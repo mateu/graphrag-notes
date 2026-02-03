@@ -291,11 +291,10 @@ impl LibrarianAgent {
 
         // Add conversation metadata
         let mut metadata = serde_json::Map::new();
-        if let Some(ref uuid) = conversation.uuid {
-            metadata.insert("conversation_id".into(), serde_json::json!(uuid));
-        }
-        if let Some(ref created) = conversation.created_at {
-            metadata.insert("created_at".into(), serde_json::json!(created));
+        metadata.insert("conversation_id".into(), serde_json::json!(&conversation.uuid));
+        metadata.insert("created_at".into(), serde_json::json!(&conversation.created_at));
+        if !conversation.summary.is_empty() {
+            metadata.insert("summary".into(), serde_json::json!(&conversation.summary));
         }
         source = source.with_metadata(serde_json::Value::Object(metadata));
 
@@ -303,7 +302,7 @@ impl LibrarianAgent {
         let source_id = source.id.as_ref().map(|id| id.to_string());
 
         // Extract Q&A pairs from messages
-        let qa_pairs = self.extract_qa_pairs(&conversation.messages);
+        let qa_pairs = self.extract_qa_pairs(&conversation.chat_messages);
 
         if qa_pairs.is_empty() {
             // No Q&A pairs, import the whole conversation as markdown
@@ -370,15 +369,15 @@ impl LibrarianAgent {
         let mut current_human: Option<&str> = None;
 
         for msg in messages {
-            match msg.role {
+            match msg.sender {
                 MessageRole::Human => {
-                    current_human = Some(&msg.content);
+                    current_human = Some(&msg.text);
                 }
                 MessageRole::Assistant => {
                     if let Some(question) = current_human.take() {
                         // Only include if both question and answer are substantial
-                        if question.len() > 10 && msg.content.len() > 20 {
-                            pairs.push((question.to_string(), msg.content.clone()));
+                        if question.len() > 10 && msg.text.len() > 20 {
+                            pairs.push((question.to_string(), msg.text.clone()));
                         }
                     }
                 }
