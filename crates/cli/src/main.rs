@@ -1,11 +1,12 @@
 //! GraphRAG Notes CLI
-//! 
+//!
 //! A command-line interface for the GraphRAG Notes system.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use graphrag_agents::{LibrarianAgent, SearchAgent, GardenerAgent, MlClient};
-use graphrag_db::{Repository, init_persistent, init_memory};
+use graphrag_agents::{GardenerAgent, LibrarianAgent, MlClient, SearchAgent};
+use graphrag_core::ChatExport;
+use graphrag_db::{init_memory, init_persistent, Repository};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use tracing::{info, Level};
@@ -62,6 +63,12 @@ enum Commands {
     /// Import from a file
     Import {
         /// Path to file
+        path: PathBuf,
+    },
+
+    /// Import chat conversations from Claude Desktop or other chat exports
+    ImportChats {
+        /// Path to JSON file containing chat export
         path: PathBuf,
     },
     
@@ -160,6 +167,9 @@ async fn main() -> Result<()> {
         Commands::Import { path } => {
             cmd_import(repo, ml, path).await?;
         }
+        Commands::ImportChats { path } => {
+            cmd_import_chats(repo, ml, path).await?;
+        }
         Commands::Search { query, limit, context } => {
             cmd_search(repo, ml, query, limit, context).await?;
         }
@@ -223,15 +233,53 @@ async fn cmd_import(
 ) -> Result<()> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
-    
+
     let librarian = LibrarianAgent::new(repo, ml);
-    let notes = librarian.ingest_markdown(
-        path.to_str().unwrap_or("unknown"),
-        content,
-    ).await?;
-    
+    let notes = librarian
+        .ingest_markdown(path.to_str().unwrap_or("unknown"), content)
+        .await?;
+
     println!("✓ Imported {} notes from {}", notes.len(), path.display());
-    
+
+    Ok(())
+}
+
+async fn cmd_import_chats(repo: Repository, ml: MlClient, path: PathBuf) -> Result<()> {
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read file: {}", path.display()))?;
+
+    // Parse the chat export
+    let export = ChatExport::from_json(&content)
+        .with_context(|| format!("Failed to parse chat export from: {}", path.display()))?;
+
+    println!(
+        "Found {} conversations with {} total messages",
+        export.conversation_count(),
+        export.total_messages()
+    );
+
+    let librarian = LibrarianAgent::new(repo, ml);
+    let result = librarian
+        .ingest_chat_export(export, Some(path.display().to_string()))
+        .await?;
+
+    println!("\n✓ Import complete:");
+    println!(
+        "  • Conversations imported: {}",
+        result.conversations_imported
+    );
+    println!("  • Notes created: {}", result.notes_created);
+
+    if result.conversations_failed > 0 {
+        println!(
+            "  • Conversations failed: {}",
+            result.conversations_failed
+        );
+        for error in &result.errors {
+            println!("    - {}", error);
+        }
+    }
+
     Ok(())
 }
 

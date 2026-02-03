@@ -20,6 +20,8 @@ pub enum SourceType {
     Pdf,
     /// Voice memo (future)
     Voice,
+    /// Chat export (e.g., Claude Desktop)
+    ChatExport,
 }
 
 impl Default for SourceType {
@@ -93,6 +95,25 @@ impl Source {
     pub fn with_content(mut self, content: impl Into<String>) -> Self {
         self.content = Some(content.into());
         self
+    }
+
+    /// Builder: set metadata
+    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Create a source from a chat export
+    pub fn chat_export(title: impl Into<String>, uri: Option<String>) -> Self {
+        Self {
+            id: None,
+            source_type: SourceType::ChatExport,
+            title: Some(title.into()),
+            uri,
+            content: None,
+            metadata: serde_json::Value::Null,
+            created_at: Utc::now(),
+        }
     }
 }
 

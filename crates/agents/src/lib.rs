@@ -11,7 +11,7 @@ pub mod gardener;
 pub mod ml_client;
 pub mod error;
 
-pub use librarian::LibrarianAgent;
+pub use librarian::{LibrarianAgent, ChatImportResult};
 pub use search::SearchAgent;
 pub use gardener::GardenerAgent;
 pub use ml_client::MlClient;
