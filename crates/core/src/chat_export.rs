@@ -28,6 +28,7 @@ pub enum MessageRole {
 ///
 /// Claude Desktop exports messages with `sender` and `text` fields,
 /// which are mapped to `role` and `content` for internal consistency.
+/// The structured `content` array from Claude Desktop is stored in `content_blocks`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     /// Unique identifier for this message
@@ -41,8 +42,13 @@ pub struct ChatMessage {
 
     /// The message text content
     /// Maps from Claude Desktop's `text` field
-    #[serde(alias = "text")]
+    #[serde(rename = "text")]
     pub content: String,
+
+    /// Structured content blocks from Claude Desktop
+    /// Maps from Claude Desktop's `content` field
+    #[serde(rename = "content", default)]
+    pub content_blocks: serde_json::Value,
 
     /// When the message was created
     #[serde(default)]
@@ -331,6 +337,7 @@ mod tests {
                         ChatMessage {
                             uuid: Some("m1".into()),
                             content: "Hello".into(),
+                            content_blocks: serde_json::Value::Null,
                             role: MessageRole::Human,
                             created_at: None,
                             updated_at: None,
@@ -340,6 +347,7 @@ mod tests {
                         ChatMessage {
                             uuid: Some("m2".into()),
                             content: "Hi".into(),
+                            content_blocks: serde_json::Value::Null,
                             role: MessageRole::Assistant,
                             created_at: None,
                             updated_at: None,
@@ -358,6 +366,7 @@ mod tests {
                     messages: vec![ChatMessage {
                         uuid: Some("m3".into()),
                         content: "Test".into(),
+                        content_blocks: serde_json::Value::Null,
                         role: MessageRole::Human,
                         created_at: None,
                         updated_at: None,
@@ -374,19 +383,8 @@ mod tests {
     }
 
     #[test]
-    fn test_field_aliases() {
-        // Test that both internal names and Claude Desktop names work
-        let internal_format = r#"{
-            "uuid": "test",
-            "name": "Test",
-            "summary": "",
-            "created_at": "2026-01-22T15:56:10.335839Z",
-            "updated_at": "2026-01-22T15:56:17.944144Z",
-            "messages": [
-                {"role": "human", "content": "Hello"}
-            ]
-        }"#;
-
+    fn test_chat_messages_alias() {
+        // Test that chat_messages alias works for messages field
         let claude_format = r#"{
             "uuid": "test",
             "name": "Test",
@@ -398,14 +396,9 @@ mod tests {
             ]
         }"#;
 
-        let internal = ChatExport::from_json(internal_format).unwrap();
-        let claude = ChatExport::from_json(claude_format).unwrap();
-
-        assert_eq!(internal.conversations[0].messages.len(), 1);
-        assert_eq!(claude.conversations[0].messages.len(), 1);
-        assert_eq!(
-            internal.conversations[0].messages[0].content,
-            claude.conversations[0].messages[0].content
-        );
+        let export = ChatExport::from_json(claude_format).unwrap();
+        assert_eq!(export.conversations[0].messages.len(), 1);
+        assert_eq!(export.conversations[0].messages[0].content, "Hello");
+        assert_eq!(export.conversations[0].messages[0].role, MessageRole::Human);
     }
 }
