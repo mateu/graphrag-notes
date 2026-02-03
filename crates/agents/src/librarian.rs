@@ -392,17 +392,11 @@ impl LibrarianAgent {
 
     /// Generate a title for a Q&A note
     fn generate_qa_title(&self, question: &str, index: usize) -> String {
-        // Take first line, truncate if needed (use chars to handle Unicode properly)
+        // Take first line
         let first_line = question.lines().next().unwrap_or(question);
-        let truncated = if first_line.chars().count() > 60 {
-            let chars: String = first_line.chars().take(60).collect();
-            format!("{}...", chars)
-        } else {
-            first_line.to_string()
-        };
 
         // Remove common prefixes like "Can you", "Please", etc.
-        let cleaned = truncated
+        let cleaned = first_line
             .trim_start_matches("Can you ")
             .trim_start_matches("Could you ")
             .trim_start_matches("Please ")
@@ -411,9 +405,47 @@ impl LibrarianAgent {
             .trim_start_matches("Help me ");
 
         if cleaned.is_empty() {
-            format!("Q&A #{}", index)
+            return format!("Q&A #{}", index);
+        }
+
+        // Truncate at word boundary near 48 chars
+        let truncated = Self::truncate_at_word_boundary(cleaned, 48);
+        if truncated.len() < cleaned.len() {
+            format!("{}...", truncated)
         } else {
-            cleaned.to_string()
+            truncated.to_string()
+        }
+    }
+
+    /// Truncate a string at the nearest word boundary at or after the target length
+    fn truncate_at_word_boundary(s: &str, target: usize) -> &str {
+        if s.chars().count() <= target {
+            return s;
+        }
+
+        // Find word boundaries (spaces) and pick the one closest to target
+        let mut last_space = 0;
+        let mut char_count = 0;
+
+        for (byte_idx, c) in s.char_indices() {
+            char_count += 1;
+            if c.is_whitespace() {
+                if char_count > target {
+                    // We've passed target, use the last space we found
+                    break;
+                }
+                last_space = byte_idx;
+            }
+        }
+
+        if last_space == 0 {
+            // No space found before target, just return up to target chars
+            s.char_indices()
+                .nth(target)
+                .map(|(idx, _)| &s[..idx])
+                .unwrap_or(s)
+        } else {
+            &s[..last_space]
         }
     }
 }
