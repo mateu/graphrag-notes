@@ -1,0 +1,24 @@
+[package]
+name = "graphrag-cli"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "graphrag"
+path = "src/main.rs"
+
+[dependencies]
+graphrag-core = { path = "../core" }
+graphrag-db = { path = "../db" }
+graphrag-agents = { path = "../agents" }
+
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# For reading files
+dirs = "5.0"

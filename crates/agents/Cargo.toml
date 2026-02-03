@@ -1,0 +1,19 @@
+[package]
+name = "graphrag-agents"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+graphrag-core = { path = "../core" }
+graphrag-db = { path = "../db" }
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

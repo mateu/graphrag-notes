@@ -1,0 +1,36 @@
+# GraphRAG Notes Configuration
+
+[database]
+# Path to the database (relative to home directory)
+path = ".graphrag/data"
+
+[ml_worker]
+# URL of the Python ML worker
+url = "http://localhost:8100"
+# Timeout for ML requests in seconds
+timeout_secs = 30
+
+[search]
+# Default number of results to return
+default_limit = 10
+# Weights for hybrid search (vector vs full-text)
+vector_weight = 0.7
+fulltext_weight = 0.3
+
+[gardener]
+# Minimum similarity score to suggest a connection
+similarity_threshold = 0.7
+# Auto-apply connections above this threshold
+auto_apply_threshold = 0.85
+# Maximum suggestions to generate per run
+max_suggestions = 50
+
+[librarian]
+# Minimum chunk size (characters) when splitting documents
+min_chunk_size = 50
+# Maximum chunk size
+max_chunk_size = 1000
+
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "info"
