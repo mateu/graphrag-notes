@@ -199,3 +199,48 @@ graphrag-notes/
 ## License
 
 MIT
+
+## Rust & Python development quick reference
+
+### Rust (service & CLI)
+
+- Crates:
+  - `crates/core`: graph domain types (notes, entities, edges, sources) and shared logic
+  - `crates/db`: SQLite persistence and schema helpers
+  - `crates/agents`: Librarian, Search, Gardener agents plus ML client
+  - `crates/cli`: `graphrag` command-line interface
+- Build:
+  ```bash
+  cargo build --release
+  ```
+- Run CLI:
+  ```bash
+  cargo run --release -p graphrag-cli -- --help
+  ```
+- Tests:
+  ```bash
+  cargo test
+  ```
+
+### Python (ML worker)
+
+- Location: `python/src/ml_worker`
+- Tooling: `uv` (Python project manager)
+- Setup env:
+  ```bash
+  cd python
+  uv sync
+  ```
+- Run server:
+  ```bash
+  cd python
+  uv run python -m ml_worker.server
+  ```
+- Tests:
+  ```bash
+  cd python
+  uv run pytest
+  ```
+
+The Rust CLI expects the Python ML worker to be running at `http://localhost:8100`.
+
