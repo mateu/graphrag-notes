@@ -217,19 +217,22 @@ impl Repository {
         edge_type: EdgeType,
         confidence: Option<f32>,
     ) -> Result<()> {
-        // Use INSERT RELATION INTO for edge tables (correct SurrealDB syntax)
-        // SurrealDB edge tables use 'in' for source and 'out' for target
+        // Edge tables are regular SCHEMAFULL tables with 'in' and 'out' fields
+        // Use regular INSERT INTO (INSERT RELATION INTO requires TYPE RELATION tables)
         let table = edge_type.to_string();
         let query = format!(
-            "INSERT RELATION INTO {table} (in, out, confidence, created_at) VALUES ($from, $to, $confidence, time::now())"
+             "INSERT INTO {table} (in, out, confidence, created_at) VALUES ($from, $to, $confidence, time::now())"
         );
 
-        self.db
+        let result = self.db
             .query(&query)
             .bind(("from", from_id.clone()))
             .bind(("to", to_id.clone()))
             .bind(("confidence", confidence))
             .await?;
+
+        // Check for errors in the query result
+        result.check()?;
 
         Ok(())
     }
