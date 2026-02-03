@@ -217,19 +217,63 @@ impl Repository {
         edge_type: EdgeType,
         confidence: Option<f32>,
     ) -> Result<()> {
-        let table = edge_type.to_string();
-        let from = from_id.to_string();
-        let to = to_id.to_string();
-        let query = format!(
-            "RELATE {}->{}->{} SET confidence = $confidence, created_at = time::now()",
-            from, table, to
-        );
-        
-        self.db
-            .query(&query)
-            .bind(("confidence", confidence))
-            .await?;
-        
+        // Use parameter binding for RecordIds (more reliable than string interpolation)
+        // Table name must be literal in RELATE, so we use separate queries per edge type
+        match edge_type {
+            EdgeType::Supports => {
+                self.db
+                    .query("RELATE $from->supports->$to SET confidence = $confidence, created_at = time::now()")
+                    .bind(("from", from_id.clone()))
+                    .bind(("to", to_id.clone()))
+                    .bind(("confidence", confidence))
+                    .await?;
+            }
+            EdgeType::Contradicts => {
+                self.db
+                    .query("RELATE $from->contradicts->$to SET confidence = $confidence, created_at = time::now()")
+                    .bind(("from", from_id.clone()))
+                    .bind(("to", to_id.clone()))
+                    .bind(("confidence", confidence))
+                    .await?;
+            }
+            EdgeType::DerivedFrom => {
+                self.db
+                    .query("RELATE $from->derived_from->$to SET created_at = time::now()")
+                    .bind(("from", from_id.clone()))
+                    .bind(("to", to_id.clone()))
+                    .await?;
+            }
+            EdgeType::References => {
+                self.db
+                    .query("RELATE $from->references->$to SET created_at = time::now()")
+                    .bind(("from", from_id.clone()))
+                    .bind(("to", to_id.clone()))
+                    .await?;
+            }
+            EdgeType::RelatedTo => {
+                self.db
+                    .query("RELATE $from->related_to->$to SET confidence = $confidence, created_at = time::now()")
+                    .bind(("from", from_id.clone()))
+                    .bind(("to", to_id.clone()))
+                    .bind(("confidence", confidence))
+                    .await?;
+            }
+            EdgeType::Mentions => {
+                self.db
+                    .query("RELATE $from->mentions->$to SET created_at = time::now()")
+                    .bind(("from", from_id.clone()))
+                    .bind(("to", to_id.clone()))
+                    .await?;
+            }
+            EdgeType::TaggedWith => {
+                self.db
+                    .query("RELATE $from->tagged_with->$to SET created_at = time::now()")
+                    .bind(("from", from_id.clone()))
+                    .bind(("to", to_id.clone()))
+                    .await?;
+            }
+        }
+
         Ok(())
     }
     
@@ -288,14 +332,14 @@ impl Repository {
     ) -> Result<Vec<SimilarNote>> {
         let results: Vec<SimilarNote> = self.db
             .query(r#"
-                SELECT 
+                SELECT
                     id,
                     title,
                     content,
                     vector::similarity::cosine(embedding, $embedding) AS similarity
                 FROM note
-                WHERE 
-                    id != $note_id AND
+                WHERE
+                    <string>id != $note_id AND
                     embedding IS NOT NONE AND
                     vector::similarity::cosine(embedding, $embedding) > $threshold
                 ORDER BY similarity DESC
@@ -307,7 +351,7 @@ impl Repository {
             .bind(("limit", limit))
             .await?
             .take(0)?;
-        
+
         Ok(results)
     }
     
