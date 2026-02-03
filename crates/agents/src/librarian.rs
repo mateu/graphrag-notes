@@ -392,10 +392,11 @@ impl LibrarianAgent {
 
     /// Generate a title for a Q&A note
     fn generate_qa_title(&self, question: &str, index: usize) -> String {
-        // Take first line, truncate if needed
+        // Take first line, truncate if needed (use chars to handle Unicode properly)
         let first_line = question.lines().next().unwrap_or(question);
-        let truncated = if first_line.len() > 60 {
-            format!("{}...", &first_line[..60])
+        let truncated = if first_line.chars().count() > 60 {
+            let chars: String = first_line.chars().take(60).collect();
+            format!("{}...", chars)
         } else {
             first_line.to_string()
         };
