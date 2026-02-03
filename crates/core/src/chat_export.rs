@@ -3,11 +3,16 @@
 //! This module handles parsing the official Claude Desktop export format.
 //! The export consists of a `conversations.json` file containing an array
 //! of conversation objects with their chat messages.
+//!
+//! Field mapping from Claude Desktop format to internal names:
+//! - `chat_messages` → `messages`
+//! - `sender` → `role`
+//! - `text` → `content`
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Role of the message sender in Claude Desktop format
+/// Role of the message sender
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
@@ -19,22 +24,25 @@ pub enum MessageRole {
     System,
 }
 
-/// A single message in a Claude Desktop chat conversation
+/// A single message in a chat conversation
 ///
-/// Claude Desktop exports messages with both a `text` field (plain text)
-/// and a `content` array (structured content blocks). We use `text` for
-/// the message content.
+/// Claude Desktop exports messages with `sender` and `text` fields,
+/// which are mapped to `role` and `content` for internal consistency.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     /// Unique identifier for this message
     #[serde(default)]
     pub uuid: Option<String>,
 
-    /// The message text content
-    pub text: String,
-
     /// The sender role: "human" or "assistant"
-    pub sender: MessageRole,
+    /// Maps from Claude Desktop's `sender` field
+    #[serde(alias = "sender")]
+    pub role: MessageRole,
+
+    /// The message text content
+    /// Maps from Claude Desktop's `text` field
+    #[serde(alias = "text")]
+    pub content: String,
 
     /// When the message was created
     #[serde(default)]
@@ -43,10 +51,6 @@ pub struct ChatMessage {
     /// When the message was last updated
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
-
-    /// Structured content blocks (preserved but not actively used)
-    #[serde(default)]
-    pub content: serde_json::Value,
 
     /// File attachments
     #[serde(default)]
@@ -87,8 +91,9 @@ pub struct ChatConversation {
     pub account: Option<Account>,
 
     /// The messages in this conversation
-    #[serde(default)]
-    pub chat_messages: Vec<ChatMessage>,
+    /// Maps from Claude Desktop's `chat_messages` field
+    #[serde(default, alias = "chat_messages")]
+    pub messages: Vec<ChatMessage>,
 }
 
 /// A collection of chat conversations (Claude Desktop export)
@@ -139,10 +144,7 @@ impl ChatExport {
 
     /// Get total message count across all conversations
     pub fn total_messages(&self) -> usize {
-        self.conversations
-            .iter()
-            .map(|c| c.chat_messages.len())
-            .sum()
+        self.conversations.iter().map(|c| c.messages.len()).sum()
     }
 
     /// Get total conversation count
@@ -156,7 +158,7 @@ impl ChatExport {
             conversations: self
                 .conversations
                 .into_iter()
-                .filter(|c| !c.chat_messages.is_empty())
+                .filter(|c| !c.messages.is_empty())
                 .collect(),
             exported_at: self.exported_at,
         }
@@ -171,12 +173,8 @@ impl ChatConversation {
         }
 
         // Fall back to first human message
-        if let Some(msg) = self
-            .chat_messages
-            .iter()
-            .find(|m| m.sender == MessageRole::Human)
-        {
-            let first_line = msg.text.lines().next().unwrap_or(&msg.text);
+        if let Some(msg) = self.messages.iter().find(|m| m.role == MessageRole::Human) {
+            let first_line = msg.content.lines().next().unwrap_or(&msg.content);
             if first_line.len() > 50 {
                 format!("{}...", &first_line[..50])
             } else {
@@ -212,14 +210,14 @@ impl ChatConversation {
 
         // Add messages
         md.push_str("## Conversation\n\n");
-        for msg in &self.chat_messages {
-            let role_label = match msg.sender {
+        for msg in &self.messages {
+            let role_label = match msg.role {
                 MessageRole::Human => "**Human**",
                 MessageRole::Assistant => "**Assistant**",
                 MessageRole::System => "**System**",
             };
 
-            md.push_str(&format!("{}: {}\n\n", role_label, msg.text));
+            md.push_str(&format!("{}: {}\n\n", role_label, msg.content));
         }
 
         md
@@ -233,6 +231,7 @@ mod tests {
     #[test]
     fn test_parse_claude_desktop_format() {
         // This matches the actual Claude Desktop export format
+        // Note: uses `sender`, `text`, `chat_messages` which get mapped to internal names
         let json = r#"[
             {
                 "uuid": "d8d25da3-5645-43b9-87dd-abf0a3d703ae",
@@ -248,7 +247,6 @@ mod tests {
                         "sender": "human",
                         "created_at": "2026-01-26T14:44:33.978272Z",
                         "updated_at": "2026-01-26T14:44:33.978272Z",
-                        "content": [],
                         "attachments": [],
                         "files": []
                     },
@@ -258,7 +256,6 @@ mod tests {
                         "sender": "assistant",
                         "created_at": "2026-01-26T14:44:44.257542Z",
                         "updated_at": "2026-01-26T14:44:44.257542Z",
-                        "content": [],
                         "attachments": [],
                         "files": []
                     }
@@ -268,14 +265,16 @@ mod tests {
 
         let export = ChatExport::from_json(json).unwrap();
         assert_eq!(export.conversations.len(), 1);
-        assert_eq!(export.conversations[0].chat_messages.len(), 2);
+        assert_eq!(export.conversations[0].messages.len(), 2);
         assert_eq!(export.conversations[0].name, "Test Conversation");
+
+        // Verify field mapping worked
         assert_eq!(
-            export.conversations[0].chat_messages[0].text,
+            export.conversations[0].messages[0].content,
             "Hello, how are you?"
         );
         assert_eq!(
-            export.conversations[0].chat_messages[0].sender,
+            export.conversations[0].messages[0].role,
             MessageRole::Human
         );
     }
@@ -295,7 +294,7 @@ mod tests {
 
         let export = ChatExport::from_json(json).unwrap();
         assert_eq!(export.conversations.len(), 1);
-        assert_eq!(export.conversations[0].chat_messages.len(), 0);
+        assert_eq!(export.conversations[0].messages.len(), 0);
 
         // Filter to only conversations with messages
         let filtered = export.with_messages_only();
@@ -311,7 +310,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             account: None,
-            chat_messages: vec![],
+            messages: vec![],
         };
 
         assert_eq!(conv.display_title(), "My Chat Title");
@@ -328,24 +327,22 @@ mod tests {
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                     account: None,
-                    chat_messages: vec![
+                    messages: vec![
                         ChatMessage {
                             uuid: Some("m1".into()),
-                            text: "Hello".into(),
-                            sender: MessageRole::Human,
+                            content: "Hello".into(),
+                            role: MessageRole::Human,
                             created_at: None,
                             updated_at: None,
-                            content: serde_json::Value::Null,
                             attachments: vec![],
                             files: vec![],
                         },
                         ChatMessage {
                             uuid: Some("m2".into()),
-                            text: "Hi".into(),
-                            sender: MessageRole::Assistant,
+                            content: "Hi".into(),
+                            role: MessageRole::Assistant,
                             created_at: None,
                             updated_at: None,
-                            content: serde_json::Value::Null,
                             attachments: vec![],
                             files: vec![],
                         },
@@ -358,13 +355,12 @@ mod tests {
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                     account: None,
-                    chat_messages: vec![ChatMessage {
+                    messages: vec![ChatMessage {
                         uuid: Some("m3".into()),
-                        text: "Test".into(),
-                        sender: MessageRole::Human,
+                        content: "Test".into(),
+                        role: MessageRole::Human,
                         created_at: None,
                         updated_at: None,
-                        content: serde_json::Value::Null,
                         attachments: vec![],
                         files: vec![],
                     }],
@@ -375,5 +371,41 @@ mod tests {
 
         assert_eq!(export.conversation_count(), 2);
         assert_eq!(export.total_messages(), 3);
+    }
+
+    #[test]
+    fn test_field_aliases() {
+        // Test that both internal names and Claude Desktop names work
+        let internal_format = r#"{
+            "uuid": "test",
+            "name": "Test",
+            "summary": "",
+            "created_at": "2026-01-22T15:56:10.335839Z",
+            "updated_at": "2026-01-22T15:56:17.944144Z",
+            "messages": [
+                {"role": "human", "content": "Hello"}
+            ]
+        }"#;
+
+        let claude_format = r#"{
+            "uuid": "test",
+            "name": "Test",
+            "summary": "",
+            "created_at": "2026-01-22T15:56:10.335839Z",
+            "updated_at": "2026-01-22T15:56:17.944144Z",
+            "chat_messages": [
+                {"sender": "human", "text": "Hello"}
+            ]
+        }"#;
+
+        let internal = ChatExport::from_json(internal_format).unwrap();
+        let claude = ChatExport::from_json(claude_format).unwrap();
+
+        assert_eq!(internal.conversations[0].messages.len(), 1);
+        assert_eq!(claude.conversations[0].messages.len(), 1);
+        assert_eq!(
+            internal.conversations[0].messages[0].content,
+            claude.conversations[0].messages[0].content
+        );
     }
 }

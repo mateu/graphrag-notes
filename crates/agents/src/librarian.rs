@@ -302,7 +302,7 @@ impl LibrarianAgent {
         let source_id = source.id.as_ref().map(|id| id.to_string());
 
         // Extract Q&A pairs from messages
-        let qa_pairs = self.extract_qa_pairs(&conversation.chat_messages);
+        let qa_pairs = self.extract_qa_pairs(&conversation.messages);
 
         if qa_pairs.is_empty() {
             // No Q&A pairs, import the whole conversation as markdown
@@ -369,15 +369,15 @@ impl LibrarianAgent {
         let mut current_human: Option<&str> = None;
 
         for msg in messages {
-            match msg.sender {
+            match msg.role {
                 MessageRole::Human => {
-                    current_human = Some(&msg.text);
+                    current_human = Some(&msg.content);
                 }
                 MessageRole::Assistant => {
                     if let Some(question) = current_human.take() {
                         // Only include if both question and answer are substantial
-                        if question.len() > 10 && msg.text.len() > 20 {
-                            pairs.push((question.to_string(), msg.text.clone()));
+                        if question.len() > 10 && msg.content.len() > 20 {
+                            pairs.push((question.to_string(), msg.content.clone()));
                         }
                     }
                 }
