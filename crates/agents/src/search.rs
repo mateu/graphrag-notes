@@ -1,6 +1,6 @@
 //! Search Agent - Handles user queries with hybrid search
 
-use crate::{MlClient, Result};
+use crate::{Result, TeiClient};
 use graphrag_db::Repository;
 use graphrag_db::repository::{SearchResult, RelatedNotes, SimilarNote};
 use tracing::{info, debug, instrument};
@@ -15,13 +15,13 @@ pub struct EnrichedSearchResult {
 /// The Search agent handles user queries
 pub struct SearchAgent {
     repo: Repository,
-    ml: MlClient,
+    tei: TeiClient,
 }
 
 impl SearchAgent {
     /// Create a new Search agent
-    pub fn new(repo: Repository, ml: MlClient) -> Self {
-        Self { repo, ml }
+    pub fn new(repo: Repository, tei: TeiClient) -> Self {
+        Self { repo, tei }
     }
     
     /// Perform hybrid search (vector + full-text)
@@ -35,7 +35,7 @@ impl SearchAgent {
         
         // Generate query embedding
         debug!("Generating query embedding...");
-        let embedding = self.ml.embed_one(query).await?;
+        let embedding = self.tei.embed(query, true).await?;
         
         // Perform hybrid search
         let results = self.repo.hybrid_search(query, embedding, limit).await?;
@@ -75,7 +75,7 @@ impl SearchAgent {
     ) -> Result<Vec<SearchResult>> {
         debug!("Performing semantic search for: {}", query);
         
-        let embedding = self.ml.embed_one(query).await?;
+        let embedding = self.tei.embed(query, true).await?;
         let results = self.repo.vector_search(embedding, limit).await?;
         
         Ok(results)

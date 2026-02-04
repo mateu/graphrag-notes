@@ -12,7 +12,7 @@ build-debug:
 	cargo build
 
 # Run all tests
-test: test-rust test-python
+test: test-rust
 
 # Run Rust tests (unit tests, no ML worker needed)
 test-rust:
@@ -24,7 +24,7 @@ test-rust-integration:
 
 # Run Python tests
 test-python:
-	cd python && uv run pytest
+	@echo "Python worker removed; no Python tests to run."
 
 # Clean build artifacts
 clean:

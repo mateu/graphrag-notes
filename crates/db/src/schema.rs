@@ -3,8 +3,8 @@
 use crate::{DbConnection, Result};
 use tracing::info;
 
-/// Embedding dimension (MiniLM-L6-v2 uses 384)
-pub const EMBEDDING_DIMENSION: usize = 768;
+/// Embedding dimension (Jina v3 default: 1024)
+pub const EMBEDDING_DIMENSION: usize = 1024;
 
 /// Initialize the database schema
 pub async fn initialize_schema(db: &DbConnection) -> Result<()> {
@@ -108,7 +108,7 @@ DEFINE INDEX idx_note_title ON note FIELDS title
 
 -- Vector index for semantic search (HNSW for performance)
 DEFINE INDEX idx_note_embedding ON note FIELDS embedding 
-    HNSW DIMENSION 768 DIST COSINE;
+    HNSW DIMENSION 1024 DIST COSINE;
 
 -- Entity lookups
 DEFINE INDEX idx_entity_canonical ON entity FIELDS canonical_name UNIQUE;
@@ -126,7 +126,6 @@ DEFINE INDEX idx_note_tags ON note FIELDS tags;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::init_memory;
     
     #[tokio::test]

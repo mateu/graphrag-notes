@@ -1,6 +1,6 @@
 //! Gardener Agent - Maintains graph connections
 
-use crate::{MlClient, Result};
+use crate::Result;
 use graphrag_core::{Note, EdgeType};
 use graphrag_db::Repository;
 use tracing::{info, debug, instrument};
@@ -18,18 +18,15 @@ pub struct SuggestedConnection {
 /// The Gardener agent maintains graph health
 pub struct GardenerAgent {
     repo: Repository,
-    #[allow(dead_code)]
-    ml: MlClient,
     /// Minimum similarity threshold for suggesting connections
     similarity_threshold: f32,
 }
 
 impl GardenerAgent {
     /// Create a new Gardener agent
-    pub fn new(repo: Repository, ml: MlClient) -> Self {
+    pub fn new(repo: Repository) -> Self {
         Self {
             repo,
-            ml,
             similarity_threshold: 0.7,
         }
     }

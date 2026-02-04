@@ -1,6 +1,6 @@
 //! Librarian Agent - Ingests content and creates notes
 
-use crate::{MlClient, Result};
+use crate::{Result, TeiClient, TgiClient};
 use graphrag_core::{
     ChatConversation, ChatExport, ChatMessage, Entity, EntityType, MessageRole, Note, NoteType,
     Source, SourceType,
@@ -11,13 +11,14 @@ use tracing::{debug, info, instrument};
 /// The Librarian agent handles content ingestion
 pub struct LibrarianAgent {
     repo: Repository,
-    ml: MlClient,
+    tei: TeiClient,
+    tgi: TgiClient,
 }
 
 impl LibrarianAgent {
     /// Create a new Librarian agent
-    pub fn new(repo: Repository, ml: MlClient) -> Self {
-        Self { repo, ml }
+    pub fn new(repo: Repository, tei: TeiClient, tgi: TgiClient) -> Self {
+        Self { repo, tei, tgi }
     }
     
     /// Ingest raw text content and create a note
@@ -43,35 +44,30 @@ impl LibrarianAgent {
         
         // Generate embedding
         debug!("Generating embedding...");
-        let embedding = self.ml.embed_one(&content).await?;
+        let embedding = self.tei.embed(&content, false).await?;
         
         // Determine title
         let note_title = if let Some(t) = title {
             Some(t)
         } else {
-            // Try AI generation
-            if let Ok(Some(gen_title)) = self.ml.generate_title(&content).await {
-                Some(gen_title)
-            } else {
-                // Fallback heuristic: first 3-5 words, max 48 characters
-                content
-                    .lines()
-                    .find(|l| !l.trim().is_empty())
-                    .map(|l| {
-                        let l = l.trim();
-                        let words: Vec<&str> = l.split_whitespace().collect();
-                        let mut title = words
-                            .iter()
-                            .take(5)
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        if title.chars().count() > 48 {
-                            title = title.chars().take(48).collect();
-                        }
-                        title
-                    })
-            }
+            // Fallback heuristic: first 3-5 words, max 48 characters
+            content
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| {
+                    let l = l.trim();
+                    let words: Vec<&str> = l.split_whitespace().collect();
+                    let mut title = words
+                        .iter()
+                        .take(5)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if title.chars().count() > 48 {
+                        title = title.chars().take(48).collect();
+                    }
+                    title
+                })
         };
 
         // Create the note
@@ -141,7 +137,7 @@ impl LibrarianAgent {
         
         // Batch embed for efficiency
         let texts: Vec<String> = notes.iter().map(|n| n.content.clone()).collect();
-        let embeddings = self.ml.embed(texts).await?;
+        let embeddings = self.tei.embed_batch(&texts, false).await?;
         
         // Update each note
         for (note, embedding) in notes.iter().zip(embeddings.into_iter()) {
@@ -155,11 +151,18 @@ impl LibrarianAgent {
     
     /// Extract entities from a note and link them
     async fn extract_and_link_entities(&self, note: &Note) -> Result<()> {
-        let entities = self.ml.extract_entities(&note.content).await?;
+        let extraction = self.tgi.extract(&note.content).await?;
+        let entities = extraction.entities;
         
         for extracted in entities {
             // Map string type to EntityType
-            let entity_type = match extracted.entity_type.to_lowercase().as_str() {
+            let entity_type = match extracted
+                .entity_type
+                .as_deref()
+                .unwrap_or("concept")
+                .to_lowercase()
+                .as_str()
+            {
                 "person" | "per" => EntityType::Person,
                 "organization" | "org" => EntityType::Organization,
                 "location" | "loc" | "gpe" => EntityType::Location,
@@ -195,7 +198,7 @@ impl LibrarianAgent {
 
         if chunks.is_empty() {
             // Treat whole content as one note
-            let embedding = self.ml.embed_one(content).await?;
+            let embedding = self.tei.embed(content, false).await?;
             let mut note = Note::new(content)
                 .with_type(NoteType::Raw)
                 .with_embedding(embedding);
@@ -210,7 +213,7 @@ impl LibrarianAgent {
 
         // Generate embeddings in batch
         let texts: Vec<String> = chunks.iter().map(|s| s.to_string()).collect();
-        let embeddings = self.ml.embed(texts).await?;
+        let embeddings = self.tei.embed_batch(&texts, false).await?;
 
         let mut notes = Vec::new();
 
@@ -327,7 +330,7 @@ impl LibrarianAgent {
         }
 
         // Batch embed all Q&A pairs
-        let embeddings = self.ml.embed(texts_to_embed).await?;
+        let embeddings = self.tei.embed_batch(&texts_to_embed, false).await?;
 
         // Create notes
         for ((content, title), embedding) in note_builders.into_iter().zip(embeddings.into_iter()) {

@@ -1,0 +1,46 @@
+services:
+  # Service 1: Semantic Embeddings (TEI)
+  # Memory: ~600MB
+  tei-embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:latest-cuda
+    container_name: tei-embedding
+    ports:
+      - "8081:80"
+    volumes:
+      - ./data/tei_cache:/data
+    environment:
+      - MODEL_ID=jinaai/jina-embeddings-v3
+      - PORT=80
+      # Jina V3 allows flexible dimensions. We default to 1024 (SOTA).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Service 2: Entity Extraction LLM (TGI)
+  # Memory: ~3.0GB (4-bit quantized)
+  tgi-extraction:
+    image: ghcr.io/huggingface/text-generation-inference:latest-cuda
+    container_name: tgi-extraction
+    ports:
+      - "8082:80"
+    volumes:
+      - ./data/tgi_cache:/data
+    environment:
+      # Use Phi-4-mini for superior reasoning on small hardware
+      - MODEL_ID=microsoft/Phi-4-mini-instruct
+      - PORT=80
+      - MAX_TOTAL_TOKENS=4096
+      - MAX_INPUT_TOKENS=2048
+      # CRITICAL: Force 4-bit quantization to fit in 6GB VRAM
+      - QUANTIZE=bitsandbytes-nf4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

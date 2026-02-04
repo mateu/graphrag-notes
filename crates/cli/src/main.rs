@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use graphrag_agents::{GardenerAgent, LibrarianAgent, MlClient, SearchAgent};
+use graphrag_agents::{GardenerAgent, LibrarianAgent, SearchAgent, TeiClient, TgiClient};
 use graphrag_core::ChatExport;
 use graphrag_db::{init_memory, init_persistent, Repository};
 use std::io::{self, BufRead, Write};
@@ -21,10 +21,6 @@ struct Cli {
     #[arg(short, long)]
     db_path: Option<PathBuf>,
     
-    /// ML worker URL
-    #[arg(long, default_value = "http://localhost:8100")]
-    ml_url: String,
-    
     /// Use in-memory database (for testing)
     #[arg(long)]
     memory: bool,
@@ -32,13 +28,6 @@ struct Cli {
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
-    /// Ollama URL
-    #[arg(long)]
-    ollama_url: Option<String>,
-    
-    /// Ollama Model
-    #[arg(long, default_value = "phi4-mini:latest")]
-    ollama_model: String,
     
     #[command(subcommand)]
     command: Commands,
@@ -141,49 +130,45 @@ async fn main() -> Result<()> {
     };
     
     let repo = Repository::new(db);
-    let mut ml = MlClient::new(&cli.ml_url);
-    if let Some(url) = cli.ollama_url {
-        ml = ml.with_ollama(url, cli.ollama_model);
-    }
-    
-    // Check ML worker health
-    match ml.health().await {
-        Ok(true) => info!("ML worker is healthy"),
-        Ok(false) => {
-            eprintln!("Warning: ML worker returned unhealthy status");
-        }
-        Err(e) => {
-            eprintln!("Warning: Could not connect to ML worker at {}: {}", cli.ml_url, e);
-            eprintln!("Some features will not work. Start the ML worker with:");
-            eprintln!("  cd python && uv run python -m ml_worker.server");
-        }
+    let tei = TeiClient::default_local();
+    let tgi = TgiClient::default_local();
+
+    // Check inference services
+    let tei_ok = tei.health().await.unwrap_or(false);
+    let tgi_ok = tgi.health().await.unwrap_or(false);
+    if !tei_ok || !tgi_ok {
+        eprintln!("Error: inference services are not reachable.");
+        eprintln!("  TEI (embeddings): http://localhost:8081");
+        eprintln!("  TGI (extraction): http://localhost:8082");
+        eprintln!("Start them with: docker compose up -d");
+        anyhow::bail!("Inference services unavailable");
     }
     
     // Execute command
     match cli.command {
         Commands::Add { content, title, tags } => {
-            cmd_add(repo, ml, content, title, tags).await?;
+            cmd_add(repo, tei, tgi, content, title, tags).await?;
         }
         Commands::Import { path } => {
-            cmd_import(repo, ml, path).await?;
+            cmd_import(repo, tei, tgi, path).await?;
         }
         Commands::ImportChats { path } => {
-            cmd_import_chats(repo, ml, path).await?;
+            cmd_import_chats(repo, tei, tgi, path).await?;
         }
         Commands::Search { query, limit, context } => {
-            cmd_search(repo, ml, query, limit, context).await?;
+            cmd_search(repo, tei, query, limit, context).await?;
         }
         Commands::List { limit } => {
             cmd_list(repo, limit).await?;
         }
         Commands::Garden { dry_run } => {
-            cmd_garden(repo, ml, dry_run).await?;
+            cmd_garden(repo, dry_run).await?;
         }
         Commands::Stats => {
             cmd_stats(repo).await?;
         }
         Commands::Interactive => {
-            cmd_interactive(repo, ml).await?;
+            cmd_interactive(repo, tei, tgi).await?;
         }
     }
     
@@ -192,7 +177,8 @@ async fn main() -> Result<()> {
 
 async fn cmd_add(
     repo: Repository,
-    ml: MlClient,
+    tei: TeiClient,
+    tgi: TgiClient,
     content: Option<String>,
     title: Option<String>,
     tags: Option<String>,
@@ -218,7 +204,7 @@ async fn cmd_add(
         .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
     
-    let librarian = LibrarianAgent::new(repo, ml);
+    let librarian = LibrarianAgent::new(repo, tei, tgi);
     let note = librarian.ingest_text(content, title, tags).await?;
     
     println!("✓ Created note: {}", note.id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "(no id)".to_string()));
@@ -228,13 +214,14 @@ async fn cmd_add(
 
 async fn cmd_import(
     repo: Repository,
-    ml: MlClient,
+    tei: TeiClient,
+    tgi: TgiClient,
     path: PathBuf,
 ) -> Result<()> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
-    let librarian = LibrarianAgent::new(repo, ml);
+    let librarian = LibrarianAgent::new(repo, tei, tgi);
     let notes = librarian
         .ingest_markdown(path.to_str().unwrap_or("unknown"), content)
         .await?;
@@ -244,7 +231,12 @@ async fn cmd_import(
     Ok(())
 }
 
-async fn cmd_import_chats(repo: Repository, ml: MlClient, path: PathBuf) -> Result<()> {
+async fn cmd_import_chats(
+    repo: Repository,
+    tei: TeiClient,
+    tgi: TgiClient,
+    path: PathBuf,
+) -> Result<()> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
@@ -258,7 +250,7 @@ async fn cmd_import_chats(repo: Repository, ml: MlClient, path: PathBuf) -> Resu
         export.total_messages()
     );
 
-    let librarian = LibrarianAgent::new(repo, ml);
+    let librarian = LibrarianAgent::new(repo, tei, tgi);
     let result = librarian
         .ingest_chat_export(export, Some(path.display().to_string()))
         .await?;
@@ -285,12 +277,12 @@ async fn cmd_import_chats(repo: Repository, ml: MlClient, path: PathBuf) -> Resu
 
 async fn cmd_search(
     repo: Repository,
-    ml: MlClient,
+    tei: TeiClient,
     query: String,
     limit: usize,
     context: bool,
 ) -> Result<()> {
-    let search = SearchAgent::new(repo, ml);
+    let search = SearchAgent::new(repo, tei);
     
     if context {
         let results = search.search_with_context(&query, limit).await?;
@@ -369,8 +361,8 @@ async fn cmd_list(repo: Repository, limit: usize) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_garden(repo: Repository, ml: MlClient, dry_run: bool) -> Result<()> {
-    let gardener = GardenerAgent::new(repo, ml);
+async fn cmd_garden(repo: Repository, dry_run: bool) -> Result<()> {
+    let gardener = GardenerAgent::new(repo);
     
     if dry_run {
         println!("Finding orphan notes...\n");
@@ -432,10 +424,14 @@ async fn cmd_stats(repo: Repository) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_interactive(repo: Repository, ml: MlClient) -> Result<()> {
-    let librarian = LibrarianAgent::new(repo.clone(), ml.clone());
-    let search = SearchAgent::new(repo.clone(), ml.clone());
-    let gardener = GardenerAgent::new(repo.clone(), ml);
+async fn cmd_interactive(
+    repo: Repository,
+    tei: TeiClient,
+    tgi: TgiClient,
+) -> Result<()> {
+    let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone());
+    let search = SearchAgent::new(repo.clone(), tei.clone());
+    let gardener = GardenerAgent::new(repo.clone());
     
     println!("GraphRAG Notes - Interactive Mode");
     println!("Commands: add, search, list, garden, stats, help, quit");
