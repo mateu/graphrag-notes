@@ -21,7 +21,7 @@ ENV PATH=/root/.cargo/bin:$PATH
 # Build TEI from source with CUDA support
 RUN git clone https://github.com/huggingface/text-embeddings-inference /opt/tei
 WORKDIR /opt/tei
-RUN cargo build --release --features cuda --bin text-embeddings-router
+RUN cargo build --release --features "cuda dynamic-linking" --bin text-embeddings-router
 
 EXPOSE 80
 
