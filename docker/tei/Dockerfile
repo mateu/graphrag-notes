@@ -26,4 +26,4 @@ RUN cargo build --release --features "cuda cudarc/dynamic-linking" --bin text-em
 EXPOSE 80
 
 ENTRYPOINT ["./target/release/text-embeddings-router"]
-CMD ["--model-id", "jinaai/jina-embeddings-v3", "--port", "80"]
+CMD ["--model-id", "BAAI/bge-m3", "--port", "80"]

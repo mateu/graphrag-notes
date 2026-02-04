@@ -10,10 +10,10 @@ services:
     container_name: tei-embedding
     ports:
       - "8081:80"
+    command: ["--model-id", "BAAI/bge-m3", "--port", "80"]
     volumes:
       - ./data/tei_cache:/data
     environment:
-      - MODEL_ID=BAAI/bge-m3
       - PORT=80
       # bge-m3 is 1024-dim and TEI-compatible.
     deploy:
