@@ -2,7 +2,11 @@ services:
   # Service 1: Semantic Embeddings (TEI)
   # Memory: ~600MB
   tei-embedding:
-    image: ghcr.io/huggingface/text-embeddings-inference:latest-cuda
+    build:
+      context: ./docker/tei
+      args:
+        CUDA_COMPUTE_CAP: "120"
+    image: graphrag/tei-embedding:cc120
     container_name: tei-embedding
     ports:
       - "8081:80"
@@ -23,7 +27,7 @@ services:
   # Service 2: Entity Extraction LLM (TGI)
   # Memory: ~3.0GB (4-bit quantized)
   tgi-extraction:
-    image: ghcr.io/huggingface/text-generation-inference:latest-cuda
+    image: ghcr.io/huggingface/text-generation-inference:3.3.5
     container_name: tgi-extraction
     ports:
       - "8082:80"
