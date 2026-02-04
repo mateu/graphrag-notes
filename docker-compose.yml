@@ -27,7 +27,7 @@ services:
   # Service 2: Entity Extraction LLM (TGI)
   # Memory: ~3.0GB (4-bit quantized)
   tgi-extraction:
-    image: ghcr.io/huggingface/text-generation-inference:3.3.5
+    image: ghcr.io/huggingface/text-generation-inference:3.3
     container_name: tgi-extraction
     ports:
       - "8082:80"
