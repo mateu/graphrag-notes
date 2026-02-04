@@ -13,9 +13,9 @@ services:
     volumes:
       - ./data/tei_cache:/data
     environment:
-      - MODEL_ID=jinaai/jina-embeddings-v3
+      - MODEL_ID=BAAI/bge-m3
       - PORT=80
-      # Jina V3 allows flexible dimensions. We default to 1024 (SOTA).
+      # bge-m3 is 1024-dim and TEI-compatible.
     deploy:
       resources:
         reservations:
@@ -34,13 +34,13 @@ services:
     volumes:
       - ./data/tgi_cache:/data
     environment:
-      # Use Phi-4-mini for superior reasoning on small hardware
-      - MODEL_ID=microsoft/Phi-4-mini-instruct
+      # Use an AWQ-quantized model for stability on 6GB VRAM
+      - MODEL_ID=TheBloke/Phi-3-mini-4k-instruct-AWQ
       - PORT=80
       - MAX_TOTAL_TOKENS=4096
       - MAX_INPUT_TOKENS=2048
-      # CRITICAL: Force 4-bit quantization to fit in 6GB VRAM
-      - QUANTIZE=bitsandbytes-nf4
+      # AWQ quantization (no bitsandbytes runtime needed)
+      - QUANTIZE=awq
     deploy:
       resources:
         reservations:
