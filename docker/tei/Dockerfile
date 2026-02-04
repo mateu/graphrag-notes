@@ -21,9 +21,9 @@ ENV PATH=/root/.cargo/bin:$PATH
 # Build TEI from source with CUDA support
 RUN git clone https://github.com/huggingface/text-embeddings-inference /opt/tei
 WORKDIR /opt/tei
-RUN cargo build --release --features cuda --bin text-embeddings-inference
+RUN cargo build --release --features cuda --bin text-embeddings-router
 
 EXPOSE 80
 
-ENTRYPOINT ["./target/release/text-embeddings-inference"]
+ENTRYPOINT ["./target/release/text-embeddings-router"]
 CMD ["--model-id", "jinaai/jina-embeddings-v3", "--port", "80"]
