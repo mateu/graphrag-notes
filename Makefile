@@ -41,8 +41,7 @@ run-cli:
 
 # Initial setup
 setup:
-	cd python && uv sync
-	cargo build --release
+	./setup.sh
 
 # Add a test note
 demo-add:
