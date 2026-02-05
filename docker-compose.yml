@@ -2,11 +2,7 @@ services:
   # Service 1: Semantic Embeddings (TEI)
   # Memory: ~600MB
   tei-embedding:
-    build:
-      context: ./docker/tei
-      args:
-        CUDA_COMPUTE_CAP: "120"
-    image: graphrag/tei-embedding:cc120
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
     container_name: tei-embedding
     ports:
       - "8081:80"
@@ -16,13 +12,6 @@ services:
     environment:
       - PORT=80
       # e5-large-instruct is 1024-dim and TEI-supported.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   # Service 2: Entity Extraction LLM (TGI)
   # Memory: ~3.0GB (4-bit quantized)
