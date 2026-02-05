@@ -98,6 +98,13 @@ enum Commands {
     
     /// Interactive mode
     Interactive,
+
+    /// Delete the local database (fresh start)
+    ResetDb {
+        /// Database path (defaults to ~/.graphrag/data)
+        #[arg(short, long)]
+        db_path: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -127,6 +134,24 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
     
     // Initialize database
+    if let Commands::ResetDb { db_path } = &cli.command {
+        let path = db_path.clone().unwrap_or_else(|| {
+            let mut path = dirs::home_dir().expect("Could not find home directory");
+            path.push(".graphrag");
+            path.push("data");
+            path
+        });
+
+        if path.exists() {
+            std::fs::remove_dir_all(&path)
+                .with_context(|| format!("Failed to remove db at {}", path.display()))?;
+            println!("✓ Removed database at {}", path.display());
+        } else {
+            println!("Database not found at {}, nothing to remove", path.display());
+        }
+        return Ok(());
+    }
+
     let db = if cli.memory {
         info!("Using in-memory database");
         init_memory().await?
@@ -191,6 +216,9 @@ async fn main() -> Result<()> {
         }
         Commands::Interactive => {
             cmd_interactive(repo, tei, tgi).await?;
+        }
+        Commands::ResetDb { .. } => {
+            // Handled before database init.
         }
     }
     
