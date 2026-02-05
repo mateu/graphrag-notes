@@ -99,6 +99,12 @@ enum Commands {
     /// Interactive mode
     Interactive,
 
+    /// Show the embedding dimension from the active embeddings provider
+    EmbeddingDim {
+        /// Optional text to embed (defaults to "dimension probe")
+        text: Option<String>,
+    },
+
     /// Delete the local database (fresh start)
     ResetDb {
         /// Database path (defaults to ~/.graphrag/data)
@@ -123,6 +129,21 @@ async fn main() -> Result<()> {
     );
     if skip_extraction {
         std::env::set_var("SKIP_ENTITY_EXTRACTION", "true");
+    }
+
+    if let Commands::EmbeddingDim { text } = &cli.command {
+        let tei = TeiClient::default_local();
+        let tei_ok = tei.health().await.unwrap_or(false);
+        if !tei_ok {
+            eprintln!("Error: embeddings service is not reachable.");
+            eprintln!("  TEI (embeddings): {}", tei.base_url());
+            anyhow::bail!("Embeddings service unavailable");
+        }
+
+        let probe = text.clone().unwrap_or_else(|| "dimension probe".to_string());
+        let embedding = tei.embed(&probe, false).await?;
+        println!("Embedding dimension: {}", embedding.len());
+        return Ok(());
     }
     
     // Setup logging
@@ -216,6 +237,9 @@ async fn main() -> Result<()> {
         }
         Commands::Interactive => {
             cmd_interactive(repo, tei, tgi).await?;
+        }
+        Commands::EmbeddingDim { .. } => {
+            // Handled before database init.
         }
         Commands::ResetDb { .. } => {
             // Handled before database init.
