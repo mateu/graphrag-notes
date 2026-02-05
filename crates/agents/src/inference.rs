@@ -18,6 +18,7 @@ const DEFAULT_OLLAMA_FORMAT: &str = "json";
 const DEFAULT_TEI_MAX_BATCH: usize = 32;
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_OLLAMA_USE_CHAT_SCHEMA: bool = true;
+const DEFAULT_STRICT_ENTITY_JSON: bool = true;
 
 fn ollama_use_chat_schema() -> bool {
     std::env::var("TGI_OLLAMA_USE_CHAT_SCHEMA")
@@ -26,6 +27,15 @@ fn ollama_use_chat_schema() -> bool {
             matches!(value.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(DEFAULT_OLLAMA_USE_CHAT_SCHEMA)
+}
+
+fn strict_entity_json() -> bool {
+    std::env::var("STRICT_ENTITY_JSON")
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(DEFAULT_STRICT_ENTITY_JSON)
 }
 
 fn env_or_default(key: &str, default: &str) -> String {
@@ -259,6 +269,13 @@ impl TgiClient {
                 let cleaned = normalize_json_payload(&generated);
                 if let Ok(extraction) = parse_entity_extraction(&cleaned) {
                     return Ok(extraction);
+                }
+
+                if strict_entity_json() {
+                    return Err(AgentError::Processing(format!(
+                        "TGI returned invalid JSON: {}",
+                        generated
+                    )));
                 }
 
                 debug!("Ollama extraction failed, retrying with entities-only schema");
@@ -691,6 +708,12 @@ fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
     let value: Value = match serde_json::from_str(payload) {
         Ok(value) => value,
         Err(_) => {
+            if strict_entity_json() {
+                return Err(AgentError::Processing(format!(
+                    "Invalid JSON payload: {}",
+                    payload
+                )));
+            }
             if let Some(entities_json) = extract_json_array(payload, "\"entities\"") {
                 let entities_value: Value = match serde_json::from_str(&entities_json) {
                     Ok(value) => value,
