@@ -105,6 +105,13 @@ enum Commands {
         text: Option<String>,
     },
 
+    /// Extract entities for notes that are missing entity links
+    ExtractEntities {
+        /// Maximum notes to process
+        #[arg(short, long, default_value = "100")]
+        limit: usize,
+    },
+
     /// Delete the local database (fresh start)
     ResetDb {
         /// Database path (defaults to ~/.graphrag/data)
@@ -197,19 +204,42 @@ async fn main() -> Result<()> {
     let tei = TeiClient::default_local();
     let tgi = TgiClient::default_local();
 
-    // Check inference services
-    let tei_ok = tei.health().await.unwrap_or(false);
-    let tgi_ok = if skip_extraction {
-        true
-    } else {
-        tgi.health().await.unwrap_or(false)
-    };
-    if !tei_ok || !tgi_ok {
-        eprintln!("Error: inference services are not reachable.");
-        eprintln!("  TEI (embeddings): {}", tei.base_url());
-        eprintln!("  TGI (extraction): {}", tgi.base_url());
-        eprintln!("Start them with: docker compose up -d");
-        anyhow::bail!("Inference services unavailable");
+    // Check inference services only when needed
+    let needs_tei = matches!(
+        cli.command,
+        Commands::Add { .. }
+            | Commands::Import { .. }
+            | Commands::ImportChats { .. }
+            | Commands::Search { .. }
+            | Commands::Interactive
+    );
+    let needs_tgi = matches!(
+        cli.command,
+        Commands::Add { .. }
+            | Commands::Import { .. }
+            | Commands::ImportChats { .. }
+            | Commands::Interactive
+            | Commands::ExtractEntities { .. }
+    ) && !skip_extraction;
+
+    if needs_tei {
+        let tei_ok = tei.health().await.unwrap_or(false);
+        if !tei_ok {
+            eprintln!("Error: embeddings service is not reachable.");
+            eprintln!("  TEI (embeddings): {}", tei.base_url());
+            eprintln!("Start it with: docker compose up -d");
+            anyhow::bail!("Embeddings service unavailable");
+        }
+    }
+
+    if needs_tgi {
+        let tgi_ok = tgi.health().await.unwrap_or(false);
+        if !tgi_ok {
+            eprintln!("Error: extraction service is not reachable.");
+            eprintln!("  TGI (extraction): {}", tgi.base_url());
+            eprintln!("Start it with: docker compose up -d");
+            anyhow::bail!("Extraction service unavailable");
+        }
     }
     
     // Execute command
@@ -237,6 +267,9 @@ async fn main() -> Result<()> {
         }
         Commands::Interactive => {
             cmd_interactive(repo, tei, tgi).await?;
+        }
+        Commands::ExtractEntities { limit } => {
+            cmd_extract_entities(repo, tgi, limit).await?;
         }
         Commands::EmbeddingDim { .. } => {
             // Handled before database init.
@@ -346,6 +379,17 @@ async fn cmd_import_chats(
         }
     }
 
+    Ok(())
+}
+
+async fn cmd_extract_entities(
+    repo: Repository,
+    tgi: TgiClient,
+    limit: usize,
+) -> Result<()> {
+    let librarian = LibrarianAgent::new(repo, TeiClient::default_local(), tgi);
+    let processed = librarian.extract_entities_for_notes(limit).await?;
+    println!("✓ Extracted entities for {} notes", processed);
     Ok(())
 }
 

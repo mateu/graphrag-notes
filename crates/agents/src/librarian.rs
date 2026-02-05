@@ -164,7 +164,16 @@ impl LibrarianAgent {
     
     /// Extract entities from a note and link them
     async fn extract_and_link_entities(&self, note: &Note) -> Result<()> {
-        if skip_entity_extraction() {
+        self.extract_and_link_entities_inner(note, false).await
+    }
+
+    /// Extract entities from a note regardless of skip flag
+    async fn extract_and_link_entities_force(&self, note: &Note) -> Result<()> {
+        self.extract_and_link_entities_inner(note, true).await
+    }
+
+    async fn extract_and_link_entities_inner(&self, note: &Note, force: bool) -> Result<()> {
+        if !force && skip_entity_extraction() {
             return Ok(());
         }
 
@@ -197,6 +206,25 @@ impl LibrarianAgent {
         }
         
         Ok(())
+    }
+
+    /// Extract entities for notes missing entity links
+    #[instrument(skip(self))]
+    pub async fn extract_entities_for_notes(&self, limit: usize) -> Result<usize> {
+        let notes = self.repo.get_notes_without_entities(limit).await?;
+        if notes.is_empty() {
+            return Ok(0);
+        }
+
+        let mut processed = 0usize;
+        for note in notes {
+            match self.extract_and_link_entities_force(&note).await {
+                Ok(()) => processed += 1,
+                Err(e) => debug!("Entity extraction failed (non-fatal): {}", e),
+            }
+        }
+
+        Ok(processed)
     }
     
     /// Chunk content and create notes

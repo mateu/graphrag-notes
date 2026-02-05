@@ -88,6 +88,18 @@ impl Repository {
         
         Ok(notes)
     }
+
+    /// Get notes without entity links (for extraction)
+    #[instrument(skip(self))]
+    pub async fn get_notes_without_entities(&self, limit: usize) -> Result<Vec<Note>> {
+        let notes: Vec<Note> = self.db
+            .query("SELECT * FROM note WHERE id NOT IN (SELECT in FROM mentions) LIMIT $limit")
+            .bind(("limit", limit))
+            .await?
+            .take(0)?;
+
+        Ok(notes)
+    }
     
     /// Update note embedding
     #[instrument(skip(self, embedding))]
