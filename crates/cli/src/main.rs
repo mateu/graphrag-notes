@@ -403,15 +403,16 @@ async fn cmd_extract_entities(
 }
 
 async fn cmd_show_entities(repo: Repository, note_id: String) -> Result<()> {
+    let key = note_id.strip_prefix("note:").unwrap_or(&note_id);
     let note = repo
-        .get_note(&note_id)
+        .get_note(key)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note_id))?;
 
     let title = note.title.as_deref().unwrap_or("(untitled)");
     println!("Note: {} ({})", title, note_id);
 
-    let entities = repo.get_entities_for_note(&note_id).await?;
+    let entities = repo.get_entities_for_note(key).await?;
     if entities.is_empty() {
         println!("No entities linked to this note.");
         return Ok(());
