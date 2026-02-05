@@ -1,16 +1,19 @@
 services:
   # Service 1: Semantic Embeddings (TEI)
-  # Memory: ~600MB
+  # Memory: ~600MB (CPU) / higher on GPU
   tei-embedding:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    image: ghcr.io/huggingface/text-embeddings-inference:1.8
     container_name: tei-embedding
     ports:
       - "8081:80"
     command: ["--model-id", "intfloat/e5-large-v2", "--port", "80", "--payload-limit", "200000000"]
     volumes:
       - ./data/tei_cache:/data
+    runtime: nvidia
     environment:
       - PORT=80
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       # e5-large-v2 is 1024-dim and ships ONNX for the CPU image.
 
   # Service 2: Entity Extraction LLM (TGI)
