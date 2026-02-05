@@ -277,7 +277,7 @@ impl TgiClient {
             }
         };
         let cleaned = normalize_json_payload(&generated);
-        let extraction: EntityExtraction = serde_json::from_str(&cleaned).map_err(|e| {
+        let extraction = parse_entity_extraction(&cleaned).map_err(|e| {
             AgentError::Processing(format!("TGI returned invalid JSON: {} ({})", generated, e))
         })?;
 
@@ -475,6 +475,84 @@ fn normalize_json_payload(payload: &str) -> String {
     }
 
     without_fence
+}
+
+fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
+    let value: Value = serde_json::from_str(payload).map_err(|e| {
+        AgentError::Processing(format!("Invalid JSON payload: {} ({})", payload, e))
+    })?;
+
+    let entities = value
+        .get("entities")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let name = item
+                        .get("name")
+                        .or_else(|| item.get("entity"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let entity_type = item
+                        .get("type")
+                        .or_else(|| item.get("entity_type"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    name.map(|name| ExtractedEntity { name, entity_type })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let relationships = value
+        .get("relationships")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let source = item
+                        .get("source")
+                        .or_else(|| item.get("entity1"))
+                        .or_else(|| item.get("from"))
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.to_string()),
+                            Value::Array(arr) => arr.first().and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            _ => None,
+                        });
+                    let target = item
+                        .get("target")
+                        .or_else(|| item.get("entity2"))
+                        .or_else(|| item.get("to"))
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.to_string()),
+                            Value::Array(arr) => arr.first().and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            _ => None,
+                        });
+                    let relationship_type = item
+                        .get("relationship_type")
+                        .or_else(|| item.get("relation_type"))
+                        .or_else(|| item.get("type"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+
+                    match (source, target, relationship_type) {
+                        (Some(source), Some(target), Some(relationship_type)) => Some(
+                            ExtractedRelationship {
+                                source,
+                                target,
+                                relationship_type,
+                            },
+                        ),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(EntityExtraction { entities, relationships })
 }
 
 fn extract_generated_text(value: Value) -> Result<String> {
