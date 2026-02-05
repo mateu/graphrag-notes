@@ -56,7 +56,16 @@ uv sync
 cd ..
 
 echo "🔨 Building Rust CLI..."
-cargo build --release
+FORCE_BUILD=0
+if [ "${1:-}" = "--force" ]; then
+    FORCE_BUILD=1
+fi
+
+if [ -f "target/release/graphrag" ] && [ "$FORCE_BUILD" -eq 0 ]; then
+    echo "✅ Release binary already exists. Skipping build (use --force to rebuild)."
+else
+    cargo build --release
+fi
 
 echo ""
 echo "✅ Setup complete!"
