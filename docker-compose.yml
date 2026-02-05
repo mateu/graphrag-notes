@@ -2,7 +2,10 @@ services:
   # Service 1: Semantic Embeddings (TEI)
   # Memory: ~600MB (CPU) / higher on GPU
   tei-embedding:
-    image: ghcr.io/huggingface/text-embeddings-inference:1.8
+    build:
+      context: .
+      dockerfile: docker/tei-gpu/Dockerfile
+    image: graphrag/tei-embedding:cuda120
     container_name: tei-embedding
     ports:
       - "8081:80"
