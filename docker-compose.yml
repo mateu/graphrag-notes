@@ -20,20 +20,18 @@ services:
     container_name: tgi-extraction
     ports:
       - "8082:80"
+    command: ["--disable-custom-kernels", "--disable-flashinfer"]
     volumes:
       - ./data/tgi_cache:/data
     environment:
       # Use an AWQ-quantized model for stability on 6GB VRAM
-      - MODEL_ID=Sumo10/Phi-4-mini-instruct-AWQ-4bit
+      - MODEL_ID=TheBloke/Phi-3-mini-4k-instruct-AWQ
       - PORT=80
       - MAX_TOTAL_TOKENS=4096
       - MAX_INPUT_TOKENS=2048
       # AWQ quantization (no bitsandbytes runtime needed)
       - QUANTIZE=awq
       - TRUST_REMOTE_CODE=true
-      # Blackwell + flashinfer can trigger rope errors; disable custom kernels.
-      - DISABLE_CUSTOM_KERNELS=true
-      - DISABLE_FLASHINFER=true
     deploy:
       resources:
         reservations:
