@@ -12,6 +12,7 @@ const DEFAULT_OLLAMA_EMBED_MODEL: &str = "nomic-embed-text:latest";
 const DEFAULT_TGI_URL: &str = "http://localhost:8082";
 const DEFAULT_TGI_PROVIDER: &str = "tgi";
 const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";
+const DEFAULT_OLLAMA_FORMAT: &str = "json";
 const DEFAULT_TEI_MAX_BATCH: usize = 32;
 
 fn env_or_default(key: &str, default: &str) -> String {
@@ -227,7 +228,7 @@ impl TgiClient {
 
     pub async fn extract(&self, text: &str) -> Result<EntityExtraction> {
         let prompt = format!(
-            "Extract all unique entities (people, organizations, concepts) and their relationships (supports, contradicts, mentions) from the text below. Return ONLY valid JSON matching this structure: {{ \"entities\": [...], \"relationships\": [...] }}.\n\nText:\n{}",
+            "Extract all unique entities (people, organizations, concepts) and their relationships (supports, contradicts, mentions) from the text below.\n\nReturn ONLY valid JSON. No markdown, no code fences, no commentary. Do not include any extra keys. Use double quotes for all strings. If no relationships are found, return an empty array.\n\nRequired JSON schema:\n{{\n  \"entities\": [{{\"name\": string, \"type\": string}}...],\n  \"relationships\": [{{\"source\": string, \"target\": string, \"relationship_type\": string}}...]\n}}\n\nAll fields must be strings. Do not return arrays or objects for source/target. If you need a newline in a string, escape it as \\n (do not insert raw newlines inside strings).\n\nText:\n{}",
             text
         );
         let generated = match self.provider {
@@ -257,10 +258,22 @@ impl TgiClient {
             }
             TgiProvider::Ollama => {
                 let url = format!("{}/api/generate", self.base_url);
+                let format = match std::env::var("TGI_OLLAMA_FORMAT") {
+                    Ok(value) => {
+                        let trimmed = value.trim().to_string();
+                        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+                            None
+                        } else {
+                            Some(trimmed)
+                        }
+                    }
+                    Err(_) => Some(DEFAULT_OLLAMA_FORMAT.to_string()),
+                };
                 let request = OllamaGenerateRequest {
                     model: self.model.clone(),
                     prompt,
                     stream: false,
+                    format,
                 };
 
                 let response = self
@@ -381,6 +394,8 @@ struct OllamaGenerateRequest {
     model: String,
     prompt: String,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -478,31 +493,29 @@ fn normalize_json_payload(payload: &str) -> String {
 }
 
 fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
-    let value: Value = serde_json::from_str(payload).map_err(|e| {
-        AgentError::Processing(format!("Invalid JSON payload: {} ({})", payload, e))
-    })?;
+    let value: Value = match serde_json::from_str(payload) {
+        Ok(value) => value,
+        Err(_) => {
+            if let Some(entities_json) = extract_json_array(payload, "\"entities\"") {
+                let entities_value: Value = serde_json::from_str(&entities_json).map_err(|e| {
+                    AgentError::Processing(format!("Invalid entities JSON: {} ({})", entities_json, e))
+                })?;
+                let entities = parse_entities_value(&entities_value);
+                return Ok(EntityExtraction {
+                    entities,
+                    relationships: Vec::new(),
+                });
+            }
+            return Err(AgentError::Processing(format!(
+                "Invalid JSON payload: {}",
+                payload
+            )));
+        }
+    };
 
     let entities = value
         .get("entities")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let name = item
-                        .get("name")
-                        .or_else(|| item.get("entity"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let entity_type = item
-                        .get("type")
-                        .or_else(|| item.get("entity_type"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    name.map(|name| ExtractedEntity { name, entity_type })
-                })
-                .collect::<Vec<_>>()
-        })
+        .map(parse_entities_value)
         .unwrap_or_default();
 
     let relationships = value
@@ -518,7 +531,8 @@ fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
                         .or_else(|| item.get("from"))
                         .and_then(|v| match v {
                             Value::String(s) => Some(s.to_string()),
-                            Value::Array(arr) => arr.first().and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            Value::Array(arr) => arr.first().and_then(value_to_string),
+                            Value::Object(obj) => obj.get("name").and_then(value_to_string),
                             _ => None,
                         });
                     let target = item
@@ -527,7 +541,8 @@ fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
                         .or_else(|| item.get("to"))
                         .and_then(|v| match v {
                             Value::String(s) => Some(s.to_string()),
-                            Value::Array(arr) => arr.first().and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            Value::Array(arr) => arr.first().and_then(value_to_string),
+                            Value::Object(obj) => obj.get("name").and_then(value_to_string),
                             _ => None,
                         });
                     let relationship_type = item
@@ -553,6 +568,108 @@ fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
         .unwrap_or_default();
 
     Ok(EntityExtraction { entities, relationships })
+}
+
+fn extract_json_array(payload: &str, key: &str) -> Option<String> {
+    let key_pos = payload.find(key)?;
+    let slice = &payload[key_pos..];
+    let array_start_rel = slice.find('[')?;
+    let array_start = key_pos + array_start_rel;
+
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut start_idx = None;
+
+    for (offset, ch) in payload[array_start..].char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '[' => {
+                if depth == 0 {
+                    start_idx = Some(array_start + offset);
+                }
+                depth += 1;
+            }
+            ']' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let start = start_idx?;
+                    let end = array_start + offset;
+                    return Some(payload[start..=end].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn parse_entities_value(value: &Value) -> Vec<ExtractedEntity> {
+    let items = match value {
+        Value::Array(items) => items,
+        other => {
+            if let Some(items) = other.get("entities").and_then(|v| v.as_array()) {
+                items
+            } else {
+                return Vec::new();
+            }
+        }
+    };
+
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Value::String(name) => Some(ExtractedEntity {
+                name: name.to_string(),
+                entity_type: None,
+            }),
+            Value::Object(obj) => {
+                let name = obj
+                    .get("name")
+                    .or_else(|| obj.get("entity"))
+                    .or_else(|| obj.get("value"))
+                    .and_then(value_to_string)?;
+                let entity_type = obj
+                    .get("type")
+                    .or_else(|| obj.get("entity_type"))
+                    .or_else(|| obj.get("label"))
+                    .or_else(|| obj.get("category"))
+                    .and_then(value_to_string);
+                Some(ExtractedEntity { name, entity_type })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Array(arr) => arr.first().and_then(value_to_string),
+        Value::Object(obj) => obj
+            .get("name")
+            .or_else(|| obj.get("entity"))
+            .or_else(|| obj.get("value"))
+            .and_then(value_to_string),
+        _ => None,
+    }
 }
 
 fn extract_generated_text(value: Value) -> Result<String> {
