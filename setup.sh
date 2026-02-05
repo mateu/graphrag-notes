@@ -5,6 +5,26 @@ set -e
 
 echo "🚀 Setting up GraphRAG Notes..."
 
+# Install system deps needed for Rust builds (openssl + clang for bindgen)
+OS_NAME="$(uname -s)"
+if [ "$OS_NAME" = "Linux" ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "📦 Installing Linux build dependencies..."
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libssl-dev clang libclang-dev
+    else
+        echo "⚠️ Unsupported Linux package manager. Please install: pkg-config, libssl-dev (or openssl-devel), clang, libclang-dev."
+    fi
+elif [ "$OS_NAME" = "Darwin" ]; then
+    if command -v brew >/dev/null 2>&1; then
+        echo "📦 Installing macOS build dependencies..."
+        brew install pkg-config openssl@3 llvm
+        echo "ℹ️ If builds fail, you may need: export LIBCLANG_PATH=\"$(brew --prefix llvm)/lib\""
+    else
+        echo "⚠️ Homebrew not found. Please install: pkg-config, openssl@3, llvm."
+    fi
+fi
+
 # Check/install prerequisites (portable across macOS and Linux)
 if ! command -v cargo >/dev/null 2>&1; then
     echo "❌ Rust not found. Installing via rustup from https://rustup.rs/ ..."
