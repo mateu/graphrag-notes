@@ -276,7 +276,8 @@ impl TgiClient {
                 response.response
             }
         };
-        let extraction: EntityExtraction = serde_json::from_str(&generated).map_err(|e| {
+        let cleaned = normalize_json_payload(&generated);
+        let extraction: EntityExtraction = serde_json::from_str(&cleaned).map_err(|e| {
             AgentError::Processing(format!("TGI returned invalid JSON: {} ({})", generated, e))
         })?;
 
@@ -447,6 +448,33 @@ fn parse_embeddings_response(value: Value) -> Result<Vec<Vec<f32>>> {
             other
         ))),
     }
+}
+
+fn normalize_json_payload(payload: &str) -> String {
+    let trimmed = payload.trim();
+    if trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+
+    let without_fence = if trimmed.starts_with("```") {
+        let mut lines = trimmed.lines();
+        let _ = lines.next(); // drop ``` or ```json
+        let mut content = lines.collect::<Vec<_>>().join("\n");
+        if content.ends_with("```") {
+            content.truncate(content.len().saturating_sub(3));
+        }
+        content.trim().to_string()
+    } else {
+        trimmed.to_string()
+    };
+
+    if let (Some(start), Some(end)) = (without_fence.find('{'), without_fence.rfind('}')) {
+        if start < end {
+            return without_fence[start..=end].to_string();
+        }
+    }
+
+    without_fence
 }
 
 fn extract_generated_text(value: Value) -> Result<String> {
