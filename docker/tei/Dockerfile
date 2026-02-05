@@ -26,4 +26,4 @@ RUN cargo build --release --features "cuda cudarc/dynamic-linking" --bin text-em
 EXPOSE 80
 
 ENTRYPOINT ["./target/release/text-embeddings-router"]
-CMD ["--model-id", "BAAI/bge-m3", "--port", "80"]
+CMD ["--model-id", "intfloat/multilingual-e5-large-instruct", "--port", "80"]

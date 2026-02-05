@@ -10,12 +10,12 @@ services:
     container_name: tei-embedding
     ports:
       - "8081:80"
-    command: ["--model-id", "BAAI/bge-m3", "--port", "80"]
+    command: ["--model-id", "intfloat/multilingual-e5-large-instruct", "--port", "80"]
     volumes:
       - ./data/tei_cache:/data
     environment:
       - PORT=80
-      # bge-m3 is 1024-dim and TEI-compatible.
+      # e5-large-instruct is 1024-dim and TEI-supported.
     deploy:
       resources:
         reservations:
@@ -35,12 +35,13 @@ services:
       - ./data/tgi_cache:/data
     environment:
       # Use an AWQ-quantized model for stability on 6GB VRAM
-      - MODEL_ID=pytorch/Phi-4-mini-instruct-AWQ-INT4
+      - MODEL_ID=Sumo10/Phi-4-mini-instruct-AWQ-4bit
       - PORT=80
       - MAX_TOTAL_TOKENS=4096
       - MAX_INPUT_TOKENS=2048
       # AWQ quantization (no bitsandbytes runtime needed)
       - QUANTIZE=awq
+      - TRUST_REMOTE_CODE=true
     deploy:
       resources:
         reservations:
