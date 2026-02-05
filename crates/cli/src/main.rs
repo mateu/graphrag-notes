@@ -59,6 +59,10 @@ enum Commands {
     ImportChats {
         /// Path to JSON file containing chat export
         path: PathBuf,
+
+        /// Skip entity extraction (faster for testing)
+        #[arg(long)]
+        skip_extraction: bool,
     },
     
     /// Search notes
@@ -102,6 +106,17 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+
+    let skip_extraction = matches!(
+        cli.command,
+        Commands::ImportChats {
+            skip_extraction: true,
+            ..
+        }
+    );
+    if skip_extraction {
+        std::env::set_var("SKIP_ENTITY_EXTRACTION", "true");
+    }
     
     // Setup logging
     let log_level = if cli.verbose { Level::DEBUG } else { Level::INFO };
@@ -138,7 +153,11 @@ async fn main() -> Result<()> {
 
     // Check inference services
     let tei_ok = tei.health().await.unwrap_or(false);
-    let tgi_ok = tgi.health().await.unwrap_or(false);
+    let tgi_ok = if skip_extraction {
+        true
+    } else {
+        tgi.health().await.unwrap_or(false)
+    };
     if !tei_ok || !tgi_ok {
         eprintln!("Error: inference services are not reachable.");
         eprintln!("  TEI (embeddings): {}", tei.base_url());
@@ -155,7 +174,7 @@ async fn main() -> Result<()> {
         Commands::Import { path } => {
             cmd_import(repo, tei, tgi, path).await?;
         }
-        Commands::ImportChats { path } => {
+        Commands::ImportChats { path, .. } => {
             cmd_import_chats(repo, tei, tgi, path).await?;
         }
         Commands::Search { query, limit, context } => {
