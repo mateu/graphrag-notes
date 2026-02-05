@@ -5,6 +5,7 @@ use graphrag_db::schema::EMBEDDING_DIMENSION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::debug;
 use std::time::Duration;
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
@@ -260,6 +261,7 @@ impl TgiClient {
                     return Ok(extraction);
                 }
 
+                debug!("Ollama extraction failed, retrying with entities-only schema");
                 let retry_prompt = format!(
                     "Return ONLY valid JSON with the schema {{\"entities\":[{{\"name\":string,\"type\":string}}...],\"relationships\":[]}}.\nAll fields must be strings and double-quoted. Do not include any other keys.\nText:\n{}",
                     text
@@ -281,6 +283,7 @@ impl TgiClient {
                         generated_retry, e
                     ))
                 })?;
+                debug!("Ollama extraction succeeded via entities-only fallback");
                 Ok(extraction)
             }
         }
