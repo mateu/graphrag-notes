@@ -692,14 +692,35 @@ fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
         Ok(value) => value,
         Err(_) => {
             if let Some(entities_json) = extract_json_array(payload, "\"entities\"") {
-                let entities_value: Value = serde_json::from_str(&entities_json).map_err(|e| {
-                    AgentError::Processing(format!("Invalid entities JSON: {} ({})", entities_json, e))
-                })?;
+                let entities_value: Value = match serde_json::from_str(&entities_json) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        let cleaned = clean_json_array(&entities_json);
+                        serde_json::from_str(&cleaned).map_err(|e| {
+                            AgentError::Processing(format!(
+                                "Invalid entities JSON: {} ({})",
+                                entities_json, e
+                            ))
+                        })?
+                    }
+                };
                 let entities = parse_entities_value(&entities_value);
+                debug!("Recovered entities from malformed JSON payload");
                 return Ok(EntityExtraction {
                     entities,
                     relationships: Vec::new(),
                 });
+            }
+            if let Some(entities_json) = extract_json_array(payload, "entities") {
+                let cleaned = clean_json_array(&entities_json);
+                if let Ok(entities_value) = serde_json::from_str::<Value>(&cleaned) {
+                    let entities = parse_entities_value(&entities_value);
+                    debug!("Recovered entities from unquoted entities key");
+                    return Ok(EntityExtraction {
+                        entities,
+                        relationships: Vec::new(),
+                    });
+                }
             }
             return Err(AgentError::Processing(format!(
                 "Invalid JSON payload: {}",
@@ -812,6 +833,13 @@ fn extract_json_array(payload: &str, key: &str) -> Option<String> {
     }
 
     None
+}
+
+fn clean_json_array(payload: &str) -> String {
+    payload
+        .replace(",]", "]")
+        .replace("\n", "")
+        .replace("\r", "")
 }
 
 fn parse_entities_value(value: &Value) -> Vec<ExtractedEntity> {
