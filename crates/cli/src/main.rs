@@ -98,6 +98,9 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load environment variables from .env if present.
+    dotenvy::dotenv().ok();
+
     let cli = Cli::parse();
     
     // Setup logging

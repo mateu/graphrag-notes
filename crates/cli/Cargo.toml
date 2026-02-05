@@ -19,6 +19,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+dotenvy = "0.15"
 
 # For reading files
 dirs = "5.0"
