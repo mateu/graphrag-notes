@@ -19,6 +19,8 @@ const DEFAULT_TEI_MAX_BATCH: usize = 32;
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_OLLAMA_USE_CHAT_SCHEMA: bool = true;
 const DEFAULT_STRICT_ENTITY_JSON: bool = true;
+const DEFAULT_MAX_ENTITIES: usize = 30;
+const DEFAULT_MAX_RELATIONSHIPS: usize = 15;
 
 fn ollama_use_chat_schema() -> bool {
     std::env::var("TGI_OLLAMA_USE_CHAT_SCHEMA")
@@ -36,6 +38,22 @@ fn strict_entity_json() -> bool {
             matches!(value.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(DEFAULT_STRICT_ENTITY_JSON)
+}
+
+fn max_entities() -> usize {
+    std::env::var("EXTRACT_MAX_ENTITIES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_ENTITIES)
+}
+
+fn max_relationships() -> usize {
+    std::env::var("EXTRACT_MAX_RELATIONSHIPS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_RELATIONSHIPS)
 }
 
 fn env_or_default(key: &str, default: &str) -> String {
@@ -250,9 +268,13 @@ impl TgiClient {
     }
 
     pub async fn extract(&self, text: &str) -> Result<EntityExtraction> {
+        let entity_cap = max_entities();
+        let relationship_cap = max_relationships();
         let prompt = format!(
-            "Extract all unique entities (people, organizations, concepts) and their relationships (supports, contradicts, mentions) from the text below.\n\nReturn ONLY valid JSON. No markdown, no code fences, no commentary. Do not include any extra keys. Use double quotes for all strings. If no relationships are found, return an empty array.\n\nRequired JSON schema:\n{{\n  \"entities\": [{{\"name\": string, \"type\": string}}...],\n  \"relationships\": [{{\"source\": string, \"target\": string, \"relationship_type\": string}}...]\n}}\n\nAll fields must be strings. Do not return arrays or objects for source/target. If you need a newline in a string, escape it as \\n (do not insert raw newlines inside strings).\n\nText:\n{}",
-            text
+            "Extract the most important entities (people, organizations, concepts) and their relationships (supports, contradicts, mentions) from the text below.\n\nReturn ONLY valid JSON. No markdown, no code fences, no commentary. Do not include any extra keys. Use double quotes for all strings. If no relationships are found, return an empty array.\n\nLimits:\n- Up to {entity_cap} entities\n- Up to {relationship_cap} relationships\n\nRequired JSON schema:\n{{\n  \"entities\": [{{\"name\": string, \"type\": string}}...],\n  \"relationships\": [{{\"source\": string, \"target\": string, \"relationship_type\": string}}...]\n}}\n\nAll fields must be strings. Do not return arrays or objects for source/target. If you need a newline in a string, escape it as \\n (do not insert raw newlines inside strings).\n\nText:\n{}",
+            text,
+            entity_cap = entity_cap,
+            relationship_cap = relationship_cap
         );
         match self.provider {
             TgiProvider::Tgi => {
@@ -280,8 +302,9 @@ impl TgiClient {
 
                 debug!("Ollama extraction failed, retrying with entities-only schema");
                 let retry_prompt = format!(
-                    "Return ONLY valid JSON with the schema {{\"entities\":[{{\"name\":string,\"type\":string}}...],\"relationships\":[]}}.\nAll fields must be strings and double-quoted. Do not include any other keys.\nText:\n{}",
-                    text
+                    "Return ONLY valid JSON with the schema {{\"entities\":[{{\"name\":string,\"type\":string}}...],\"relationships\":[]}}.\nAll fields must be strings and double-quoted. Do not include any other keys.\nLimits: up to {entity_cap} entities.\nText:\n{}",
+                    text,
+                    entity_cap = entity_cap
                 );
                 let retry_options = merge_options(
                     options,
@@ -670,6 +693,8 @@ fn merge_options(base: Option<Value>, override_value: Option<Value>) -> Option<V
 }
 
 fn entity_extraction_schema() -> Value {
+    let entity_cap = max_entities();
+    let relationship_cap = max_relationships();
     json!({
         "type": "object",
         "additionalProperties": false,
@@ -677,6 +702,7 @@ fn entity_extraction_schema() -> Value {
         "properties": {
             "entities": {
                 "type": "array",
+                "maxItems": entity_cap,
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
@@ -689,6 +715,7 @@ fn entity_extraction_schema() -> Value {
             },
             "relationships": {
                 "type": "array",
+                "maxItems": relationship_cap,
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
