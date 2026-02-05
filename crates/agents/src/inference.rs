@@ -447,6 +447,10 @@ impl TgiClient {
             .json::<OllamaChatResponse>()
             .await?;
 
+        if let Some(done) = response.done {
+            debug!("Ollama chat done={}", done);
+        }
+
         if let Some(done_reason) = response.done_reason.as_deref() {
             debug!("Ollama chat done_reason={}", done_reason);
         }
