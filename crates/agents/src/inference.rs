@@ -4,7 +4,7 @@ use crate::{AgentError, Result};
 use graphrag_db::schema::EMBEDDING_DIMENSION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::time::Duration;
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
@@ -233,78 +233,47 @@ impl TgiClient {
             "Extract all unique entities (people, organizations, concepts) and their relationships (supports, contradicts, mentions) from the text below.\n\nReturn ONLY valid JSON. No markdown, no code fences, no commentary. Do not include any extra keys. Use double quotes for all strings. If no relationships are found, return an empty array.\n\nRequired JSON schema:\n{{\n  \"entities\": [{{\"name\": string, \"type\": string}}...],\n  \"relationships\": [{{\"source\": string, \"target\": string, \"relationship_type\": string}}...]\n}}\n\nAll fields must be strings. Do not return arrays or objects for source/target. If you need a newline in a string, escape it as \\n (do not insert raw newlines inside strings).\n\nText:\n{}",
             text
         );
-        let generated = match self.provider {
+        match self.provider {
             TgiProvider::Tgi => {
-                let url = format!("{}/generate", self.base_url);
-                let request = TgiGenerateRequest {
-                    inputs: prompt,
-                    parameters: TgiParameters {
-                        max_new_tokens: Some(512),
-                        return_full_text: Some(false),
-                        stop: Some(vec!["\n\n".to_string()]),
-                        grammar: self.json_schema.clone(),
-                    },
-                };
-
-                let response = self
-                    .client
-                    .post(&url)
-                    .json(&request)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json::<Value>()
-                    .await?;
-
-                extract_generated_text(response)?
+                let generated = self.tgi_generate(prompt).await?;
+                let cleaned = normalize_json_payload(&generated);
+                let extraction = parse_entity_extraction(&cleaned).map_err(|e| {
+                    AgentError::Processing(format!("TGI returned invalid JSON: {} ({})", generated, e))
+                })?;
+                Ok(extraction)
             }
             TgiProvider::Ollama => {
-                let url = format!("{}/api/generate", self.base_url);
-                let format = match std::env::var("TGI_OLLAMA_FORMAT") {
-                    Ok(value) => {
-                        let trimmed = value.trim().to_string();
-                        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
-                            None
-                        } else {
-                            Some(trimmed)
-                        }
-                    }
-                    Err(_) => Some(DEFAULT_OLLAMA_FORMAT.to_string()),
-                };
                 let options = parse_ollama_options()?;
-                let timeout_secs = std::env::var("TGI_OLLAMA_TIMEOUT_SECS")
-                    .ok()
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .filter(|value| *value > 0)
-                    .unwrap_or(DEFAULT_OLLAMA_TIMEOUT_SECS);
-                let request = OllamaGenerateRequest {
-                    model: self.model.clone(),
-                    prompt,
-                    stream: false,
-                    format,
+                let generated = self.ollama_generate(&prompt, options.clone()).await?;
+                let cleaned = normalize_json_payload(&generated);
+                if let Ok(extraction) = parse_entity_extraction(&cleaned) {
+                    return Ok(extraction);
+                }
+
+                let retry_prompt = format!(
+                    "Return ONLY valid JSON with the schema {{\"entities\":[{{\"name\":string,\"type\":string}}...],\"relationships\":[]}}.\nAll fields must be strings and double-quoted. Do not include any other keys.\nText:\n{}",
+                    text
+                );
+                let retry_options = merge_options(
                     options,
-                };
-
-                let response = self
-                    .client
-                    .post(&url)
-                    .json(&request)
-                    .timeout(Duration::from_secs(timeout_secs))
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json::<OllamaGenerateResponse>()
-                    .await?;
-
-                response.response
+                    Some(json!({
+                        "num_ctx": 512,
+                        "num_predict": 128,
+                        "temperature": 0,
+                        "stop": ["```"]
+                    })),
+                );
+                let generated_retry = self.ollama_generate(&retry_prompt, retry_options).await?;
+                let cleaned_retry = normalize_json_payload(&generated_retry);
+                let extraction = parse_entity_extraction(&cleaned_retry).map_err(|e| {
+                    AgentError::Processing(format!(
+                        "TGI returned invalid JSON: {} ({})",
+                        generated_retry, e
+                    ))
+                })?;
+                Ok(extraction)
             }
-        };
-        let cleaned = normalize_json_payload(&generated);
-        let extraction = parse_entity_extraction(&cleaned).map_err(|e| {
-            AgentError::Processing(format!("TGI returned invalid JSON: {} ({})", generated, e))
-        })?;
-
-        Ok(extraction)
+        }
     }
 
     pub async fn health(&self) -> Result<bool> {
@@ -318,6 +287,71 @@ impl TgiClient {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    async fn tgi_generate(&self, prompt: String) -> Result<String> {
+        let url = format!("{}/generate", self.base_url);
+        let request = TgiGenerateRequest {
+            inputs: prompt,
+            parameters: TgiParameters {
+                max_new_tokens: Some(512),
+                return_full_text: Some(false),
+                stop: Some(vec!["\n\n".to_string()]),
+                grammar: self.json_schema.clone(),
+            },
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+
+        extract_generated_text(response)
+    }
+
+    async fn ollama_generate(&self, prompt: &str, options: Option<Value>) -> Result<String> {
+        let url = format!("{}/api/generate", self.base_url);
+        let format = match std::env::var("TGI_OLLAMA_FORMAT") {
+            Ok(value) => {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }
+            Err(_) => Some(DEFAULT_OLLAMA_FORMAT.to_string()),
+        };
+        let timeout_secs = std::env::var("TGI_OLLAMA_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_OLLAMA_TIMEOUT_SECS);
+        let request = OllamaGenerateRequest {
+            model: self.model.clone(),
+            prompt: prompt.to_string(),
+            stream: false,
+            format,
+            options,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .timeout(Duration::from_secs(timeout_secs))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<OllamaGenerateResponse>()
+            .await?;
+
+        Ok(response.response)
     }
 }
 
@@ -526,6 +560,20 @@ fn parse_ollama_options() -> Result<Option<Value>> {
     }
 
     Ok(Some(value))
+}
+
+fn merge_options(base: Option<Value>, override_value: Option<Value>) -> Option<Value> {
+    match (base, override_value) {
+        (None, None) => None,
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (Some(Value::Object(mut base)), Some(Value::Object(override_obj))) => {
+            for (k, v) in override_obj {
+                base.insert(k, v);
+            }
+            Some(Value::Object(base))
+        }
+        (Some(value), Some(_)) => Some(value),
+    }
 }
 
 fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
