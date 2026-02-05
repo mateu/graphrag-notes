@@ -22,6 +22,15 @@ fn skip_entity_extraction() -> bool {
         .unwrap_or(false)
 }
 
+fn extract_log_each() -> bool {
+    std::env::var("EXTRACT_LOG_EACH")
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
 fn extract_max_chars() -> usize {
     std::env::var("EXTRACT_MAX_CHARS")
         .ok()
@@ -255,16 +264,54 @@ impl LibrarianAgent {
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_PROGRESS_EVERY_SECS);
+        let log_each = extract_log_each();
 
         let mut processed = 0usize;
         let total = notes.len();
         let start = Instant::now();
         let mut last_progress = Instant::now();
 
-        for note in notes {
+        for (index, note) in notes.into_iter().enumerate() {
+            let note_id = note.id.as_deref().unwrap_or("<unknown>");
+            let note_len = note.content.len();
+            if log_each {
+                info!(
+                    "Entity extraction start: {}/{} note_id={} chars={}",
+                    index + 1,
+                    total,
+                    note_id,
+                    note_len
+                );
+            }
+
+            let note_start = Instant::now();
             match self.extract_and_link_entities_force(&note).await {
-                Ok(()) => processed += 1,
-                Err(e) => debug!("Entity extraction failed (non-fatal): {}", e),
+                Ok(()) => {
+                    processed += 1;
+                    if log_each {
+                        info!(
+                            "Entity extraction done: {}/{} note_id={} elapsed={:.2}s",
+                            index + 1,
+                            total,
+                            note_id,
+                            note_start.elapsed().as_secs_f32()
+                        );
+                    }
+                }
+                Err(e) => {
+                    if log_each {
+                        info!(
+                            "Entity extraction failed: {}/{} note_id={} elapsed={:.2}s error={}",
+                            index + 1,
+                            total,
+                            note_id,
+                            note_start.elapsed().as_secs_f32(),
+                            e
+                        );
+                    } else {
+                        debug!("Entity extraction failed (non-fatal): {}", e);
+                    }
+                }
             }
 
             if processed % progress_every == 0
