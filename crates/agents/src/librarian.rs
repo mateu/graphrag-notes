@@ -7,6 +7,10 @@ use graphrag_core::{
 };
 use graphrag_db::Repository;
 use tracing::{debug, info, instrument};
+use std::time::{Duration, Instant};
+
+const DEFAULT_PROGRESS_EVERY: usize = 10;
+const DEFAULT_PROGRESS_EVERY_SECS: u64 = 5;
 
 fn skip_entity_extraction() -> bool {
     std::env::var("SKIP_ENTITY_EXTRACTION")
@@ -256,12 +260,26 @@ impl LibrarianAgent {
         export: ChatExport,
         source_uri: Option<String>,
     ) -> Result<ChatImportResult> {
+        let total = export.conversation_count();
+        let progress_every = std::env::var("IMPORT_PROGRESS_EVERY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PROGRESS_EVERY);
+        let progress_every_secs = std::env::var("IMPORT_PROGRESS_EVERY_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PROGRESS_EVERY_SECS);
+        let mut last_progress = Instant::now();
+
         info!(
             "Ingesting chat export with {} conversations",
-            export.conversation_count()
+            total
         );
 
         let mut result = ChatImportResult::default();
+        let mut processed = 0usize;
 
         for conversation in export.conversations {
             match self
@@ -281,6 +299,21 @@ impl LibrarianAgent {
                         e
                     ));
                 }
+            }
+
+            processed += 1;
+            if processed % progress_every == 0
+                || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
+            {
+                info!(
+                    "Import progress: {}/{} conversations ({} ok, {} failed, {} notes)",
+                    processed,
+                    total,
+                    result.conversations_imported,
+                    result.conversations_failed,
+                    result.notes_created
+                );
+                last_progress = Instant::now();
             }
         }
 
