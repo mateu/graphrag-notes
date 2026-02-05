@@ -271,7 +271,7 @@ impl TgiClient {
         let entity_cap = max_entities();
         let relationship_cap = max_relationships();
         let prompt = format!(
-            "Extract the most important entities (people, organizations, concepts) and their relationships (supports, contradicts, mentions) from the text below.\n\nReturn ONLY valid JSON. No markdown, no code fences, no commentary. Do not include any extra keys. Use double quotes for all strings. If no relationships are found, return an empty array.\n\nLimits:\n- Up to {entity_cap} entities\n- Up to {relationship_cap} relationships\n\nRequired JSON schema:\n{{\n  \"entities\": [{{\"name\": string, \"type\": string}}...],\n  \"relationships\": [{{\"source\": string, \"target\": string, \"relationship_type\": string}}...]\n}}\n\nAll fields must be strings. Do not return arrays or objects for source/target. If you need a newline in a string, escape it as \\n (do not insert raw newlines inside strings).\n\nText:\n{}",
+            "Return ONLY valid JSON. No markdown, no extra keys.\n\nSchema:\n{{\"entities\":[{{\"name\":string,\"type\":string}}],\"relationships\":[{{\"source\":string,\"target\":string,\"relationship_type\":string}}]}}\n\nRules:\n- Strings only, double-quoted\n- Keep strings short (1-6 words)\n- If unsure, return empty arrays\n- Max {entity_cap} entities, max {relationship_cap} relationships\n\nText:\n{}",
             text,
             entity_cap = entity_cap,
             relationship_cap = relationship_cap
@@ -418,12 +418,19 @@ impl TgiClient {
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_OLLAMA_TIMEOUT_SECS);
+        let system_prompt = "You are a strict JSON generator. Output MUST be a single JSON object matching the provided schema. No prose, no markdown.";
         let request = OllamaChatRequest {
             model: self.model.clone(),
-            messages: vec![OllamaChatMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
+            messages: vec![
+                OllamaChatMessage {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                OllamaChatMessage {
+                    role: "user".to_string(),
+                    content: prompt.to_string(),
+                },
+            ],
             stream: false,
             format: Some(entity_extraction_schema()),
             options,
@@ -695,6 +702,9 @@ fn merge_options(base: Option<Value>, override_value: Option<Value>) -> Option<V
 fn entity_extraction_schema() -> Value {
     let entity_cap = max_entities();
     let relationship_cap = max_relationships();
+    let max_name_len: usize = 80;
+    let max_type_len: usize = 40;
+    let max_rel_len: usize = 40;
     json!({
         "type": "object",
         "additionalProperties": false,
@@ -708,8 +718,8 @@ fn entity_extraction_schema() -> Value {
                     "additionalProperties": false,
                     "required": ["name"],
                     "properties": {
-                        "name": { "type": "string" },
-                        "type": { "type": "string" }
+                        "name": { "type": "string", "maxLength": max_name_len },
+                        "type": { "type": "string", "maxLength": max_type_len }
                     }
                 }
             },
@@ -721,9 +731,9 @@ fn entity_extraction_schema() -> Value {
                     "additionalProperties": false,
                     "required": ["source", "target", "relationship_type"],
                     "properties": {
-                        "source": { "type": "string" },
-                        "target": { "type": "string" },
-                        "relationship_type": { "type": "string" }
+                        "source": { "type": "string", "maxLength": max_name_len },
+                        "target": { "type": "string", "maxLength": max_name_len },
+                        "relationship_type": { "type": "string", "maxLength": max_rel_len }
                     }
                 }
             }
