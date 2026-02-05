@@ -448,24 +448,24 @@ impl TgiClient {
             .await?;
 
         if let Some(done) = response.done {
-            debug!("Ollama chat done={}", done);
+            info!("Ollama chat done={}", done);
         }
 
         if let Some(done_reason) = response.done_reason.as_deref() {
-            debug!("Ollama chat done_reason={}", done_reason);
+            info!("Ollama chat done_reason={}", done_reason);
         }
 
         if let Some(total_ms) = response
             .total_duration
             .map(|ns| ns as f64 / 1_000_000.0)
         {
-            debug!("Ollama chat total_duration_ms={:.2}", total_ms);
+            info!("Ollama chat total_duration_ms={:.2}", total_ms);
         }
 
         let content = response.message.content;
         let trimmed = content.trim_end();
         if !trimmed.ends_with('}') {
-            debug!(
+            info!(
                 "Ollama chat content does not end with '}}' (len={})",
                 trimmed.len()
             );
