@@ -27,8 +27,8 @@ services:
       # Use an AWQ-quantized model for stability on 6GB VRAM
       - MODEL_ID=Sreenington/Phi-3-mini-4k-instruct-AWQ
       - PORT=80
-      - MAX_TOTAL_TOKENS=4096
-      - MAX_INPUT_TOKENS=2048
+      - MAX_TOTAL_TOKENS=2048
+      - MAX_INPUT_TOKENS=1024
       # AWQ quantization (no bitsandbytes runtime needed)
       - QUANTIZE=awq
       - TRUST_REMOTE_CODE=true
