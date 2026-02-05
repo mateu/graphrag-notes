@@ -272,7 +272,11 @@ impl LibrarianAgent {
         let mut last_progress = Instant::now();
 
         for (index, note) in notes.into_iter().enumerate() {
-            let note_id = note.id.as_deref().unwrap_or("<unknown>");
+            let note_id = note
+                .id
+                .as_ref()
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
             let note_len = note.content.len();
             if log_each {
                 info!(
