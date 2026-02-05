@@ -32,6 +32,8 @@ services:
       # AWQ quantization (no bitsandbytes runtime needed)
       - QUANTIZE=awq
       - TRUST_REMOTE_CODE=true
+      # Hugging Face token (set in .env)
+      - HF_TOKEN=${HF_TOKEN}
     deploy:
       resources:
         reservations:
