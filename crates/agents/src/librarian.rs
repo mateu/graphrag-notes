@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_PROGRESS_EVERY: usize = 10;
 const DEFAULT_PROGRESS_EVERY_SECS: u64 = 5;
+const DEFAULT_EXTRACT_MAX_CHARS: usize = 8000;
 
 fn skip_entity_extraction() -> bool {
     std::env::var("SKIP_ENTITY_EXTRACTION")
@@ -19,6 +20,33 @@ fn skip_entity_extraction() -> bool {
             matches!(value.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(false)
+}
+
+fn extract_max_chars() -> usize {
+    std::env::var("EXTRACT_MAX_CHARS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_EXTRACT_MAX_CHARS)
+}
+
+fn truncate_for_extraction(text: &str) -> String {
+    let max_chars = extract_max_chars();
+    if max_chars == 0 {
+        return text.to_string();
+    }
+
+    let mut iter = text.chars();
+    let mut collected = String::new();
+    for _ in 0..max_chars {
+        if let Some(ch) = iter.next() {
+            collected.push(ch);
+        } else {
+            return text.to_string();
+        }
+    }
+
+    collected.push_str("\n\n[truncated]");
+    collected
 }
 
 /// The Librarian agent handles content ingestion
@@ -177,7 +205,8 @@ impl LibrarianAgent {
             return Ok(());
         }
 
-        let extraction = self.tgi.extract(&note.content).await?;
+        let text = truncate_for_extraction(&note.content);
+        let extraction = self.tgi.extract(&text).await?;
         let entities = extraction.entities;
         
         for extracted in entities {

@@ -5,6 +5,7 @@ use graphrag_db::schema::EMBEDDING_DIMENSION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
 const DEFAULT_TEI_PROVIDER: &str = "tei";
@@ -14,6 +15,7 @@ const DEFAULT_TGI_PROVIDER: &str = "tgi";
 const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";
 const DEFAULT_OLLAMA_FORMAT: &str = "json";
 const DEFAULT_TEI_MAX_BATCH: usize = 32;
+const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 120;
 
 fn env_or_default(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -269,17 +271,25 @@ impl TgiClient {
                     }
                     Err(_) => Some(DEFAULT_OLLAMA_FORMAT.to_string()),
                 };
+                let options = parse_ollama_options()?;
+                let timeout_secs = std::env::var("TGI_OLLAMA_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(DEFAULT_OLLAMA_TIMEOUT_SECS);
                 let request = OllamaGenerateRequest {
                     model: self.model.clone(),
                     prompt,
                     stream: false,
                     format,
+                    options,
                 };
 
                 let response = self
                     .client
                     .post(&url)
                     .json(&request)
+                    .timeout(Duration::from_secs(timeout_secs))
                     .send()
                     .await?
                     .error_for_status()?
@@ -396,6 +406,8 @@ struct OllamaGenerateRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -490,6 +502,30 @@ fn normalize_json_payload(payload: &str) -> String {
     }
 
     without_fence
+}
+
+fn parse_ollama_options() -> Result<Option<Value>> {
+    let raw = match std::env::var("TGI_OLLAMA_OPTIONS") {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let value: Value = serde_json::from_str(trimmed).map_err(|e| {
+        AgentError::Processing(format!("Invalid TGI_OLLAMA_OPTIONS JSON: {}", e))
+    })?;
+
+    if !value.is_object() {
+        return Err(AgentError::Processing(
+            "TGI_OLLAMA_OPTIONS must be a JSON object".to_string(),
+        ));
+    }
+
+    Ok(Some(value))
 }
 
 fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
