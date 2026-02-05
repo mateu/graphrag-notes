@@ -138,8 +138,8 @@ async fn main() -> Result<()> {
     let tgi_ok = tgi.health().await.unwrap_or(false);
     if !tei_ok || !tgi_ok {
         eprintln!("Error: inference services are not reachable.");
-        eprintln!("  TEI (embeddings): http://localhost:8081");
-        eprintln!("  TGI (extraction): http://localhost:8082");
+        eprintln!("  TEI (embeddings): {}", tei.base_url());
+        eprintln!("  TGI (extraction): {}", tgi.base_url());
         eprintln!("Start them with: docker compose up -d");
         anyhow::bail!("Inference services unavailable");
     }

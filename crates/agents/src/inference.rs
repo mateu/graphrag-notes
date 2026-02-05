@@ -7,6 +7,12 @@ use serde_json::Value;
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
 const DEFAULT_TGI_URL: &str = "http://localhost:8082";
+const DEFAULT_TGI_PROVIDER: &str = "tgi";
+const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";
+
+fn env_or_default(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
 
 #[derive(Clone)]
 pub struct TeiClient {
@@ -23,7 +29,8 @@ impl TeiClient {
     }
 
     pub fn default_local() -> Self {
-        Self::new(DEFAULT_TEI_URL)
+        let url = env_or_default("TEI_URL", DEFAULT_TEI_URL);
+        Self::new(url)
     }
 
     pub async fn embed(&self, text: &str, is_query: bool) -> Result<Vec<f32>> {
@@ -89,6 +96,10 @@ impl TeiClient {
         let response = self.client.get(&url).send().await?;
         Ok(response.status().is_success())
     }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
 }
 
 #[derive(Clone)]
@@ -96,6 +107,8 @@ pub struct TgiClient {
     client: Client,
     base_url: String,
     json_schema: Option<Value>,
+    provider: TgiProvider,
+    model: String,
 }
 
 impl TgiClient {
@@ -104,11 +117,27 @@ impl TgiClient {
             client: Client::new(),
             base_url: base_url.into(),
             json_schema: None,
+            provider: TgiProvider::Tgi,
+            model: DEFAULT_OLLAMA_MODEL.to_string(),
         }
     }
 
     pub fn default_local() -> Self {
-        Self::new(DEFAULT_TGI_URL)
+        let provider = env_or_default("TGI_PROVIDER", DEFAULT_TGI_PROVIDER);
+        if provider.eq_ignore_ascii_case("ollama") {
+            let url = env_or_default("TGI_URL", "http://localhost:11434");
+            let model = env_or_default("TGI_MODEL", DEFAULT_OLLAMA_MODEL);
+            Self {
+                client: Client::new(),
+                base_url: url,
+                json_schema: None,
+                provider: TgiProvider::Ollama,
+                model,
+            }
+        } else {
+            let url = env_or_default("TGI_URL", DEFAULT_TGI_URL);
+            Self::new(url)
+        }
     }
 
     pub fn with_json_schema(mut self, schema: Value) -> Self {
@@ -117,33 +146,56 @@ impl TgiClient {
     }
 
     pub async fn extract(&self, text: &str) -> Result<EntityExtraction> {
-        let url = format!("{}/generate", self.base_url);
         let prompt = format!(
             "Extract all unique entities (people, organizations, concepts) and their relationships (supports, contradicts, mentions) from the text below. Return ONLY valid JSON matching this structure: {{ \"entities\": [...], \"relationships\": [...] }}.\n\nText:\n{}",
             text
         );
+        let generated = match self.provider {
+            TgiProvider::Tgi => {
+                let url = format!("{}/generate", self.base_url);
+                let request = TgiGenerateRequest {
+                    inputs: prompt,
+                    parameters: TgiParameters {
+                        max_new_tokens: Some(512),
+                        return_full_text: Some(false),
+                        stop: Some(vec!["\n\n".to_string()]),
+                        grammar: self.json_schema.clone(),
+                    },
+                };
 
-        let request = TgiGenerateRequest {
-            inputs: prompt,
-            parameters: TgiParameters {
-                max_new_tokens: Some(512),
-                return_full_text: Some(false),
-                stop: Some(vec!["\n\n".to_string()]),
-                grammar: self.json_schema.clone(),
-            },
+                let response = self
+                    .client
+                    .post(&url)
+                    .json(&request)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<Value>()
+                    .await?;
+
+                extract_generated_text(response)?
+            }
+            TgiProvider::Ollama => {
+                let url = format!("{}/api/generate", self.base_url);
+                let request = OllamaGenerateRequest {
+                    model: self.model.clone(),
+                    prompt,
+                    stream: false,
+                };
+
+                let response = self
+                    .client
+                    .post(&url)
+                    .json(&request)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<OllamaGenerateResponse>()
+                    .await?;
+
+                response.response
+            }
         };
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
-
-        let generated = extract_generated_text(response)?;
         let extraction: EntityExtraction = serde_json::from_str(&generated).map_err(|e| {
             AgentError::Processing(format!("TGI returned invalid JSON: {} ({})", generated, e))
         })?;
@@ -152,10 +204,23 @@ impl TgiClient {
     }
 
     pub async fn health(&self) -> Result<bool> {
-        let url = format!("{}/health", self.base_url);
+        let url = match self.provider {
+            TgiProvider::Tgi => format!("{}/health", self.base_url),
+            TgiProvider::Ollama => format!("{}/api/tags", self.base_url),
+        };
         let response = self.client.get(&url).send().await?;
         Ok(response.status().is_success())
     }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TgiProvider {
+    Tgi,
+    Ollama,
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +277,18 @@ struct TgiParameters {
     // Best-effort: TGI may accept a grammar/JSON schema constraint.
     #[serde(skip_serializing_if = "Option::is_none")]
     grammar: Option<Value>,
+}
+
+#[derive(Serialize)]
+struct OllamaGenerateRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+struct OllamaGenerateResponse {
+    response: String,
 }
 
 fn parse_embedding_response(value: Value) -> Result<Vec<f32>> {
