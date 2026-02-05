@@ -374,6 +374,18 @@ impl Repository {
         
         Ok(())
     }
+
+    /// Get entities linked to a note
+    #[instrument(skip(self))]
+    pub async fn get_entities_for_note(&self, note_id: &str) -> Result<Vec<Entity>> {
+        let entities: Vec<Entity> = self.db
+            .query("SELECT out.* FROM mentions WHERE in = $note_id")
+            .bind(("note_id", note_id))
+            .await?
+            .take(0)?;
+
+        Ok(entities)
+    }
     
     // ==========================================
     // SOURCE OPERATIONS

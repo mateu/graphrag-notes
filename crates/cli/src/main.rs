@@ -112,6 +112,12 @@ enum Commands {
         limit: usize,
     },
 
+    /// Show entities linked to a note
+    ShowEntities {
+        /// Note ID (e.g., note:xxxxxxxx)
+        note_id: String,
+    },
+
     /// Delete the local database (fresh start)
     ResetDb {
         /// Database path (defaults to ~/.graphrag/data)
@@ -271,6 +277,9 @@ async fn main() -> Result<()> {
         Commands::ExtractEntities { limit } => {
             cmd_extract_entities(repo, tgi, limit).await?;
         }
+        Commands::ShowEntities { note_id } => {
+            cmd_show_entities(repo, note_id).await?;
+        }
         Commands::EmbeddingDim { .. } => {
             // Handled before database init.
         }
@@ -390,6 +399,37 @@ async fn cmd_extract_entities(
     let librarian = LibrarianAgent::new(repo, TeiClient::default_local(), tgi);
     let processed = librarian.extract_entities_for_notes(limit).await?;
     println!("✓ Extracted entities for {} notes", processed);
+    Ok(())
+}
+
+async fn cmd_show_entities(repo: Repository, note_id: String) -> Result<()> {
+    let note = repo
+        .get_note(&note_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note_id))?;
+
+    let title = note.title.as_deref().unwrap_or("(untitled)");
+    println!("Note: {} ({})", title, note_id);
+
+    let entities = repo.get_entities_for_note(&note_id).await?;
+    if entities.is_empty() {
+        println!("No entities linked to this note.");
+        return Ok(());
+    }
+
+    println!("Entities ({}):", entities.len());
+    for entity in entities {
+        let entity_type = serde_json::to_string(&entity.entity_type)
+            .unwrap_or_else(|_| "\"other\"".to_string())
+            .trim_matches('"')
+            .to_string();
+        println!(
+            "  • {} [{}]",
+            entity.name,
+            entity_type
+        );
+    }
+
     Ok(())
 }
 
