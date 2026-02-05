@@ -9,6 +9,7 @@ const DEFAULT_TEI_URL: &str = "http://localhost:8081";
 const DEFAULT_TGI_URL: &str = "http://localhost:8082";
 const DEFAULT_TGI_PROVIDER: &str = "tgi";
 const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";
+const DEFAULT_TEI_MAX_BATCH: usize = 32;
 
 fn env_or_default(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -35,16 +36,16 @@ impl TeiClient {
 
     pub async fn embed(&self, text: &str, is_query: bool) -> Result<Vec<f32>> {
         let prompt_name = if is_query {
-            "retrieval.query"
+            std::env::var("TEI_PROMPT_NAME_QUERY").ok()
         } else {
-            "retrieval.passage"
+            std::env::var("TEI_PROMPT_NAME_PASSAGE").ok()
         };
 
         let url = format!("{}/embed", self.base_url);
         let request = TeiEmbedRequest {
             inputs: text,
             truncate: true,
-            prompt_name: Some(prompt_name),
+            prompt_name: prompt_name.as_deref(),
         };
 
         let response = self
@@ -66,29 +67,42 @@ impl TeiClient {
         }
 
         let prompt_name = if is_query {
-            "retrieval.query"
+            std::env::var("TEI_PROMPT_NAME_QUERY").ok()
         } else {
-            "retrieval.passage"
+            std::env::var("TEI_PROMPT_NAME_PASSAGE").ok()
         };
+
+        let max_batch = std::env::var("TEI_MAX_BATCH")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_TEI_MAX_BATCH);
 
         let url = format!("{}/embed", self.base_url);
-        let request = TeiEmbedBatchRequest {
-            inputs: texts,
-            truncate: true,
-            prompt_name: Some(prompt_name),
-        };
+        let mut results = Vec::with_capacity(texts.len());
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
+        for chunk in texts.chunks(max_batch) {
+            let request = TeiEmbedBatchRequest {
+                inputs: chunk,
+                truncate: true,
+                prompt_name: prompt_name.as_deref(),
+            };
 
-        parse_embeddings_response(response)
+            let response = self
+                .client
+                .post(&url)
+                .json(&request)
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<Value>()
+                .await?;
+
+            let embeddings = parse_embeddings_response(response)?;
+            results.extend(embeddings);
+        }
+
+        Ok(results)
     }
 
     pub async fn health(&self) -> Result<bool> {
