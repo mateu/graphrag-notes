@@ -25,7 +25,7 @@ services:
       - ./data/tgi_cache:/data
     environment:
       # Use an AWQ-quantized model for stability on 6GB VRAM
-      - MODEL_ID=TheBloke/Phi-3-mini-4k-instruct-AWQ
+      - MODEL_ID=Sreenington/Phi-3-mini-4k-instruct-AWQ
       - PORT=80
       - MAX_TOTAL_TOKENS=4096
       - MAX_INPUT_TOKENS=2048
