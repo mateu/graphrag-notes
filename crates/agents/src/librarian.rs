@@ -216,11 +216,44 @@ impl LibrarianAgent {
             return Ok(0);
         }
 
+        let progress_every = std::env::var("EXTRACT_PROGRESS_EVERY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PROGRESS_EVERY);
+        let progress_every_secs = std::env::var("EXTRACT_PROGRESS_EVERY_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PROGRESS_EVERY_SECS);
+
         let mut processed = 0usize;
+        let total = notes.len();
+        let start = Instant::now();
+        let mut last_progress = Instant::now();
+
         for note in notes {
             match self.extract_and_link_entities_force(&note).await {
                 Ok(()) => processed += 1,
                 Err(e) => debug!("Entity extraction failed (non-fatal): {}", e),
+            }
+
+            if processed % progress_every == 0
+                || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
+            {
+                let elapsed = start.elapsed().as_secs_f32().max(0.001);
+                let rate = processed as f32 / elapsed;
+                let remaining = total.saturating_sub(processed);
+                let eta_secs = if rate > 0.0 {
+                    (remaining as f32 / rate).round() as u64
+                } else {
+                    0
+                };
+                info!(
+                    "Entity extraction progress: {}/{} notes (rate: {:.2}/s, eta: {}s)",
+                    processed, total, rate, eta_secs
+                );
+                last_progress = Instant::now();
             }
         }
 
