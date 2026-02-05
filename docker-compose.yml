@@ -29,6 +29,7 @@ services:
       - PORT=80
       - MAX_TOTAL_TOKENS=2048
       - MAX_INPUT_TOKENS=1024
+      - MAX_BATCH_PREFILL_TOKENS=512
       # AWQ quantization (no bitsandbytes runtime needed)
       - QUANTIZE=awq
       - TRUST_REMOTE_CODE=true
