@@ -1,11 +1,14 @@
 //! Local inference clients for embeddings (TEI) and entity extraction (TGI).
 
 use crate::{AgentError, Result};
+use graphrag_db::schema::EMBEDDING_DIMENSION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
+const DEFAULT_TEI_PROVIDER: &str = "tei";
+const DEFAULT_OLLAMA_EMBED_MODEL: &str = "nomic-embed-text:latest";
 const DEFAULT_TGI_URL: &str = "http://localhost:8082";
 const DEFAULT_TGI_PROVIDER: &str = "tgi";
 const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";
@@ -19,6 +22,8 @@ fn env_or_default(key: &str, default: &str) -> String {
 pub struct TeiClient {
     client: Client,
     base_url: String,
+    provider: TeiProvider,
+    model: String,
 }
 
 impl TeiClient {
@@ -26,15 +31,35 @@ impl TeiClient {
         Self {
             client: Client::new(),
             base_url: base_url.into(),
+            provider: TeiProvider::Tei,
+            model: DEFAULT_OLLAMA_EMBED_MODEL.to_string(),
         }
     }
 
     pub fn default_local() -> Self {
-        let url = env_or_default("TEI_URL", DEFAULT_TEI_URL);
-        Self::new(url)
+        let provider = env_or_default("TEI_PROVIDER", DEFAULT_TEI_PROVIDER);
+        if provider.eq_ignore_ascii_case("ollama") {
+            let url = env_or_default("TEI_URL", "http://localhost:11434");
+            let model = env_or_default("TEI_MODEL", DEFAULT_OLLAMA_EMBED_MODEL);
+            Self {
+                client: Client::new(),
+                base_url: url,
+                provider: TeiProvider::Ollama,
+                model,
+            }
+        } else {
+            let url = env_or_default("TEI_URL", DEFAULT_TEI_URL);
+            Self::new(url)
+        }
     }
 
     pub async fn embed(&self, text: &str, is_query: bool) -> Result<Vec<f32>> {
+        if matches!(self.provider, TeiProvider::Ollama) {
+            let embedding = self.ollama_embed(text).await?;
+            validate_embedding_dim(embedding.len())?;
+            return Ok(embedding);
+        }
+
         let prompt_name = if is_query {
             std::env::var("TEI_PROMPT_NAME_QUERY").ok()
         } else {
@@ -58,12 +83,24 @@ impl TeiClient {
             .json::<Value>()
             .await?;
 
-        parse_embedding_response(response)
+        let embedding = parse_embedding_response(response)?;
+        validate_embedding_dim(embedding.len())?;
+        Ok(embedding)
     }
 
     pub async fn embed_batch(&self, texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
+        }
+
+        if matches!(self.provider, TeiProvider::Ollama) {
+            let mut results = Vec::with_capacity(texts.len());
+            for text in texts {
+                let embedding = self.ollama_embed(text).await?;
+                validate_embedding_dim(embedding.len())?;
+                results.push(embedding);
+            }
+            return Ok(results);
         }
 
         let prompt_name = if is_query {
@@ -99,6 +136,9 @@ impl TeiClient {
                 .await?;
 
             let embeddings = parse_embeddings_response(response)?;
+            if let Some(first) = embeddings.first() {
+                validate_embedding_dim(first.len())?;
+            }
             results.extend(embeddings);
         }
 
@@ -106,6 +146,12 @@ impl TeiClient {
     }
 
     pub async fn health(&self) -> Result<bool> {
+        if matches!(self.provider, TeiProvider::Ollama) {
+            let url = format!("{}/api/tags", self.base_url);
+            let response = self.client.get(&url).send().await?;
+            return Ok(response.status().is_success());
+        }
+
         let url = format!("{}/health", self.base_url);
         let response = self.client.get(&url).send().await?;
         Ok(response.status().is_success())
@@ -113,6 +159,26 @@ impl TeiClient {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    async fn ollama_embed(&self, text: &str) -> Result<Vec<f32>> {
+        let url = format!("{}/api/embeddings", self.base_url);
+        let request = OllamaEmbedRequest {
+            model: self.model.clone(),
+            prompt: text.to_string(),
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<OllamaEmbedResponse>()
+            .await?;
+
+        Ok(response.embedding)
     }
 }
 
@@ -258,6 +324,22 @@ pub struct ExtractedRelationship {
     pub relationship_type: String,
 }
 
+#[derive(Clone, Copy)]
+enum TeiProvider {
+    Tei,
+    Ollama,
+}
+
+fn validate_embedding_dim(len: usize) -> Result<()> {
+    if len != EMBEDDING_DIMENSION {
+        return Err(AgentError::Processing(format!(
+            "Embedding dimension {} does not match expected {}. Choose a 1024-dim model or update the schema.",
+            len, EMBEDDING_DIMENSION
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct TeiEmbedRequest<'a> {
     inputs: &'a str,
@@ -300,9 +382,20 @@ struct OllamaGenerateRequest {
     stream: bool,
 }
 
+#[derive(Serialize)]
+struct OllamaEmbedRequest {
+    model: String,
+    prompt: String,
+}
+
 #[derive(Deserialize)]
 struct OllamaGenerateResponse {
     response: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaEmbedResponse {
+    embedding: Vec<f32>,
 }
 
 fn parse_embedding_response(value: Value) -> Result<Vec<f32>> {
