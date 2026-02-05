@@ -5,7 +5,7 @@ use graphrag_db::schema::EMBEDDING_DIMENSION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::debug;
+use tracing::{debug, info};
 use std::time::Duration;
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
