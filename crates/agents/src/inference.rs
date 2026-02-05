@@ -447,7 +447,27 @@ impl TgiClient {
             .json::<OllamaChatResponse>()
             .await?;
 
-        Ok(response.message.content)
+        if let Some(done_reason) = response.done_reason.as_deref() {
+            debug!("Ollama chat done_reason={}", done_reason);
+        }
+
+        if let Some(total_ms) = response
+            .total_duration
+            .map(|ns| ns as f64 / 1_000_000.0)
+        {
+            debug!("Ollama chat total_duration_ms={:.2}", total_ms);
+        }
+
+        let content = response.message.content;
+        let trimmed = content.trim_end();
+        if !trimmed.ends_with('}') {
+            debug!(
+                "Ollama chat content does not end with '}}' (len={})",
+                trimmed.len()
+            );
+        }
+
+        Ok(content)
     }
 }
 
@@ -566,6 +586,12 @@ struct OllamaEmbedRequest {
 #[derive(Deserialize)]
 struct OllamaChatResponse {
     message: OllamaChatMessageResponse,
+    #[serde(default)]
+    done: Option<bool>,
+    #[serde(default)]
+    done_reason: Option<String>,
+    #[serde(default)]
+    total_duration: Option<u64>,
 }
 
 #[derive(Deserialize)]
