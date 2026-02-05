@@ -8,6 +8,15 @@ use graphrag_core::{
 use graphrag_db::Repository;
 use tracing::{debug, info, instrument};
 
+fn skip_entity_extraction() -> bool {
+    std::env::var("SKIP_ENTITY_EXTRACTION")
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
 /// The Librarian agent handles content ingestion
 pub struct LibrarianAgent {
     repo: Repository,
@@ -151,6 +160,10 @@ impl LibrarianAgent {
     
     /// Extract entities from a note and link them
     async fn extract_and_link_entities(&self, note: &Note) -> Result<()> {
+        if skip_entity_extraction() {
+            return Ok(());
+        }
+
         let extraction = self.tgi.extract(&note.content).await?;
         let entities = extraction.entities;
         
