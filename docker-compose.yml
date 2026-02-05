@@ -6,12 +6,12 @@ services:
     container_name: tei-embedding
     ports:
       - "8081:80"
-    command: ["--model-id", "intfloat/multilingual-e5-large-instruct", "--port", "80"]
+    command: ["--model-id", "intfloat/e5-large-v2", "--port", "80"]
     volumes:
       - ./data/tei_cache:/data
     environment:
       - PORT=80
-      # e5-large-instruct is 1024-dim and TEI-supported.
+      # e5-large-v2 is 1024-dim and ships ONNX for the CPU image.
 
   # Service 2: Entity Extraction LLM (TGI)
   # Memory: ~3.0GB (4-bit quantized)
@@ -31,6 +31,9 @@ services:
       # AWQ quantization (no bitsandbytes runtime needed)
       - QUANTIZE=awq
       - TRUST_REMOTE_CODE=true
+      # Blackwell + flashinfer can trigger rope errors; disable custom kernels.
+      - DISABLE_CUSTOM_KERNELS=true
+      - DISABLE_FLASHINFER=true
     deploy:
       resources:
         reservations:
