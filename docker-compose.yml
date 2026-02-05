@@ -6,7 +6,7 @@ services:
     container_name: tei-embedding
     ports:
       - "8081:80"
-    command: ["--model-id", "intfloat/e5-large-v2", "--port", "80"]
+    command: ["--model-id", "intfloat/e5-large-v2", "--port", "80", "--payload-limit", "200000000"]
     volumes:
       - ./data/tei_cache:/data
     environment:
