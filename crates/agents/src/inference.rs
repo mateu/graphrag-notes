@@ -16,6 +16,16 @@ const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";
 const DEFAULT_OLLAMA_FORMAT: &str = "json";
 const DEFAULT_TEI_MAX_BATCH: usize = 32;
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_OLLAMA_USE_CHAT_SCHEMA: bool = true;
+
+fn ollama_use_chat_schema() -> bool {
+    std::env::var("TGI_OLLAMA_USE_CHAT_SCHEMA")
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(DEFAULT_OLLAMA_USE_CHAT_SCHEMA)
+}
 
 fn env_or_default(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -315,6 +325,10 @@ impl TgiClient {
     }
 
     async fn ollama_generate(&self, prompt: &str, options: Option<Value>) -> Result<String> {
+        if ollama_use_chat_schema() {
+            return self.ollama_chat_generate(prompt, options).await;
+        }
+
         let url = format!("{}/api/generate", self.base_url);
         let format = match std::env::var("TGI_OLLAMA_FORMAT") {
             Ok(value) => {
@@ -352,6 +366,38 @@ impl TgiClient {
             .await?;
 
         Ok(response.response)
+    }
+
+    async fn ollama_chat_generate(&self, prompt: &str, options: Option<Value>) -> Result<String> {
+        let url = format!("{}/api/chat", self.base_url);
+        let timeout_secs = std::env::var("TGI_OLLAMA_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_OLLAMA_TIMEOUT_SECS);
+        let request = OllamaChatRequest {
+            model: self.model.clone(),
+            messages: vec![OllamaChatMessage {
+                role: "user".to_string(),
+                content: prompt.to_string(),
+            }],
+            stream: false,
+            format: Some(entity_extraction_schema()),
+            options,
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .timeout(Duration::from_secs(timeout_secs))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<OllamaChatResponse>()
+            .await?;
+
+        Ok(response.message.content)
     }
 }
 
@@ -445,9 +491,36 @@ struct OllamaGenerateRequest {
 }
 
 #[derive(Serialize)]
+struct OllamaChatRequest {
+    model: String,
+    messages: Vec<OllamaChatMessage>,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<Value>,
+}
+
+#[derive(Serialize)]
+struct OllamaChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
 struct OllamaEmbedRequest {
     model: String,
     prompt: String,
+}
+
+#[derive(Deserialize)]
+struct OllamaChatResponse {
+    message: OllamaChatMessageResponse,
+}
+
+#[derive(Deserialize)]
+struct OllamaChatMessageResponse {
+    content: String,
 }
 
 #[derive(Deserialize)]
@@ -574,6 +647,41 @@ fn merge_options(base: Option<Value>, override_value: Option<Value>) -> Option<V
         }
         (Some(value), Some(_)) => Some(value),
     }
+}
+
+fn entity_extraction_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["entities", "relationships"],
+        "properties": {
+            "entities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "type": { "type": "string" }
+                    }
+                }
+            },
+            "relationships": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["source", "target", "relationship_type"],
+                    "properties": {
+                        "source": { "type": "string" },
+                        "target": { "type": "string" },
+                        "relationship_type": { "type": "string" }
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
