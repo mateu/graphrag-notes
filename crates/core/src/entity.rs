@@ -39,6 +39,7 @@ pub struct Entity {
     pub id: Option<RecordId>,
     
     /// The type of entity
+    #[serde(default)]
     pub entity_type: EntityType,
     
     /// Display name
