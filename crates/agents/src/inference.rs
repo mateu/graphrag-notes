@@ -294,14 +294,16 @@ impl TgiClient {
                         return Ok(extraction);
                     }
 
-                    if strict && done_reason.as_deref() == Some("length") {
-                        if idx + 1 < budgets.len() {
-                            info!(
-                                "Ollama output truncated (done_reason=length); retrying with num_predict={}",
-                                budgets[idx + 1]
-                            );
-                            continue;
-                        }
+                    if strict
+                        && idx + 1 < budgets.len()
+                        && should_retry_ollama_parse_failure(done_reason.as_deref())
+                    {
+                        info!(
+                            "Ollama returned invalid JSON (done_reason={}); retrying with num_predict={}",
+                            done_reason.as_deref().unwrap_or("none"),
+                            budgets[idx + 1]
+                        );
+                        continue;
                     }
 
                     if strict {
@@ -687,7 +689,7 @@ fn merge_options(base: Option<Value>, override_value: Option<Value>) -> Option<V
 }
 
 fn ollama_predict_budgets(options: &Option<Value>) -> Vec<u32> {
-    let mut budgets = vec![512, 768, 1024];
+    let default_budgets = vec![512, 768, 1024];
     let configured = options.as_ref().and_then(|value| {
         value.as_object().and_then(|map| {
             map.get("num_predict")
@@ -696,14 +698,34 @@ fn ollama_predict_budgets(options: &Option<Value>) -> Vec<u32> {
         })
     });
 
-    if let Some(value) = configured {
-        if !budgets.contains(&value) {
-            budgets.insert(0, value);
-        }
-        budgets.retain(|b| *b >= value);
+    let Some(value) = configured else {
+        return default_budgets;
+    };
+
+    // Expand upward from the configured value rather than collapsing to a single budget.
+    let mut budgets = vec![value];
+    let step: u32 = 256;
+    let max_default = *default_budgets.last().unwrap_or(&1024);
+    let max_budget = std::cmp::max(max_default, value.saturating_add(step.saturating_mul(2)));
+
+    let mut next = if value % step == 0 {
+        value.saturating_add(step)
+    } else {
+        ((value / step) + 1).saturating_mul(step)
+    };
+
+    while next <= max_budget {
+        budgets.push(next);
+        next = next.saturating_add(step);
     }
 
+    budgets.sort_unstable();
+    budgets.dedup();
     budgets
+}
+
+fn should_retry_ollama_parse_failure(done_reason: Option<&str>) -> bool {
+    !matches!(done_reason, Some("stop"))
 }
 
 fn entity_extraction_schema() -> Value {
