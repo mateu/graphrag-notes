@@ -391,6 +391,34 @@ impl Repository {
 
         Ok(entities)
     }
+
+    /// List note-to-note edges across all edge tables
+    #[instrument(skip(self))]
+    pub async fn list_note_edges(&self, limit: usize) -> Result<Vec<NoteEdgeRow>> {
+        let mut edges: Vec<NoteEdgeRow> = Vec::new();
+        let limit = limit.max(1);
+
+        edges.extend(self.query_edges_table("supports", limit).await?);
+        edges.extend(self.query_edges_table("contradicts", limit).await?);
+        edges.extend(self.query_edges_table("related_to", limit).await?);
+        edges.extend(self.query_edges_table("derived_from", limit).await?);
+
+        Ok(edges)
+    }
+
+    /// Get note-to-note edges for a specific note id (in or out)
+    #[instrument(skip(self))]
+    pub async fn get_note_edges(&self, note_id: &str) -> Result<Vec<NoteEdgeRow>> {
+        let note_id = normalize_note_id(note_id);
+        let mut edges: Vec<NoteEdgeRow> = Vec::new();
+
+        edges.extend(self.query_edges_for_note("supports", &note_id).await?);
+        edges.extend(self.query_edges_for_note("contradicts", &note_id).await?);
+        edges.extend(self.query_edges_for_note("related_to", &note_id).await?);
+        edges.extend(self.query_edges_for_note("derived_from", &note_id).await?);
+
+        Ok(edges)
+    }
     
     // ==========================================
     // SOURCE OPERATIONS
@@ -433,6 +461,59 @@ impl Repository {
             .take(0)?;
         
         stats.into_iter().next().ok_or_else(|| DbError::QueryFailed("stats".into()))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteEdgeRow {
+    pub edge_type: String,
+    pub in_id: RecordId,
+    pub out_id: RecordId,
+    #[serde(default)]
+    pub confidence: Option<f32>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn normalize_note_id(note_id: &str) -> String {
+    if note_id.starts_with("note:") {
+        note_id.to_string()
+    } else {
+        format!("note:{}", note_id)
+    }
+}
+
+impl Repository {
+    async fn query_edges_table(&self, table: &str, limit: usize) -> Result<Vec<NoteEdgeRow>> {
+        let query = format!(
+            "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at FROM {table} LIMIT $limit"
+        );
+        let edges: Vec<NoteEdgeRow> = self
+            .db
+            .query(&query)
+            .bind(("limit", limit))
+            .await?
+            .take(0)?;
+        Ok(edges)
+    }
+
+    async fn query_edges_for_note(
+        &self,
+        table: &str,
+        note_id: &str,
+    ) -> Result<Vec<NoteEdgeRow>> {
+        let query = format!(
+            "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at \
+             FROM {table} WHERE in = $note_id OR out = $note_id"
+        );
+        let edges: Vec<NoteEdgeRow> = self
+            .db
+            .query(&query)
+            .bind(("note_id", note_id))
+            .await?
+            .take(0)?;
+        Ok(edges)
     }
 }
 

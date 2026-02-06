@@ -118,6 +118,25 @@ enum Commands {
         note_id: String,
     },
 
+    /// Show a note by ID
+    ShowNote {
+        /// Note ID (e.g., note:xxxxxxxx)
+        note_id: String,
+    },
+
+    /// List note-to-note edges
+    ListEdges {
+        /// Maximum edges per edge type
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+
+    /// Show note-to-note edges for a specific note
+    ShowNoteEdges {
+        /// Note ID (e.g., note:xxxxxxxx)
+        note_id: String,
+    },
+
     /// Delete the local database (fresh start)
     ResetDb {
         /// Database path (defaults to ~/.graphrag/data)
@@ -280,6 +299,15 @@ async fn main() -> Result<()> {
         Commands::ShowEntities { note_id } => {
             cmd_show_entities(repo, note_id).await?;
         }
+        Commands::ShowNote { note_id } => {
+            cmd_show_note(repo, note_id).await?;
+        }
+        Commands::ListEdges { limit } => {
+            cmd_list_edges(repo, limit).await?;
+        }
+        Commands::ShowNoteEdges { note_id } => {
+            cmd_show_note_edges(repo, note_id).await?;
+        }
         Commands::EmbeddingDim { .. } => {
             // Handled before database init.
         }
@@ -431,6 +459,71 @@ async fn cmd_show_entities(repo: Repository, note_id: String) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+async fn cmd_show_note(repo: Repository, note_id: String) -> Result<()> {
+    let key = note_id.strip_prefix("note:").unwrap_or(&note_id);
+    let note = repo
+        .get_note(key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Note not found: {}", note_id))?;
+
+    println!(
+        "Note: {} ({})",
+        note.title.as_deref().unwrap_or("(untitled)"),
+        note_id
+    );
+    println!("Type: {}", note.note_type);
+    println!("Tags: {}", if note.tags.is_empty() { "(none)".into() } else { note.tags.join(", ") });
+    println!();
+    println!("{}", note.content);
+    Ok(())
+}
+
+async fn cmd_list_edges(repo: Repository, limit: usize) -> Result<()> {
+    let edges = repo.list_note_edges(limit).await?;
+    if edges.is_empty() {
+        println!("No note edges found.");
+        return Ok(());
+    }
+
+    println!("Note edges (up to {} per type):", limit);
+    for edge in edges {
+        let reason = edge.reason.as_deref().unwrap_or("");
+        let confidence = edge.confidence.map(|c| format!("{:.2}", c)).unwrap_or_else(|| "-".into());
+        println!(
+            "  • {}: {} -> {} (confidence: {}){}",
+            edge.edge_type,
+            edge.in_id,
+            edge.out_id,
+            confidence,
+            if reason.is_empty() { "".into() } else { format!(" reason: {}", reason) }
+        );
+    }
+    Ok(())
+}
+
+async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Result<()> {
+    let edges = repo.get_note_edges(&note_id).await?;
+    if edges.is_empty() {
+        println!("No edges found for {}", note_id);
+        return Ok(());
+    }
+
+    println!("Edges for {}:", note_id);
+    for edge in edges {
+        let reason = edge.reason.as_deref().unwrap_or("");
+        let confidence = edge.confidence.map(|c| format!("{:.2}", c)).unwrap_or_else(|| "-".into());
+        println!(
+            "  • {}: {} -> {} (confidence: {}){}",
+            edge.edge_type,
+            edge.in_id,
+            edge.out_id,
+            confidence,
+            if reason.is_empty() { "".into() } else { format!(" reason: {}", reason) }
+        );
+    }
     Ok(())
 }
 
