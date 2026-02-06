@@ -352,15 +352,26 @@ impl Repository {
                     name = $name,
                     embedding = $embedding
             "#)
-            .bind(("entity_type", entity_type))
-            .bind(("name", name))
-            .bind(("canonical_name", canonical_name))
-            .bind(("embedding", embedding))
-            .bind(("metadata", metadata))
+            .bind(("entity_type", entity_type.clone()))
+            .bind(("name", name.clone()))
+            .bind(("canonical_name", canonical_name.clone()))
+            .bind(("embedding", embedding.clone()))
+            .bind(("metadata", metadata.clone()))
             .await?
             .take(0)?;
 
-        result.ok_or_else(|| DbError::CreateFailed("entity".into()))
+        if let Some(entity) = result {
+            return Ok(entity);
+        }
+
+        // If SurrealDB doesn't return the id on upsert, look it up by canonical name
+        let fetched: Option<Entity> = self.db
+            .query("SELECT * FROM entity WHERE canonical_name = $canonical_name LIMIT 1")
+            .bind(("canonical_name", canonical_name))
+            .await?
+            .take(0)?;
+
+        fetched.ok_or_else(|| DbError::CreateFailed("entity".into()))
     }
     
     /// Link a note to an entity

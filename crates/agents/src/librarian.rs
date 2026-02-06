@@ -217,6 +217,8 @@ impl LibrarianAgent {
         let text = truncate_for_extraction(&note.content);
         let extraction = self.tgi.extract(&text).await?;
         let entities = extraction.entities;
+        let extracted_count = entities.len();
+        let mut linked_count = 0usize;
         
         for extracted in entities {
             // Map string type to EntityType
@@ -240,7 +242,15 @@ impl LibrarianAgent {
             // Link note to entity
             if let (Some(note_id), Some(entity_id)) = (&note.id, &entity.id) {
                 self.repo.link_note_to_entity(note_id, entity_id).await?;
+                linked_count += 1;
             }
+        }
+
+        if extracted_count > 0 || linked_count > 0 {
+            debug!(
+                "Entity extraction summary: extracted={} linked={} note_id={:?}",
+                extracted_count, linked_count, note.id
+            );
         }
         
         Ok(())
