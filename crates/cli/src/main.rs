@@ -107,7 +107,7 @@ enum Commands {
 
     /// Extract entities for notes that are missing entity links
     ExtractEntities {
-        /// Maximum notes to process
+        /// Maximum notes to process (or page size when using --all)
         #[arg(short, long, default_value = "100")]
         limit: usize,
 
