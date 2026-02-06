@@ -450,6 +450,7 @@ impl Repository {
                     note_count: (SELECT count() FROM note GROUP ALL)[0].count,
                     entity_count: (SELECT count() FROM entity GROUP ALL)[0].count,
                     source_count: (SELECT count() FROM source GROUP ALL)[0].count,
+                    mention_count: (SELECT count() FROM mentions GROUP ALL)[0].count,
                     edge_count: (
                         (SELECT count() FROM supports GROUP ALL)[0].count +
                         (SELECT count() FROM contradicts GROUP ALL)[0].count +
@@ -568,6 +569,8 @@ pub struct DbStats {
     pub entity_count: i64,
     #[serde(default)]
     pub source_count: i64,
+    #[serde(default)]
+    pub mention_count: i64,
     #[serde(default)]
     pub edge_count: i64,
 }

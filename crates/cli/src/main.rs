@@ -670,6 +670,7 @@ async fn cmd_stats(repo: Repository) -> Result<()> {
     println!("Database Statistics:");
     println!("  • Notes: {}", stats.note_count);
     println!("  • Entities: {}", stats.entity_count);
+    println!("  • Mentions: {}", stats.mention_count);
     println!("  • Sources: {}", stats.source_count);
     println!("  • Edges: {}", stats.edge_count);
     
