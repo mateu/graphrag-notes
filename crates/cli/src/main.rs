@@ -9,8 +9,8 @@ use graphrag_core::ChatExport;
 use graphrag_db::{init_memory, init_persistent, Repository};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::info;
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 /// GraphRAG Notes - An evolving knowledge graph for your notes
 #[derive(Parser)]
@@ -25,7 +25,7 @@ struct Cli {
     #[arg(long)]
     memory: bool,
     
-    /// Verbose output
+    /// Verbose output (DEBUG logs)
     #[arg(short, long)]
     verbose: bool,
     
@@ -190,10 +190,15 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     
-    // Setup logging
-    let log_level = if cli.verbose { Level::DEBUG } else { Level::INFO };
+    // Setup logging: default to WARN, allow explicit DEBUG via --verbose,
+    // and support custom filters through RUST_LOG.
+    let log_filter = if cli.verbose {
+        EnvFilter::new("debug")
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
+    };
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(log_level)
+        .with_env_filter(log_filter)
         .with_target(false)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
