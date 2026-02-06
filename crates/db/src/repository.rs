@@ -377,11 +377,26 @@ impl Repository {
     /// Link a note to an entity
     #[instrument(skip(self))]
     pub async fn link_note_to_entity(&self, note_id: &surrealdb::RecordId, entity_id: &surrealdb::RecordId) -> Result<()> {
-        self.db
-            .query("RELATE $note_id->mentions->$entity_id")
+        #[derive(Deserialize)]
+        struct CountRow {
+            count: Option<u64>,
+        }
+
+        let existing: Option<CountRow> = self.db
+            .query("SELECT count() FROM mentions WHERE in = $note_id AND out = $entity_id GROUP ALL")
             .bind(("note_id", note_id.clone()))
             .bind(("entity_id", entity_id.clone()))
-            .await?;
+            .await?
+            .take(0)?;
+
+        let count = existing.and_then(|row| row.count).unwrap_or(0);
+        if count == 0 {
+            self.db
+                .query("CREATE mentions SET in = $note_id, out = $entity_id")
+                .bind(("note_id", note_id.clone()))
+                .bind(("entity_id", entity_id.clone()))
+                .await?;
+        }
         
         Ok(())
     }
