@@ -59,7 +59,7 @@ pub struct Entity {
     pub metadata: serde_json::Value,
     
     /// When first seen
-    #[serde(skip_serializing)]
+    #[serde(default = "default_created_at", skip_serializing)]
     pub created_at: DateTime<Utc>,
 }
 
@@ -93,6 +93,10 @@ impl Entity {
         self.embedding = embedding;
         self
     }
+}
+
+fn default_created_at() -> DateTime<Utc> {
+    Utc::now()
 }
 
 /// Result of entity extraction from text
