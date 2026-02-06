@@ -503,6 +503,7 @@ impl Repository {
         table: &str,
         note_id: &str,
     ) -> Result<Vec<NoteEdgeRow>> {
+        let note_id = note_id.to_string();
         let query = format!(
             "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at \
              FROM {table} WHERE in = $note_id OR out = $note_id"
