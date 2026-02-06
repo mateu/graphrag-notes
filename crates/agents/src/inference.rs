@@ -14,22 +14,12 @@ const DEFAULT_OLLAMA_EMBED_MODEL: &str = "nomic-embed-text:latest";
 const DEFAULT_TGI_URL: &str = "http://localhost:8082";
 const DEFAULT_TGI_PROVIDER: &str = "tgi";
 const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";
-const DEFAULT_OLLAMA_FORMAT: &str = "json";
 const DEFAULT_TEI_MAX_BATCH: usize = 32;
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 120;
-const DEFAULT_OLLAMA_USE_CHAT_SCHEMA: bool = true;
 const DEFAULT_STRICT_ENTITY_JSON: bool = true;
 const DEFAULT_MAX_ENTITIES: usize = 30;
 const DEFAULT_MAX_RELATIONSHIPS: usize = 15;
 
-fn ollama_use_chat_schema() -> bool {
-    std::env::var("TGI_OLLAMA_USE_CHAT_SCHEMA")
-        .map(|value| {
-            let value = value.trim().to_ascii_lowercase();
-            matches!(value.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(DEFAULT_OLLAMA_USE_CHAT_SCHEMA)
-}
 
 fn strict_entity_json() -> bool {
     std::env::var("STRICT_ENTITY_JSON")
@@ -390,51 +380,6 @@ impl TgiClient {
         extract_generated_text(response)
     }
 
-    async fn ollama_generate(&self, prompt: &str, options: Option<Value>) -> Result<String> {
-        if ollama_use_chat_schema() {
-            let (content, _) = self.ollama_chat_generate_with_meta(prompt, options).await?;
-            return Ok(content);
-        }
-
-        let url = format!("{}/api/generate", self.base_url);
-        let format = match std::env::var("TGI_OLLAMA_FORMAT") {
-            Ok(value) => {
-                let trimmed = value.trim().to_string();
-                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
-                    None
-                } else {
-                    Some(trimmed)
-                }
-            }
-            Err(_) => Some(DEFAULT_OLLAMA_FORMAT.to_string()),
-        };
-        let timeout_secs = std::env::var("TGI_OLLAMA_TIMEOUT_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_OLLAMA_TIMEOUT_SECS);
-        let request = OllamaGenerateRequest {
-            model: self.model.clone(),
-            prompt: prompt.to_string(),
-            stream: false,
-            format,
-            options,
-        };
-
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .timeout(Duration::from_secs(timeout_secs))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<OllamaGenerateResponse>()
-            .await?;
-
-        Ok(response.response)
-    }
-
     async fn ollama_chat_generate_with_meta(
         &self,
         prompt: &str,
@@ -582,17 +527,6 @@ struct TgiParameters {
 }
 
 #[derive(Serialize)]
-struct OllamaGenerateRequest {
-    model: String,
-    prompt: String,
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    options: Option<Value>,
-}
-
-#[derive(Serialize)]
 struct OllamaChatRequest {
     model: String,
     messages: Vec<OllamaChatMessage>,
@@ -629,11 +563,6 @@ struct OllamaChatResponse {
 #[derive(Deserialize)]
 struct OllamaChatMessageResponse {
     content: String,
-}
-
-#[derive(Deserialize)]
-struct OllamaGenerateResponse {
-    response: String,
 }
 
 #[derive(Deserialize)]
