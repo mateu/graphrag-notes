@@ -404,14 +404,15 @@ impl Repository {
     /// Get entities linked to a note
     #[instrument(skip(self))]
     pub async fn get_entities_for_note(&self, note_id: &str) -> Result<Vec<Entity>> {
-        let note_id = if note_id.starts_with("note:") {
-            note_id.to_string()
+        let raw = if note_id.starts_with("note:") {
+            &note_id["note:".len()..]
         } else {
-            format!("note:{}", note_id)
+            note_id
         };
         let entities: Vec<Entity> = self.db
-            .query("SELECT out.* FROM mentions WHERE in = $note_id")
-            .bind(("note_id", note_id))
+            .query("SELECT out.* FROM mentions WHERE in = type::thing($table, $id)")
+            .bind(("table", "note"))
+            .bind(("id", raw))
             .await?
             .take(0)?;
 
