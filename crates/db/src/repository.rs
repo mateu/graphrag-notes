@@ -433,12 +433,25 @@ impl Repository {
         } else {
             note_id.to_string()
         };
-        let entities: Vec<Entity> = self.db
-            .query("SELECT * FROM entity WHERE id IN (SELECT VALUE out FROM mentions WHERE in = type::thing($table, $id))")
+
+        let entity_ids: Vec<RecordId> = self.db
+            .query("SELECT VALUE out FROM mentions WHERE in = type::thing($table, $id)")
             .bind(("table", "note"))
             .bind(("id", raw))
             .await?
             .take(0)?;
+
+        if entity_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut entities = Vec::with_capacity(entity_ids.len());
+        for entity_id in entity_ids {
+            let entity: Option<Entity> = self.db.select(entity_id).await?;
+            if let Some(entity) = entity {
+                entities.push(entity);
+            }
+        }
 
         Ok(entities)
     }
