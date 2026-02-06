@@ -287,17 +287,39 @@ impl TgiClient {
             }
             TgiProvider::Ollama => {
                 let options = parse_ollama_options()?;
-                let generated = self.ollama_generate(&prompt, options.clone()).await?;
-                let cleaned = normalize_json_payload(&generated);
-                if let Ok(extraction) = parse_entity_extraction(&cleaned) {
-                    return Ok(extraction);
-                }
+                let budgets = ollama_predict_budgets(&options);
+                let strict = strict_entity_json();
 
-                if strict_entity_json() {
-                    return Err(AgentError::Processing(format!(
-                        "TGI returned invalid JSON: {}",
-                        generated
-                    )));
+                for (idx, budget) in budgets.iter().enumerate() {
+                    let attempt_options = merge_options(
+                        options.clone(),
+                        Some(json!({
+                            "num_predict": budget
+                        })),
+                    );
+                    let (generated, done_reason) =
+                        self.ollama_generate_with_meta(&prompt, attempt_options).await?;
+                    let cleaned = normalize_json_payload(&generated);
+                    if let Ok(extraction) = parse_entity_extraction(&cleaned) {
+                        return Ok(extraction);
+                    }
+
+                    if strict && done_reason.as_deref() == Some("length") {
+                        if idx + 1 < budgets.len() {
+                            info!(
+                                "Ollama output truncated (done_reason=length); retrying with num_predict={}",
+                                budgets[idx + 1]
+                            );
+                            continue;
+                        }
+                    }
+
+                    if strict {
+                        return Err(AgentError::Processing(format!(
+                            "TGI returned invalid JSON: {}",
+                            generated
+                        )));
+                    }
                 }
 
                 debug!("Ollama extraction failed, retrying with entities-only schema");
@@ -315,7 +337,8 @@ impl TgiClient {
                         "stop": ["```"]
                     })),
                 );
-                let generated_retry = self.ollama_generate(&retry_prompt, retry_options).await?;
+                let (generated_retry, _) =
+                    self.ollama_generate_with_meta(&retry_prompt, retry_options).await?;
                 let cleaned_retry = normalize_json_payload(&generated_retry);
                 let extraction = parse_entity_extraction(&cleaned_retry).map_err(|e| {
                     AgentError::Processing(format!(
@@ -369,7 +392,8 @@ impl TgiClient {
 
     async fn ollama_generate(&self, prompt: &str, options: Option<Value>) -> Result<String> {
         if ollama_use_chat_schema() {
-            return self.ollama_chat_generate(prompt, options).await;
+            let (content, _) = self.ollama_chat_generate_with_meta(prompt, options).await?;
+            return Ok(content);
         }
 
         let url = format!("{}/api/generate", self.base_url);
@@ -411,7 +435,11 @@ impl TgiClient {
         Ok(response.response)
     }
 
-    async fn ollama_chat_generate(&self, prompt: &str, options: Option<Value>) -> Result<String> {
+    async fn ollama_chat_generate_with_meta(
+        &self,
+        prompt: &str,
+        options: Option<Value>,
+    ) -> Result<(String, Option<String>)> {
         let url = format!("{}/api/chat", self.base_url);
         let timeout_secs = std::env::var("TGI_OLLAMA_TIMEOUT_SECS")
             .ok()
@@ -471,7 +499,7 @@ impl TgiClient {
             );
         }
 
-        Ok(content)
+        Ok((content, response.done_reason))
     }
 }
 
@@ -727,6 +755,26 @@ fn merge_options(base: Option<Value>, override_value: Option<Value>) -> Option<V
         }
         (Some(value), Some(_)) => Some(value),
     }
+}
+
+fn ollama_predict_budgets(options: &Option<Value>) -> Vec<u32> {
+    let mut budgets = vec![512, 768, 1024];
+    let configured = options.as_ref().and_then(|value| {
+        value.as_object().and_then(|map| {
+            map.get("num_predict")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+        })
+    });
+
+    if let Some(value) = configured {
+        if !budgets.contains(&value) {
+            budgets.insert(0, value);
+        }
+        budgets.retain(|b| *b >= value);
+    }
+
+    budgets
 }
 
 fn entity_extraction_schema() -> Value {
