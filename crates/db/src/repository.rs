@@ -434,7 +434,7 @@ impl Repository {
             note_id.to_string()
         };
         let entities: Vec<Entity> = self.db
-            .query("SELECT out.* FROM mentions WHERE in = type::thing($table, $id)")
+            .query("SELECT * FROM entity WHERE id IN (SELECT VALUE out FROM mentions WHERE in = type::thing($table, $id))")
             .bind(("table", "note"))
             .bind(("id", raw))
             .await?
