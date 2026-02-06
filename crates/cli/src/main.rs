@@ -474,7 +474,7 @@ async fn cmd_show_note(repo: Repository, note_id: String) -> Result<()> {
         note.title.as_deref().unwrap_or("(untitled)"),
         note_id
     );
-    println!("Type: {}", note.note_type);
+    println!("Type: {:?}", note.note_type);
     println!("Tags: {}", if note.tags.is_empty() { "(none)".into() } else { note.tags.join(", ") });
     println!();
     println!("{}", note.content);
