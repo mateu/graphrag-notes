@@ -100,6 +100,19 @@ impl Repository {
 
         Ok(notes)
     }
+
+    /// Get notes in a stable order (for full extraction passes)
+    #[instrument(skip(self))]
+    pub async fn get_notes_page(&self, limit: usize, offset: usize) -> Result<Vec<Note>> {
+        let notes: Vec<Note> = self.db
+            .query("SELECT * FROM note ORDER BY created_at ASC LIMIT $limit START $offset")
+            .bind(("limit", limit))
+            .bind(("offset", offset))
+            .await?
+            .take(0)?;
+
+        Ok(notes)
+    }
     
     /// Update note embedding
     #[instrument(skip(self, embedding))]
@@ -398,6 +411,17 @@ impl Repository {
                 .await?;
         }
         
+        Ok(())
+    }
+
+    /// Remove all mention links for a note
+    #[instrument(skip(self))]
+    pub async fn delete_mentions_for_note(&self, note_id: &surrealdb::RecordId) -> Result<()> {
+        self.db
+            .query("DELETE mentions WHERE in = $note_id")
+            .bind(("note_id", note_id.clone()))
+            .await?;
+
         Ok(())
     }
 

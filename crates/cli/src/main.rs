@@ -110,6 +110,14 @@ enum Commands {
         /// Maximum notes to process
         #[arg(short, long, default_value = "100")]
         limit: usize,
+
+        /// Process all notes (not just those missing mentions)
+        #[arg(long)]
+        all: bool,
+
+        /// Clear existing mentions before re-extracting (use with --all)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Show entities linked to a note
@@ -293,8 +301,8 @@ async fn main() -> Result<()> {
         Commands::Interactive => {
             cmd_interactive(repo, tei, tgi).await?;
         }
-        Commands::ExtractEntities { limit } => {
-            cmd_extract_entities(repo, tgi, limit).await?;
+        Commands::ExtractEntities { limit, all, force } => {
+            cmd_extract_entities(repo, tgi, limit, all, force).await?;
         }
         Commands::ShowEntities { note_id } => {
             cmd_show_entities(repo, note_id).await?;
@@ -423,9 +431,22 @@ async fn cmd_extract_entities(
     repo: Repository,
     tgi: TgiClient,
     limit: usize,
+    all: bool,
+    force: bool,
 ) -> Result<()> {
+    if force && !all {
+        anyhow::bail!("--force requires --all");
+    }
     let librarian = LibrarianAgent::new(repo, TeiClient::default_local(), tgi);
-    let processed = librarian.extract_entities_for_notes(limit).await?;
+    let processed = if all {
+        let processed = librarian
+            .extract_entities_for_all_notes(limit, force)
+            .await?;
+        processed
+    } else {
+        let processed = librarian.extract_entities_for_notes(limit).await?;
+        processed
+    };
     println!("✓ Extracted entities for {} notes", processed);
     Ok(())
 }

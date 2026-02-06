@@ -349,6 +349,110 @@ impl LibrarianAgent {
 
         Ok(processed)
     }
+
+    /// Extract entities for all notes (optionally clearing existing mentions first)
+    #[instrument(skip(self))]
+    pub async fn extract_entities_for_all_notes(
+        &self,
+        limit: usize,
+        force_clear: bool,
+    ) -> Result<usize> {
+        let progress_every = std::env::var("EXTRACT_PROGRESS_EVERY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PROGRESS_EVERY);
+        let progress_every_secs = std::env::var("EXTRACT_PROGRESS_EVERY_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_PROGRESS_EVERY_SECS);
+        let log_each = extract_log_each();
+
+        let mut processed = 0usize;
+        let start = Instant::now();
+        let mut last_progress = Instant::now();
+        let mut offset = 0usize;
+
+        loop {
+            let notes = self.repo.get_notes_page(limit, offset).await?;
+            if notes.is_empty() {
+                break;
+            }
+
+            let total = notes.len();
+            for (index, note) in notes.into_iter().enumerate() {
+                let note_id = note
+                    .id
+                    .as_ref()
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                let note_len = note.content.len();
+                if log_each {
+                    info!(
+                        "Entity extraction start: {}/{} note_id={} chars={}",
+                        index + 1,
+                        total,
+                        note_id,
+                        note_len
+                    );
+                }
+
+                if force_clear {
+                    if let Some(ref id) = note.id {
+                        self.repo.delete_mentions_for_note(id).await?;
+                    }
+                }
+
+                let note_start = Instant::now();
+                match self.extract_and_link_entities_force(&note).await {
+                    Ok(()) => {
+                        processed += 1;
+                        if log_each {
+                            info!(
+                                "Entity extraction done: {}/{} note_id={} elapsed={:.2}s",
+                                index + 1,
+                                total,
+                                note_id,
+                                note_start.elapsed().as_secs_f32()
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        if log_each {
+                            info!(
+                                "Entity extraction failed: {}/{} note_id={} elapsed={:.2}s error={}",
+                                index + 1,
+                                total,
+                                note_id,
+                                note_start.elapsed().as_secs_f32(),
+                                e
+                            );
+                        } else {
+                            debug!("Entity extraction failed (non-fatal): {}", e);
+                        }
+                    }
+                }
+
+                if processed % progress_every == 0
+                    || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
+                {
+                    let elapsed = start.elapsed().as_secs_f32().max(0.001);
+                    let rate = processed as f32 / elapsed;
+                    let eta_secs = 0;
+                    info!(
+                        "Entity extraction progress: {} processed (rate: {:.2}/s, eta: {}s)",
+                        processed, rate, eta_secs
+                    );
+                    last_progress = Instant::now();
+                }
+            }
+
+            offset += limit;
+        }
+
+        Ok(processed)
+    }
     
     /// Chunk content and create notes
     async fn chunk_and_create_notes(
