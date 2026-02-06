@@ -453,6 +453,71 @@ impl LibrarianAgent {
 
         Ok(processed)
     }
+
+    /// Extract entities for explicit note ids
+    #[instrument(skip(self, note_ids))]
+    pub async fn extract_entities_for_note_ids(
+        &self,
+        note_ids: &[String],
+        force_clear: bool,
+    ) -> Result<usize> {
+        if note_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let log_each = extract_log_each();
+        let mut processed = 0usize;
+
+        for (index, note_id_raw) in note_ids.iter().enumerate() {
+            let key = note_id_raw.strip_prefix("note:").unwrap_or(note_id_raw);
+            let maybe_note = self.repo.get_note(key).await?;
+            let Some(note) = maybe_note else {
+                debug!("Note not found for extraction: {}", note_id_raw);
+                continue;
+            };
+
+            let note_id = note
+                .id
+                .as_ref()
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let note_len = note.content.len();
+            if log_each {
+                info!(
+                    "Entity extraction start: {}/{} note_id={} chars={}",
+                    index + 1,
+                    note_ids.len(),
+                    note_id,
+                    note_len
+                );
+            }
+
+            if force_clear {
+                if let Some(ref id) = note.id {
+                    self.repo.delete_mentions_for_note(id).await?;
+                }
+            }
+
+            match self.extract_and_link_entities_force(&note).await {
+                Ok(()) => {
+                    processed += 1;
+                    if log_each {
+                        info!(
+                            "Entity extraction done: {}/{} note_id={}",
+                            index + 1,
+                            note_ids.len(),
+                            note_id
+                        );
+                    }
+                }
+                Err(e) => {
+                    debug!("Entity extraction failed for {}: {}", note_id_raw, e);
+                }
+            }
+        }
+
+        Ok(processed)
+    }
     
     /// Chunk content and create notes
     async fn chunk_and_create_notes(

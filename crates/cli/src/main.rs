@@ -115,7 +115,11 @@ enum Commands {
         #[arg(long)]
         all: bool,
 
-        /// Clear existing mentions before re-extracting (use with --all)
+        /// Process only specific note id(s); repeat this flag per note
+        #[arg(long = "note-id")]
+        note_ids: Vec<String>,
+
+        /// Clear existing mentions before re-extracting (use with --all or --note-id)
         #[arg(long)]
         force: bool,
     },
@@ -301,8 +305,8 @@ async fn main() -> Result<()> {
         Commands::Interactive => {
             cmd_interactive(repo, tei, tgi).await?;
         }
-        Commands::ExtractEntities { limit, all, force } => {
-            cmd_extract_entities(repo, tgi, limit, all, force).await?;
+        Commands::ExtractEntities { limit, all, note_ids, force } => {
+            cmd_extract_entities(repo, tgi, limit, all, note_ids, force).await?;
         }
         Commands::ShowEntities { note_id } => {
             cmd_show_entities(repo, note_id).await?;
@@ -432,13 +436,21 @@ async fn cmd_extract_entities(
     tgi: TgiClient,
     limit: usize,
     all: bool,
+    note_ids: Vec<String>,
     force: bool,
 ) -> Result<()> {
-    if force && !all {
-        anyhow::bail!("--force requires --all");
+    if all && !note_ids.is_empty() {
+        anyhow::bail!("--all and --note-id cannot be used together");
+    }
+    if force && !all && note_ids.is_empty() {
+        anyhow::bail!("--force requires --all or at least one --note-id");
     }
     let librarian = LibrarianAgent::new(repo, TeiClient::default_local(), tgi);
-    let processed = if all {
+    let processed = if !note_ids.is_empty() {
+        librarian
+            .extract_entities_for_note_ids(&note_ids, force)
+            .await?
+    } else if all {
         let processed = librarian
             .extract_entities_for_all_notes(limit, force)
             .await?;
