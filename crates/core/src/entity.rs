@@ -43,9 +43,11 @@ pub struct Entity {
     pub entity_type: EntityType,
     
     /// Display name
+    #[serde(default)]
     pub name: String,
     
     /// Canonical/normalized name for deduplication
+    #[serde(default)]
     pub canonical_name: String,
     
     /// Vector embedding of the entity
