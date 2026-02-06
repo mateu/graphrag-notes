@@ -405,9 +405,9 @@ impl Repository {
     #[instrument(skip(self))]
     pub async fn get_entities_for_note(&self, note_id: &str) -> Result<Vec<Entity>> {
         let raw = if note_id.starts_with("note:") {
-            &note_id["note:".len()..]
+            note_id["note:".len()..].to_string()
         } else {
-            note_id
+            note_id.to_string()
         };
         let entities: Vec<Entity> = self.db
             .query("SELECT out.* FROM mentions WHERE in = type::thing($table, $id)")
