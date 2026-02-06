@@ -298,7 +298,7 @@ impl TgiClient {
                         })),
                     );
                     let (generated, done_reason) =
-                        self.ollama_generate_with_meta(&prompt, attempt_options).await?;
+                        self.ollama_chat_generate_with_meta(&prompt, attempt_options).await?;
                     let cleaned = normalize_json_payload(&generated);
                     if let Ok(extraction) = parse_entity_extraction(&cleaned) {
                         return Ok(extraction);
@@ -338,7 +338,7 @@ impl TgiClient {
                     })),
                 );
                 let (generated_retry, _) =
-                    self.ollama_generate_with_meta(&retry_prompt, retry_options).await?;
+                    self.ollama_chat_generate_with_meta(&retry_prompt, retry_options).await?;
                 let cleaned_retry = normalize_json_payload(&generated_retry);
                 let extraction = parse_entity_extraction(&cleaned_retry).map_err(|e| {
                     AgentError::Processing(format!(
