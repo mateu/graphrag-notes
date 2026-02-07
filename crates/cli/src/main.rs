@@ -3,8 +3,10 @@
 //! A command-line interface for the GraphRAG Notes system.
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-use graphrag_agents::{GardenerAgent, LibrarianAgent, SearchAgent, TeiClient, TgiClient};
+use clap::{Parser, Subcommand, ValueEnum};
+use graphrag_agents::{
+    ChatImportMode, GardenerAgent, LibrarianAgent, SearchAgent, TeiClient, TgiClient,
+};
 use graphrag_core::ChatExport;
 use graphrag_db::{init_memory, init_persistent, Repository};
 use std::io::{self, BufRead, Write};
@@ -20,15 +22,15 @@ struct Cli {
     /// Database path (defaults to ~/.graphrag/data)
     #[arg(short, long)]
     db_path: Option<PathBuf>,
-    
+
     /// Use in-memory database (for testing)
     #[arg(long)]
     memory: bool,
-    
+
     /// Verbose output (DEBUG logs)
     #[arg(short, long)]
     verbose: bool,
-    
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -39,16 +41,16 @@ enum Commands {
     Add {
         /// Note content (reads from stdin if not provided)
         content: Option<String>,
-        
+
         /// Note title
         #[arg(short, long)]
         title: Option<String>,
-        
+
         /// Tags (comma-separated)
         #[arg(short = 'T', long)]
         tags: Option<String>,
     },
-    
+
     /// Import from a file
     Import {
         /// Path to file
@@ -60,42 +62,46 @@ enum Commands {
         /// Path to JSON file containing chat export
         path: PathBuf,
 
+        /// Import mode: qa (default), message, or hybrid
+        #[arg(long, value_enum, default_value_t = ImportModeArg::Qa)]
+        mode: ImportModeArg,
+
         /// Skip entity extraction (faster for testing)
         #[arg(long)]
         skip_extraction: bool,
     },
-    
+
     /// Search notes
     Search {
         /// Search query
         query: String,
-        
+
         /// Maximum results
         #[arg(short, long, default_value = "10")]
         limit: usize,
-        
+
         /// Include graph context
         #[arg(short, long)]
         context: bool,
     },
-    
+
     /// List recent notes
     List {
         /// Maximum results
         #[arg(short, long, default_value = "20")]
         limit: usize,
     },
-    
+
     /// Run the gardener (maintenance)
     Garden {
         /// Only show suggestions, don't apply
         #[arg(long)]
         dry_run: bool,
     },
-    
+
     /// Show database statistics
     Stats,
-    
+
     /// Interactive mode
     Interactive,
 
@@ -157,6 +163,13 @@ enum Commands {
     },
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ImportModeArg {
+    Qa,
+    Message,
+    Hybrid,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables from .env if present.
@@ -184,12 +197,14 @@ async fn main() -> Result<()> {
             anyhow::bail!("Embeddings service unavailable");
         }
 
-        let probe = text.clone().unwrap_or_else(|| "dimension probe".to_string());
+        let probe = text
+            .clone()
+            .unwrap_or_else(|| "dimension probe".to_string());
         let embedding = tei.embed(&probe, false).await?;
         println!("Embedding dimension: {}", embedding.len());
         return Ok(());
     }
-    
+
     // Setup logging: default to WARN, allow explicit DEBUG via --verbose,
     // and support custom filters through RUST_LOG.
     let log_filter = if cli.verbose {
@@ -202,7 +217,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
-    
+
     // Initialize database
     if let Commands::ResetDb { db_path } = &cli.command {
         let path = db_path.clone().unwrap_or_else(|| {
@@ -217,7 +232,10 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("Failed to remove db at {}", path.display()))?;
             println!("✓ Removed database at {}", path.display());
         } else {
-            println!("Database not found at {}, nothing to remove", path.display());
+            println!(
+                "Database not found at {}, nothing to remove",
+                path.display()
+            );
         }
         return Ok(());
     }
@@ -232,16 +250,16 @@ async fn main() -> Result<()> {
             path.push("data");
             path
         });
-        
+
         // Ensure directory exists
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         info!("Using database at: {}", db_path.display());
         init_persistent(&db_path).await?
     };
-    
+
     let repo = Repository::new(db);
     let tei = TeiClient::default_local();
     let tgi = TgiClient::default_local();
@@ -283,19 +301,27 @@ async fn main() -> Result<()> {
             anyhow::bail!("Extraction service unavailable");
         }
     }
-    
+
     // Execute command
     match cli.command {
-        Commands::Add { content, title, tags } => {
+        Commands::Add {
+            content,
+            title,
+            tags,
+        } => {
             cmd_add(repo, tei, tgi, content, title, tags).await?;
         }
         Commands::Import { path } => {
             cmd_import(repo, tei, tgi, path).await?;
         }
-        Commands::ImportChats { path, .. } => {
-            cmd_import_chats(repo, tei, tgi, path).await?;
+        Commands::ImportChats { path, mode, .. } => {
+            cmd_import_chats(repo, tei, tgi, path, mode).await?;
         }
-        Commands::Search { query, limit, context } => {
+        Commands::Search {
+            query,
+            limit,
+            context,
+        } => {
             cmd_search(repo, tei, query, limit, context).await?;
         }
         Commands::List { limit } => {
@@ -310,7 +336,12 @@ async fn main() -> Result<()> {
         Commands::Interactive => {
             cmd_interactive(repo, tei, tgi).await?;
         }
-        Commands::ExtractEntities { limit, all, note_ids, force } => {
+        Commands::ExtractEntities {
+            limit,
+            all,
+            note_ids,
+            force,
+        } => {
             cmd_extract_entities(repo, tgi, limit, all, note_ids, force).await?;
         }
         Commands::ShowEntities { note_id } => {
@@ -332,7 +363,7 @@ async fn main() -> Result<()> {
             // Handled before database init.
         }
     }
-    
+
     Ok(())
 }
 
@@ -350,35 +381,34 @@ async fn cmd_add(
             // Read from stdin
             eprintln!("Enter note content (Ctrl+D to finish):");
             let stdin = io::stdin();
-            let lines: Vec<String> = stdin.lock().lines()
-                .filter_map(|l| l.ok())
-                .collect();
+            let lines: Vec<String> = stdin.lock().lines().filter_map(|l| l.ok()).collect();
             lines.join("\n")
         }
     };
-    
+
     if content.trim().is_empty() {
         anyhow::bail!("Note content cannot be empty");
     }
-    
+
     let tags = tags
         .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
-    
+
     let librarian = LibrarianAgent::new(repo, tei, tgi);
     let note = librarian.ingest_text(content, title, tags).await?;
-    
-    println!("✓ Created note: {}", note.id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "(no id)".to_string()));
-    
+
+    println!(
+        "✓ Created note: {}",
+        note.id
+            .as_ref()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "(no id)".to_string())
+    );
+
     Ok(())
 }
 
-async fn cmd_import(
-    repo: Repository,
-    tei: TeiClient,
-    tgi: TgiClient,
-    path: PathBuf,
-) -> Result<()> {
+async fn cmd_import(repo: Repository, tei: TeiClient, tgi: TgiClient, path: PathBuf) -> Result<()> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
@@ -397,6 +427,7 @@ async fn cmd_import_chats(
     tei: TeiClient,
     tgi: TgiClient,
     path: PathBuf,
+    mode: ImportModeArg,
 ) -> Result<()> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
@@ -410,10 +441,31 @@ async fn cmd_import_chats(
         export.conversation_count(),
         export.total_messages()
     );
+    let conversations_with_messages = export
+        .conversations
+        .iter()
+        .filter(|conv| !conv.messages.is_empty())
+        .count();
+    let summary_only = export
+        .conversations
+        .iter()
+        .filter(|conv| conv.messages.is_empty() && !conv.summary.is_empty())
+        .count();
+    println!(
+        "  • With messages: {}, without messages: {}, summary-only: {}",
+        conversations_with_messages,
+        export.conversation_count() - conversations_with_messages,
+        summary_only
+    );
 
     let librarian = LibrarianAgent::new(repo, tei, tgi);
+    let mode = match mode {
+        ImportModeArg::Qa => ChatImportMode::Qa,
+        ImportModeArg::Message => ChatImportMode::Message,
+        ImportModeArg::Hybrid => ChatImportMode::Hybrid,
+    };
     let result = librarian
-        .ingest_chat_export(export, Some(path.display().to_string()))
+        .ingest_chat_export(export, Some(path.display().to_string()), mode)
         .await?;
 
     println!("\n✓ Import complete:");
@@ -421,13 +473,48 @@ async fn cmd_import_chats(
         "  • Conversations imported: {}",
         result.conversations_imported
     );
+    println!("  • Conversations failed: {}", result.conversations_failed);
+    println!("  • Conversations total: {}", result.conversations_total);
+    println!(
+        "  • Conversations with messages: {}",
+        result.conversations_with_messages
+    );
+    println!(
+        "  • Conversations without messages: {}",
+        result.conversations_without_messages
+    );
+    println!(
+        "  • Summary-only conversations: {}",
+        result.conversations_summary_only
+    );
+    println!("  • Messages seen: {}", result.messages_total);
     println!("  • Notes created: {}", result.notes_created);
+    println!("    - From Q&A: {}", result.notes_from_qa);
+    println!("    - From messages: {}", result.notes_from_messages);
+    println!("    - From summaries: {}", result.notes_from_summaries);
+    println!(
+        "    - From fallback chunking: {}",
+        result.notes_from_fallback
+    );
+    println!("  • Q&A pairs created: {}", result.qa_pairs_created);
+    println!(
+        "    - Dropped (short question): {}",
+        result.qa_pairs_dropped_short_question
+    );
+    println!(
+        "    - Dropped (short answer): {}",
+        result.qa_pairs_dropped_short_answer
+    );
+    println!(
+        "    - Assistant without pending question: {}",
+        result.assistant_without_human
+    );
+    println!(
+        "    - Conversations with trailing unpaired human turn: {}",
+        result.trailing_unpaired_human
+    );
 
     if result.conversations_failed > 0 {
-        println!(
-            "  • Conversations failed: {}",
-            result.conversations_failed
-        );
         for error in &result.errors {
             println!("    - {}", error);
         }
@@ -490,11 +577,7 @@ async fn cmd_show_entities(repo: Repository, note_id: String) -> Result<()> {
             .unwrap_or_else(|_| "\"other\"".to_string())
             .trim_matches('"')
             .to_string();
-        println!(
-            "  • {} [{}]",
-            entity.name,
-            entity_type
-        );
+        println!("  • {} [{}]", entity.name, entity_type);
     }
 
     Ok(())
@@ -513,7 +596,14 @@ async fn cmd_show_note(repo: Repository, note_id: String) -> Result<()> {
         note_id
     );
     println!("Type: {:?}", note.note_type);
-    println!("Tags: {}", if note.tags.is_empty() { "(none)".into() } else { note.tags.join(", ") });
+    println!(
+        "Tags: {}",
+        if note.tags.is_empty() {
+            "(none)".into()
+        } else {
+            note.tags.join(", ")
+        }
+    );
     println!();
     println!("{}", note.content);
     Ok(())
@@ -529,14 +619,21 @@ async fn cmd_list_edges(repo: Repository, limit: usize) -> Result<()> {
     println!("Note edges (up to {} per type):", limit);
     for edge in edges {
         let reason = edge.reason.as_deref().unwrap_or("");
-        let confidence = edge.confidence.map(|c| format!("{:.2}", c)).unwrap_or_else(|| "-".into());
+        let confidence = edge
+            .confidence
+            .map(|c| format!("{:.2}", c))
+            .unwrap_or_else(|| "-".into());
         println!(
             "  • {}: {} -> {} (confidence: {}){}",
             edge.edge_type,
             edge.in_id,
             edge.out_id,
             confidence,
-            if reason.is_empty() { "".into() } else { format!(" reason: {}", reason) }
+            if reason.is_empty() {
+                "".into()
+            } else {
+                format!(" reason: {}", reason)
+            }
         );
     }
     Ok(())
@@ -552,14 +649,21 @@ async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Result<()> {
     println!("Edges for {}:", note_id);
     for edge in edges {
         let reason = edge.reason.as_deref().unwrap_or("");
-        let confidence = edge.confidence.map(|c| format!("{:.2}", c)).unwrap_or_else(|| "-".into());
+        let confidence = edge
+            .confidence
+            .map(|c| format!("{:.2}", c))
+            .unwrap_or_else(|| "-".into());
         println!(
             "  • {}: {} -> {} (confidence: {}){}",
             edge.edge_type,
             edge.in_id,
             edge.out_id,
             confidence,
-            if reason.is_empty() { "".into() } else { format!(" reason: {}", reason) }
+            if reason.is_empty() {
+                "".into()
+            } else {
+                format!(" reason: {}", reason)
+            }
         );
     }
     Ok(())
@@ -573,106 +677,117 @@ async fn cmd_search(
     context: bool,
 ) -> Result<()> {
     let search = SearchAgent::new(repo, tei);
-    
+
     if context {
         let results = search.search_with_context(&query, limit).await?;
-        
+
         if results.is_empty() {
             println!("No results found.");
             return Ok(());
         }
-        
+
         println!("Found {} results:\n", results.len());
-        
+
         for (i, result) in results.iter().enumerate() {
             let r = &result.result;
             println!("{}. {}", i + 1, r.title.as_deref().unwrap_or("(untitled)"));
             println!("   ID: {}", r.id);
             println!("   Type: {}", r.note_type);
-            
+
             // Truncate content for display
             let preview: String = r.content.chars().take(200).collect();
-            println!("   {}{}", preview, if r.content.len() > 200 { "..." } else { "" });
-            
+            println!(
+                "   {}{}",
+                preview,
+                if r.content.len() > 200 { "..." } else { "" }
+            );
+
             if let Some(ref related) = result.related {
-                let total = related.supporting.len() 
-                    + related.contradicting.len() 
-                    + related.related.len();
+                let total =
+                    related.supporting.len() + related.contradicting.len() + related.related.len();
                 if total > 0 {
                     println!("   → {} related notes", total);
                 }
             }
-            
+
             println!();
         }
     } else {
         let results = search.search(&query, limit).await?;
-        
+
         if results.is_empty() {
             println!("No results found.");
             return Ok(());
         }
-        
+
         println!("Found {} results:\n", results.len());
-        
+
         for (i, r) in results.iter().enumerate() {
             println!("{}. {}", i + 1, r.title.as_deref().unwrap_or("(untitled)"));
             println!("   ID: {}", r.id);
-            
+
             let preview: String = r.content.chars().take(200).collect();
-            println!("   {}{}", preview, if r.content.len() > 200 { "..." } else { "" });
+            println!(
+                "   {}{}",
+                preview,
+                if r.content.len() > 200 { "..." } else { "" }
+            );
             println!();
         }
     }
-    
+
     Ok(())
 }
 
 async fn cmd_list(repo: Repository, limit: usize) -> Result<()> {
     let notes = repo.list_notes(limit).await?;
-    
+
     if notes.is_empty() {
         println!("No notes yet. Add one with: graphrag add \"your note\"");
         return Ok(());
     }
-    
+
     println!("Recent notes ({}):\n", notes.len());
-    
+
     for note in notes {
         let title = note.title.as_deref().unwrap_or("(untitled)");
         let id = note.id.to_string();
         let preview: String = note.content.chars().take(80).collect();
-        
+
         println!("• {} [{}]", title, id);
-        println!("  {}{}", preview, if note.content.len() > 80 { "..." } else { "" });
+        println!(
+            "  {}{}",
+            preview,
+            if note.content.len() > 80 { "..." } else { "" }
+        );
         println!();
     }
-    
+
     Ok(())
 }
 
 async fn cmd_garden(repo: Repository, dry_run: bool) -> Result<()> {
     let gardener = GardenerAgent::new(repo);
-    
+
     if dry_run {
         println!("Finding orphan notes...\n");
-        
+
         let orphans = gardener.find_orphans().await?;
-        
+
         if orphans.is_empty() {
             println!("No orphan notes found. Your knowledge graph is well connected!");
             return Ok(());
         }
-        
+
         println!("Found {} orphan notes:", orphans.len());
         for orphan in &orphans {
             println!("  • {}", orphan.title.as_deref().unwrap_or("(untitled)"));
         }
-        
+
         println!("\nGenerating suggestions...\n");
-        
+
         let suggestions = gardener.suggest_connections().await?;
-        
+
         if suggestions.is_empty() {
             println!("No connection suggestions found.");
         } else {
@@ -689,75 +804,80 @@ async fn cmd_garden(repo: Repository, dry_run: bool) -> Result<()> {
         }
     } else {
         println!("Running maintenance...\n");
-        
+
         let report = gardener.run_maintenance().await?;
-        
+
         println!("Maintenance complete:");
         println!("  • Orphans found: {}", report.orphans_found);
-        println!("  • Suggestions generated: {}", report.suggestions_generated);
+        println!(
+            "  • Suggestions generated: {}",
+            report.suggestions_generated
+        );
         println!("  • Connections applied: {}", report.connections_applied);
         println!("  • Orphans remaining: {}", report.orphans_remaining);
     }
-    
+
     Ok(())
 }
 
 async fn cmd_stats(repo: Repository) -> Result<()> {
     let stats = repo.get_stats().await?;
-    
+
     println!("Database Statistics:");
     println!("  • Notes: {}", stats.note_count);
     println!("  • Entities: {}", stats.entity_count);
     println!("  • Mentions: {}", stats.mention_count);
     println!("  • Sources: {}", stats.source_count);
     println!("  • Edges: {}", stats.edge_count);
-    
+
     Ok(())
 }
 
-async fn cmd_interactive(
-    repo: Repository,
-    tei: TeiClient,
-    tgi: TgiClient,
-) -> Result<()> {
+async fn cmd_interactive(repo: Repository, tei: TeiClient, tgi: TgiClient) -> Result<()> {
     let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone());
     let search = SearchAgent::new(repo.clone(), tei.clone());
     let gardener = GardenerAgent::new(repo.clone());
-    
+
     println!("GraphRAG Notes - Interactive Mode");
     println!("Commands: add, search, list, garden, stats, help, quit");
     println!();
-    
+
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    
+
     loop {
         print!("graphrag> ");
         stdout.flush()?;
-        
+
         let mut line = String::new();
         if stdin.lock().read_line(&mut line)? == 0 {
             break; // EOF
         }
-        
+
         let parts: Vec<&str> = line.trim().splitn(2, ' ').collect();
         let cmd = parts.first().map(|s| *s).unwrap_or("");
         let arg = parts.get(1).map(|s| *s).unwrap_or("");
-        
+
         match cmd {
             "" => continue,
-            
+
             "add" | "a" => {
                 if arg.is_empty() {
                     println!("Usage: add <content>");
                     continue;
                 }
                 match librarian.ingest_text(arg, None, vec![]).await {
-                    Ok(note) => println!("✓ Added: {}", note.id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "(no id)".to_string())), 
+                    Ok(note) => println!(
+                        "✓ Added: {}",
+                        note.id
+                            .as_ref()
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "(no id)".to_string())
+                    ),
                     Err(e) => println!("Error: {}", e),
                 }
             }
-            
+
             "search" | "s" => {
                 if arg.is_empty() {
                     println!("Usage: search <query>");
@@ -770,7 +890,8 @@ async fn cmd_interactive(
                         } else {
                             for r in results {
                                 let preview: String = r.content.chars().take(100).collect();
-                                println!("• {} - {}{}", 
+                                println!(
+                                    "• {} - {}{}",
                                     r.title.as_deref().unwrap_or("(untitled)"),
                                     preview,
                                     if r.content.len() > 100 { "..." } else { "" }
@@ -781,48 +902,46 @@ async fn cmd_interactive(
                     Err(e) => println!("Error: {}", e),
                 }
             }
-            
-            "list" | "l" => {
-                match repo.list_notes(10).await {
-                    Ok(notes) => {
-                        if notes.is_empty() {
-                            println!("No notes yet.");
-                        } else {
-                            for note in notes {
-                                let preview: String = note.content.chars().take(60).collect();
-                                println!("• {} - {}{}", 
-                                    note.title.as_deref().unwrap_or("(untitled)"),
-                                    preview,
-                                    if note.content.len() > 60 { "..." } else { "" }
-                                );
-                            }
+
+            "list" | "l" => match repo.list_notes(10).await {
+                Ok(notes) => {
+                    if notes.is_empty() {
+                        println!("No notes yet.");
+                    } else {
+                        for note in notes {
+                            let preview: String = note.content.chars().take(60).collect();
+                            println!(
+                                "• {} - {}{}",
+                                note.title.as_deref().unwrap_or("(untitled)"),
+                                preview,
+                                if note.content.len() > 60 { "..." } else { "" }
+                            );
                         }
                     }
-                    Err(e) => println!("Error: {}", e),
                 }
-            }
-            
-            "garden" | "g" => {
-                match gardener.run_maintenance().await {
-                    Ok(report) => {
-                        println!("Maintenance: {} orphans, {} suggestions, {} applied",
-                            report.orphans_found,
-                            report.suggestions_generated,
-                            report.connections_applied,
-                        );
-                    }
-                    Err(e) => println!("Error: {}", e),
+                Err(e) => println!("Error: {}", e),
+            },
+
+            "garden" | "g" => match gardener.run_maintenance().await {
+                Ok(report) => {
+                    println!(
+                        "Maintenance: {} orphans, {} suggestions, {} applied",
+                        report.orphans_found,
+                        report.suggestions_generated,
+                        report.connections_applied,
+                    );
                 }
-            }
-            
-            "stats" => {
-                match repo.get_stats().await {
-                    Ok(s) => println!("Notes: {}, Entities: {}, Edges: {}", 
-                        s.note_count, s.entity_count, s.edge_count),
-                    Err(e) => println!("Error: {}", e),
-                }
-            }
-            
+                Err(e) => println!("Error: {}", e),
+            },
+
+            "stats" => match repo.get_stats().await {
+                Ok(s) => println!(
+                    "Notes: {}, Entities: {}, Edges: {}",
+                    s.note_count, s.entity_count, s.edge_count
+                ),
+                Err(e) => println!("Error: {}", e),
+            },
+
             "help" | "h" | "?" => {
                 println!("Commands:");
                 println!("  add <content>    - Add a new note");
@@ -832,19 +951,22 @@ async fn cmd_interactive(
                 println!("  stats            - Show statistics");
                 println!("  quit             - Exit");
             }
-            
+
             "quit" | "q" | "exit" => {
                 println!("Goodbye!");
                 break;
             }
-            
+
             _ => {
-                println!("Unknown command: {}. Type 'help' for available commands.", cmd);
+                println!(
+                    "Unknown command: {}. Type 'help' for available commands.",
+                    cmd
+                );
             }
         }
-        
+
         println!();
     }
-    
+
     Ok(())
 }
