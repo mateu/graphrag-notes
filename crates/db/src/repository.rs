@@ -766,6 +766,50 @@ impl Repository {
         Ok(entities)
     }
 
+    /// Check whether a note has at least one linked entity matching the query.
+    #[instrument(skip(self))]
+    pub async fn note_has_entity_name(&self, note_id: &str, entity_query: &str) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct CountRow {
+            #[serde(default)]
+            count: Option<u64>,
+        }
+
+        let raw = if note_id.starts_with("note:") {
+            note_id["note:".len()..].to_string()
+        } else {
+            note_id.to_string()
+        };
+        let normalized = entity_query.trim().to_lowercase();
+
+        if normalized.is_empty() {
+            return Ok(true);
+        }
+
+        let existing: Option<CountRow> = self
+            .db
+            .query(
+                r#"
+                SELECT count() AS count
+                FROM mentions
+                WHERE in = type::thing("note", $note_id)
+                  AND out IN (
+                    SELECT VALUE id
+                    FROM entity
+                    WHERE canonical_name CONTAINS $entity_query
+                  )
+                GROUP ALL
+            "#,
+            )
+            .bind(("note_id", raw))
+            .bind(("entity_query", normalized))
+            .await?
+            .take(0)?;
+
+        let count = existing.and_then(|row| row.count).unwrap_or(0);
+        Ok(count > 0)
+    }
+
     /// List note-to-note edges across all edge tables
     #[instrument(skip(self))]
     pub async fn list_note_edges(&self, limit: usize) -> Result<Vec<NoteEdgeRow>> {

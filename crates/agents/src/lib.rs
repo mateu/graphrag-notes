@@ -19,4 +19,4 @@ pub use inference::{
 pub use librarian::{
     ChatImportMode, ChatImportPreview, ChatImportResult, ChatIngestOptions, LibrarianAgent,
 };
-pub use search::{SearchAgent, SearchHitType, SearchScope};
+pub use search::{AugmentContext, AugmentOptions, SearchAgent, SearchHitType, SearchScope};

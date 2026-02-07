@@ -5,8 +5,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use graphrag_agents::{
-    ChatImportMode, ChatIngestOptions, GardenerAgent, LibrarianAgent, SearchAgent, SearchHitType,
-    SearchScope, TeiClient, TgiClient,
+    AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, LibrarianAgent, SearchAgent,
+    SearchHitType, SearchScope, TeiClient, TgiClient,
 };
 use graphrag_core::ChatExport;
 use graphrag_db::{init_memory, init_persistent, Repository};
@@ -118,6 +118,40 @@ enum Commands {
         /// Include graph context
         #[arg(short, long)]
         context: bool,
+    },
+
+    /// Build prompt-ready augmentation context with citations
+    Augment {
+        /// Retrieval query
+        query: String,
+
+        /// Maximum context chunks to include
+        #[arg(short, long, default_value = "8")]
+        limit: usize,
+
+        /// Search scope: notes, messages, or all
+        #[arg(long, value_enum, default_value_t = SearchScopeArg::All)]
+        scope: SearchScopeArg,
+
+        /// Restrict results to records updated/created in the last N days
+        #[arg(long)]
+        since_days: Option<u32>,
+
+        /// Restrict results to a specific source URI
+        #[arg(long)]
+        source_uri: Option<String>,
+
+        /// Filter note chunks to notes linked to matching entities
+        #[arg(long)]
+        entity: Option<String>,
+
+        /// Approximate max tokens across all chunks
+        #[arg(long, default_value = "1200")]
+        max_tokens: usize,
+
+        /// Approximate max tokens per chunk
+        #[arg(long, default_value = "180")]
+        max_chunk_tokens: usize,
     },
 
     /// List recent notes
@@ -325,6 +359,7 @@ async fn main() -> Result<()> {
             | Commands::ImportChats { .. }
             | Commands::MigrateChats { .. }
             | Commands::Search { .. }
+            | Commands::Augment { .. }
             | Commands::Interactive
     );
     let needs_tgi = matches!(
@@ -394,6 +429,30 @@ async fn main() -> Result<()> {
         } => {
             cmd_search(
                 repo, tei, query, limit, scope, since_days, source_uri, context,
+            )
+            .await?;
+        }
+        Commands::Augment {
+            query,
+            limit,
+            scope,
+            since_days,
+            source_uri,
+            entity,
+            max_tokens,
+            max_chunk_tokens,
+        } => {
+            cmd_augment(
+                repo,
+                tei,
+                query,
+                limit,
+                scope,
+                since_days,
+                source_uri,
+                entity,
+                max_tokens,
+                max_chunk_tokens,
             )
             .await?;
         }
@@ -961,6 +1020,95 @@ async fn cmd_search(
             );
             println!();
         }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_augment(
+    repo: Repository,
+    tei: TeiClient,
+    query: String,
+    limit: usize,
+    scope: SearchScopeArg,
+    since_days: Option<u32>,
+    source_uri: Option<String>,
+    entity: Option<String>,
+    max_tokens: usize,
+    max_chunk_tokens: usize,
+) -> Result<()> {
+    if entity.is_some() && scope != SearchScopeArg::Notes {
+        anyhow::bail!("--entity currently requires --scope notes");
+    }
+
+    let scope = match scope {
+        SearchScopeArg::Notes => SearchScope::Notes,
+        SearchScopeArg::Messages => SearchScope::Messages,
+        SearchScopeArg::All => SearchScope::All,
+    };
+
+    let search = SearchAgent::new(repo, tei);
+    let ctx = search
+        .build_augmented_context(
+            &query,
+            scope,
+            since_days,
+            source_uri,
+            entity.clone(),
+            AugmentOptions {
+                max_chunks: limit,
+                max_total_tokens: max_tokens,
+                max_chunk_tokens,
+            },
+        )
+        .await?;
+
+    if ctx.chunks.is_empty() {
+        println!("No augmentation context found.");
+        return Ok(());
+    }
+
+    println!("Augmentation context:");
+    println!("  • Query: {}", ctx.query);
+    println!("  • Scope: {:?}", ctx.scope);
+    if let Some(filter) = ctx.entity_filter.as_deref() {
+        println!("  • Entity filter: {}", filter);
+    }
+    println!("  • Chunks selected: {}", ctx.chunks.len());
+    println!("  • Approx tokens used: {}", ctx.total_tokens);
+    println!(
+        "  • Dropped (duplicates/budget/entity-filter): {}/{}/{}",
+        ctx.dropped_duplicates, ctx.dropped_for_budget, ctx.dropped_for_entity_filter
+    );
+
+    println!("\nPrompt-ready context block:\n");
+    println!("{}", ctx.render_prompt_block());
+
+    println!("\nCitations:");
+    for chunk in &ctx.chunks {
+        let hit_kind = match chunk.hit_type {
+            SearchHitType::Note => "note",
+            SearchHitType::Message => "message",
+            SearchHitType::ConversationSummary => "conversation-summary",
+        };
+        let mut provenance = format!("id={}", chunk.id);
+        if let Some(conversation_uuid) = chunk.conversation_uuid.as_ref() {
+            provenance.push_str(&format!(", conversation_uuid={}", conversation_uuid));
+        }
+        if let Some(message_index) = chunk.message_index {
+            provenance.push_str(&format!(", message_index={}", message_index + 1));
+        }
+        if let Some(role) = chunk.role.as_ref() {
+            provenance.push_str(&format!(", role={}", role));
+        }
+        if let Some(created_at) = chunk.created_at {
+            provenance.push_str(&format!(", created_at={}", created_at.to_rfc3339()));
+        }
+        println!(
+            "  [C{}] {} | score={:.3} | tokens={} | {}",
+            chunk.citation, hit_kind, chunk.score, chunk.approx_tokens, provenance
+        );
     }
 
     Ok(())
