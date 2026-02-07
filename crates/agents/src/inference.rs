@@ -5,8 +5,8 @@ use graphrag_db::schema::EMBEDDING_DIMENSION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::{debug, info};
 use std::time::Duration;
+use tracing::{debug, info};
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
 const DEFAULT_TEI_PROVIDER: &str = "tei";
@@ -19,7 +19,6 @@ const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_STRICT_ENTITY_JSON: bool = true;
 const DEFAULT_MAX_ENTITIES: usize = 30;
 const DEFAULT_MAX_RELATIONSHIPS: usize = 15;
-
 
 fn strict_entity_json() -> bool {
     std::env::var("STRICT_ENTITY_JSON")
@@ -271,7 +270,10 @@ impl TgiClient {
                 let generated = self.tgi_generate(prompt).await?;
                 let cleaned = normalize_json_payload(&generated);
                 let extraction = parse_entity_extraction(&cleaned).map_err(|e| {
-                    AgentError::Processing(format!("TGI returned invalid JSON: {} ({})", generated, e))
+                    AgentError::Processing(format!(
+                        "TGI returned invalid JSON: {} ({})",
+                        generated, e
+                    ))
                 })?;
                 Ok(extraction)
             }
@@ -287,8 +289,9 @@ impl TgiClient {
                             "num_predict": budget
                         })),
                     );
-                    let (generated, done_reason) =
-                        self.ollama_chat_generate_with_meta(&prompt, attempt_options).await?;
+                    let (generated, done_reason) = self
+                        .ollama_chat_generate_with_meta(&prompt, attempt_options)
+                        .await?;
                     let cleaned = normalize_json_payload(&generated);
                     if let Ok(extraction) = parse_entity_extraction(&cleaned) {
                         return Ok(extraction);
@@ -329,8 +332,9 @@ impl TgiClient {
                         "stop": ["```"]
                     })),
                 );
-                let (generated_retry, _) =
-                    self.ollama_chat_generate_with_meta(&retry_prompt, retry_options).await?;
+                let (generated_retry, _) = self
+                    .ollama_chat_generate_with_meta(&retry_prompt, retry_options)
+                    .await?;
                 let cleaned_retry = normalize_json_payload(&generated_retry);
                 let extraction = parse_entity_extraction(&cleaned_retry).map_err(|e| {
                     AgentError::Processing(format!(
@@ -430,10 +434,7 @@ impl TgiClient {
             info!("Ollama chat done_reason={}", done_reason);
         }
 
-        if let Some(total_ms) = response
-            .total_duration
-            .map(|ns| ns as f64 / 1_000_000.0)
-        {
+        if let Some(total_ms) = response.total_duration.map(|ns| ns as f64 / 1_000_000.0) {
             info!("Ollama chat total_duration_ms={:.2}", total_ms);
         }
 
@@ -583,9 +584,10 @@ fn parse_embedding_response(value: Value) -> Result<Vec<f32>> {
                     AgentError::Processing(format!("Invalid TEI embedding array: {}", e))
                 })
             } else {
-                let first = items.into_iter().next().ok_or_else(|| {
-                    AgentError::Processing("Missing embeddings".to_string())
-                })?;
+                let first = items
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| AgentError::Processing("Missing embeddings".to_string()))?;
                 serde_json::from_value(first).map_err(|e| {
                     AgentError::Processing(format!("Invalid TEI embedding array: {}", e))
                 })
@@ -661,9 +663,8 @@ fn parse_ollama_options() -> Result<Option<Value>> {
         return Ok(None);
     }
 
-    let value: Value = serde_json::from_str(trimmed).map_err(|e| {
-        AgentError::Processing(format!("Invalid TGI_OLLAMA_OPTIONS JSON: {}", e))
-    })?;
+    let value: Value = serde_json::from_str(trimmed)
+        .map_err(|e| AgentError::Processing(format!("Invalid TGI_OLLAMA_OPTIONS JSON: {}", e)))?;
 
     if !value.is_object() {
         return Err(AgentError::Processing(
@@ -858,13 +859,13 @@ fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
                         .map(|s| s.to_string());
 
                     match (source, target, relationship_type) {
-                        (Some(source), Some(target), Some(relationship_type)) => Some(
-                            ExtractedRelationship {
+                        (Some(source), Some(target), Some(relationship_type)) => {
+                            Some(ExtractedRelationship {
                                 source,
                                 target,
                                 relationship_type,
-                            },
-                        ),
+                            })
+                        }
                         _ => None,
                     }
                 })
@@ -872,7 +873,10 @@ fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
         })
         .unwrap_or_default();
 
-    Ok(EntityExtraction { entities, relationships })
+    Ok(EntityExtraction {
+        entities,
+        relationships,
+    })
 }
 
 fn extract_json_array(payload: &str, key: &str) -> Option<String> {

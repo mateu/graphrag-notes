@@ -5,7 +5,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use graphrag_agents::{
-    ChatImportMode, GardenerAgent, LibrarianAgent, SearchAgent, TeiClient, TgiClient,
+    ChatImportMode, ChatIngestOptions, GardenerAgent, LibrarianAgent, SearchAgent, SearchHitType,
+    SearchScope, TeiClient, TgiClient,
 };
 use graphrag_core::ChatExport;
 use graphrag_db::{init_memory, init_persistent, Repository};
@@ -71,7 +72,29 @@ enum Commands {
         skip_extraction: bool,
     },
 
-    /// Search notes
+    /// Migrate chat exports into conversation/message tables (and optionally regenerate notes)
+    MigrateChats {
+        /// Path to JSON file containing chat export
+        path: PathBuf,
+
+        /// Preview counts without writing to the database
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Also regenerate derived notes (idempotent: skips conversations already linked to notes)
+        #[arg(long)]
+        with_notes: bool,
+
+        /// Note import mode when using --with-notes
+        #[arg(long, value_enum, default_value_t = ImportModeArg::Hybrid)]
+        mode: ImportModeArg,
+
+        /// Skip entity extraction when using --with-notes
+        #[arg(long)]
+        skip_extraction: bool,
+    },
+
+    /// Search notes, messages, or conversation summaries
     Search {
         /// Search query
         query: String,
@@ -79,6 +102,18 @@ enum Commands {
         /// Maximum results
         #[arg(short, long, default_value = "10")]
         limit: usize,
+
+        /// Search scope: notes, messages, or all
+        #[arg(long, value_enum, default_value_t = SearchScopeArg::Notes)]
+        scope: SearchScopeArg,
+
+        /// Restrict results to records updated/created in the last N days
+        #[arg(long)]
+        since_days: Option<u32>,
+
+        /// Restrict results to a specific source URI
+        #[arg(long)]
+        source_uri: Option<String>,
 
         /// Include graph context
         #[arg(short, long)]
@@ -170,6 +205,21 @@ enum ImportModeArg {
     Hybrid,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum SearchScopeArg {
+    Notes,
+    Messages,
+    All,
+}
+
+fn to_import_mode(mode: ImportModeArg) -> ChatImportMode {
+    match mode {
+        ImportModeArg::Qa => ChatImportMode::Qa,
+        ImportModeArg::Message => ChatImportMode::Message,
+        ImportModeArg::Hybrid => ChatImportMode::Hybrid,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables from .env if present.
@@ -180,6 +230,9 @@ async fn main() -> Result<()> {
     let skip_extraction = matches!(
         cli.command,
         Commands::ImportChats {
+            skip_extraction: true,
+            ..
+        } | Commands::MigrateChats {
             skip_extraction: true,
             ..
         }
@@ -270,6 +323,7 @@ async fn main() -> Result<()> {
         Commands::Add { .. }
             | Commands::Import { .. }
             | Commands::ImportChats { .. }
+            | Commands::MigrateChats { .. }
             | Commands::Search { .. }
             | Commands::Interactive
     );
@@ -280,6 +334,10 @@ async fn main() -> Result<()> {
             | Commands::ImportChats { .. }
             | Commands::Interactive
             | Commands::ExtractEntities { .. }
+            | Commands::MigrateChats {
+                with_notes: true,
+                ..
+            }
     ) && !skip_extraction;
 
     if needs_tei {
@@ -317,12 +375,27 @@ async fn main() -> Result<()> {
         Commands::ImportChats { path, mode, .. } => {
             cmd_import_chats(repo, tei, tgi, path, mode).await?;
         }
+        Commands::MigrateChats {
+            path,
+            dry_run,
+            with_notes,
+            mode,
+            ..
+        } => {
+            cmd_migrate_chats(repo, tei, tgi, path, dry_run, with_notes, mode).await?;
+        }
         Commands::Search {
             query,
             limit,
+            scope,
+            since_days,
+            source_uri,
             context,
         } => {
-            cmd_search(repo, tei, query, limit, context).await?;
+            cmd_search(
+                repo, tei, query, limit, scope, since_days, source_uri, context,
+            )
+            .await?;
         }
         Commands::List { limit } => {
             cmd_list(repo, limit).await?;
@@ -459,11 +532,7 @@ async fn cmd_import_chats(
     );
 
     let librarian = LibrarianAgent::new(repo, tei, tgi);
-    let mode = match mode {
-        ImportModeArg::Qa => ChatImportMode::Qa,
-        ImportModeArg::Message => ChatImportMode::Message,
-        ImportModeArg::Hybrid => ChatImportMode::Hybrid,
-    };
+    let mode = to_import_mode(mode);
     let result = librarian
         .ingest_chat_export(export, Some(path.display().to_string()), mode)
         .await?;
@@ -521,6 +590,109 @@ async fn cmd_import_chats(
         "  • Message records upserted: {}",
         result.message_records_upserted
     );
+    println!(
+        "  • Note→Conversation links created: {}",
+        result.note_conversation_links_created
+    );
+    println!(
+        "  • Note→Message links created: {}",
+        result.note_message_links_created
+    );
+
+    if result.conversations_failed > 0 {
+        for error in &result.errors {
+            println!("    - {}", error);
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_migrate_chats(
+    repo: Repository,
+    tei: TeiClient,
+    tgi: TgiClient,
+    path: PathBuf,
+    dry_run: bool,
+    with_notes: bool,
+    mode: ImportModeArg,
+) -> Result<()> {
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read file: {}", path.display()))?;
+    let export = ChatExport::from_json(&content)
+        .with_context(|| format!("Failed to parse chat export from: {}", path.display()))?;
+    let mode = to_import_mode(mode);
+
+    let preview = LibrarianAgent::preview_chat_export(&export, mode, with_notes);
+    println!("Migration preview:");
+    println!("  • Conversations total: {}", preview.conversations_total);
+    println!(
+        "  • With messages: {}, without messages: {}, summary-only: {}",
+        preview.conversations_with_messages,
+        preview.conversations_without_messages,
+        preview.summary_only_conversations
+    );
+    println!("  • Messages total: {}", preview.messages_total);
+    println!("  • Q&A pairs: {}", preview.qa_pairs);
+    println!(
+        "  • Q&A dropped (short question/answer): {}/{}",
+        preview.qa_pairs_dropped_short_question, preview.qa_pairs_dropped_short_answer
+    );
+    if with_notes {
+        println!(
+            "  • Estimated notes to generate: {}",
+            preview.estimated_notes
+        );
+        println!("    - From Q&A: {}", preview.notes_from_qa);
+        println!("    - From messages: {}", preview.notes_from_messages);
+        println!("    - From summaries: {}", preview.notes_from_summaries);
+        println!(
+            "    - From fallback chunking: {}",
+            preview.notes_from_fallback
+        );
+    } else {
+        println!("  • Mode: records-only backfill (no new notes)");
+    }
+
+    if dry_run {
+        println!("\nDry run complete. No writes performed.");
+        return Ok(());
+    }
+
+    let librarian = LibrarianAgent::new(repo, tei, tgi);
+    let result = if with_notes {
+        librarian
+            .ingest_chat_export_with_options(
+                export,
+                Some(path.display().to_string()),
+                mode,
+                ChatIngestOptions {
+                    persist_notes: true,
+                    skip_notes_if_linked: true,
+                },
+            )
+            .await?
+    } else {
+        librarian
+            .backfill_chat_export_records(export, Some(path.display().to_string()))
+            .await?
+    };
+
+    println!("\n✓ Migration complete:");
+    println!(
+        "  • Conversations imported: {}",
+        result.conversations_imported
+    );
+    println!("  • Conversations failed: {}", result.conversations_failed);
+    println!(
+        "  • Conversation records upserted: {}",
+        result.conversation_records_upserted
+    );
+    println!(
+        "  • Message records upserted: {}",
+        result.message_records_upserted
+    );
+    println!("  • Notes created: {}", result.notes_created);
     println!(
         "  • Note→Conversation links created: {}",
         result.note_conversation_links_created
@@ -690,12 +862,22 @@ async fn cmd_search(
     tei: TeiClient,
     query: String,
     limit: usize,
+    scope: SearchScopeArg,
+    since_days: Option<u32>,
+    source_uri: Option<String>,
     context: bool,
 ) -> Result<()> {
     let search = SearchAgent::new(repo, tei);
+    let scope = match scope {
+        SearchScopeArg::Notes => SearchScope::Notes,
+        SearchScopeArg::Messages => SearchScope::Messages,
+        SearchScopeArg::All => SearchScope::All,
+    };
 
-    if context {
-        let results = search.search_with_context(&query, limit).await?;
+    if context && scope == SearchScope::Notes {
+        let results = search
+            .search_with_context_filtered(&query, limit, since_days, source_uri)
+            .await?;
 
         if results.is_empty() {
             println!("No results found.");
@@ -729,7 +911,13 @@ async fn cmd_search(
             println!();
         }
     } else {
-        let results = search.search(&query, limit).await?;
+        if context && scope != SearchScope::Notes {
+            println!("Context is only available for notes scope; continuing without context.\n");
+        }
+
+        let results = search
+            .search_with_scope(&query, limit, scope, since_days, source_uri)
+            .await?;
 
         if results.is_empty() {
             println!("No results found.");
@@ -739,8 +927,31 @@ async fn cmd_search(
         println!("Found {} results:\n", results.len());
 
         for (i, r) in results.iter().enumerate() {
-            println!("{}. {}", i + 1, r.title.as_deref().unwrap_or("(untitled)"));
+            let kind = match r.hit_type {
+                SearchHitType::Note => "note",
+                SearchHitType::Message => "message",
+                SearchHitType::ConversationSummary => "conversation-summary",
+            };
+            println!(
+                "{}. [{}] {}",
+                i + 1,
+                kind,
+                r.title.as_deref().unwrap_or("(untitled)")
+            );
             println!("   ID: {}", r.id);
+            println!("   Score: {:.3}", r.score);
+            if let Some(ref conversation_uuid) = r.conversation_uuid {
+                println!("   Conversation UUID: {}", conversation_uuid);
+            }
+            if let Some(message_index) = r.message_index {
+                println!("   Message #: {}", message_index + 1);
+            }
+            if let Some(ref role) = r.role {
+                println!("   Role: {}", role);
+            }
+            if let Some(created_at) = r.created_at {
+                println!("   Created/Updated: {}", created_at.to_rfc3339());
+            }
 
             let preview: String = r.content.chars().take(200).collect();
             println!(

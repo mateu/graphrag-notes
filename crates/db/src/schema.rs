@@ -59,6 +59,7 @@ DEFINE FIELD summary ON conversation TYPE option<string>;
 DEFINE FIELD source_uri ON conversation TYPE option<string>;
 DEFINE FIELD account_uuid ON conversation TYPE option<string>;
 DEFINE FIELD metadata ON conversation TYPE option<object>;
+DEFINE FIELD summary_embedding ON conversation TYPE option<array<float>>;
 DEFINE FIELD created_at ON conversation TYPE datetime;
 DEFINE FIELD updated_at ON conversation TYPE datetime;
 DEFINE FIELD ingested_at ON conversation TYPE datetime DEFAULT time::now();
@@ -72,6 +73,7 @@ DEFINE FIELD conversation_uuid ON message TYPE string;
 DEFINE FIELD message_index ON message TYPE int;
 DEFINE FIELD role ON message TYPE string;
 DEFINE FIELD content ON message TYPE string;
+DEFINE FIELD embedding ON message TYPE option<array<float>>;
 DEFINE FIELD content_blocks ON message TYPE option<array<object>>;
 DEFINE FIELD attachments ON message TYPE option<array<object>>;
 DEFINE FIELD files ON message TYPE option<array<object>>;
@@ -146,6 +148,14 @@ DEFINE INDEX idx_note_content ON note FIELDS content
 DEFINE INDEX idx_note_title ON note FIELDS title 
     SEARCH ANALYZER ascii BM25;
 
+-- Full-text search on chat messages and conversation summaries
+DEFINE INDEX idx_message_content ON message FIELDS content
+    SEARCH ANALYZER ascii BM25;
+DEFINE INDEX idx_conversation_summary ON conversation FIELDS summary
+    SEARCH ANALYZER ascii BM25;
+DEFINE INDEX idx_conversation_title ON conversation FIELDS title
+    SEARCH ANALYZER ascii BM25;
+
 -- Vector index for semantic search (HNSW for performance)
 DEFINE INDEX idx_note_embedding ON note FIELDS embedding 
     HNSW DIMENSION 1024 DIST COSINE;
@@ -162,6 +172,8 @@ DEFINE INDEX idx_conversation_uuid ON conversation FIELDS uuid UNIQUE;
 DEFINE INDEX idx_message_key ON message FIELDS message_key UNIQUE;
 DEFINE INDEX idx_message_conversation ON message FIELDS conversation_id;
 DEFINE INDEX idx_message_uuid ON message FIELDS message_uuid;
+DEFINE INDEX idx_message_embedding ON message FIELDS embedding HNSW DIMENSION 1024 DIST COSINE;
+DEFINE INDEX idx_conversation_summary_embedding ON conversation FIELDS summary_embedding HNSW DIMENSION 1024 DIST COSINE;
 
 -- Note type filtering
 DEFINE INDEX idx_note_type ON note FIELDS note_type;

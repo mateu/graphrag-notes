@@ -139,11 +139,29 @@ impl Repository {
         embedding: Vec<f32>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        self.hybrid_search_notes(query_text, embedding, limit, None, None)
+            .await
+    }
+
+    /// Hybrid search for notes with optional temporal/source filters.
+    #[instrument(skip(self, embedding))]
+    pub async fn hybrid_search_notes(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<SearchResult>> {
         // Run vector search
-        let vec_results = self.vector_search(embedding.clone(), limit).await?;
+        let vec_results = self
+            .vector_search_notes(embedding.clone(), limit, since, source_uri.clone())
+            .await?;
 
         // Run fulltext search
-        let fts_results = self.fulltext_search(query_text, limit).await?;
+        let fts_results = self
+            .fulltext_search_notes(query_text, limit, since, source_uri)
+            .await?;
 
         // Merge results using HashMap to deduplicate and combine scores
         use std::collections::hash_map::Entry;
@@ -170,12 +188,25 @@ impl Repository {
         let results: Vec<SearchResult> = map.into_values().collect();
         Ok(results)
     }
+
     #[instrument(skip(self, embedding))]
     pub async fn vector_search(
         &self,
         embedding: Vec<f32>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        self.vector_search_notes(embedding, limit, None, None).await
+    }
+
+    #[instrument(skip(self, embedding))]
+    pub async fn vector_search_notes(
+        &self,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<SearchResult>> {
+        let since = since.map(|ts| ts.to_rfc3339());
         let results: Vec<SearchResult> = self
             .db
             .query(
@@ -190,21 +221,36 @@ impl Repository {
                     vector::distance::knn() AS vec_distance
                 FROM note
                 WHERE embedding <|100,COSINE|> $embedding
+                  AND ($since = NONE OR created_at >= <datetime>$since)
+                  AND ($source_uri = NONE OR source_id.uri = $source_uri)
                 LIMIT $limit
             "#,
             )
             .bind(("embedding", embedding))
             .bind(("limit", limit))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
             .await?
             .take(0)?;
 
-        // let results = results.unwrap_or_default();
         Ok(results)
     }
 
     /// Full-text search only
     #[instrument(skip(self))]
     pub async fn fulltext_search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        self.fulltext_search_notes(query, limit, None, None).await
+    }
+
+    #[instrument(skip(self))]
+    pub async fn fulltext_search_notes(
+        &self,
+        query: &str,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<SearchResult>> {
+        let since = since.map(|ts| ts.to_rfc3339());
         let results: Vec<SearchResult> = self
             .db
             .query(
@@ -218,17 +264,258 @@ impl Repository {
                     created_at,
                     search::score(0) + search::score(1) AS fts_score
                 FROM note
-                WHERE content @0@ $query OR title @1@ $query
+                WHERE (content @0@ $query OR title @1@ $query)
+                  AND ($since = NONE OR created_at >= <datetime>$since)
+                  AND ($source_uri = NONE OR source_id.uri = $source_uri)
                 ORDER BY fts_score DESC
                 LIMIT $limit
             "#,
             )
             .bind(("query", query.to_string()))
             .bind(("limit", limit))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
             .await?
             .take(0)?;
 
-        // let results = results.unwrap_or_default();
+        Ok(results)
+    }
+
+    /// Hybrid search across persisted chat messages.
+    #[instrument(skip(self, embedding))]
+    pub async fn hybrid_search_messages(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<MessageSearchResult>> {
+        let vec_results = self
+            .vector_search_messages(embedding.clone(), limit, since, source_uri.clone())
+            .await?;
+        let fts_results = self
+            .fulltext_search_messages(query_text, limit, since, source_uri)
+            .await?;
+
+        use std::collections::hash_map::Entry;
+        let mut map = std::collections::HashMap::new();
+
+        for r in vec_results {
+            map.insert(r.id.clone(), r);
+        }
+
+        for r in fts_results {
+            match map.entry(r.id.clone()) {
+                Entry::Occupied(mut e) => {
+                    if let Some(score) = r.fts_score {
+                        e.get_mut().fts_score = Some(score);
+                    }
+                }
+                Entry::Vacant(e) => {
+                    e.insert(r);
+                }
+            }
+        }
+
+        Ok(map.into_values().collect())
+    }
+
+    #[instrument(skip(self, embedding))]
+    pub async fn vector_search_messages(
+        &self,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<MessageSearchResult>> {
+        let since = since.map(|ts| ts.to_rfc3339());
+        let results: Vec<MessageSearchResult> = self
+            .db
+            .query(
+                r#"
+                SELECT
+                    id,
+                    conversation_id,
+                    conversation_uuid,
+                    message_index,
+                    role,
+                    content,
+                    created_at,
+                    vector::distance::knn() AS vec_distance
+                FROM message
+                WHERE embedding <|100,COSINE|> $embedding
+                  AND ($since = NONE OR (created_at != NONE AND created_at >= <datetime>$since))
+                  AND ($source_uri = NONE OR conversation_id.source_uri = $source_uri)
+                LIMIT $limit
+            "#,
+            )
+            .bind(("embedding", embedding))
+            .bind(("limit", limit))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
+            .await?
+            .take(0)?;
+
+        Ok(results)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn fulltext_search_messages(
+        &self,
+        query: &str,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<MessageSearchResult>> {
+        let since = since.map(|ts| ts.to_rfc3339());
+        let results: Vec<MessageSearchResult> = self
+            .db
+            .query(
+                r#"
+                SELECT
+                    id,
+                    conversation_id,
+                    conversation_uuid,
+                    message_index,
+                    role,
+                    content,
+                    created_at,
+                    search::score(0) AS fts_score
+                FROM message
+                WHERE content @0@ $query
+                  AND ($since = NONE OR (created_at != NONE AND created_at >= <datetime>$since))
+                  AND ($source_uri = NONE OR conversation_id.source_uri = $source_uri)
+                ORDER BY fts_score DESC
+                LIMIT $limit
+            "#,
+            )
+            .bind(("query", query.to_string()))
+            .bind(("limit", limit))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
+            .await?
+            .take(0)?;
+        Ok(results)
+    }
+
+    /// Hybrid search across conversation summaries.
+    #[instrument(skip(self, embedding))]
+    pub async fn hybrid_search_conversation_summaries(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<ConversationSearchResult>> {
+        let vec_results = self
+            .vector_search_conversation_summaries(
+                embedding.clone(),
+                limit,
+                since,
+                source_uri.clone(),
+            )
+            .await?;
+        let fts_results = self
+            .fulltext_search_conversation_summaries(query_text, limit, since, source_uri)
+            .await?;
+
+        use std::collections::hash_map::Entry;
+        let mut map = std::collections::HashMap::new();
+
+        for r in vec_results {
+            map.insert(r.id.clone(), r);
+        }
+
+        for r in fts_results {
+            match map.entry(r.id.clone()) {
+                Entry::Occupied(mut e) => {
+                    if let Some(score) = r.fts_score {
+                        e.get_mut().fts_score = Some(score);
+                    }
+                }
+                Entry::Vacant(e) => {
+                    e.insert(r);
+                }
+            }
+        }
+
+        Ok(map.into_values().collect())
+    }
+
+    #[instrument(skip(self, embedding))]
+    pub async fn vector_search_conversation_summaries(
+        &self,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<ConversationSearchResult>> {
+        let since = since.map(|ts| ts.to_rfc3339());
+        let results: Vec<ConversationSearchResult> = self
+            .db
+            .query(
+                r#"
+                SELECT
+                    id,
+                    uuid,
+                    title,
+                    summary,
+                    source_uri,
+                    updated_at,
+                    vector::distance::knn() AS vec_distance
+                FROM conversation
+                WHERE summary_embedding <|100,COSINE|> $embedding
+                  AND ($since = NONE OR updated_at >= <datetime>$since)
+                  AND ($source_uri = NONE OR source_uri = $source_uri)
+                LIMIT $limit
+            "#,
+            )
+            .bind(("embedding", embedding))
+            .bind(("limit", limit))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
+            .await?
+            .take(0)?;
+        Ok(results)
+    }
+
+    #[instrument(skip(self))]
+    pub async fn fulltext_search_conversation_summaries(
+        &self,
+        query: &str,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<ConversationSearchResult>> {
+        let since = since.map(|ts| ts.to_rfc3339());
+        let results: Vec<ConversationSearchResult> = self
+            .db
+            .query(
+                r#"
+                SELECT
+                    id,
+                    uuid,
+                    title,
+                    summary,
+                    source_uri,
+                    updated_at,
+                    search::score(0) + search::score(1) AS fts_score
+                FROM conversation
+                WHERE (summary @0@ $query OR title @1@ $query)
+                  AND ($since = NONE OR updated_at >= <datetime>$since)
+                  AND ($source_uri = NONE OR source_uri = $source_uri)
+                ORDER BY fts_score DESC
+                LIMIT $limit
+            "#,
+            )
+            .bind(("query", query.to_string()))
+            .bind(("limit", limit))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
+            .await?
+            .take(0)?;
         Ok(results)
     }
 
@@ -535,6 +822,7 @@ impl Repository {
         conversation: &ChatConversation,
         source_uri: Option<String>,
         metadata: serde_json::Value,
+        summary_embedding: Option<Vec<f32>>,
     ) -> Result<RecordId> {
         #[derive(Debug, Deserialize)]
         struct ConversationIdRow {
@@ -556,10 +844,10 @@ impl Repository {
             .query(
                 r#"
                 INSERT INTO conversation (
-                    uuid, title, summary, source_uri, account_uuid, metadata, created_at, updated_at, ingested_at
+                    uuid, title, summary, source_uri, account_uuid, metadata, summary_embedding, created_at, updated_at, ingested_at
                 )
                 VALUES (
-                    $uuid, $title, $summary, $source_uri, $account_uuid, $metadata, <datetime>$created_at, <datetime>$updated_at, time::now()
+                    $uuid, $title, $summary, $source_uri, $account_uuid, $metadata, $summary_embedding, <datetime>$created_at, <datetime>$updated_at, time::now()
                 )
                 ON DUPLICATE KEY UPDATE
                     title = $title,
@@ -567,6 +855,7 @@ impl Repository {
                     source_uri = $source_uri,
                     account_uuid = $account_uuid,
                     metadata = $metadata,
+                    summary_embedding = $summary_embedding,
                     created_at = <datetime>$created_at,
                     updated_at = <datetime>$updated_at,
                     ingested_at = time::now()
@@ -578,6 +867,7 @@ impl Repository {
             .bind(("source_uri", source_uri))
             .bind(("account_uuid", account_uuid))
             .bind(("metadata", metadata))
+            .bind(("summary_embedding", summary_embedding))
             .bind(("created_at", conversation.created_at.to_rfc3339()))
             .bind(("updated_at", conversation.updated_at.to_rfc3339()))
             .await?
@@ -607,6 +897,7 @@ impl Repository {
         conversation_uuid: &str,
         index: usize,
         message: &ChatMessage,
+        embedding: Option<Vec<f32>>,
     ) -> Result<RecordId> {
         #[derive(Debug, Deserialize)]
         struct MessageIdRow {
@@ -637,11 +928,11 @@ impl Repository {
                 r#"
                 INSERT INTO message (
                     message_key, message_uuid, conversation_id, conversation_uuid, message_index, role,
-                    content, content_blocks, attachments, files, has_files, created_at, updated_at, ingested_at
+                    content, embedding, content_blocks, attachments, files, has_files, created_at, updated_at, ingested_at
                 )
                 VALUES (
                     $message_key, $message_uuid, $conversation_id, $conversation_uuid, $message_index, $role,
-                    $content, $content_blocks, $attachments, $files, $has_files,
+                    $content, $embedding, $content_blocks, $attachments, $files, $has_files,
                     IF $created_at = NONE THEN NONE ELSE <datetime>$created_at END,
                     IF $updated_at = NONE THEN NONE ELSE <datetime>$updated_at END,
                     time::now()
@@ -653,6 +944,7 @@ impl Repository {
                     message_index = $message_index,
                     role = $role,
                     content = $content,
+                    embedding = $embedding,
                     content_blocks = $content_blocks,
                     attachments = $attachments,
                     files = $files,
@@ -669,6 +961,7 @@ impl Repository {
             .bind(("message_index", index as i64))
             .bind(("role", role))
             .bind(("content", message.content.clone()))
+            .bind(("embedding", embedding))
             .bind(("content_blocks", content_blocks))
             .bind(("attachments", attachments))
             .bind(("files", files.clone()))
@@ -772,6 +1065,26 @@ impl Repository {
         Ok(true)
     }
 
+    /// Check whether a conversation already has any linked notes.
+    #[instrument(skip(self))]
+    pub async fn conversation_has_note_links(&self, conversation_id: &RecordId) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct CountRow {
+            count: Option<u64>,
+        }
+
+        let existing: Option<CountRow> = self
+            .db
+            .query(
+                "SELECT count() FROM note_from_conversation WHERE out = $conversation_id GROUP ALL",
+            )
+            .bind(("conversation_id", conversation_id.clone()))
+            .await?
+            .take(0)?;
+
+        Ok(existing.and_then(|row| row.count).unwrap_or(0) > 0)
+    }
+
     // ==========================================
     // STATS
     // ==========================================
@@ -872,6 +1185,39 @@ pub struct SearchResult {
     pub note_type: String,
     pub tags: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub vec_distance: Option<f32>,
+    #[serde(default)]
+    pub fts_score: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageSearchResult {
+    pub id: RecordId,
+    pub conversation_id: RecordId,
+    pub conversation_uuid: String,
+    pub message_index: i64,
+    pub role: String,
+    pub content: String,
+    #[serde(default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub vec_distance: Option<f32>,
+    #[serde(default)]
+    pub fts_score: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationSearchResult {
+    pub id: RecordId,
+    pub uuid: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub source_uri: Option<String>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
     pub vec_distance: Option<f32>,
     #[serde(default)]

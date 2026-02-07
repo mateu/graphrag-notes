@@ -3,16 +3,16 @@
 //! This crate defines the fundamental data structures used throughout
 //! the application: Notes, Entities, Sources, and their relationships.
 
-pub mod note;
-pub mod entity;
-pub mod source;
-pub mod edge;
-pub mod error;
 pub mod chat_export;
+pub mod edge;
+pub mod entity;
+pub mod error;
+pub mod note;
+pub mod source;
 
-pub use note::{Note, NoteType, AtomicNote};
-pub use entity::{Entity, EntityType};
-pub use source::{Source, SourceType};
+pub use chat_export::{ChatConversation, ChatExport, ChatMessage, MessageRole};
 pub use edge::{Edge, EdgeType};
+pub use entity::{Entity, EntityType};
 pub use error::{CoreError, Result};
-pub use chat_export::{ChatExport, ChatConversation, ChatMessage, MessageRole};
+pub use note::{AtomicNote, Note, NoteType};
+pub use source::{Source, SourceType};

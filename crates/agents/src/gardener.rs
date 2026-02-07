@@ -1,9 +1,9 @@
 //! Gardener Agent - Maintains graph connections
 
 use crate::Result;
-use graphrag_core::{Note, EdgeType};
+use graphrag_core::{EdgeType, Note};
 use graphrag_db::Repository;
-use tracing::{info, debug, instrument};
+use tracing::{debug, info, instrument};
 
 /// A suggested connection between notes
 #[derive(Debug)]
@@ -30,45 +30,45 @@ impl GardenerAgent {
             similarity_threshold: 0.7,
         }
     }
-    
+
     /// Set the similarity threshold
     pub fn with_threshold(mut self, threshold: f32) -> Self {
         self.similarity_threshold = threshold;
         self
     }
-    
+
     /// Find orphan notes (no connections)
     #[instrument(skip(self))]
     pub async fn find_orphans(&self) -> Result<Vec<Note>> {
         info!("Finding orphan notes...");
-        
+
         let orphans = self.repo.find_orphan_notes().await?;
-        
+
         info!("Found {} orphan notes", orphans.len());
-        
+
         Ok(orphans)
     }
-    
+
     /// Suggest connections for orphan notes
     #[instrument(skip(self))]
     pub async fn suggest_connections(&self) -> Result<Vec<SuggestedConnection>> {
         let orphans = self.find_orphans().await?;
-        
+
         if orphans.is_empty() {
             info!("No orphan notes to process");
             return Ok(Vec::new());
         }
-        
+
         info!("Finding connections for {} orphan notes", orphans.len());
-        
+
         let mut suggestions = Vec::new();
-        
+
         for orphan in orphans {
             if orphan.embedding.is_empty() {
                 debug!("Skipping orphan without embedding: {:?}", orphan.id);
                 continue;
             }
-            
+
             let note_id = match orphan.id.as_ref() {
                 Some(id) => id.key().to_string(),
                 None => {
@@ -78,7 +78,8 @@ impl GardenerAgent {
             };
 
             // Find similar notes
-            let similar = self.repo
+            let similar = self
+                .repo
                 .find_similar_notes(
                     &note_id,
                     orphan.embedding.clone(),
@@ -86,7 +87,7 @@ impl GardenerAgent {
                     5,
                 )
                 .await?;
-            
+
             for sim in similar {
                 // Get the full target note
                 let target_id = sim.id.key().to_string();
@@ -104,45 +105,53 @@ impl GardenerAgent {
                 }
             }
         }
-        
+
         info!("Generated {} connection suggestions", suggestions.len());
-        
+
         Ok(suggestions)
     }
-    
+
     /// Apply a suggested connection
     #[instrument(skip(self, suggestion))]
     pub async fn apply_connection(&self, suggestion: &SuggestedConnection) -> Result<()> {
-        let from_id = suggestion.from_note.id.as_ref()
+        let from_id = suggestion
+            .from_note
+            .id
+            .as_ref()
             .ok_or_else(|| crate::AgentError::NotFound("from note id".into()))?;
-        
-        let to_id = suggestion.to_note.id.as_ref()
+
+        let to_id = suggestion
+            .to_note
+            .id
+            .as_ref()
             .ok_or_else(|| crate::AgentError::NotFound("to note id".into()))?;
-        
-        self.repo.create_edge(
-            from_id,
-            to_id,
-            suggestion.edge_type.clone(),
-            Some(suggestion.similarity),
-        ).await?;
-        
+
+        self.repo
+            .create_edge(
+                from_id,
+                to_id,
+                suggestion.edge_type.clone(),
+                Some(suggestion.similarity),
+            )
+            .await?;
+
         info!(
             "Created {:?} edge from {} to {}",
             suggestion.edge_type, from_id, to_id
         );
-        
+
         Ok(())
     }
-    
+
     /// Run full maintenance cycle
     #[instrument(skip(self))]
     pub async fn run_maintenance(&self) -> Result<MaintenanceReport> {
         info!("Starting maintenance cycle...");
-        
+
         let orphans_before = self.find_orphans().await?.len();
         let suggestions = self.suggest_connections().await?;
         let suggestions_count = suggestions.len();
-        
+
         // Auto-apply high-confidence suggestions
         let mut applied = 0;
         for suggestion in &suggestions {
@@ -152,18 +161,18 @@ impl GardenerAgent {
                 }
             }
         }
-        
+
         let orphans_after = self.find_orphans().await?.len();
-        
+
         let report = MaintenanceReport {
             orphans_found: orphans_before,
             suggestions_generated: suggestions_count,
             connections_applied: applied,
             orphans_remaining: orphans_after,
         };
-        
+
         info!("Maintenance complete: {:?}", report);
-        
+
         Ok(report)
     }
 }

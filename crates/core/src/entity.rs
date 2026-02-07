@@ -1,8 +1,8 @@
 //! Entity types - people, concepts, projects, etc.
 
 use chrono::{DateTime, Utc};
-use surrealdb::RecordId;
 use serde::{Deserialize, Serialize};
+use surrealdb::RecordId;
 
 /// The type/classification of an entity
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -37,27 +37,27 @@ impl Default for EntityType {
 pub struct Entity {
     /// Unique identifier
     pub id: Option<RecordId>,
-    
+
     /// The type of entity
     #[serde(default)]
     pub entity_type: EntityType,
-    
+
     /// Display name
     #[serde(default)]
     pub name: String,
-    
+
     /// Canonical/normalized name for deduplication
     #[serde(default)]
     pub canonical_name: String,
-    
+
     /// Vector embedding of the entity
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub embedding: Vec<f32>,
-    
+
     /// Additional metadata
     #[serde(default)]
     pub metadata: serde_json::Value,
-    
+
     /// When first seen
     #[serde(default = "default_created_at", skip_serializing)]
     pub created_at: DateTime<Utc>,
@@ -78,7 +78,7 @@ impl Entity {
             created_at: Utc::now(),
         }
     }
-    
+
     /// Canonicalize a name for deduplication
     pub fn canonicalize(name: &str) -> String {
         name.to_lowercase()
@@ -87,7 +87,7 @@ impl Entity {
             .collect::<Vec<_>>()
             .join(" ")
     }
-    
+
     /// Builder: set embedding
     pub fn with_embedding(mut self, embedding: Vec<f32>) -> Self {
         self.embedding = embedding;
@@ -114,16 +114,16 @@ pub struct ExtractedEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_entity_creation() {
         let entity = Entity::new("John Doe", EntityType::Person);
-        
+
         assert_eq!(entity.name, "John Doe");
         assert_eq!(entity.canonical_name, "john doe");
         assert_eq!(entity.entity_type, EntityType::Person);
     }
-    
+
     #[test]
     fn test_canonicalization() {
         assert_eq!(Entity::canonicalize("  John   DOE  "), "john doe");

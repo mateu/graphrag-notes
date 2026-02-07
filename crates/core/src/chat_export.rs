@@ -279,10 +279,7 @@ mod tests {
             export.conversations[0].messages[0].content,
             "Hello, how are you?"
         );
-        assert_eq!(
-            export.conversations[0].messages[0].role,
-            MessageRole::Human
-        );
+        assert_eq!(export.conversations[0].messages[0].role, MessageRole::Human);
     }
 
     #[test]

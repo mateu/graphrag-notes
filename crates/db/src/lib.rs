@@ -1,17 +1,17 @@
 //! Database layer for GraphRAG Notes
-//! 
+//!
 //! Provides SurrealDB integration with schema management and queries.
 
-pub mod schema;
-pub mod repository;
 pub mod error;
+pub mod repository;
+pub mod schema;
 
 pub use error::{DbError, Result};
 pub use repository::Repository;
 
-use surrealdb::engine::local::{Db, RocksDb, Mem};
-use surrealdb::Surreal;
 use std::path::Path;
+use surrealdb::engine::local::{Db, Mem, RocksDb};
+use surrealdb::Surreal;
 
 /// Database connection type
 pub type DbConnection = Surreal<Db>;
@@ -40,7 +40,7 @@ async fn setup_database(db: &DbConnection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_init_memory() {
         let db = init_memory().await.expect("Failed to init memory db");

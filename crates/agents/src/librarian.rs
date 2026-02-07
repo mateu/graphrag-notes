@@ -73,6 +73,21 @@ pub enum ChatImportMode {
     Hybrid,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ChatIngestOptions {
+    pub persist_notes: bool,
+    pub skip_notes_if_linked: bool,
+}
+
+impl Default for ChatIngestOptions {
+    fn default() -> Self {
+        Self {
+            persist_notes: true,
+            skip_notes_if_linked: false,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct QaExtractionResult {
     pairs: Vec<QaPair>,
@@ -628,6 +643,18 @@ impl LibrarianAgent {
         source_uri: Option<String>,
         mode: ChatImportMode,
     ) -> Result<ChatImportResult> {
+        self.ingest_chat_export_with_options(export, source_uri, mode, ChatIngestOptions::default())
+            .await
+    }
+
+    #[instrument(skip(self, export))]
+    pub async fn ingest_chat_export_with_options(
+        &self,
+        export: ChatExport,
+        source_uri: Option<String>,
+        mode: ChatImportMode,
+        options: ChatIngestOptions,
+    ) -> Result<ChatImportResult> {
         let total = export.conversation_count();
         let progress_every = std::env::var("IMPORT_PROGRESS_EVERY")
             .ok()
@@ -664,7 +691,7 @@ impl LibrarianAgent {
             result.messages_total += conversation.messages.len();
 
             match self
-                .ingest_conversation(&conversation, source_uri.clone(), mode)
+                .ingest_conversation(&conversation, source_uri.clone(), mode, options)
                 .await
             {
                 Ok(outcome) => {
@@ -721,6 +748,122 @@ impl LibrarianAgent {
         Ok(result)
     }
 
+    /// Backfill conversation/message records without generating derived notes.
+    #[instrument(skip(self, export))]
+    pub async fn backfill_chat_export_records(
+        &self,
+        export: ChatExport,
+        source_uri: Option<String>,
+    ) -> Result<ChatImportResult> {
+        self.ingest_chat_export_with_options(
+            export,
+            source_uri,
+            ChatImportMode::Qa,
+            ChatIngestOptions {
+                persist_notes: false,
+                skip_notes_if_linked: true,
+            },
+        )
+        .await
+    }
+
+    /// Preview import/backfill counts without writing to the database.
+    pub fn preview_chat_export(
+        export: &ChatExport,
+        mode: ChatImportMode,
+        include_notes: bool,
+    ) -> ChatImportPreview {
+        let mut preview = ChatImportPreview {
+            conversations_total: export.conversation_count(),
+            messages_total: export.total_messages(),
+            ..Default::default()
+        };
+
+        for conversation in &export.conversations {
+            if conversation.messages.is_empty() {
+                preview.conversations_without_messages += 1;
+                if !conversation.summary.is_empty() {
+                    preview.summary_only_conversations += 1;
+                }
+            } else {
+                preview.conversations_with_messages += 1;
+            }
+
+            if !conversation.summary.is_empty() {
+                preview.summary_notes += 1;
+            }
+
+            let qa = Self::extract_qa_pairs_with_diagnostics(&conversation.messages);
+            preview.qa_pairs += qa.pairs.len();
+            preview.qa_pairs_dropped_short_question += qa.dropped_short_question;
+            preview.qa_pairs_dropped_short_answer += qa.dropped_short_answer;
+            preview.assistant_without_human += qa.assistant_without_human;
+            preview.trailing_unpaired_human += qa.trailing_unpaired_human;
+
+            if !include_notes {
+                continue;
+            }
+
+            let fallback_chunks = Self::estimate_fallback_chunks(conversation);
+            match mode {
+                ChatImportMode::Qa => {
+                    if qa.pairs.is_empty() {
+                        preview.notes_from_fallback += fallback_chunks;
+                    } else {
+                        preview.notes_from_qa += qa.pairs.len();
+                    }
+                }
+                ChatImportMode::Message => {
+                    if conversation.messages.is_empty() {
+                        preview.notes_from_fallback += fallback_chunks;
+                    } else {
+                        preview.notes_from_messages += conversation.messages.len();
+                    }
+                }
+                ChatImportMode::Hybrid => {
+                    preview.notes_from_qa += qa.pairs.len();
+                    let paired_indices: HashSet<usize> = qa
+                        .pairs
+                        .iter()
+                        .flat_map(|pair| [pair.human_idx, pair.assistant_idx])
+                        .collect();
+                    let selected = conversation
+                        .messages
+                        .iter()
+                        .enumerate()
+                        .filter(|(idx, msg)| {
+                            !paired_indices.contains(idx) || Self::message_has_extra_signal(msg)
+                        })
+                        .count();
+                    if qa.pairs.is_empty() && selected == 0 {
+                        preview.notes_from_fallback += fallback_chunks;
+                    } else {
+                        preview.notes_from_messages += selected;
+                    }
+                }
+            }
+        }
+
+        if include_notes {
+            preview.notes_from_summaries = preview.summary_notes;
+            preview.estimated_notes = preview.notes_from_qa
+                + preview.notes_from_messages
+                + preview.notes_from_summaries
+                + preview.notes_from_fallback;
+        }
+
+        preview
+    }
+
+    fn estimate_fallback_chunks(conversation: &ChatConversation) -> usize {
+        conversation
+            .to_markdown()
+            .split("\n\n")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && s.len() > 20)
+            .count()
+    }
+
     /// Ingest a single conversation
     #[instrument(skip(self, conversation))]
     async fn ingest_conversation(
@@ -728,12 +871,11 @@ impl LibrarianAgent {
         conversation: &ChatConversation,
         source_uri: Option<String>,
         mode: ChatImportMode,
+        options: ChatIngestOptions,
     ) -> Result<ConversationImportOutcome> {
         let title = conversation.display_title();
         info!("Ingesting conversation: {}", title);
-
-        // Create source record for this conversation
-        let mut source = Source::chat_export(&title, source_uri.clone());
+        let source_uri_for_source = source_uri.clone();
 
         // Add conversation metadata
         let mut metadata = serde_json::Map::new();
@@ -749,27 +891,75 @@ impl LibrarianAgent {
             metadata.insert("summary".into(), serde_json::json!(&conversation.summary));
         }
         let metadata_value = serde_json::Value::Object(metadata);
-        source = source.with_metadata(metadata_value.clone());
-
-        let source = self.repo.create_source(source).await?;
-        let source_id = source.id.as_ref().map(|id| id.to_string());
         let mut outcome = ConversationImportOutcome::default();
+
+        let summary_embedding = if conversation.summary.is_empty() {
+            None
+        } else {
+            let summary_text = format!(
+                "{}\n\n{}",
+                conversation.display_title(),
+                conversation.summary
+            );
+            Some(self.tei.embed(&summary_text, false).await?)
+        };
 
         let conversation_record_id = self
             .repo
-            .upsert_conversation(conversation, source_uri, metadata_value)
+            .upsert_conversation(conversation, source_uri, metadata_value, summary_embedding)
             .await?;
         outcome.conversation_records_upserted = 1;
 
+        let message_embeddings = if conversation.messages.is_empty() {
+            Vec::new()
+        } else {
+            let message_texts: Vec<String> = conversation
+                .messages
+                .iter()
+                .map(Self::message_text_for_embedding)
+                .collect();
+            self.tei.embed_batch(&message_texts, false).await?
+        };
+
         let mut message_record_ids = Vec::with_capacity(conversation.messages.len());
         for (idx, message) in conversation.messages.iter().enumerate() {
+            let embedding = message_embeddings.get(idx).cloned();
             let message_id = self
                 .repo
-                .upsert_message(&conversation_record_id, &conversation.uuid, idx, message)
+                .upsert_message(
+                    &conversation_record_id,
+                    &conversation.uuid,
+                    idx,
+                    message,
+                    embedding,
+                )
                 .await?;
             message_record_ids.push(message_id);
         }
         outcome.message_records_upserted = message_record_ids.len();
+
+        if !options.persist_notes {
+            return Ok(outcome);
+        }
+
+        if options.skip_notes_if_linked
+            && self
+                .repo
+                .conversation_has_note_links(&conversation_record_id)
+                .await?
+        {
+            return Ok(outcome);
+        }
+
+        // Create source record for this conversation only when generating notes.
+        let mut source = Source::chat_export(&title, source_uri_for_source);
+        source = source.with_metadata(serde_json::json!({
+            "conversation_id": &conversation.uuid,
+            "created_at": &conversation.created_at,
+            "summary": &conversation.summary,
+        }));
+        let source = self.repo.create_source(source).await?;
+        let source_id = source.id.as_ref().map(|id| id.to_string());
 
         if !conversation.summary.is_empty() {
             let summary_stats = self
@@ -782,7 +972,7 @@ impl LibrarianAgent {
             outcome.note_message_links_created += summary_stats.note_message_links_created;
         }
 
-        let qa = self.extract_qa_pairs_with_diagnostics(&conversation.messages);
+        let qa = Self::extract_qa_pairs_with_diagnostics(&conversation.messages);
         outcome.qa_pairs_created = qa.pairs.len();
         outcome.qa_pairs_dropped_short_question = qa.dropped_short_question;
         outcome.qa_pairs_dropped_short_answer = qa.dropped_short_answer;
@@ -1180,7 +1370,7 @@ impl LibrarianAgent {
     }
 
     /// Extract Q&A pairs from a list of messages and collect diagnostics
-    fn extract_qa_pairs_with_diagnostics(&self, messages: &[ChatMessage]) -> QaExtractionResult {
+    fn extract_qa_pairs_with_diagnostics(messages: &[ChatMessage]) -> QaExtractionResult {
         let mut result = QaExtractionResult::default();
         let mut current_human: Option<(usize, &str)> = None;
 
@@ -1251,6 +1441,28 @@ impl LibrarianAgent {
             || signal.has_files
             || signal.has_citations
             || message.content.trim().is_empty()
+    }
+
+    fn message_text_for_embedding(message: &ChatMessage) -> String {
+        if !message.content.trim().is_empty() {
+            return message.content.clone();
+        }
+
+        if let Some(blocks) = message.content_blocks.as_array() {
+            let mut parts = Vec::new();
+            for block in blocks {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    if !text.trim().is_empty() {
+                        parts.push(text.to_string());
+                    }
+                }
+            }
+            if !parts.is_empty() {
+                return parts.join("\n\n");
+            }
+        }
+
+        "[empty message]".to_string()
     }
 
     fn message_signal(message: &ChatMessage) -> MessageSignal {
@@ -1339,6 +1551,27 @@ impl LibrarianAgent {
             &s[..last_space]
         }
     }
+}
+
+/// Result of importing chat conversations
+#[derive(Debug, Default)]
+pub struct ChatImportPreview {
+    pub conversations_total: usize,
+    pub conversations_with_messages: usize,
+    pub conversations_without_messages: usize,
+    pub summary_only_conversations: usize,
+    pub messages_total: usize,
+    pub summary_notes: usize,
+    pub qa_pairs: usize,
+    pub qa_pairs_dropped_short_question: usize,
+    pub qa_pairs_dropped_short_answer: usize,
+    pub assistant_without_human: usize,
+    pub trailing_unpaired_human: usize,
+    pub notes_from_qa: usize,
+    pub notes_from_messages: usize,
+    pub notes_from_summaries: usize,
+    pub notes_from_fallback: usize,
+    pub estimated_notes: usize,
 }
 
 /// Result of importing chat conversations

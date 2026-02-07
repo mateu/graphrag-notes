@@ -1,8 +1,8 @@
 //! Edge types - relationships between notes
 
 use chrono::{DateTime, Utc};
-use surrealdb::RecordId;
 use serde::{Deserialize, Serialize};
+use surrealdb::RecordId;
 
 /// Types of relationships between notes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -43,27 +43,27 @@ impl std::fmt::Display for EdgeType {
 pub struct Edge {
     /// Unique identifier (SurrealDB generates this)
     pub id: Option<RecordId>,
-    
+
     /// Source node ID (the "from" node)
     pub from_id: String,
-    
+
     /// Target node ID (the "to" node)
     pub to_id: String,
-    
+
     /// Type of relationship
     pub edge_type: EdgeType,
-    
+
     /// Confidence score (0.0 - 1.0), for auto-generated edges
     pub confidence: Option<f32>,
-    
+
     /// Additional metadata/context about the relationship
     #[serde(default)]
     pub metadata: serde_json::Value,
-    
+
     /// When this edge was created
     #[serde(skip_serializing)]
     pub created_at: DateTime<Utc>,
-    
+
     /// Whether this edge was manually created or auto-generated
     pub is_manual: bool,
 }
@@ -82,13 +82,13 @@ impl Edge {
             is_manual: false,
         }
     }
-    
+
     /// Builder: set confidence
     pub fn with_confidence(mut self, confidence: f32) -> Self {
         self.confidence = Some(confidence.clamp(0.0, 1.0));
         self
     }
-    
+
     /// Builder: mark as manual
     pub fn manual(mut self) -> Self {
         self.is_manual = true;
@@ -107,19 +107,18 @@ pub struct SuggestedEdge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_edge_creation() {
-        let edge = Edge::new("note:1", "note:2", EdgeType::Supports)
-            .with_confidence(0.85);
-        
+        let edge = Edge::new("note:1", "note:2", EdgeType::Supports).with_confidence(0.85);
+
         assert_eq!(edge.from_id, "note:1");
         assert_eq!(edge.to_id, "note:2");
         assert_eq!(edge.edge_type, EdgeType::Supports);
         assert_eq!(edge.confidence, Some(0.85));
         assert!(!edge.is_manual);
     }
-    
+
     #[test]
     fn test_edge_type_display() {
         assert_eq!(EdgeType::Supports.to_string(), "supports");
