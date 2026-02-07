@@ -513,6 +513,22 @@ async fn cmd_import_chats(
         "    - Conversations with trailing unpaired human turn: {}",
         result.trailing_unpaired_human
     );
+    println!(
+        "  • Conversation records upserted: {}",
+        result.conversation_records_upserted
+    );
+    println!(
+        "  • Message records upserted: {}",
+        result.message_records_upserted
+    );
+    println!(
+        "  • Note→Conversation links created: {}",
+        result.note_conversation_links_created
+    );
+    println!(
+        "  • Note→Message links created: {}",
+        result.note_message_links_created
+    );
 
     if result.conversations_failed > 0 {
         for error in &result.errors {
@@ -826,8 +842,15 @@ async fn cmd_stats(repo: Repository) -> Result<()> {
     println!("Database Statistics:");
     println!("  • Notes: {}", stats.note_count);
     println!("  • Entities: {}", stats.entity_count);
-    println!("  • Mentions: {}", stats.mention_count);
     println!("  • Sources: {}", stats.source_count);
+    println!("  • Conversations: {}", stats.conversation_count);
+    println!("  • Messages: {}", stats.message_count);
+    println!("  • Mentions: {}", stats.mention_count);
+    println!(
+        "  • Note→Conversation links: {}",
+        stats.note_conversation_link_count
+    );
+    println!("  • Note→Message links: {}", stats.note_message_link_count);
     println!("  • Edges: {}", stats.edge_count);
 
     Ok(())

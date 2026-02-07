@@ -97,6 +97,10 @@ struct ConversationImportOutcome {
     notes_from_messages: usize,
     notes_from_summaries: usize,
     notes_from_fallback: usize,
+    conversation_records_upserted: usize,
+    message_records_upserted: usize,
+    note_conversation_links_created: usize,
+    note_message_links_created: usize,
     qa_pairs_created: usize,
     qa_pairs_dropped_short_question: usize,
     qa_pairs_dropped_short_answer: usize,
@@ -112,6 +116,13 @@ struct MessageSignal {
     has_tooling: bool,
     has_files: bool,
     has_citations: bool,
+}
+
+#[derive(Debug, Default)]
+struct NoteCreationStats {
+    notes_created: usize,
+    note_conversation_links_created: usize,
+    note_message_links_created: usize,
 }
 
 impl LibrarianAgent {
@@ -663,6 +674,11 @@ impl LibrarianAgent {
                     result.notes_from_messages += outcome.notes_from_messages;
                     result.notes_from_summaries += outcome.notes_from_summaries;
                     result.notes_from_fallback += outcome.notes_from_fallback;
+                    result.conversation_records_upserted += outcome.conversation_records_upserted;
+                    result.message_records_upserted += outcome.message_records_upserted;
+                    result.note_conversation_links_created +=
+                        outcome.note_conversation_links_created;
+                    result.note_message_links_created += outcome.note_message_links_created;
                     result.qa_pairs_created += outcome.qa_pairs_created;
                     result.qa_pairs_dropped_short_question +=
                         outcome.qa_pairs_dropped_short_question;
@@ -717,7 +733,7 @@ impl LibrarianAgent {
         info!("Ingesting conversation: {}", title);
 
         // Create source record for this conversation
-        let mut source = Source::chat_export(&title, source_uri);
+        let mut source = Source::chat_export(&title, source_uri.clone());
 
         // Add conversation metadata
         let mut metadata = serde_json::Map::new();
@@ -732,17 +748,38 @@ impl LibrarianAgent {
         if !conversation.summary.is_empty() {
             metadata.insert("summary".into(), serde_json::json!(&conversation.summary));
         }
-        source = source.with_metadata(serde_json::Value::Object(metadata));
+        let metadata_value = serde_json::Value::Object(metadata);
+        source = source.with_metadata(metadata_value.clone());
 
         let source = self.repo.create_source(source).await?;
         let source_id = source.id.as_ref().map(|id| id.to_string());
         let mut outcome = ConversationImportOutcome::default();
 
-        if !conversation.summary.is_empty() {
-            self.create_summary_note(conversation, source_id.clone())
+        let conversation_record_id = self
+            .repo
+            .upsert_conversation(conversation, source_uri, metadata_value)
+            .await?;
+        outcome.conversation_records_upserted = 1;
+
+        let mut message_record_ids = Vec::with_capacity(conversation.messages.len());
+        for (idx, message) in conversation.messages.iter().enumerate() {
+            let message_id = self
+                .repo
+                .upsert_message(&conversation_record_id, &conversation.uuid, idx, message)
                 .await?;
-            outcome.notes_created += 1;
-            outcome.notes_from_summaries += 1;
+            message_record_ids.push(message_id);
+        }
+        outcome.message_records_upserted = message_record_ids.len();
+
+        if !conversation.summary.is_empty() {
+            let summary_stats = self
+                .create_summary_note(conversation, source_id.clone(), &conversation_record_id)
+                .await?;
+            outcome.notes_created += summary_stats.notes_created;
+            outcome.notes_from_summaries += summary_stats.notes_created;
+            outcome.note_conversation_links_created +=
+                summary_stats.note_conversation_links_created;
+            outcome.note_message_links_created += summary_stats.note_message_links_created;
         }
 
         let qa = self.extract_qa_pairs_with_diagnostics(&conversation.messages);
@@ -759,10 +796,24 @@ impl LibrarianAgent {
                     let fallback_notes = self.chunk_and_create_notes(&markdown, source_id).await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
+                    outcome.note_conversation_links_created += self
+                        .link_notes_to_conversation(&fallback_notes, &conversation_record_id)
+                        .await?;
                 } else {
-                    let created = self.create_qa_notes(&qa.pairs, source_id, &title).await?;
-                    outcome.notes_created += created;
-                    outcome.notes_from_qa += created;
+                    let stats = self
+                        .create_qa_notes(
+                            &qa.pairs,
+                            source_id,
+                            &title,
+                            &conversation_record_id,
+                            &message_record_ids,
+                        )
+                        .await?;
+                    outcome.notes_created += stats.notes_created;
+                    outcome.notes_from_qa += stats.notes_created;
+                    outcome.note_conversation_links_created +=
+                        stats.note_conversation_links_created;
+                    outcome.note_message_links_created += stats.note_message_links_created;
                 }
             }
             ChatImportMode::Message => {
@@ -771,27 +822,44 @@ impl LibrarianAgent {
                     let fallback_notes = self.chunk_and_create_notes(&markdown, source_id).await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
+                    outcome.note_conversation_links_created += self
+                        .link_notes_to_conversation(&fallback_notes, &conversation_record_id)
+                        .await?;
                 } else {
                     let selection: Vec<usize> = (0..conversation.messages.len()).collect();
-                    let created = self
+                    let stats = self
                         .create_message_notes(
                             conversation,
                             &conversation.messages,
                             &selection,
                             source_id,
+                            &conversation_record_id,
+                            &message_record_ids,
                         )
                         .await?;
-                    outcome.notes_created += created;
-                    outcome.notes_from_messages += created;
+                    outcome.notes_created += stats.notes_created;
+                    outcome.notes_from_messages += stats.notes_created;
+                    outcome.note_conversation_links_created +=
+                        stats.note_conversation_links_created;
+                    outcome.note_message_links_created += stats.note_message_links_created;
                 }
             }
             ChatImportMode::Hybrid => {
                 if !qa.pairs.is_empty() {
-                    let created = self
-                        .create_qa_notes(&qa.pairs, source_id.clone(), &title)
+                    let stats = self
+                        .create_qa_notes(
+                            &qa.pairs,
+                            source_id.clone(),
+                            &title,
+                            &conversation_record_id,
+                            &message_record_ids,
+                        )
                         .await?;
-                    outcome.notes_created += created;
-                    outcome.notes_from_qa += created;
+                    outcome.notes_created += stats.notes_created;
+                    outcome.notes_from_qa += stats.notes_created;
+                    outcome.note_conversation_links_created +=
+                        stats.note_conversation_links_created;
+                    outcome.note_message_links_created += stats.note_message_links_created;
                 }
 
                 let mut selected_messages = Vec::new();
@@ -815,10 +883,15 @@ impl LibrarianAgent {
                             &conversation.messages,
                             &selected_messages,
                             source_id.clone(),
+                            &conversation_record_id,
+                            &message_record_ids,
                         )
                         .await?;
-                    outcome.notes_created += created;
-                    outcome.notes_from_messages += created;
+                    outcome.notes_created += created.notes_created;
+                    outcome.notes_from_messages += created.notes_created;
+                    outcome.note_conversation_links_created +=
+                        created.note_conversation_links_created;
+                    outcome.note_message_links_created += created.note_message_links_created;
                 }
 
                 if outcome.notes_from_qa == 0 && outcome.notes_from_messages == 0 {
@@ -826,6 +899,9 @@ impl LibrarianAgent {
                     let fallback_notes = self.chunk_and_create_notes(&markdown, source_id).await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
+                    outcome.note_conversation_links_created += self
+                        .link_notes_to_conversation(&fallback_notes, &conversation_record_id)
+                        .await?;
                 }
             }
         }
@@ -843,7 +919,9 @@ impl LibrarianAgent {
         qa_pairs: &[QaPair],
         source_id: Option<String>,
         conversation_title: &str,
-    ) -> Result<usize> {
+        conversation_record_id: &surrealdb::RecordId,
+        message_record_ids: &[surrealdb::RecordId],
+    ) -> Result<NoteCreationStats> {
         let mut texts_to_embed: Vec<String> = Vec::new();
         let mut note_builders: Vec<(String, Option<String>)> = Vec::new();
 
@@ -862,8 +940,12 @@ impl LibrarianAgent {
         let embeddings = self.tei.embed_batch(&texts_to_embed, false).await?;
 
         // Create notes
-        let mut created = 0usize;
-        for ((content, title), embedding) in note_builders.into_iter().zip(embeddings.into_iter()) {
+        let mut stats = NoteCreationStats::default();
+        for (idx, ((content, title), embedding)) in note_builders
+            .into_iter()
+            .zip(embeddings.into_iter())
+            .enumerate()
+        {
             let mut note = Note::new(&content)
                 .with_type(NoteType::Synthesis)
                 .with_embedding(embedding)
@@ -888,17 +970,30 @@ impl LibrarianAgent {
                 debug!("Entity extraction failed (non-fatal): {}", e);
             }
 
-            created += 1;
+            stats.notes_created += 1;
+            stats.note_conversation_links_created += self
+                .link_note_to_conversation(&note, conversation_record_id)
+                .await?;
+
+            if let Some(message_id) = message_record_ids.get(qa_pairs[idx].human_idx) {
+                stats.note_message_links_created +=
+                    self.link_note_to_message(&note, message_id).await?;
+            }
+            if let Some(message_id) = message_record_ids.get(qa_pairs[idx].assistant_idx) {
+                stats.note_message_links_created +=
+                    self.link_note_to_message(&note, message_id).await?;
+            }
         }
 
-        Ok(created)
+        Ok(stats)
     }
 
     async fn create_summary_note(
         &self,
         conversation: &ChatConversation,
         source_id: Option<String>,
-    ) -> Result<()> {
+        conversation_record_id: &surrealdb::RecordId,
+    ) -> Result<NoteCreationStats> {
         let summary_title = format!("Summary: {}", conversation.display_title());
         let summary_content = format!(
             "**Conversation:** {}\n\n{}",
@@ -921,7 +1016,15 @@ impl LibrarianAgent {
             debug!("Entity extraction failed (non-fatal): {}", e);
         }
 
-        Ok(())
+        let mut stats = NoteCreationStats {
+            notes_created: 1,
+            ..Default::default()
+        };
+        stats.note_conversation_links_created += self
+            .link_note_to_conversation(&note, conversation_record_id)
+            .await?;
+
+        Ok(stats)
     }
 
     async fn create_message_notes(
@@ -930,9 +1033,11 @@ impl LibrarianAgent {
         messages: &[ChatMessage],
         indices: &[usize],
         source_id: Option<String>,
-    ) -> Result<usize> {
+        conversation_record_id: &surrealdb::RecordId,
+        message_record_ids: &[surrealdb::RecordId],
+    ) -> Result<NoteCreationStats> {
         if indices.is_empty() {
-            return Ok(0);
+            return Ok(NoteCreationStats::default());
         }
 
         let mut texts_to_embed = Vec::with_capacity(indices.len());
@@ -993,14 +1098,15 @@ impl LibrarianAgent {
                 );
                 let title = format!("{} message #{}", role_label, idx + 1);
                 texts_to_embed.push(content.clone());
-                builders.push((content, title, tags));
+                builders.push((content, title, tags, *idx));
             }
         }
 
         let embeddings = self.tei.embed_batch(&texts_to_embed, false).await?;
-        let mut created = 0usize;
+        let mut stats = NoteCreationStats::default();
 
-        for ((content, title, tags), embedding) in builders.into_iter().zip(embeddings.into_iter())
+        for ((content, title, tags, message_idx), embedding) in
+            builders.into_iter().zip(embeddings.into_iter())
         {
             let mut note = Note::new(content)
                 .with_type(NoteType::Raw)
@@ -1016,10 +1122,61 @@ impl LibrarianAgent {
             if let Err(e) = self.extract_and_link_entities(&note).await {
                 debug!("Entity extraction failed (non-fatal): {}", e);
             }
-            created += 1;
+            stats.notes_created += 1;
+            stats.note_conversation_links_created += self
+                .link_note_to_conversation(&note, conversation_record_id)
+                .await?;
+            if let Some(message_id) = message_record_ids.get(message_idx) {
+                stats.note_message_links_created +=
+                    self.link_note_to_message(&note, message_id).await?;
+            }
         }
 
+        Ok(stats)
+    }
+
+    async fn link_notes_to_conversation(
+        &self,
+        notes: &[Note],
+        conversation_record_id: &surrealdb::RecordId,
+    ) -> Result<usize> {
+        let mut created = 0usize;
+        for note in notes {
+            created += self
+                .link_note_to_conversation(note, conversation_record_id)
+                .await?;
+        }
         Ok(created)
+    }
+
+    async fn link_note_to_conversation(
+        &self,
+        note: &Note,
+        conversation_record_id: &surrealdb::RecordId,
+    ) -> Result<usize> {
+        if let Some(note_id) = &note.id {
+            let linked = self
+                .repo
+                .link_note_to_conversation(note_id, conversation_record_id)
+                .await?;
+            return Ok(if linked { 1 } else { 0 });
+        }
+        Ok(0)
+    }
+
+    async fn link_note_to_message(
+        &self,
+        note: &Note,
+        message_record_id: &surrealdb::RecordId,
+    ) -> Result<usize> {
+        if let Some(note_id) = &note.id {
+            let linked = self
+                .repo
+                .link_note_to_message(note_id, message_record_id)
+                .await?;
+            return Ok(if linked { 1 } else { 0 });
+        }
+        Ok(0)
     }
 
     /// Extract Q&A pairs from a list of messages and collect diagnostics
@@ -1211,6 +1368,14 @@ pub struct ChatImportResult {
     pub notes_from_summaries: usize,
     /// Number of notes created by markdown fallback chunking
     pub notes_from_fallback: usize,
+    /// Conversation records upserted into the conversation table
+    pub conversation_records_upserted: usize,
+    /// Message records upserted into the message table
+    pub message_records_upserted: usize,
+    /// Provenance links created from notes to conversations
+    pub note_conversation_links_created: usize,
+    /// Provenance links created from notes to messages
+    pub note_message_links_created: usize,
     /// Q&A pairs created
     pub qa_pairs_created: usize,
     /// Q&A candidates dropped due to short question

@@ -51,6 +51,35 @@ DEFINE FIELD content ON source TYPE option<string>;
 DEFINE FIELD metadata ON source TYPE option<object>;
 DEFINE FIELD created_at ON source TYPE datetime DEFAULT time::now();
 
+-- Conversations imported from chat exports
+DEFINE TABLE conversation SCHEMAFULL;
+DEFINE FIELD uuid ON conversation TYPE string;
+DEFINE FIELD title ON conversation TYPE option<string>;
+DEFINE FIELD summary ON conversation TYPE option<string>;
+DEFINE FIELD source_uri ON conversation TYPE option<string>;
+DEFINE FIELD account_uuid ON conversation TYPE option<string>;
+DEFINE FIELD metadata ON conversation TYPE option<object>;
+DEFINE FIELD created_at ON conversation TYPE datetime;
+DEFINE FIELD updated_at ON conversation TYPE datetime;
+DEFINE FIELD ingested_at ON conversation TYPE datetime DEFAULT time::now();
+
+-- Messages imported from chat exports
+DEFINE TABLE message SCHEMAFULL;
+DEFINE FIELD message_key ON message TYPE string;
+DEFINE FIELD message_uuid ON message TYPE option<string>;
+DEFINE FIELD conversation_id ON message TYPE record<conversation>;
+DEFINE FIELD conversation_uuid ON message TYPE string;
+DEFINE FIELD message_index ON message TYPE int;
+DEFINE FIELD role ON message TYPE string;
+DEFINE FIELD content ON message TYPE string;
+DEFINE FIELD content_blocks ON message TYPE option<array<object>>;
+DEFINE FIELD attachments ON message TYPE option<array<object>>;
+DEFINE FIELD files ON message TYPE option<array<object>>;
+DEFINE FIELD has_files ON message TYPE bool DEFAULT false;
+DEFINE FIELD created_at ON message TYPE option<datetime>;
+DEFINE FIELD updated_at ON message TYPE option<datetime>;
+DEFINE FIELD ingested_at ON message TYPE datetime DEFAULT time::now();
+
 -- ============================================
 -- GRAPH EDGE TABLES
 -- ============================================
@@ -89,6 +118,17 @@ DEFINE FIELD in ON mentions TYPE record<note>;
 DEFINE FIELD out ON mentions TYPE record<entity>;
 DEFINE FIELD created_at ON mentions TYPE datetime DEFAULT time::now();
 
+-- Note provenance relationships
+DEFINE TABLE note_from_conversation SCHEMAFULL;
+DEFINE FIELD in ON note_from_conversation TYPE record<note>;
+DEFINE FIELD out ON note_from_conversation TYPE record<conversation>;
+DEFINE FIELD created_at ON note_from_conversation TYPE datetime DEFAULT time::now();
+
+DEFINE TABLE note_from_message SCHEMAFULL;
+DEFINE FIELD in ON note_from_message TYPE record<note>;
+DEFINE FIELD out ON note_from_message TYPE record<message>;
+DEFINE FIELD created_at ON note_from_message TYPE datetime DEFAULT time::now();
+
 -- ============================================
 -- INDEXES
 -- ============================================
@@ -116,6 +156,12 @@ DEFINE INDEX idx_entity_type ON entity FIELDS entity_type;
 
 -- Source lookups
 DEFINE INDEX idx_source_uri ON source FIELDS uri;
+
+-- Conversation/message lookups
+DEFINE INDEX idx_conversation_uuid ON conversation FIELDS uuid UNIQUE;
+DEFINE INDEX idx_message_key ON message FIELDS message_key UNIQUE;
+DEFINE INDEX idx_message_conversation ON message FIELDS conversation_id;
+DEFINE INDEX idx_message_uuid ON message FIELDS message_uuid;
 
 -- Note type filtering
 DEFINE INDEX idx_note_type ON note FIELDS note_type;
