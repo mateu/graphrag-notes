@@ -9,10 +9,10 @@ pub const EMBEDDING_DIMENSION: usize = 1024;
 /// Initialize the database schema
 pub async fn initialize_schema(db: &DbConnection) -> Result<()> {
     info!("Initializing database schema...");
-    
+
     // Define tables and fields
     db.query(SCHEMA_DEFINITION).await?;
-    
+
     info!("Schema initialized successfully");
     Ok(())
 }
@@ -127,15 +127,15 @@ DEFINE INDEX idx_note_tags ON note FIELDS tags;
 #[cfg(test)]
 mod tests {
     use crate::init_memory;
-    
+
     #[tokio::test]
     async fn test_schema_initialization() {
         let db = init_memory().await.expect("Failed to init db");
-        
+
         // Verify tables exist by selecting from them
         let notes: Vec<serde_json::Value> = db.select("note").await.unwrap();
         assert!(notes.is_empty());
-        
+
         let entities: Vec<serde_json::Value> = db.select("entity").await.unwrap();
         assert!(entities.is_empty());
     }
