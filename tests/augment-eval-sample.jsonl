@@ -1,0 +1,3 @@
+{"name":"navidrome-overview","query":"navidrome self-hosted music server","scope":"all","limit":6,"expected_contains":["navidrome","music server"]}
+{"name":"homelab-gpu","query":"rtx 5060 homelab power","scope":"all","limit":6,"expected_contains":["rtx","homelab"]}
+{"name":"messages-only-support","query":"turtle beach dongle blinking","scope":"messages","limit":4,"expected_contains":["dongle","blinking"]}
