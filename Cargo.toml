@@ -17,8 +17,8 @@ license = "MIT"
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
 
-# SurrealDB
-surrealdb = { version = "2.2", features = ["kv-rocksdb", "kv-mem"] }
+# SurrealDB - minimal features in workspace, crates add what they need
+surrealdb = { version = "2.2", default-features = false }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -46,6 +46,20 @@ chrono = { version = "0.4", features = ["serde"] }
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.14"
+
+[profile.dev]
+# Optimize for compile speed during development/testing
+codegen-units = 16
+debug = 0
+incremental = true
+# Disable unwinding for faster compile and smaller binaries
+panic = "abort"
+# Strip debuginfo from binaries for faster linking
+strip = "debuginfo"
+
+[profile.test]
+# Test-specific profile inherits from dev but can be modified
+inherits = "dev"
 
 [profile.release]
 lto = true

@@ -1,0 +1,6 @@
+# Cargo configuration for optimized builds
+# Additional build optimizations can be added here
+
+[build]
+# Use sccache for faster compilation when available
+rustc-wrapper = "sccache"

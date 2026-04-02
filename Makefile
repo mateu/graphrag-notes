@@ -15,8 +15,10 @@ build-debug:
 test: test-rust
 
 # Run Rust tests (unit tests, no ML worker needed)
+# Uses --offline --locked for faster, reproducible builds
+# Requires sccache for optimal performance (see .cargo/config.toml)
 test-rust:
-	cargo test
+	cargo test --offline --locked
 
 # Run Rust integration tests (requires ML worker)
 test-rust-integration:

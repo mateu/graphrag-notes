@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 graphrag-core = { path = "../core" }
-graphrag-db = { path = "../db" }
+graphrag-db = { path = "../db", features = ["rocksdb"] }
 graphrag-agents = { path = "../agents" }
 
 tokio.workspace = true

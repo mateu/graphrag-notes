@@ -10,13 +10,16 @@ pub use error::{DbError, Result};
 pub use repository::Repository;
 
 use std::path::Path;
-use surrealdb::engine::local::{Db, Mem, RocksDb};
+use surrealdb::engine::local::{Db, Mem};
+#[cfg(feature = "rocksdb")]
+use surrealdb::engine::local::RocksDb;
 use surrealdb::Surreal;
 
 /// Database connection type
 pub type DbConnection = Surreal<Db>;
 
 /// Initialize database with RocksDB (persistent)
+#[cfg(feature = "rocksdb")]
 pub async fn init_persistent(path: impl AsRef<Path>) -> Result<DbConnection> {
     let db = Surreal::new::<RocksDb>(path.as_ref()).await?;
     setup_database(&db).await?;

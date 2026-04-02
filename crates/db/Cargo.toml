@@ -3,10 +3,14 @@ name = "graphrag-db"
 version.workspace = true
 edition = "2021"
 
+[features]
+default = ["rocksdb"]
+rocksdb = ["surrealdb/kv-rocksdb"]
+
 [dependencies]
 graphrag-core = { path = "../core" }
 
-surrealdb.workspace = true
+surrealdb = { workspace = true, default-features = false, features = ["kv-mem"] }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
