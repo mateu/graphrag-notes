@@ -1,5 +1,13 @@
 .PHONY: all build test clean run-ml run-cli setup
 
+# =============================================================================
+# PERFORMANCE NOTE:
+# This project uses sccache for fast builds. Install it:
+#   brew install sccache  (macOS)
+#   apt install sccache   (Linux)
+# The daemon starts automatically. See .cargo/config.toml for configuration.
+# =============================================================================
+
 # Default target
 all: build
 

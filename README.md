@@ -47,6 +47,8 @@ An evolving knowledge graph for your notes. Combines vector search, full-text se
 
 - Rust 1.75+ (install via [rustup](https://rustup.rs/))
 - Python 3.10+ with [uv](https://github.com/astral-sh/uv)
+- [sccache](https://github.com/mozilla/sccache) - for fast builds (optional but recommended)
+  - `brew install sccache` (macOS) or `apt install sccache` (Linux)
 
 ### 1. Start the ML Worker
 
