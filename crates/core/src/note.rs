@@ -43,7 +43,7 @@ pub struct Note {
     /// The actual content
     pub content: String,
 
-    /// Vector embedding (1536 dimensions for OpenAI, 384 for MiniLM)
+    /// Vector embedding (current Rust path uses 1024-dimensional embeddings)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub embedding: Vec<f32>,
 

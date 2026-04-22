@@ -10,9 +10,9 @@ pub use error::{DbError, Result};
 pub use repository::Repository;
 
 use std::path::Path;
-use surrealdb::engine::local::{Db, Mem};
 #[cfg(feature = "rocksdb")]
 use surrealdb::engine::local::RocksDb;
+use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 
 /// Database connection type

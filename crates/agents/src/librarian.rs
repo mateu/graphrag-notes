@@ -1625,6 +1625,6 @@ pub struct ChatImportResult {
 
 #[cfg(test)]
 mod tests {
-    // Integration tests require the ML worker running
+    // Integration tests require local inference backends
     // See tests/integration_test.rs
 }

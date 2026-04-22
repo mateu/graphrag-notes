@@ -4,11 +4,17 @@
 # Path to the database (relative to home directory)
 path = ".graphrag/data"
 
-[ml_worker]
-# URL of the Python ML worker
-url = "http://localhost:8100"
-# Timeout for ML requests in seconds
+[inference]
+# Embeddings backend (TEI by default, or Ollama when TEI_PROVIDER=ollama)
+embedding_url = "http://localhost:8081"
+# Entity extraction backend (TGI by default, or Ollama when TGI_PROVIDER=ollama)
+extraction_url = "http://localhost:8082"
+# Timeout for inference requests in seconds
 timeout_secs = 30
+# Optional local-Ollama defaults for the Rust inference clients
+ollama_url = "http://localhost:11434"
+embedding_model = "bge-m3:latest"
+extraction_model = "phi4-mini:latest"
 
 [search]
 # Default number of results to return

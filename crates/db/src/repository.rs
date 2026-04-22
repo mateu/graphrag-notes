@@ -153,17 +153,22 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
-        // Run vector search
+        // Pull a wider candidate pool from each retrieval mode, then rerank.
+        let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
+
         let vec_results = self
-            .vector_search_notes(embedding.clone(), limit, since, source_uri.clone())
+            .vector_search_notes(
+                embedding.clone(),
+                candidate_limit,
+                since,
+                source_uri.clone(),
+            )
             .await?;
 
-        // Run fulltext search
         let fts_results = self
-            .fulltext_search_notes(query_text, limit, since, source_uri)
+            .fulltext_search_notes(query_text, candidate_limit, since, source_uri)
             .await?;
 
-        // Merge results using HashMap to deduplicate and combine scores
         use std::collections::hash_map::Entry;
         let mut map = std::collections::HashMap::new();
 
@@ -174,9 +179,18 @@ impl Repository {
         for r in fts_results {
             match map.entry(r.id.clone()) {
                 Entry::Occupied(mut e) => {
-                    // Update existing with fts_score if present
+                    let existing = e.get_mut();
+                    if existing.title.is_none() {
+                        existing.title = r.title.clone();
+                    }
+                    if existing.content.is_empty() {
+                        existing.content = r.content.clone();
+                    }
+                    if existing.tags.is_empty() {
+                        existing.tags = r.tags.clone();
+                    }
                     if let Some(score) = r.fts_score {
-                        e.get_mut().fts_score = Some(score);
+                        existing.fts_score = Some(score);
                     }
                 }
                 Entry::Vacant(e) => {
@@ -185,7 +199,14 @@ impl Repository {
             }
         }
 
-        let results: Vec<SearchResult> = map.into_values().collect();
+        let mut results: Vec<SearchResult> = map.into_values().collect();
+        results.sort_by(|a, b| {
+            hybrid_rank_score(b.vec_distance, b.fts_score)
+                .total_cmp(&hybrid_rank_score(a.vec_distance, a.fts_score))
+        });
+        if results.len() > limit {
+            results.truncate(limit);
+        }
         Ok(results)
     }
 
@@ -262,7 +283,7 @@ impl Repository {
                     note_type,
                     tags,
                     created_at,
-                    search::score(0) + search::score(1) AS fts_score
+                    (search::score(0) * 0.7 + search::score(1) * 0.3) AS fts_score
                 FROM note
                 WHERE (content @0@ $query OR title @1@ $query)
                   AND ($since = NONE OR created_at >= <datetime>$since)
@@ -291,11 +312,18 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<MessageSearchResult>> {
+        let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
+
         let vec_results = self
-            .vector_search_messages(embedding.clone(), limit, since, source_uri.clone())
+            .vector_search_messages(
+                embedding.clone(),
+                candidate_limit,
+                since,
+                source_uri.clone(),
+            )
             .await?;
         let fts_results = self
-            .fulltext_search_messages(query_text, limit, since, source_uri)
+            .fulltext_search_messages(query_text, candidate_limit, since, source_uri)
             .await?;
 
         use std::collections::hash_map::Entry;
@@ -318,7 +346,16 @@ impl Repository {
             }
         }
 
-        Ok(map.into_values().collect())
+        let mut results: Vec<MessageSearchResult> = map.into_values().collect();
+        results.sort_by(|a, b| {
+            hybrid_rank_score(b.vec_distance, b.fts_score)
+                .total_cmp(&hybrid_rank_score(a.vec_distance, a.fts_score))
+        });
+        if results.len() > limit {
+            results.truncate(limit);
+        }
+
+        Ok(results)
     }
 
     #[instrument(skip(self, embedding))]
@@ -409,16 +446,18 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<ConversationSearchResult>> {
+        let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
+
         let vec_results = self
             .vector_search_conversation_summaries(
                 embedding.clone(),
-                limit,
+                candidate_limit,
                 since,
                 source_uri.clone(),
             )
             .await?;
         let fts_results = self
-            .fulltext_search_conversation_summaries(query_text, limit, since, source_uri)
+            .fulltext_search_conversation_summaries(query_text, candidate_limit, since, source_uri)
             .await?;
 
         use std::collections::hash_map::Entry;
@@ -441,7 +480,16 @@ impl Repository {
             }
         }
 
-        Ok(map.into_values().collect())
+        let mut results: Vec<ConversationSearchResult> = map.into_values().collect();
+        results.sort_by(|a, b| {
+            hybrid_rank_score(b.vec_distance, b.fts_score)
+                .total_cmp(&hybrid_rank_score(a.vec_distance, a.fts_score))
+        });
+        if results.len() > limit {
+            results.truncate(limit);
+        }
+
+        Ok(results)
     }
 
     #[instrument(skip(self, embedding))]
@@ -501,7 +549,7 @@ impl Repository {
                     summary,
                     source_uri,
                     updated_at,
-                    search::score(0) + search::score(1) AS fts_score
+                    (search::score(0) * 0.7 + search::score(1) * 0.3) AS fts_score
                 FROM conversation
                 WHERE (summary @0@ $query OR title @1@ $query)
                   AND ($since = NONE OR updated_at >= <datetime>$since)
@@ -1268,6 +1316,16 @@ pub struct ConversationSearchResult {
     pub fts_score: Option<f32>,
 }
 
+fn hybrid_rank_score(vec_distance: Option<f32>, fts_score: Option<f32>) -> f32 {
+    let vec_component = vec_distance
+        .map(|distance| 1.0 / (1.0 + distance.max(0.0)))
+        .unwrap_or(0.0);
+    let fts_component = fts_score
+        .map(|score| (score / 10.0).min(1.0))
+        .unwrap_or(0.0);
+    (vec_component * 0.65) + (fts_component * 0.35)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RelatedNotes {
     #[serde(default)]
@@ -1344,5 +1402,34 @@ mod tests {
 
         let notes = repo.list_notes(10).await.unwrap();
         assert_eq!(notes.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_search_small_limit_keeps_relevant_note() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db);
+
+        let rust_embedding = vec![1.0_f32; 1024];
+        let distractor_embedding = vec![0.05_f32; 1024];
+
+        let rust_note = Note::new("Rust is memory-safe and fast")
+            .with_title("Rust note")
+            .with_embedding(rust_embedding.clone());
+        repo.create_note(rust_note).await.unwrap();
+
+        for i in 0..60 {
+            let note = Note::new(format!("Distractor content {}", i))
+                .with_title(format!("Distractor {}", i))
+                .with_embedding(distractor_embedding.clone());
+            repo.create_note(note).await.unwrap();
+        }
+
+        let results = repo
+            .hybrid_search_notes("Rust note", rust_embedding, 3, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].title.as_deref(), Some("Rust note"));
     }
 }

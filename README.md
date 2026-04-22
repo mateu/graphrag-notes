@@ -1,10 +1,10 @@
 # GraphRAG Notes
 
-An evolving knowledge graph for your notes. Combines vector search, full-text search, and graph relationships to help you connect ideas.
+A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, and graph/provenance links.
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                        CLI / Future Web UI                      │
 └─────────────────────────────────────────────────────────────────┘
@@ -25,87 +25,134 @@ An evolving knowledge graph for your notes. Combines vector search, full-text se
                           HTTP/JSON
                                 │
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Python ML Worker                           │
-│  ┌─────────────────────┐  ┌─────────────────────┐              │
-│  │  Embeddings         │  │  Entity Extraction  │              │
-│  │  (MiniLM-L6-v2)     │  │  (Pattern-based)    │              │
-│  └─────────────────────┘  └─────────────────────┘              │
+│                    Inference Backends                           │
+│                                                                 │
+│  Embeddings: TEI or Ollama                                      │
+│  Extraction: TGI or Ollama                                      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
 
-- **Hybrid Search**: Combines semantic (vector) search with keyword (full-text) search
-- **Knowledge Graph**: Notes connect via typed relationships (supports, contradicts, related_to)
-- **Entity Extraction**: Automatically identifies concepts, technologies, dates
-- **Gardener Agent**: Finds orphan notes and suggests connections
-- **Local-First**: All data stored locally, ML runs locally (no API keys needed)
+- **Hybrid Search**: combines semantic (vector) search with keyword (full-text) search
+- **Knowledge Graph**: notes connect via typed relationships (`supports`, `contradicts`, `related_to`)
+- **Entity Extraction**: local structured extraction via TGI or Ollama
+- **Gardener Agent**: finds orphan notes and suggests connections
+- **Local-First**: all data stored locally, inference runs locally
+- **Chat Retrieval**: import chats, search messages, and build prompt-ready augmentation context with citations
+
+## Runtime model
+
+The current implementation is **Rust-first**.
+
+The CLI talks directly to inference services via Rust clients:
+- `TeiClient` for embeddings
+- `TgiClient` for extraction
+
+Supported backend modes:
+- **Default:** TEI + TGI
+- **Alternative:** Ollama for embeddings and extraction
+
+### Default endpoints
+
+- `TEI_URL=http://localhost:8081`
+- `TGI_URL=http://localhost:8082`
+- `TEI_PROVIDER=tei`
+- `TGI_PROVIDER=tgi`
+
+### Ollama mode
+
+Set:
+
+```bash
+export TEI_PROVIDER=ollama
+export TGI_PROVIDER=ollama
+```
+
+Defaults:
+- Ollama URL: `http://localhost:11434`
+- Embedding model: `bge-m3:latest` (matches the repo's 1024-dim schema)
+- Extraction model: `phi4-mini:latest`
 
 ## Quick Start
 
 ### Prerequisites
 
 - Rust 1.75+ (install via [rustup](https://rustup.rs/))
-- Python 3.10+ with [uv](https://github.com/astral-sh/uv)
-- [sccache](https://github.com/mozilla/sccache) - for fast builds (optional but recommended)
-  - `brew install sccache` (macOS) or `apt install sccache` (Linux)
+- Running local inference backends:
+  - either **TEI + TGI**
+  - or **Ollama**
+- [sccache](https://github.com/mozilla/sccache) optional but recommended for fast builds
 
-### 1. Start the ML Worker
+### 1. Start inference backends
+
+#### Option A: TEI + TGI via Docker Compose
 
 ```bash
-cd python
-uv sync
-uv run python -m ml_worker.server
+docker compose up -d
 ```
 
-The ML worker runs on `http://localhost:8100` and provides:
-- `/embed` - Generate embeddings for text
-- `/extract-entities` - Extract entities from text
-- `/health` - Health check
+This starts:
+- TEI embeddings on `http://localhost:8081`
+- TGI extraction on `http://localhost:8082`
+
+#### Option B: Ollama
+
+Make sure Ollama is running, then set:
+
+```bash
+export TEI_PROVIDER=ollama
+export TGI_PROVIDER=ollama
+```
+
+Recommended local models:
+
+```bash
+export TEI_URL=http://localhost:11434
+export TGI_URL=http://localhost:11434
+export TEI_MODEL=bge-m3:latest
+export TGI_MODEL=phi4-mini:latest
+```
+
+You can verify the embedding model matches the schema with:
+
+```bash
+cargo run -q -p graphrag-cli -- embedding-dim
+```
+
+Expected output:
+
+```text
+Embedding dimension: 1024
+```
 
 ### 2. Build and Run the CLI
 
 ```bash
-# Build
 cargo build --release
-
-# Or run directly
 cargo run --release -p graphrag-cli -- --help
 ```
 
 ### 3. Add Some Notes
 
 ```bash
-# Add a note directly
 graphrag add "Machine learning models learn patterns from data"
-
-# Add with a title
 graphrag add "Neural networks are inspired by biological brains" --title "Neural Networks Basics"
-
-# Add with tags
-graphrag add "Python is great for ML" --tags "python,ml,programming"
-
-# Import from a file
+graphrag add "Rust is a solid fit for local tooling" --tags "rust,systems,tooling"
 graphrag import notes.md
 ```
 
 ### 4. Search Your Notes
 
 ```bash
-# Hybrid search (vector + full-text)
 graphrag search "how do neural networks work"
-
-# With graph context (shows related notes)
 graphrag search "machine learning" --context
 ```
 
 ### 5. Run the Gardener
 
 ```bash
-# See what the gardener would do
 graphrag garden --dry-run
-
-# Apply high-confidence connections automatically
 graphrag garden
 ```
 
@@ -121,36 +168,51 @@ graphrag interactive
 |---------|-------------|
 | `add <content>` | Add a new note |
 | `import <file>` | Import notes from a markdown file |
-| `search <query>` | Search notes |
+| `import-chats <file>` | Import chat export data |
+| `migrate-chats <file>` | Migrate chats into conversation/message tables |
+| `search <query>` | Search notes, messages, or all |
+| `augment <query>` | Build prompt-ready retrieval context with citations |
+| `eval-augment <file>` | Evaluate augmentation retrieval quality |
 | `list` | List recent notes |
 | `garden` | Run maintenance (find orphans, suggest connections) |
 | `stats` | Show database statistics |
 | `interactive` | Interactive REPL mode |
+| `embedding-dim` | Show embedding dimension for the active provider |
+| `extract-entities` | Extract entities for notes missing entity links |
 
 ## Development
 
 ### Run Tests
 
-```bash
-# Rust tests
-cargo test
+Basic test suite:
 
-# Python tests
-cd python
-uv run pytest
+```bash
+cargo --config 'build.rustc-wrapper = ""' test
+```
+
+Inference-backed integration test with local Ollama:
+
+```bash
+TEI_PROVIDER=ollama \
+TGI_PROVIDER=ollama \
+TEI_URL=http://localhost:11434 \
+TGI_URL=http://localhost:11434 \
+TEI_MODEL=bge-m3:latest \
+TGI_MODEL=phi4-mini:latest \
+cargo --config 'build.rustc-wrapper = ""' test -p graphrag-agents --test integration_test -- --ignored
 ```
 
 ### Project Structure
 
-```
+```text
 graphrag-notes/
 ├── crates/
-│   ├── core/      # Domain types (Note, Entity, Edge)
-│   ├── db/        # SurrealDB layer
-│   ├── agents/    # Librarian, Search, Gardener
+│   ├── core/      # Domain types (notes, entities, edges, chat export)
+│   ├── db/        # SurrealDB layer and schema
+│   ├── agents/    # Librarian, Search, Gardener, inference clients
 │   └── cli/       # Command-line interface
-└── python/
-    └── src/ml_worker/  # Embedding & entity extraction
+├── docker/
+└── tests/
 ```
 
 ## How It Works
@@ -158,41 +220,40 @@ graphrag-notes/
 ### Data Model
 
 **Notes** are the atomic units of knowledge:
-- Content (the actual text)
-- Embedding (384-dim vector from MiniLM)
-- Type (claim, definition, observation, etc.)
-- Tags (user-defined)
+- content
+- embedding (currently 1024-dim in the Rust path)
+- type (claim, definition, observation, etc.)
+- tags
 
 **Entities** are extracted concepts:
-- People, organizations, technologies, concepts
-- Canonical names for deduplication
+- people, organizations, technologies, concepts
+- canonical names for deduplication
 
 **Edges** are typed relationships:
-- `supports` - one note supports another
-- `contradicts` - notes are in conflict
-- `related_to` - semantic similarity
-- `mentions` - note mentions an entity
+- `supports`
+- `contradicts`
+- `related_to`
+- `mentions`
+- provenance links from notes to imported conversations/messages
 
 ### Search Pipeline
 
-1. **Query Understanding**: Convert query to embedding
-2. **Parallel Retrieval**:
-   - Vector search (semantic similarity)
-   - Full-text search (keyword matching)
-3. **Merge & Rerank**: Combine results
-4. **Graph Enrichment**: Add related notes
+1. convert query to embedding
+2. retrieve from vector and full-text search
+3. merge and rerank
+4. optionally enrich with graph context
 
 ### Agent Roles
 
 | Agent | Trigger | Purpose |
 |-------|---------|---------|
 | Librarian | New content | Ingest, embed, extract entities |
-| Search | User query | Fast hybrid search |
+| Search | User query | Fast hybrid retrieval |
 | Gardener | Scheduled/manual | Find orphans, suggest links |
 
 ## Future Plans
 
-- [ ] Alchemist Agent (synthesis, "state of knowledge" docs)
+- [ ] Alchemist Agent (synthesis / state-of-knowledge docs)
 - [ ] Critic Agent (find contradictions, gaps)
 - [ ] PDF/voice ingestion
 - [ ] Web UI
@@ -201,48 +262,3 @@ graphrag-notes/
 ## License
 
 MIT
-
-## Rust & Python development quick reference
-
-### Rust (service & CLI)
-
-- Crates:
-  - `crates/core`: graph domain types (notes, entities, edges, sources) and shared logic
-  - `crates/db`: SQLite persistence and schema helpers
-  - `crates/agents`: Librarian, Search, Gardener agents plus ML client
-  - `crates/cli`: `graphrag` command-line interface
-- Build:
-  ```bash
-  cargo build --release
-  ```
-- Run CLI:
-  ```bash
-  cargo run --release -p graphrag-cli -- --help
-  ```
-- Tests:
-  ```bash
-  cargo test
-  ```
-
-### Python (ML worker)
-
-- Location: `python/src/ml_worker`
-- Tooling: `uv` (Python project manager)
-- Setup env:
-  ```bash
-  cd python
-  uv sync
-  ```
-- Run server:
-  ```bash
-  cd python
-  uv run python -m ml_worker.server
-  ```
-- Tests:
-  ```bash
-  cd python
-  uv run pytest
-  ```
-
-The Rust CLI expects the Python ML worker to be running at `http://localhost:8100`.
-

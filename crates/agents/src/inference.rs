@@ -10,7 +10,7 @@ use tracing::{debug, info};
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
 const DEFAULT_TEI_PROVIDER: &str = "tei";
-const DEFAULT_OLLAMA_EMBED_MODEL: &str = "nomic-embed-text:latest";
+const DEFAULT_OLLAMA_EMBED_MODEL: &str = "bge-m3:latest";
 const DEFAULT_TGI_URL: &str = "http://localhost:8082";
 const DEFAULT_TGI_PROVIDER: &str = "tgi";
 const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";

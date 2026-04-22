@@ -1,11 +1,8 @@
 #!/bin/bash
-# Setup script for GraphRAG Notes
-
 set -e
 
 echo "🚀 Setting up GraphRAG Notes..."
 
-# Install system deps needed for Rust builds (openssl + clang for bindgen)
 OS_NAME="$(uname -s)"
 if [ "$OS_NAME" = "Linux" ]; then
     if command -v apt-get >/dev/null 2>&1; then
@@ -25,11 +22,9 @@ elif [ "$OS_NAME" = "Darwin" ]; then
     fi
 fi
 
-# Check/install prerequisites (portable across macOS and Linux)
 if ! command -v cargo >/dev/null 2>&1; then
     echo "❌ Rust not found. Installing via rustup from https://rustup.rs/ ..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    # shellcheck disable=SC1090
     if [ -f "$HOME/.cargo/env" ]; then
         . "$HOME/.cargo/env"
     fi
@@ -38,22 +33,6 @@ if ! command -v cargo >/dev/null 2>&1; then
         exit 1
     fi
 fi
-
-if ! command -v uv >/dev/null 2>&1; then
-    echo "❌ uv not found. Installing via https://astral.sh/uv/install.sh ..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # uv installer typically adjusts PATH via shell rc; try a rehash
-    if ! command -v uv >/dev/null 2>&1; then
-        echo "⚠️ uv was installed but is not yet on PATH. Please restart your shell or source your shell rc file, then re-run ./setup.sh or make setup."
-        exit 1
-    fi
-fi
-
-# Setup Python environment
-echo "📦 Setting up Python ML worker..."
-cd python
-uv sync
-cd ..
 
 echo "🔨 Building Rust CLI..."
 FORCE_BUILD=0
@@ -70,17 +49,14 @@ fi
 echo ""
 echo "✅ Setup complete!"
 echo ""
-echo "To get started:"
+echo "Next steps:"
+echo "1. Start inference backends (TEI/TGI via docker compose, or Ollama)"
+echo "2. Run: ./target/release/graphrag --help"
 echo ""
-echo "1. Start the ML worker (in one terminal):"
-echo "   cd python && uv run python -m ml_worker.server"
+echo "Default backend endpoints:"
+echo "  TEI_URL=http://localhost:8081"
+echo "  TGI_URL=http://localhost:8082"
 echo ""
-echo "2. Use the CLI (in another terminal):"
-echo "   ./target/release/graphrag --help"
-echo ""
-echo "   Or add some notes:"
-echo "   ./target/release/graphrag add \"Your first note\""
-echo ""
-echo "   Search:"
-echo "   ./target/release/graphrag search \"your query\""
-echo ""
+echo "Ollama alternative:"
+echo "  export TEI_PROVIDER=ollama"
+echo "  export TGI_PROVIDER=ollama"
