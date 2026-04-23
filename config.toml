@@ -2,7 +2,7 @@
 
 [database]
 # Path to the database (relative to home directory)
-path = ".graphrag/data"
+path = ".graphrag/data-v3"
 
 [inference]
 # Embeddings backend (TEI by default, or Ollama when TEI_PROVIDER=ollama)
