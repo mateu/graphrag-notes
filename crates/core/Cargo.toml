@@ -10,3 +10,4 @@ uuid.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 surrealdb.workspace = true
+surrealdb-types.workspace = true

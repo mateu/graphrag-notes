@@ -8,7 +8,7 @@ use graphrag_agents::{
     AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, LibrarianAgent, SearchAgent,
     SearchHitType, SearchScope, TeiClient, TgiClient,
 };
-use graphrag_core::ChatExport;
+use graphrag_core::{record_id_to_string, ChatExport};
 use graphrag_db::{init_memory, init_persistent, Repository};
 use serde::Deserialize;
 use std::io::{self, BufRead, Write};
@@ -16,12 +16,19 @@ use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
+fn default_db_path() -> PathBuf {
+    let mut path = dirs::home_dir().expect("Could not find home directory");
+    path.push(".graphrag");
+    path.push("data-v3");
+    path
+}
+
 /// GraphRAG Notes - An evolving knowledge graph for your notes
 #[derive(Parser)]
 #[command(name = "graphrag")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Database path (defaults to ~/.graphrag/data)
+    /// Database path (defaults to ~/.graphrag/data-v3)
     #[arg(short, long)]
     db_path: Option<PathBuf>,
 
@@ -261,7 +268,7 @@ enum Commands {
 
     /// Delete the local database (fresh start)
     ResetDb {
-        /// Database path (defaults to ~/.graphrag/data)
+        /// Database path (defaults to ~/.graphrag/data-v3)
         #[arg(short, long)]
         db_path: Option<PathBuf>,
     },
@@ -342,12 +349,7 @@ async fn main() -> Result<()> {
 
     // Initialize database
     if let Commands::ResetDb { db_path } = &cli.command {
-        let path = db_path.clone().unwrap_or_else(|| {
-            let mut path = dirs::home_dir().expect("Could not find home directory");
-            path.push(".graphrag");
-            path.push("data");
-            path
-        });
+        let path = db_path.clone().unwrap_or_else(default_db_path);
 
         if path.exists() {
             std::fs::remove_dir_all(&path)
@@ -366,12 +368,7 @@ async fn main() -> Result<()> {
         info!("Using in-memory database");
         init_memory().await?
     } else {
-        let db_path = cli.db_path.unwrap_or_else(|| {
-            let mut path = dirs::home_dir().expect("Could not find home directory");
-            path.push(".graphrag");
-            path.push("data");
-            path
-        });
+        let db_path = cli.db_path.unwrap_or_else(default_db_path);
 
         // Ensure directory exists
         if let Some(parent) = db_path.parent() {
@@ -631,7 +628,7 @@ async fn cmd_add(
         "✓ Created note: {}",
         note.id
             .as_ref()
-            .map(|id| id.to_string())
+            .map(record_id_to_string)
             .unwrap_or_else(|| "(no id)".to_string())
     );
 
@@ -971,8 +968,8 @@ async fn cmd_list_edges(repo: Repository, limit: usize) -> Result<()> {
         println!(
             "  • {}: {} -> {} (confidence: {}){}",
             edge.edge_type,
-            edge.in_id,
-            edge.out_id,
+            record_id_to_string(&edge.in_id),
+            record_id_to_string(&edge.out_id),
             confidence,
             if reason.is_empty() {
                 "".into()
@@ -1001,8 +998,8 @@ async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Result<()> {
         println!(
             "  • {}: {} -> {} (confidence: {}){}",
             edge.edge_type,
-            edge.in_id,
-            edge.out_id,
+            record_id_to_string(&edge.in_id),
+            record_id_to_string(&edge.out_id),
             confidence,
             if reason.is_empty() {
                 "".into()
@@ -1046,7 +1043,7 @@ async fn cmd_search(
         for (i, result) in results.iter().enumerate() {
             let r = &result.result;
             println!("{}. {}", i + 1, r.title.as_deref().unwrap_or("(untitled)"));
-            println!("   ID: {}", r.id);
+            println!("   ID: {}", record_id_to_string(&r.id));
             println!("   Type: {}", r.note_type);
 
             // Truncate content for display
@@ -1445,7 +1442,7 @@ async fn cmd_list(repo: Repository, limit: usize) -> Result<()> {
 
     for note in notes {
         let title = note.title.as_deref().unwrap_or("(untitled)");
-        let id = note.id.to_string();
+        let id = record_id_to_string(&note.id);
         let preview: String = note.content.chars().take(80).collect();
 
         println!("• {} [{}]", title, id);
@@ -1572,7 +1569,7 @@ async fn cmd_interactive(repo: Repository, tei: TeiClient, tgi: TgiClient) -> Re
                         "✓ Added: {}",
                         note.id
                             .as_ref()
-                            .map(|id| id.to_string())
+                            .map(record_id_to_string)
                             .unwrap_or_else(|| "(no id)".to_string())
                     ),
                     Err(e) => println!("Error: {}", e),

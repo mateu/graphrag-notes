@@ -1,7 +1,7 @@
 //! Gardener Agent - Maintains graph connections
 
 use crate::Result;
-use graphrag_core::{EdgeType, Note};
+use graphrag_core::{record_id_to_string, EdgeType, Note};
 use graphrag_db::Repository;
 use tracing::{debug, info, instrument};
 
@@ -70,7 +70,7 @@ impl GardenerAgent {
             }
 
             let note_id = match orphan.id.as_ref() {
-                Some(id) => id.key().to_string(),
+                Some(id) => record_id_to_string(id),
                 None => {
                     debug!("Skipping orphan without id");
                     continue;
@@ -90,7 +90,7 @@ impl GardenerAgent {
 
             for sim in similar {
                 // Get the full target note
-                let target_id = sim.id.key().to_string();
+                let target_id = record_id_to_string(&sim.id);
                 if let Some(target_note) = self.repo.get_note(&target_id).await? {
                     suggestions.push(SuggestedConnection {
                         from_note: orphan.clone(),
@@ -136,7 +136,7 @@ impl GardenerAgent {
             .await?;
 
         info!(
-            "Created {:?} edge from {} to {}",
+            "Created {:?} edge from {:?} to {:?}",
             suggestion.edge_type, from_id, to_id
         );
 

@@ -2,11 +2,15 @@
 
 use crate::{Result, TeiClient};
 use chrono::{Duration, Utc};
+use graphrag_core::record_id_to_string;
 use graphrag_db::repository::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };
 use graphrag_db::Repository;
+
 use std::collections::HashSet;
+
+
 use tracing::{debug, info, instrument};
 
 /// Search result with optional graph context
@@ -315,7 +319,7 @@ impl SearchAgent {
         let score = Self::rank_score(result.vec_distance, result.fts_score);
         ScopedSearchResult {
             hit_type: SearchHitType::Note,
-            id: result.id.to_string(),
+            id: record_id_to_string(&result.id),
             title: result.title,
             content: result.content,
             created_at: Some(result.created_at),
@@ -330,7 +334,7 @@ impl SearchAgent {
         let score = Self::rank_score(result.vec_distance, result.fts_score);
         ScopedSearchResult {
             hit_type: SearchHitType::Message,
-            id: result.id.to_string(),
+            id: record_id_to_string(&result.id),
             title: Some(format!(
                 "{} message #{}",
                 result.role,
@@ -354,7 +358,7 @@ impl SearchAgent {
         let content = result.summary.unwrap_or_default();
         ScopedSearchResult {
             hit_type: SearchHitType::ConversationSummary,
-            id: result.id.to_string(),
+            id: record_id_to_string(&result.id),
             title,
             content,
             created_at: Some(result.updated_at),

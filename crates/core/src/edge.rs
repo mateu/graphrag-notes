@@ -2,10 +2,11 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use surrealdb::RecordId;
+use surrealdb::types::RecordId;
+use surrealdb_types::SurrealValue;
 
 /// Types of relationships between notes
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, SurrealValue)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeType {
     /// One note supports/confirms another
@@ -39,7 +40,7 @@ impl std::fmt::Display for EdgeType {
 }
 
 /// An edge/relationship in the knowledge graph
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct Edge {
     /// Unique identifier (SurrealDB generates this)
     pub id: Option<RecordId>,
@@ -97,7 +98,7 @@ impl Edge {
 }
 
 /// A suggested edge that needs user confirmation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct SuggestedEdge {
     pub edge: Edge,
     /// Why this edge was suggested

@@ -2,8 +2,8 @@
 
 use crate::{Result, TeiClient, TgiClient};
 use graphrag_core::{
-    ChatConversation, ChatExport, ChatMessage, Entity, EntityType, MessageRole, Note, NoteType,
-    Source, SourceType,
+    record_id_to_string, ChatConversation, ChatExport, ChatMessage, Entity, EntityType,
+    MessageRole, Note, NoteType, Source, SourceType,
 };
 use graphrag_db::Repository;
 use std::collections::HashSet;
@@ -198,7 +198,7 @@ impl LibrarianAgent {
         }
 
         if let Some(sid) = source_id {
-            note = note.with_source(sid.to_string());
+            note = note.with_source(record_id_to_string(&sid));
         }
 
         let note = self.repo.create_note(note).await?;
@@ -225,7 +225,7 @@ impl LibrarianAgent {
         // Create source
         let source = Source::from_file(path, SourceType::Markdown).with_content(content.clone());
         let source = self.repo.create_source(source).await?;
-        let source_id = source.id.as_ref().map(|id| id.to_string());
+        let source_id = source.id.as_ref().map(record_id_to_string);
 
         // For MVP, treat the whole file as one note
         // Future: parse markdown and create atomic notes
@@ -347,7 +347,7 @@ impl LibrarianAgent {
             let note_id = note
                 .id
                 .as_ref()
-                .map(|id| id.to_string())
+                .map(record_id_to_string)
                 .unwrap_or_else(|| "<unknown>".to_string());
             let note_len = note.content.len();
             if log_each {
@@ -447,7 +447,7 @@ impl LibrarianAgent {
                 let note_id = note
                     .id
                     .as_ref()
-                    .map(|id| id.to_string())
+                    .map(record_id_to_string)
                     .unwrap_or_else(|| "<unknown>".to_string());
                 let note_len = note.content.len();
                 if log_each {
@@ -541,7 +541,7 @@ impl LibrarianAgent {
             let note_id = note
                 .id
                 .as_ref()
-                .map(|id| id.to_string())
+                .map(record_id_to_string)
                 .unwrap_or_else(|| "<unknown>".to_string());
             let note_len = note.content.len();
             if log_each {
@@ -959,7 +959,7 @@ impl LibrarianAgent {
             "summary": &conversation.summary,
         }));
         let source = self.repo.create_source(source).await?;
-        let source_id = source.id.as_ref().map(|id| id.to_string());
+        let source_id = source.id.as_ref().map(record_id_to_string);
 
         if !conversation.summary.is_empty() {
             let summary_stats = self
@@ -1109,8 +1109,8 @@ impl LibrarianAgent {
         qa_pairs: &[QaPair],
         source_id: Option<String>,
         conversation_title: &str,
-        conversation_record_id: &surrealdb::RecordId,
-        message_record_ids: &[surrealdb::RecordId],
+        conversation_record_id: &surrealdb::types::RecordId,
+        message_record_ids: &[surrealdb::types::RecordId],
     ) -> Result<NoteCreationStats> {
         let mut texts_to_embed: Vec<String> = Vec::new();
         let mut note_builders: Vec<(String, Option<String>)> = Vec::new();
@@ -1182,7 +1182,7 @@ impl LibrarianAgent {
         &self,
         conversation: &ChatConversation,
         source_id: Option<String>,
-        conversation_record_id: &surrealdb::RecordId,
+        conversation_record_id: &surrealdb::types::RecordId,
     ) -> Result<NoteCreationStats> {
         let summary_title = format!("Summary: {}", conversation.display_title());
         let summary_content = format!(
@@ -1223,8 +1223,8 @@ impl LibrarianAgent {
         messages: &[ChatMessage],
         indices: &[usize],
         source_id: Option<String>,
-        conversation_record_id: &surrealdb::RecordId,
-        message_record_ids: &[surrealdb::RecordId],
+        conversation_record_id: &surrealdb::types::RecordId,
+        message_record_ids: &[surrealdb::types::RecordId],
     ) -> Result<NoteCreationStats> {
         if indices.is_empty() {
             return Ok(NoteCreationStats::default());
@@ -1328,7 +1328,7 @@ impl LibrarianAgent {
     async fn link_notes_to_conversation(
         &self,
         notes: &[Note],
-        conversation_record_id: &surrealdb::RecordId,
+        conversation_record_id: &surrealdb::types::RecordId,
     ) -> Result<usize> {
         let mut created = 0usize;
         for note in notes {
@@ -1342,7 +1342,7 @@ impl LibrarianAgent {
     async fn link_note_to_conversation(
         &self,
         note: &Note,
-        conversation_record_id: &surrealdb::RecordId,
+        conversation_record_id: &surrealdb::types::RecordId,
     ) -> Result<usize> {
         if let Some(note_id) = &note.id {
             let linked = self
@@ -1357,7 +1357,7 @@ impl LibrarianAgent {
     async fn link_note_to_message(
         &self,
         note: &Note,
-        message_record_id: &surrealdb::RecordId,
+        message_record_id: &surrealdb::types::RecordId,
     ) -> Result<usize> {
         if let Some(note_id) = &note.id {
             let linked = self

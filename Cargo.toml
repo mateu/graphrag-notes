@@ -18,7 +18,8 @@ license = "MIT"
 tokio = { version = "1.43", features = ["full"] }
 
 # SurrealDB - minimal features in workspace, crates add what they need
-surrealdb = { version = "2.2", default-features = false }
+surrealdb = { version = "3", default-features = false }
+surrealdb-types = "3"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
