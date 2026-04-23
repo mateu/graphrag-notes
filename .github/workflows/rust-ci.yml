@@ -27,4 +27,4 @@ jobs:
         run: cargo check --workspace
 
       - name: Cargo test
-        run: cargo test --workspace --quiet
+        run: cargo test --workspace --quiet -- --test-threads=1
