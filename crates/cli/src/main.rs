@@ -16,6 +16,13 @@ use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
+fn default_db_path() -> PathBuf {
+    let mut path = dirs::home_dir().expect("Could not find home directory");
+    path.push(".graphrag");
+    path.push("data-v3");
+    path
+}
+
 fn record_id_to_string(id: &surrealdb_types::RecordId) -> String {
     match &id.key {
         surrealdb_types::RecordIdKey::String(s) => format!("{}:{}", id.table, s),
@@ -32,7 +39,7 @@ fn record_id_to_string(id: &surrealdb_types::RecordId) -> String {
 #[command(name = "graphrag")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Database path (defaults to ~/.graphrag/data)
+    /// Database path (defaults to ~/.graphrag/data-v3)
     #[arg(short, long)]
     db_path: Option<PathBuf>,
 
@@ -272,7 +279,7 @@ enum Commands {
 
     /// Delete the local database (fresh start)
     ResetDb {
-        /// Database path (defaults to ~/.graphrag/data)
+        /// Database path (defaults to ~/.graphrag/data-v3)
         #[arg(short, long)]
         db_path: Option<PathBuf>,
     },
@@ -353,12 +360,7 @@ async fn main() -> Result<()> {
 
     // Initialize database
     if let Commands::ResetDb { db_path } = &cli.command {
-        let path = db_path.clone().unwrap_or_else(|| {
-            let mut path = dirs::home_dir().expect("Could not find home directory");
-            path.push(".graphrag");
-            path.push("data");
-            path
-        });
+        let path = db_path.clone().unwrap_or_else(default_db_path);
 
         if path.exists() {
             std::fs::remove_dir_all(&path)
@@ -377,12 +379,7 @@ async fn main() -> Result<()> {
         info!("Using in-memory database");
         init_memory().await?
     } else {
-        let db_path = cli.db_path.unwrap_or_else(|| {
-            let mut path = dirs::home_dir().expect("Could not find home directory");
-            path.push(".graphrag");
-            path.push("data");
-            path
-        });
+        let db_path = cli.db_path.unwrap_or_else(default_db_path);
 
         // Ensure directory exists
         if let Some(parent) = db_path.parent() {
