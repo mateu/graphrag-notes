@@ -84,6 +84,59 @@ Defaults:
   - or **Ollama**
 - [sccache](https://github.com/mozilla/sccache) optional but recommended for fast builds
 
+### SurrealDB 2.x → 3.x migration (embedded RocksDB)
+
+If you already have a persistent v2 database, do **not** point the v3 app at it directly. The safe path is:
+
+1. stop anything using the live DB
+2. make a full copy of the v2 RocksDB directory
+3. export that copy with a v2 Surreal binary using `--v3`
+4. import into a fresh v3 RocksDB directory
+5. validate with `stats`, `list`, and `search`
+
+Example dry-run commands:
+
+```bash
+# 1) copy the old DB
+cp -a ~/.graphrag/data ~/.graphrag-migration-backups/data-v2-copy-$(date +%Y%m%d-%H%M%S)
+
+# 2) start SurrealDB 2.6.5 against the copied DB
+/tmp/surreal2-binary/surreal2.6.5 start \
+  rocksdb:/home/hunter/.graphrag-migration-backups/data-v2-copy-YYYYMMDD-HHMMSS \
+  --bind 127.0.0.1:8102 --unauthenticated
+
+# 3) export in v3-compatible format
+/tmp/surreal2-binary/surreal2.6.5 export \
+  --endpoint http://127.0.0.1:8102 \
+  --namespace graphrag \
+  --database notes \
+  /tmp/graphrag-v3-export.surql \
+  --v3
+
+# 4) start a fresh v3 target
+~/.local/bin/surreal3.0.5 start \
+  rocksdb:/tmp/graphrag-v3-restore \
+  --bind 127.0.0.1:8103 --unauthenticated
+
+# 5) import into v3
+~/.local/bin/surreal3.0.5 import \
+  --endpoint http://127.0.0.1:8103 \
+  --namespace graphrag \
+  --database notes \
+  /tmp/graphrag-v3-export.surql
+
+# 6) validate with the app (run one command at a time; RocksDB locks)
+cargo run -q -p graphrag-cli -- --db-path /tmp/graphrag-v3-restore stats
+cargo run -q -p graphrag-cli -- --db-path /tmp/graphrag-v3-restore list --limit 3
+TEI_PROVIDER=ollama TGI_PROVIDER=ollama TEI_URL=http://127.0.0.1:11434 TGI_URL=http://127.0.0.1:11434 \
+  cargo run -q -p graphrag-cli -- --db-path /tmp/graphrag-v3-restore search "migration" --limit 3
+```
+
+Notes:
+- Use `rocksdb:/path/to/db`, not a plain filesystem path, with the Surreal CLI.
+- Avoid concurrent access to the same DB path; overlapping processes will fail on the RocksDB `LOCK` file.
+- Validate on a copied DB before doing a real cutover.
+
 ### 1. Start inference backends
 
 #### Option A: TEI + TGI via Docker Compose
