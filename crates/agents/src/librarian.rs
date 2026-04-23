@@ -2,24 +2,13 @@
 
 use crate::{Result, TeiClient, TgiClient};
 use graphrag_core::{
-    ChatConversation, ChatExport, ChatMessage, Entity, EntityType, MessageRole, Note, NoteType,
-    Source, SourceType,
+    record_id_to_string, ChatConversation, ChatExport, ChatMessage, Entity, EntityType,
+    MessageRole, Note, NoteType, Source, SourceType,
 };
 use graphrag_db::Repository;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, instrument};
-
-fn record_id_to_string(id: &surrealdb::types::RecordId) -> String {
-    match &id.key {
-        surrealdb::types::RecordIdKey::String(s) => format!("{}:{}", id.table, s),
-        surrealdb::types::RecordIdKey::Number(n) => format!("{}:{}", id.table, n),
-        surrealdb::types::RecordIdKey::Uuid(u) => format!("{}:{}", id.table, u),
-        surrealdb::types::RecordIdKey::Array(a) => format!("{}:{:?}", id.table, a),
-        surrealdb::types::RecordIdKey::Object(o) => format!("{}:{:?}", id.table, o),
-        surrealdb::types::RecordIdKey::Range(r) => format!("{}:{:?}", id.table, r),
-    }
-}
 
 const DEFAULT_PROGRESS_EVERY: usize = 10;
 const DEFAULT_PROGRESS_EVERY_SECS: u64 = 5;

@@ -29,8 +29,11 @@ DEFINE FIELD IF NOT EXISTS title ON note TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS content ON note TYPE string;
 DEFINE FIELD IF NOT EXISTS embedding ON note TYPE option<array<float>>;
 DEFINE FIELD IF NOT EXISTS source_id ON note TYPE option<record<source>>;
-DEFINE FIELD IF NOT EXISTS entity_ids ON note TYPE array<string> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS tags ON note TYPE array<string> DEFAULT [];
+-- entity_ids is kept in the schema with DEFAULT [] so that SurrealDB never returns NONE
+-- for this field; the Rust model marks it skip_serializing because entity–note links live
+-- in the `mentions` edge table rather than on the note record itself.
+DEFINE FIELD IF NOT EXISTS entity_ids ON note TYPE array<string> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS created_at ON note TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON note TYPE datetime DEFAULT time::now();
 

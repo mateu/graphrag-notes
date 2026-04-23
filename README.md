@@ -102,7 +102,7 @@ cp -a ~/.graphrag/data ~/.graphrag-migration-backups/data-v2-copy-$(date +%Y%m%d
 
 # 2) start SurrealDB 2.6.5 against the copied DB
 /tmp/surreal2-binary/surreal2.6.5 start \
-  rocksdb:/home/hunter/.graphrag-migration-backups/data-v2-copy-YYYYMMDD-HHMMSS \
+  rocksdb:~/.graphrag-migration-backups/data-v2-copy-YYYYMMDD-HHMMSS \
   --bind 127.0.0.1:8102 --unauthenticated
 
 # 3) export in v3-compatible format

@@ -2,21 +2,11 @@
 
 use crate::{Result, TeiClient};
 use chrono::{Duration, Utc};
+use graphrag_core::record_id_to_string;
 use graphrag_db::repository::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };
 use graphrag_db::Repository;
-
-fn record_id_to_string(id: &surrealdb::types::RecordId) -> String {
-    match &id.key {
-        surrealdb::types::RecordIdKey::String(s) => format!("{}:{}", id.table, s),
-        surrealdb::types::RecordIdKey::Number(n) => format!("{}:{}", id.table, n),
-        surrealdb::types::RecordIdKey::Uuid(u) => format!("{}:{}", id.table, u),
-        surrealdb::types::RecordIdKey::Array(a) => format!("{}:{:?}", id.table, a),
-        surrealdb::types::RecordIdKey::Object(o) => format!("{}:{:?}", id.table, o),
-        surrealdb::types::RecordIdKey::Range(r) => format!("{}:{:?}", id.table, r),
-    }
-}
 
 use std::collections::HashSet;
 

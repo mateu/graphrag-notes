@@ -8,7 +8,7 @@ use graphrag_agents::{
     AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, LibrarianAgent, SearchAgent,
     SearchHitType, SearchScope, TeiClient, TgiClient,
 };
-use graphrag_core::ChatExport;
+use graphrag_core::{record_id_to_string, ChatExport};
 use graphrag_db::{init_memory, init_persistent, Repository};
 use serde::Deserialize;
 use std::io::{self, BufRead, Write};
@@ -21,17 +21,6 @@ fn default_db_path() -> PathBuf {
     path.push(".graphrag");
     path.push("data-v3");
     path
-}
-
-fn record_id_to_string(id: &surrealdb_types::RecordId) -> String {
-    match &id.key {
-        surrealdb_types::RecordIdKey::String(s) => format!("{}:{}", id.table, s),
-        surrealdb_types::RecordIdKey::Number(n) => format!("{}:{}", id.table, n),
-        surrealdb_types::RecordIdKey::Uuid(u) => format!("{}:{}", id.table, u),
-        surrealdb_types::RecordIdKey::Array(a) => format!("{}:{:?}", id.table, a),
-        surrealdb_types::RecordIdKey::Object(o) => format!("{}:{:?}", id.table, o),
-        surrealdb_types::RecordIdKey::Range(r) => format!("{}:{:?}", id.table, r),
-    }
 }
 
 /// GraphRAG Notes - An evolving knowledge graph for your notes
@@ -1054,7 +1043,7 @@ async fn cmd_search(
         for (i, result) in results.iter().enumerate() {
             let r = &result.result;
             println!("{}. {}", i + 1, r.title.as_deref().unwrap_or("(untitled)"));
-            println!("   ID: {:?}", r.id);
+            println!("   ID: {}", record_id_to_string(&r.id));
             println!("   Type: {}", r.note_type);
 
             // Truncate content for display
@@ -1103,7 +1092,7 @@ async fn cmd_search(
                 kind,
                 r.title.as_deref().unwrap_or("(untitled)")
             );
-            println!("   ID: {:?}", r.id);
+            println!("   ID: {}", r.id);
             println!("   Score: {:.3}", r.score);
             if let Some(ref conversation_uuid) = r.conversation_uuid {
                 println!("   Conversation UUID: {}", conversation_uuid);

@@ -1,7 +1,7 @@
 //! Repository pattern for database operations
 
 use crate::{DbConnection, DbError, Result};
-use graphrag_core::{ChatConversation, ChatMessage, EdgeType, Entity, Note, Source};
+use graphrag_core::{record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, Source};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
@@ -13,12 +13,12 @@ pub struct Repository {
     db: DbConnection,
 }
 
-fn note_content_value(note: &Note) -> serde_json::Value {
-    let mut value = serde_json::to_value(note).expect("Note should serialize to JSON");
+fn note_content_value(note: &Note) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(note)
+        .map_err(|e| DbError::QueryFailed(format!("note serialization failed: {e}")))?;
     if let Some(obj) = value.as_object_mut() {
-        if note.id.is_none() {
-            obj.remove("id");
-        }
+        // Always remove id – the record id is determined by the create/update target
+        obj.remove("id");
         if note.source_id.is_none() {
             obj.remove("source_id");
         }
@@ -28,11 +28,8 @@ fn note_content_value(note: &Note) -> serde_json::Value {
         if note.embedding.is_empty() {
             obj.remove("embedding");
         }
-        if note.entity_ids.is_empty() {
-            obj.remove("entity_ids");
-        }
     }
-    value
+    Ok(value)
 }
 
 impl Repository {
@@ -53,7 +50,7 @@ impl Repository {
         let created: Option<Note> = self
             .db
             .create("note")
-            .content(note_content_value(&note))
+            .content(note_content_value(&note)?)
             .await?;
 
         created.ok_or_else(|| DbError::QueryFailed("create_note".into()))
@@ -72,7 +69,7 @@ impl Repository {
         let updated: Option<Note> = self
             .db
             .update(("note", id))
-            .content(note_content_value(&note))
+            .content(note_content_value(&note)?)
             .await?;
 
         updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
@@ -657,7 +654,7 @@ impl Repository {
         result
             .into_iter()
             .next()
-            .ok_or_else(|| DbError::NotFound("note".into(), format!("{:?}", note_id)))
+            .ok_or_else(|| DbError::NotFound("note".into(), record_id_to_string(note_id)))
     }
 
     /// Find orphan notes (no connections)
