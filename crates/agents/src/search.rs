@@ -6,7 +6,21 @@ use graphrag_db::repository::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };
 use graphrag_db::Repository;
+
+fn record_id_to_string(id: &surrealdb::types::RecordId) -> String {
+    match &id.key {
+        surrealdb::types::RecordIdKey::String(s) => format!("{}:{}", id.table, s),
+        surrealdb::types::RecordIdKey::Number(n) => format!("{}:{}", id.table, n),
+        surrealdb::types::RecordIdKey::Uuid(u) => format!("{}:{}", id.table, u),
+        surrealdb::types::RecordIdKey::Array(a) => format!("{}:{:?}", id.table, a),
+        surrealdb::types::RecordIdKey::Object(o) => format!("{}:{:?}", id.table, o),
+        surrealdb::types::RecordIdKey::Range(r) => format!("{}:{:?}", id.table, r),
+    }
+}
+
 use std::collections::HashSet;
+
+
 use tracing::{debug, info, instrument};
 
 /// Search result with optional graph context
@@ -315,7 +329,7 @@ impl SearchAgent {
         let score = Self::rank_score(result.vec_distance, result.fts_score);
         ScopedSearchResult {
             hit_type: SearchHitType::Note,
-            id: result.id.to_string(),
+            id: record_id_to_string(&result.id),
             title: result.title,
             content: result.content,
             created_at: Some(result.created_at),
@@ -330,7 +344,7 @@ impl SearchAgent {
         let score = Self::rank_score(result.vec_distance, result.fts_score);
         ScopedSearchResult {
             hit_type: SearchHitType::Message,
-            id: result.id.to_string(),
+            id: record_id_to_string(&result.id),
             title: Some(format!(
                 "{} message #{}",
                 result.role,
@@ -354,7 +368,7 @@ impl SearchAgent {
         let content = result.summary.unwrap_or_default();
         ScopedSearchResult {
             hit_type: SearchHitType::ConversationSummary,
-            id: result.id.to_string(),
+            id: record_id_to_string(&result.id),
             title,
             content,
             created_at: Some(result.updated_at),

@@ -2,11 +2,14 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use surrealdb::RecordId;
+use surrealdb::types::RecordId;
+use surrealdb_types::SurrealValue;
 
 /// The type/classification of an entity
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, SurrealValue)]
 #[serde(rename_all = "snake_case")]
+#[surreal(crate = "surrealdb_types")]
+#[surreal(untagged, lowercase)]
 pub enum EntityType {
     /// A person
     Person,
@@ -33,7 +36,7 @@ impl Default for EntityType {
 }
 
 /// An entity extracted from notes
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct Entity {
     /// Unique identifier
     pub id: Option<RecordId>,
@@ -52,6 +55,7 @@ pub struct Entity {
 
     /// Vector embedding of the entity
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[surreal(default, skip_if = "Vec::is_empty")]
     pub embedding: Vec<f32>,
 
     /// Additional metadata
@@ -100,7 +104,7 @@ fn default_created_at() -> DateTime<Utc> {
 }
 
 /// Result of entity extraction from text
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct ExtractedEntity {
     pub name: String,
     pub entity_type: EntityType,

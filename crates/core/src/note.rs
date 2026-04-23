@@ -2,11 +2,14 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use surrealdb::RecordId;
+use surrealdb::types::RecordId;
+use surrealdb_types::SurrealValue;
 
 /// The type/classification of a note
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
 #[serde(rename_all = "snake_case")]
+#[surreal(crate = "surrealdb_types")]
+#[surreal(untagged, lowercase)]
 pub enum NoteType {
     /// A factual claim that can be verified
     Claim,
@@ -29,7 +32,7 @@ impl Default for NoteType {
 }
 
 /// An atomic note - the fundamental unit of knowledge
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct Note {
     /// Unique identifier (maps to SurrealDB record ID)
     pub id: Option<RecordId>,
@@ -45,13 +48,18 @@ pub struct Note {
 
     /// Vector embedding (current Rust path uses 1024-dimensional embeddings)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[surreal(default, skip_if = "Vec::is_empty")]
     pub embedding: Vec<f32>,
 
     /// Source this note was derived from
     pub source_id: Option<String>,
 
     /// Extracted entities mentioned in this note
-    #[serde(default)]
+    ///
+    /// This remains in-memory/app-facing only; persisted note↔entity links live
+    /// in the `mentions` edge table rather than on the note record itself.
+    #[serde(default, skip_serializing)]
+    #[surreal(skip)]
     pub entity_ids: Vec<String>,
 
     /// User-defined tags
@@ -122,7 +130,7 @@ impl Note {
 }
 
 /// A note with additional context from graph traversal
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct AtomicNote {
     pub note: Note,
     /// Notes that support this one

@@ -29,6 +29,7 @@ DEFINE FIELD title ON note TYPE option<string>;
 DEFINE FIELD content ON note TYPE string;
 DEFINE FIELD embedding ON note TYPE option<array<float>>;
 DEFINE FIELD source_id ON note TYPE option<record<source>>;
+DEFINE FIELD entity_ids ON note TYPE array<string> DEFAULT [];
 DEFINE FIELD tags ON note TYPE array<string> DEFAULT [];
 DEFINE FIELD created_at ON note TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at ON note TYPE datetime DEFAULT time::now();
@@ -142,19 +143,19 @@ DEFINE ANALYZER IF NOT EXISTS ascii
 
 -- Full-text search on note content
 DEFINE INDEX idx_note_content ON note FIELDS content 
-    SEARCH ANALYZER ascii BM25;
+    FULLTEXT ANALYZER ascii BM25;
 
 -- Full-text search on note title
 DEFINE INDEX idx_note_title ON note FIELDS title 
-    SEARCH ANALYZER ascii BM25;
+    FULLTEXT ANALYZER ascii BM25;
 
 -- Full-text search on chat messages and conversation summaries
 DEFINE INDEX idx_message_content ON message FIELDS content
-    SEARCH ANALYZER ascii BM25;
+    FULLTEXT ANALYZER ascii BM25;
 DEFINE INDEX idx_conversation_summary ON conversation FIELDS summary
-    SEARCH ANALYZER ascii BM25;
+    FULLTEXT ANALYZER ascii BM25;
 DEFINE INDEX idx_conversation_title ON conversation FIELDS title
-    SEARCH ANALYZER ascii BM25;
+    FULLTEXT ANALYZER ascii BM25;
 
 -- Vector index for semantic search (HNSW for performance)
 DEFINE INDEX idx_note_embedding ON note FIELDS embedding 

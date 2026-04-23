@@ -16,6 +16,17 @@ use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
+fn record_id_to_string(id: &surrealdb_types::RecordId) -> String {
+    match &id.key {
+        surrealdb_types::RecordIdKey::String(s) => format!("{}:{}", id.table, s),
+        surrealdb_types::RecordIdKey::Number(n) => format!("{}:{}", id.table, n),
+        surrealdb_types::RecordIdKey::Uuid(u) => format!("{}:{}", id.table, u),
+        surrealdb_types::RecordIdKey::Array(a) => format!("{}:{:?}", id.table, a),
+        surrealdb_types::RecordIdKey::Object(o) => format!("{}:{:?}", id.table, o),
+        surrealdb_types::RecordIdKey::Range(r) => format!("{}:{:?}", id.table, r),
+    }
+}
+
 /// GraphRAG Notes - An evolving knowledge graph for your notes
 #[derive(Parser)]
 #[command(name = "graphrag")]
@@ -631,7 +642,7 @@ async fn cmd_add(
         "✓ Created note: {}",
         note.id
             .as_ref()
-            .map(|id| id.to_string())
+            .map(record_id_to_string)
             .unwrap_or_else(|| "(no id)".to_string())
     );
 
@@ -971,8 +982,8 @@ async fn cmd_list_edges(repo: Repository, limit: usize) -> Result<()> {
         println!(
             "  • {}: {} -> {} (confidence: {}){}",
             edge.edge_type,
-            edge.in_id,
-            edge.out_id,
+            record_id_to_string(&edge.in_id),
+            record_id_to_string(&edge.out_id),
             confidence,
             if reason.is_empty() {
                 "".into()
@@ -1001,8 +1012,8 @@ async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Result<()> {
         println!(
             "  • {}: {} -> {} (confidence: {}){}",
             edge.edge_type,
-            edge.in_id,
-            edge.out_id,
+            record_id_to_string(&edge.in_id),
+            record_id_to_string(&edge.out_id),
             confidence,
             if reason.is_empty() {
                 "".into()
@@ -1046,7 +1057,7 @@ async fn cmd_search(
         for (i, result) in results.iter().enumerate() {
             let r = &result.result;
             println!("{}. {}", i + 1, r.title.as_deref().unwrap_or("(untitled)"));
-            println!("   ID: {}", r.id);
+            println!("   ID: {:?}", r.id);
             println!("   Type: {}", r.note_type);
 
             // Truncate content for display
@@ -1095,7 +1106,7 @@ async fn cmd_search(
                 kind,
                 r.title.as_deref().unwrap_or("(untitled)")
             );
-            println!("   ID: {}", r.id);
+            println!("   ID: {:?}", r.id);
             println!("   Score: {:.3}", r.score);
             if let Some(ref conversation_uuid) = r.conversation_uuid {
                 println!("   Conversation UUID: {}", conversation_uuid);
@@ -1445,7 +1456,7 @@ async fn cmd_list(repo: Repository, limit: usize) -> Result<()> {
 
     for note in notes {
         let title = note.title.as_deref().unwrap_or("(untitled)");
-        let id = note.id.to_string();
+        let id = record_id_to_string(&note.id);
         let preview: String = note.content.chars().take(80).collect();
 
         println!("• {} [{}]", title, id);
@@ -1572,7 +1583,7 @@ async fn cmd_interactive(repo: Repository, tei: TeiClient, tgi: TgiClient) -> Re
                         "✓ Added: {}",
                         note.id
                             .as_ref()
-                            .map(|id| id.to_string())
+                            .map(record_id_to_string)
                             .unwrap_or_else(|| "(no id)".to_string())
                     ),
                     Err(e) => println!("Error: {}", e),

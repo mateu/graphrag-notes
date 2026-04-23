@@ -2,10 +2,11 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use surrealdb::RecordId;
+use surrealdb::types::RecordId;
+use surrealdb_types::SurrealValue;
 
 /// The type of source
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceType {
     /// User-typed note
@@ -31,7 +32,7 @@ impl Default for SourceType {
 }
 
 /// A source of notes/content
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct Source {
     /// Unique identifier
     pub id: Option<RecordId>,

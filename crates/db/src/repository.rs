@@ -3,13 +3,36 @@
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::{ChatConversation, ChatMessage, EdgeType, Entity, Note, Source};
 use serde::{Deserialize, Serialize};
-use surrealdb::RecordId;
+use surrealdb::types::RecordId;
+use surrealdb_types::SurrealValue;
 use tracing::instrument;
 
 /// Repository for all database operations
 #[derive(Clone)]
 pub struct Repository {
     db: DbConnection,
+}
+
+fn note_content_value(note: &Note) -> serde_json::Value {
+    let mut value = serde_json::to_value(note).expect("Note should serialize to JSON");
+    if let Some(obj) = value.as_object_mut() {
+        if note.id.is_none() {
+            obj.remove("id");
+        }
+        if note.source_id.is_none() {
+            obj.remove("source_id");
+        }
+        if note.title.is_none() {
+            obj.remove("title");
+        }
+        if note.embedding.is_empty() {
+            obj.remove("embedding");
+        }
+        if note.entity_ids.is_empty() {
+            obj.remove("entity_ids");
+        }
+    }
+    value
 }
 
 impl Repository {
@@ -27,7 +50,11 @@ impl Repository {
     pub async fn create_note(&self, note: Note) -> Result<Note> {
         // Use SurrealDB's high-level create API so we get back the stored
         // record including its generated `id`.
-        let created: Option<Note> = self.db.create("note").content(note).await?;
+        let created: Option<Note> = self
+            .db
+            .create("note")
+            .content(note_content_value(&note))
+            .await?;
 
         created.ok_or_else(|| DbError::QueryFailed("create_note".into()))
     }
@@ -42,7 +69,11 @@ impl Repository {
     /// Update a note
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
-        let updated: Option<Note> = self.db.update(("note", id)).content(note).await?;
+        let updated: Option<Note> = self
+            .db
+            .update(("note", id))
+            .content(note_content_value(&note))
+            .await?;
 
         updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
@@ -113,7 +144,7 @@ impl Repository {
     #[instrument(skip(self, embedding))]
     pub async fn update_note_embedding(
         &self,
-        id: &surrealdb::RecordId,
+        id: &surrealdb::types::RecordId,
         embedding: Vec<f32>,
     ) -> Result<()> {
         self.db
@@ -575,8 +606,8 @@ impl Repository {
     #[instrument(skip(self))]
     pub async fn create_edge(
         &self,
-        from_id: &surrealdb::RecordId,
-        to_id: &surrealdb::RecordId,
+        from_id: &surrealdb::types::RecordId,
+        to_id: &surrealdb::types::RecordId,
         edge_type: EdgeType,
         confidence: Option<f32>,
     ) -> Result<()> {
@@ -603,7 +634,7 @@ impl Repository {
 
     /// Get notes related to a given note (any direction)
     #[instrument(skip(self))]
-    pub async fn get_related_notes(&self, note_id: &surrealdb::RecordId) -> Result<RelatedNotes> {
+    pub async fn get_related_notes(&self, note_id: &surrealdb::types::RecordId) -> Result<RelatedNotes> {
         let result: Vec<RelatedNotes> = self
             .db
             .query(
@@ -626,7 +657,7 @@ impl Repository {
         result
             .into_iter()
             .next()
-            .ok_or_else(|| DbError::NotFound("note".into(), note_id.to_string()))
+            .ok_or_else(|| DbError::NotFound("note".into(), format!("{:?}", note_id)))
     }
 
     /// Find orphan notes (no connections)
@@ -741,10 +772,10 @@ impl Repository {
     #[instrument(skip(self))]
     pub async fn link_note_to_entity(
         &self,
-        note_id: &surrealdb::RecordId,
-        entity_id: &surrealdb::RecordId,
+        note_id: &surrealdb::types::RecordId,
+        entity_id: &surrealdb::types::RecordId,
     ) -> Result<()> {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
         }
@@ -773,7 +804,7 @@ impl Repository {
 
     /// Remove all mention links for a note
     #[instrument(skip(self))]
-    pub async fn delete_mentions_for_note(&self, note_id: &surrealdb::RecordId) -> Result<()> {
+    pub async fn delete_mentions_for_note(&self, note_id: &surrealdb::types::RecordId) -> Result<()> {
         self.db
             .query("DELETE mentions WHERE in = $note_id")
             .bind(("note_id", note_id.clone()))
@@ -817,7 +848,7 @@ impl Repository {
     /// Check whether a note has at least one linked entity matching the query.
     #[instrument(skip(self))]
     pub async fn note_has_entity_name(&self, note_id: &str, entity_query: &str) -> Result<bool> {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             #[serde(default)]
             count: Option<u64>,
@@ -916,7 +947,7 @@ impl Repository {
         metadata: serde_json::Value,
         summary_embedding: Option<Vec<f32>>,
     ) -> Result<RecordId> {
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, SurrealValue)]
         struct ConversationIdRow {
             id: RecordId,
         }
@@ -991,7 +1022,7 @@ impl Repository {
         message: &ChatMessage,
         embedding: Option<Vec<f32>>,
     ) -> Result<RecordId> {
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, SurrealValue)]
         struct MessageIdRow {
             id: RecordId,
         }
@@ -1092,7 +1123,7 @@ impl Repository {
         note_id: &RecordId,
         conversation_id: &RecordId,
     ) -> Result<bool> {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
         }
@@ -1128,7 +1159,7 @@ impl Repository {
         note_id: &RecordId,
         message_id: &RecordId,
     ) -> Result<bool> {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
         }
@@ -1160,7 +1191,7 @@ impl Repository {
     /// Check whether a conversation already has any linked notes.
     #[instrument(skip(self))]
     pub async fn conversation_has_note_links(&self, conversation_id: &RecordId) -> Result<bool> {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
         }
@@ -1215,7 +1246,7 @@ impl Repository {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct NoteEdgeRow {
     pub edge_type: String,
     pub in_id: RecordId,
@@ -1269,7 +1300,7 @@ impl Repository {
 // RESULT TYPES
 // ==========================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct SearchResult {
     pub id: RecordId,
     pub title: Option<String>,
@@ -1283,7 +1314,7 @@ pub struct SearchResult {
     pub fts_score: Option<f32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct MessageSearchResult {
     pub id: RecordId,
     pub conversation_id: RecordId,
@@ -1299,7 +1330,7 @@ pub struct MessageSearchResult {
     pub fts_score: Option<f32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct ConversationSearchResult {
     pub id: RecordId,
     pub uuid: String,
@@ -1326,7 +1357,7 @@ fn hybrid_rank_score(vec_distance: Option<f32>, fts_score: Option<f32>) -> f32 {
     (vec_component * 0.65) + (fts_component * 0.35)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, SurrealValue)]
 pub struct RelatedNotes {
     #[serde(default)]
     pub supporting: Vec<Note>,
@@ -1342,7 +1373,7 @@ pub struct RelatedNotes {
     pub related_from: Vec<Note>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct SimilarNote {
     pub id: RecordId,
     pub title: Option<String>,
@@ -1350,7 +1381,7 @@ pub struct SimilarNote {
     pub similarity: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, SurrealValue)]
 pub struct DbStats {
     #[serde(default)]
     pub note_count: i64,
