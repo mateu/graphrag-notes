@@ -55,6 +55,10 @@ impl ReindexScope {
 pub struct ReindexPreview {
     pub scope: ReindexScope,
     pub item_ids: Vec<String>,
+    /// Provider-neutral estimate for operators. Local providers do not expose
+    /// a stable currency price, so character volume is the honest preflight
+    /// cost unit rather than a fabricated dollar amount.
+    pub estimated_input_characters: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,12 +94,21 @@ impl ReindexAgent {
                 "select at least one reindex scope".into(),
             ));
         }
+        let item_ids = self
+            .repo
+            .snapshot_reindex_item_ids(scope.notes, scope.messages, scope.summaries)
+            .await?;
+        let mut estimated_input_characters = 0_u64;
+        for id in &item_ids {
+            if let Some(item) = self.repo.get_reindex_item(id).await? {
+                estimated_input_characters =
+                    estimated_input_characters.saturating_add(item.text.chars().count() as u64);
+            }
+        }
         Ok(ReindexPreview {
             scope,
-            item_ids: self
-                .repo
-                .snapshot_reindex_item_ids(scope.notes, scope.messages, scope.summaries)
-                .await?,
+            item_ids,
+            estimated_input_characters,
         })
     }
 

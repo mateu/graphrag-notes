@@ -235,8 +235,9 @@ graph data.
 
 Use `reindex` when intentionally changing embedding provider or model. It
 probes the active provider first and rejects dimensions other than the current
-1024-dimension index. `--dry-run` reports the immutable item count and target
-identity without creating a job or writing vectors.
+1024-dimension index. `--dry-run` reports the immutable item count, target
+identity, and provider-neutral input-character cost estimate without creating
+a job or writing vectors.
 
 ```bash
 graphrag reindex --all --dry-run --format json

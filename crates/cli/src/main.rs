@@ -1542,6 +1542,7 @@ struct ReindexOutput {
     dry_run: bool,
     scope: String,
     item_count: usize,
+    estimated_input_characters: u64,
     provider: String,
     model: String,
     dimension: usize,
@@ -1556,8 +1557,8 @@ fn print_reindex_output(output: &ReindexOutput, format: JobOutputFormat) -> Resu
         JobOutputFormat::Human => {
             if output.dry_run {
                 println!(
-                    "Reindex dry run: scope={} items={}",
-                    output.scope, output.item_count
+                    "Reindex dry run: scope={} items={} estimated_input_characters={}",
+                    output.scope, output.item_count, output.estimated_input_characters
                 );
             } else {
                 println!(
@@ -1623,6 +1624,7 @@ async fn cmd_reindex(
                 dry_run: false,
                 scope: job.scope.unwrap_or_else(|| "reindex".into()),
                 item_count: job.item_ids.len(),
+                estimated_input_characters: 0,
                 provider: capabilities.provider,
                 model: capabilities.model,
                 dimension: probe.len(),
@@ -1650,6 +1652,7 @@ async fn cmd_reindex(
                 dry_run: true,
                 scope: preview.scope.label(),
                 item_count: preview.item_ids.len(),
+                estimated_input_characters: preview.estimated_input_characters,
                 provider: capabilities.provider,
                 model: capabilities.model,
                 dimension: probe.len(),
@@ -1662,6 +1665,7 @@ async fn cmd_reindex(
         return Ok(());
     }
     let item_count = preview.item_ids.len();
+    let estimated_input_characters = preview.estimated_input_characters;
     let scope = preview.scope.label();
     let result = agent.start(preview, identity).await?;
     print_reindex_output(
@@ -1669,6 +1673,7 @@ async fn cmd_reindex(
             dry_run: false,
             scope,
             item_count,
+            estimated_input_characters,
             provider: capabilities.provider,
             model: capabilities.model,
             dimension: probe.len(),
@@ -3728,6 +3733,7 @@ mod tests {
             dry_run: true,
             scope: "notes".into(),
             item_count: 4,
+            estimated_input_characters: 123,
             provider: "fixture".into(),
             model: "model".into(),
             dimension: 1024,
@@ -3740,6 +3746,7 @@ mod tests {
             "dry_run",
             "scope",
             "item_count",
+            "estimated_input_characters",
             "provider",
             "model",
             "dimension",
