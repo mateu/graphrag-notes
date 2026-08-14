@@ -153,10 +153,20 @@ pub struct MarkdownImportResult {
 /// Stable outcome of a durable, resumable inference pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessingRunResult {
+    /// Empty when the requested scope had no work, so no durable job exists.
     pub job_id: String,
     pub completed: u64,
     pub failed: u64,
     pub cancelled: bool,
+}
+
+fn no_processing_work() -> ProcessingRunResult {
+    ProcessingRunResult {
+        job_id: String::new(),
+        completed: 0,
+        failed: 0,
+        cancelled: false,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -556,6 +566,9 @@ impl LibrarianAgent {
                     .iter()
                     .filter_map(|note| note.id.as_ref().map(record_id_to_string))
                     .collect::<Vec<_>>();
+                if item_ids.is_empty() {
+                    return Ok(no_processing_work());
+                }
                 let job = self
                     .repo
                     .create_processing_job_with_scope(
@@ -854,6 +867,9 @@ impl LibrarianAgent {
                     .iter()
                     .filter_map(|note| note.id.as_ref().map(record_id_to_string))
                     .collect::<Vec<_>>();
+                if item_ids.is_empty() {
+                    return Ok(no_processing_work());
+                }
                 let job = self
                     .repo
                     .create_processing_job_with_scope(
@@ -2314,8 +2330,8 @@ pub struct ChatImportResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_content, decode_file_uri, truncate_for_extraction, LibrarianAgent,
-        LibrarianRuntimeConfig,
+        chunk_content, decode_file_uri, no_processing_work, truncate_for_extraction,
+        LibrarianAgent, LibrarianRuntimeConfig,
     };
     use crate::{DeterministicEmbedder, FixtureEntityExtractor};
     use graphrag_core::Note;
@@ -2328,6 +2344,32 @@ mod tests {
         assert_eq!(config.min_chunk_size, 20);
         assert_eq!(config.max_chunk_size, usize::MAX);
         assert!(!config.skip_entity_extraction);
+    }
+
+    #[tokio::test]
+    async fn empty_processing_scopes_return_zero_work_without_persisting_jobs() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+
+        assert_eq!(
+            librarian
+                .process_pending_embeddings_job(None)
+                .await
+                .unwrap(),
+            no_processing_work()
+        );
+        assert_eq!(
+            librarian
+                .extract_entities_for_notes_job(100, None)
+                .await
+                .unwrap(),
+            no_processing_work()
+        );
+        assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
     }
 
     #[test]
