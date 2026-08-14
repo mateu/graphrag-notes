@@ -137,11 +137,27 @@ struct Draft {
     split_fenced_code: bool,
 }
 
+#[derive(Debug)]
+struct ParsedBlocks {
+    blocks: Vec<Block>,
+    trailing_heading_path: Vec<String>,
+}
+
 impl Chunker for MarkdownChunker {
     fn chunk(&self, source_identity: &str, markdown: &str) -> Result<Vec<Chunk>, ChunkingError> {
         self.config.validate()?;
-        let blocks = parse_blocks(markdown);
-        let mut drafts = assemble_blocks(&blocks, self.config);
+        let parsed = parse_blocks(markdown);
+        let mut drafts = assemble_blocks(&parsed.blocks, self.config);
+        if drafts.is_empty() {
+            // A Markdown document can be structurally meaningful even when
+            // it contains no prose blocks (for example, a heading outline or
+            // thematic break). Preserve non-whitespace source as one
+            // searchable, source-faithful fallback instead of promoting an
+            // empty source generation that hides prior notes on refresh.
+            if let Some(fallback) = fallback_block(markdown, parsed.trailing_heading_path) {
+                drafts = assemble_blocks(&[fallback], self.config);
+            }
+        }
         if drafts.is_empty() {
             return Ok(Vec::new());
         }
@@ -201,7 +217,7 @@ impl Chunker for MarkdownChunker {
     }
 }
 
-fn parse_blocks(markdown: &str) -> Vec<Block> {
+fn parse_blocks(markdown: &str) -> ParsedBlocks {
     let lines = lines_with_offsets(markdown);
     let mut blocks = Vec::new();
     let mut headings: Vec<String> = Vec::new();
@@ -330,7 +346,34 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
             }
         }
     }
-    blocks
+    ParsedBlocks {
+        blocks,
+        trailing_heading_path: headings,
+    }
+}
+
+fn fallback_block(markdown: &str, heading_path: Vec<String>) -> Option<Block> {
+    let (start_byte, end_byte) = trim_byte_bounds(markdown);
+    let content = markdown.get(start_byte..end_byte)?;
+    if content.is_empty() {
+        return None;
+    }
+    let start_line = 1 + markdown[..start_byte]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count();
+    let end_line = start_line + content.bytes().filter(|byte| *byte == b'\n').count();
+    Some(Block {
+        start_line,
+        end_line,
+        start_byte,
+        end_byte,
+        heading_path,
+        separator_before: String::new(),
+        assembly_boundary_before: false,
+        content: content.to_string(),
+        kind: BlockKind::Prose,
+    })
 }
 
 fn assemble_blocks(blocks: &[Block], config: ChunkingConfig) -> Vec<Draft> {
@@ -878,6 +921,27 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].heading_path, [""]);
         assert!(!chunks[0].content.contains("# "));
+    }
+
+    #[test]
+    fn heading_only_and_thematic_documents_keep_source_faithful_fallback_chunks() {
+        let heading_only = "# Roadmap\n\n## Next";
+        let chunks = chunk(heading_only, SIZES);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].heading_path, ["Roadmap", "Next"]);
+        assert_eq!(chunks[0].content, heading_only);
+        assert_eq!(
+            &heading_only[chunks[0].start_byte..chunks[0].end_byte],
+            chunks[0].content
+        );
+        assert!(chunks[0].search_text.starts_with("Roadmap > Next\n\n"));
+
+        let thematic_only = "---";
+        let chunks = chunk(thematic_only, SIZES);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].heading_path.is_empty());
+        assert_eq!(chunks[0].content, thematic_only);
+        assert_eq!(chunks[0].search_text, thematic_only);
     }
 
     #[test]

@@ -4062,6 +4062,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn heading_only_markdown_imports_and_refreshes_as_a_searchable_chunk() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+
+        let first_content = "# Roadmap\n\n---";
+        let first = librarian
+            .ingest_markdown_with_options("heading-only.md", first_content, false)
+            .await
+            .unwrap();
+        assert_eq!(first.action, SourceImportAction::Created);
+        assert_eq!(first.notes.len(), 1);
+        assert_eq!(first.notes[0].content, first_content);
+        assert_eq!(first.notes[0].chunk_heading_path, vec!["Roadmap"]);
+        assert!(first.notes[0]
+            .search_content
+            .as_deref()
+            .is_some_and(|text| text.starts_with("Roadmap\n\n")));
+
+        let refreshed_content = "# Roadmap\n\n## Next";
+        let refreshed = librarian
+            .ingest_markdown_with_options("heading-only.md", refreshed_content, false)
+            .await
+            .unwrap();
+        assert_eq!(refreshed.action, SourceImportAction::Updated);
+        assert_eq!(refreshed.notes.len(), 1);
+        assert_eq!(refreshed.notes[0].content, refreshed_content);
+        assert_eq!(
+            refreshed.notes[0].chunk_heading_path,
+            vec!["Roadmap", "Next"]
+        );
+        let source_id = refreshed.notes[0].source_id.as_ref().unwrap();
+        assert_eq!(repo.get_source_chunks(source_id).await.unwrap().len(), 1);
+        assert_eq!(repo.fulltext_search("Next", 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn markdown_reconciliation_preserves_unchanged_chunk_identity_and_provenance() {
         let repo = Repository::new(init_memory().await.unwrap());
         let librarian = LibrarianAgent::new(

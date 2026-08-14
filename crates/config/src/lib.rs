@@ -40,6 +40,17 @@ pub struct RuntimeConfig {
     pub logging: LoggingConfig,
 }
 
+/// Tracks whether the newer chunking controls appeared in the TOML layer
+/// while configuration is being resolved. It intentionally stays outside the
+/// public configuration structs so downstream callers can continue using
+/// `LibrarianConfig { ..Default::default() }` without exposing resolution
+/// internals as configuration fields.
+#[derive(Debug, Clone, Copy, Default)]
+struct LibrarianChunkingControlPresence {
+    target_chunk_size: bool,
+    chunk_overlap: bool,
+}
+
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
@@ -223,14 +234,10 @@ pub struct LibrarianConfig {
     pub min_chunk_size: usize,
     /// Target Markdown chunk size in Unicode scalar values (characters).
     pub target_chunk_size: usize,
-    #[serde(skip)]
-    target_chunk_size_from_file: bool,
     pub max_chunk_size: usize,
     /// Tail characters copied from the preceding chunk when it fits under the
     /// hard maximum.
     pub chunk_overlap: usize,
-    #[serde(skip)]
-    chunk_overlap_from_file: bool,
     pub skip_entity_extraction: bool,
     pub extract_log_each: bool,
     /// Maximum characters sent to entity extraction. Zero preserves the
@@ -246,10 +253,8 @@ impl Default for LibrarianConfig {
         Self {
             min_chunk_size: 50,
             target_chunk_size: 700,
-            target_chunk_size_from_file: false,
             max_chunk_size: 1000,
             chunk_overlap: 100,
-            chunk_overlap_from_file: false,
             skip_entity_extraction: false,
             extract_log_each: false,
             extract_max_chars: 8000,
@@ -304,19 +309,21 @@ impl RuntimeConfig {
         env: &impl Fn(&str) -> Option<String>,
         default_path: Option<PathBuf>,
     ) -> Result<Self, ConfigError> {
-        let mut config = match explicit_path.map(Path::to_path_buf).or_else(|| {
-            env("GRAPHRAG_CONFIG")
-                .filter(|value| !value.trim().is_empty())
-                .map(|value| expand_home_directory(Path::new(&value)))
-        }) {
-            Some(path) => Self::from_file(&path)?,
+        let (mut config, librarian_controls_from_file) = match explicit_path
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                env("GRAPHRAG_CONFIG")
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| expand_home_directory(Path::new(&value)))
+            }) {
+            Some(path) => Self::from_file_with_librarian_control_presence(&path)?,
             None => default_path
                 .filter(|path| path.exists())
-                .map(|path| Self::from_file(&path))
+                .map(|path| Self::from_file_with_librarian_control_presence(&path))
                 .transpose()?
-                .unwrap_or_default(),
+                .unwrap_or_else(|| (Self::default(), LibrarianChunkingControlPresence::default())),
         };
-        config.apply_env(env)?;
+        config.apply_env_with_librarian_control_presence(env, librarian_controls_from_file)?;
         if let Some(path) = &overrides.database_path {
             config.database.path = path.clone();
         }
@@ -325,6 +332,12 @@ impl RuntimeConfig {
     }
 
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
+        Self::from_file_with_librarian_control_presence(path).map(|(config, _)| config)
+    }
+
+    fn from_file_with_librarian_control_presence(
+        path: &Path,
+    ) -> Result<(Self, LibrarianChunkingControlPresence), ConfigError> {
         let content = std::fs::read_to_string(path).map_err(|source| ConfigError::ReadFile {
             path: path.into(),
             source,
@@ -346,16 +359,17 @@ impl RuntimeConfig {
             inference.is_some_and(|table| table.contains_key("embedding_url"));
         config.inference.extraction_url_from_file =
             inference.is_some_and(|table| table.contains_key("extraction_url"));
+        let mut librarian_controls_from_file = LibrarianChunkingControlPresence::default();
         if let Some(librarian) = raw.get("librarian").and_then(toml::Value::as_table) {
-            config.librarian.target_chunk_size_from_file =
+            librarian_controls_from_file.target_chunk_size =
                 librarian.contains_key("target_chunk_size");
-            config.librarian.chunk_overlap_from_file = librarian.contains_key("chunk_overlap");
+            librarian_controls_from_file.chunk_overlap = librarian.contains_key("chunk_overlap");
             // `target_chunk_size` and `chunk_overlap` were added after the
             // original min/max-only configuration. Derive omitted values from
             // the explicit legacy bounds before validation, rather than
             // rejecting an otherwise valid existing config because today's
             // global defaults do not fit its smaller maximum.
-            if !config.librarian.target_chunk_size_from_file {
+            if !librarian_controls_from_file.target_chunk_size {
                 // `usize::clamp` panics when its lower bound exceeds its
                 // upper bound. Leave an invalid legacy min/max pair intact
                 // for normal configuration validation to report, instead of
@@ -367,7 +381,7 @@ impl RuntimeConfig {
                     );
                 }
             }
-            if !config.librarian.chunk_overlap_from_file {
+            if !librarian_controls_from_file.chunk_overlap {
                 config.librarian.chunk_overlap = config
                     .librarian
                     .chunk_overlap
@@ -376,10 +390,21 @@ impl RuntimeConfig {
         }
         config.normalize_provider_names();
         config.database.path = expand_home_directory(&config.database.path);
-        Ok(config)
+        Ok((config, librarian_controls_from_file))
     }
 
     pub fn apply_env(&mut self, env: &impl Fn(&str) -> Option<String>) -> Result<(), ConfigError> {
+        self.apply_env_with_librarian_control_presence(
+            env,
+            LibrarianChunkingControlPresence::default(),
+        )
+    }
+
+    fn apply_env_with_librarian_control_presence(
+        &mut self,
+        env: &impl Fn(&str) -> Option<String>,
+        librarian_controls_from_file: LibrarianChunkingControlPresence,
+    ) -> Result<(), ConfigError> {
         set_path(env, "GRAPHRAG_DB_PATH", &mut self.database.path);
         set_string(env, "GRAPHRAG_LOG_LEVEL", &mut self.logging.level);
 
@@ -622,13 +647,13 @@ impl RuntimeConfig {
         // has landed. An explicit control from either source must remain
         // visible to validation instead of being silently rewritten.
         if self.librarian.min_chunk_size <= self.librarian.max_chunk_size {
-            if !self.librarian.target_chunk_size_from_file && !target_chunk_size_from_env {
+            if !librarian_controls_from_file.target_chunk_size && !target_chunk_size_from_env {
                 self.librarian.target_chunk_size = self
                     .librarian
                     .target_chunk_size
                     .clamp(self.librarian.min_chunk_size, self.librarian.max_chunk_size);
             }
-            if !self.librarian.chunk_overlap_from_file && !chunk_overlap_from_env {
+            if !librarian_controls_from_file.chunk_overlap && !chunk_overlap_from_env {
                 self.librarian.chunk_overlap = self
                     .librarian
                     .chunk_overlap
@@ -1111,9 +1136,13 @@ mod tests {
         )
         .unwrap();
 
-        let mut config = RuntimeConfig::from_file(&path).unwrap();
+        let (mut config, librarian_controls_from_file) =
+            RuntimeConfig::from_file_with_librarian_control_presence(&path).unwrap();
         config
-            .apply_env(&env(&[("GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE", "80")]))
+            .apply_env_with_librarian_control_presence(
+                &env(&[("GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE", "80")]),
+                librarian_controls_from_file,
+            )
             .unwrap();
 
         // TOML values remain explicit even when a legacy environment bound
