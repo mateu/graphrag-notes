@@ -563,7 +563,13 @@ fn thematic_boundary(line: &str) -> bool {
 }
 
 fn fence_marker(line: &str) -> Option<(char, usize)> {
-    let trimmed = line.trim_start_matches(' ');
+    // Fenced-code delimiters, like ATX headings, may be indented by at most
+    // three spaces. Four spaces or a tab are literal indented-code content.
+    let leading_spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+    if leading_spaces > 3 {
+        return None;
+    }
+    let trimmed = &line[leading_spaces..];
     let marker = trimmed.chars().next()?;
     if marker != '`' && marker != '~' {
         return None;
@@ -573,7 +579,11 @@ fn fence_marker(line: &str) -> Option<(char, usize)> {
 }
 
 fn is_closing_fence(line: &str, marker: (char, usize)) -> bool {
-    let trimmed = line.trim_start_matches(' ');
+    let leading_spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+    if leading_spaces > 3 {
+        return false;
+    }
+    let trimmed = &line[leading_spaces..];
     let count = trimmed.chars().take_while(|ch| *ch == marker.0).count();
     count >= marker.1 && trimmed[count..].trim().is_empty()
 }
@@ -721,6 +731,26 @@ mod tests {
         assert!(chunks[0].heading_path.is_empty());
         assert!(chunks[0].content.contains("# Four-space code"));
         assert!(chunks[0].content.contains("# Tab code"));
+        assert_eq!(chunks[1].heading_path, ["Actual Heading"]);
+    }
+
+    #[test]
+    fn indented_fences_remain_literal_content_and_do_not_hide_headings() {
+        let markdown = "    ```rust\nlet four_space = true;\n    ```\n\n\t~~~text\ntab fence content\n\t~~~\n\n# Actual Heading\n\nBody remains structurally visible.";
+        let chunks = chunk(
+            markdown,
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 240,
+                max_size: 280,
+                overlap_size: 0,
+            },
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].heading_path.is_empty());
+        assert!(chunks[0].content.contains("```rust"));
+        assert!(chunks[0].content.contains("~~~text"));
         assert_eq!(chunks[1].heading_path, ["Actual Heading"]);
     }
 
