@@ -56,8 +56,9 @@ pub struct AugmentOptions {
     pub max_chunks: usize,
     pub max_total_tokens: usize,
     pub max_chunk_tokens: usize,
-    /// Weight of novelty in greedy MMR-style selection. `0.0` preserves score
-    /// ordering; `1.0` is allowed but `min_relevance` still gates candidates.
+    /// Weight of novelty in greedy MMR-style selection. `0.0` preserves the
+    /// incoming retrieval order; `1.0` is allowed but `min_relevance` still
+    /// gates candidates.
     pub novelty_weight: f32,
     /// Candidates below this retrieval score are never selected for diversity.
     pub min_relevance: f32,
@@ -165,11 +166,10 @@ pub(crate) fn build_augment_context_from_hits(
     query: String,
     scope: SearchScope,
     entity_filter: Option<String>,
-    mut hits: Vec<ScopedSearchResult>,
+    hits: Vec<ScopedSearchResult>,
     options: AugmentOptions,
     dropped_for_entity_filter: usize,
 ) -> AugmentContext {
-    hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
     let counter = options.token_counter.as_ref();
     if options.max_chunks == 0 || options.max_total_tokens == 0 || options.max_chunk_tokens == 0 {
         return empty_context(
@@ -1235,6 +1235,41 @@ mod tests {
         );
         assert_eq!(context.chunks.len(), 2);
         assert_eq!(context.diagnostics.dropped_near_duplicates, 0);
+    }
+
+    #[test]
+    fn zero_novelty_preserves_incoming_scoped_tie_order_for_citations() {
+        // This is the retrieval order established by search's scoped tie
+        // contract: hit type first, then record ID, after fused-score ties.
+        let mut note_a = hit("note:a", 0.5, "first distinct context");
+        let mut note_b = hit("note:b", 0.5, "second distinct context");
+        let mut message_z = hit("message:z", 0.5, "third distinct context");
+        note_a.hit_type = SearchHitType::Note;
+        note_b.hit_type = SearchHitType::Note;
+        message_z.hit_type = SearchHitType::Message;
+        let mut packing_options = options();
+        packing_options.max_chunks = 3;
+        packing_options.max_total_tokens = 300;
+        packing_options.max_chunk_tokens = 80;
+        packing_options.novelty_weight = 0.0;
+        packing_options.near_duplicate_threshold = 1.0;
+        let context = build_augment_context_from_hits(
+            "context".into(),
+            SearchScope::All,
+            None,
+            vec![note_a, note_b, message_z],
+            packing_options,
+            0,
+        );
+
+        assert_eq!(
+            context
+                .chunks
+                .iter()
+                .map(|chunk| (chunk.citation, chunk.id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "note:a"), (2, "note:b"), (3, "message:z")]
+        );
     }
 
     #[test]
