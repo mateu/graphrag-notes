@@ -63,7 +63,10 @@ fn source_content_value(source: &Source) -> Result<serde_json::Value> {
             object.remove(key);
         }
     }
-    if object.get("metadata").is_some_and(serde_json::Value::is_null) {
+    if object
+        .get("metadata")
+        .is_some_and(serde_json::Value::is_null)
+    {
         object.remove("metadata");
     }
     Ok(value)
@@ -366,6 +369,11 @@ impl Repository {
                 WHERE embedding <|{limit},COSINE|> $embedding
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
+                  AND (
+                    source_id IS NONE
+                    OR source_generation IS NONE
+                    OR source_generation = source_id.successful_generation
+                  )
                 ORDER BY vec_distance ASC, id ASC
                 LIMIT $limit
             "#
@@ -415,6 +423,11 @@ impl Repository {
                 WHERE (content @0@ $query OR title @1@ $query)
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
+                  AND (
+                    source_id IS NONE
+                    OR source_generation IS NONE
+                    OR source_generation = source_id.successful_generation
+                  )
                 ORDER BY fts_score DESC, id ASC
                 LIMIT $limit
             "#,
@@ -1103,9 +1116,7 @@ impl Repository {
 
         let source: Option<Source> = self
             .db
-            .query(
-                "SELECT * FROM source WHERE normalized_uri = $key OR uri = $key LIMIT 1",
-            )
+            .query("SELECT * FROM source WHERE normalized_uri = $key OR uri = $key LIMIT 1")
             .bind(("key", id_or_uri.to_string()))
             .await?
             .take(0)?;
@@ -1282,7 +1293,9 @@ impl Repository {
         let summary = self
             .source_delete_summary(source_id, generation, older_than_generation)
             .await?;
-        let notes = self.source_owned_note_ids(source_id, generation, older_than_generation).await?;
+        let notes = self
+            .source_owned_note_ids(source_id, generation, older_than_generation)
+            .await?;
         for note_id in notes {
             self.db
                 .query(
@@ -1313,7 +1326,8 @@ impl Repository {
             (Some(_), false) => "source_generation = $generation",
             (None, _) => "source_generation IS NOT NONE",
         };
-        let query = format!("SELECT VALUE id FROM note WHERE source_id = $source_id AND {condition}");
+        let query =
+            format!("SELECT VALUE id FROM note WHERE source_id = $source_id AND {condition}");
         let mut request = self.db.query(query).bind(("source_id", source_id.clone()));
         if let Some(generation) = generation {
             request = request.bind(("generation", generation as i64));
@@ -1327,16 +1341,18 @@ impl Repository {
         generation: Option<u64>,
         older_than_generation: bool,
     ) -> Result<SourceDeleteSummary> {
-        let notes = self.source_owned_note_ids(source_id, generation, older_than_generation).await?;
+        let notes = self
+            .source_owned_note_ids(source_id, generation, older_than_generation)
+            .await?;
         let mut summary = SourceDeleteSummary::default();
         summary.notes = notes.len() as u64;
+        summary.note_edges = self.count_note_edges_for_notes(&notes).await?;
         for note_id in notes {
             let counts: Vec<SourceDeleteCount> = self
                 .db
                 .query(
                     "RETURN [\
                        { kind: 'mentions', count: (SELECT count() FROM mentions WHERE in = $note GROUP ALL)[0].count },\
-                       { kind: 'note_edges', count: ((SELECT count() FROM supports WHERE in = $note OR out = $note GROUP ALL)[0].count + (SELECT count() FROM contradicts WHERE in = $note OR out = $note GROUP ALL)[0].count + (SELECT count() FROM derived_from WHERE in = $note OR out = $note GROUP ALL)[0].count + (SELECT count() FROM related_to WHERE in = $note OR out = $note GROUP ALL)[0].count) },\
                        { kind: 'conversation_provenance', count: (SELECT count() FROM note_from_conversation WHERE in = $note GROUP ALL)[0].count },\
                        { kind: 'message_provenance', count: (SELECT count() FROM note_from_message WHERE in = $note GROUP ALL)[0].count }\
                      ];",
@@ -1347,14 +1363,41 @@ impl Repository {
             for count in counts {
                 match count.kind.as_str() {
                     "mentions" => summary.mentions += count.count,
-                    "note_edges" => summary.note_edges += count.count,
-                    "conversation_provenance" => summary.note_conversation_provenance += count.count,
+                    "conversation_provenance" => {
+                        summary.note_conversation_provenance += count.count
+                    }
                     "message_provenance" => summary.note_message_provenance += count.count,
                     _ => {}
                 }
             }
         }
         Ok(summary)
+    }
+
+    /// Count each edge row once across all owned notes. An internal edge is
+    /// reachable from two endpoints but is deleted exactly once, so summing
+    /// per-note counts would make dry-run output inaccurate.
+    async fn count_note_edges_for_notes(&self, notes: &[RecordId]) -> Result<u64> {
+        let mut total = 0_u64;
+        for table in ["supports", "contradicts", "derived_from", "related_to"] {
+            #[derive(Deserialize, SurrealValue)]
+            struct CountRow {
+                #[serde(default)]
+                count: Option<u64>,
+            }
+
+            let query = format!(
+                "SELECT count() FROM {table} WHERE in IN $notes OR out IN $notes GROUP ALL"
+            );
+            let row: Option<CountRow> = self
+                .db
+                .query(query)
+                .bind(("notes", notes.to_vec()))
+                .await?
+                .take(0)?;
+            total += row.and_then(|row| row.count).unwrap_or(0);
+        }
+        Ok(total)
     }
 
     // ==========================================
@@ -1970,11 +2013,26 @@ mod tests {
             )
             .await
             .unwrap();
-        let cleanup = repo.complete_file_import(&mut changed.source).await.unwrap();
+        let cleanup = repo
+            .complete_file_import(&mut changed.source)
+            .await
+            .unwrap();
         assert_eq!(cleanup.notes, 1);
-        assert!(repo.get_note(&record_id_to_string(derived.id.as_ref().unwrap())).await.unwrap().is_none());
-        assert!(repo.get_note(&record_id_to_string(current.id.as_ref().unwrap())).await.unwrap().is_some());
-        assert!(repo.get_note(&record_id_to_string(manual.id.as_ref().unwrap())).await.unwrap().is_some());
+        assert!(repo
+            .get_note(&record_id_to_string(derived.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_note(&record_id_to_string(current.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .get_note(&record_id_to_string(manual.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
 
         let mut failed = begin_markdown(&repo, "third", true).await;
         let partial = repo
@@ -1995,8 +2053,80 @@ mod tests {
             .unwrap();
         assert_eq!(stored.status, SourceIngestionStatus::Failed);
         assert_eq!(stored.successful_generation, 2);
-        assert!(repo.get_note(&record_id_to_string(partial.id.as_ref().unwrap())).await.unwrap().is_none());
-        assert!(repo.get_note(&record_id_to_string(current.id.as_ref().unwrap())).await.unwrap().is_some());
+        assert!(repo
+            .get_note(&record_id_to_string(partial.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_note(&record_id_to_string(current.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn retrieval_hides_unpromoted_source_generations_after_interruption() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        repo.create_note(
+            Note::new("visible generation one")
+                .with_embedding(vec![0.0; 1024])
+                .with_source(source_id.clone())
+                .with_source_generation(first.source.generation),
+        )
+        .await
+        .unwrap();
+
+        // The first process can be interrupted before promotion. Its staged
+        // note must not be returned by either retrieval path after restart.
+        assert!(repo
+            .fulltext_search("visible generation", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(repo
+            .vector_search(vec![0.0; 1024], 10)
+            .await
+            .unwrap()
+            .is_empty());
+
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        assert_eq!(
+            repo.fulltext_search("visible generation", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            repo.vector_search(vec![0.0; 1024], 10).await.unwrap().len(),
+            1
+        );
+
+        let second = begin_markdown(&repo, "second", false).await;
+        assert_eq!(second.source.generation, 2);
+        repo.create_note(
+            Note::new("pending generation two")
+                .with_embedding(vec![0.0; 1024])
+                .with_source(source_id)
+                .with_source_generation(second.source.generation),
+        )
+        .await
+        .unwrap();
+        assert!(repo
+            .fulltext_search("pending generation", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            repo.fulltext_search("visible generation", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -2012,7 +2142,25 @@ mod tests {
             )
             .await
             .unwrap();
+        let derived_second = repo
+            .create_note(
+                Note::new("derived second")
+                    .with_source(source_id.clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
         let unrelated = repo.create_note(Note::new("manual")).await.unwrap();
+        // This internal edge is reachable through two source-owned notes but
+        // must count once in the exact dry-run/delete summary.
+        repo.create_edge(
+            derived.id.as_ref().unwrap(),
+            derived_second.id.as_ref().unwrap(),
+            EdgeType::RelatedTo,
+            Some(0.5),
+        )
+        .await
+        .unwrap();
         repo.create_edge(
             derived.id.as_ref().unwrap(),
             unrelated.id.as_ref().unwrap(),
@@ -2023,24 +2171,33 @@ mod tests {
         .unwrap();
         let mut retained_entity = Entity::new("Retained entity", EntityType::Concept);
         retained_entity.metadata = serde_json::json!({});
-        let entity = repo
-            .upsert_entity(retained_entity)
-            .await
-            .unwrap();
+        let entity = repo.upsert_entity(retained_entity).await.unwrap();
         repo.link_note_to_entity(derived.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
             .await
             .unwrap();
         repo.complete_file_import(&mut plan.source).await.unwrap();
 
         let preview = repo.preview_source_delete(&plan.source).await.unwrap();
-        assert_eq!(preview.notes, 1);
+        assert_eq!(preview.notes, 2);
         assert_eq!(preview.mentions, 1);
-        assert_eq!(preview.note_edges, 1);
+        assert_eq!(preview.note_edges, 2);
         let confirmed = repo.delete_source(&plan.source).await.unwrap();
         assert_eq!(confirmed, preview);
-        assert!(repo.get_note(&record_id_to_string(derived.id.as_ref().unwrap())).await.unwrap().is_none());
-        assert!(repo.get_note(&record_id_to_string(unrelated.id.as_ref().unwrap())).await.unwrap().is_some());
-        assert!(repo.get_source(&record_id_to_string(&source_id)).await.unwrap().is_none());
+        assert!(repo
+            .get_note(&record_id_to_string(derived.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_note(&record_id_to_string(unrelated.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .get_source(&record_id_to_string(&source_id))
+            .await
+            .unwrap()
+            .is_none());
         let mut retained_entity = Entity::new("Retained entity", EntityType::Concept);
         retained_entity.metadata = serde_json::json!({});
         assert!(repo.upsert_entity(retained_entity).await.is_ok());

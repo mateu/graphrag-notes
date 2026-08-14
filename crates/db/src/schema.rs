@@ -33,7 +33,6 @@ DEFINE FIELD IF NOT EXISTS title ON note TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS content ON note TYPE string;
 DEFINE FIELD IF NOT EXISTS embedding ON note TYPE option<array<float>>;
 DEFINE FIELD IF NOT EXISTS source_id ON note TYPE option<record<source>>;
-DEFINE FIELD IF NOT EXISTS source_generation ON note TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS tags ON note TYPE array<string> DEFAULT [];
 -- entity_ids: kept in the schema with DEFAULT [] so SurrealDB never returns NONE for this
 -- field (serde `default` only handles absent fields, not explicit nulls). The Rust model marks

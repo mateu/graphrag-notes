@@ -354,6 +354,17 @@ mod tests {
         assert_eq!(migrations[2].name, "source_lifecycle");
     }
 
+    #[test]
+    fn historic_v001_checksum_is_immutable() {
+        // This guards the v001 baseline used by databases that recorded the
+        // migration before later additive schema changes existed. Altering it
+        // would make startup reject those databases before upgrades can run.
+        assert_eq!(
+            checksum(v001_initial::MIGRATION),
+            "df8157d6c1b27c25a97eefdc8025d3c50e977cdc62b8b47fef1074056e05dd53"
+        );
+    }
+
     #[tokio::test]
     async fn reapplying_current_schema_is_a_noop() {
         let db = raw_memory_db().await;
@@ -414,8 +425,8 @@ mod tests {
                 invalid,
             ],
         )
-            .await
-            .unwrap_err();
+        .await
+        .unwrap_err();
         assert!(matches!(retry, DbError::MigrationHistory(_)));
     }
 

@@ -902,17 +902,30 @@ async fn cmd_import(
     path: PathBuf,
     force: bool,
 ) -> Result<()> {
+    let source_path = import_path_utf8(&path)?;
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
     let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
     let summary = librarian
-        .ingest_markdown_with_options(path.to_str().unwrap_or("unknown"), content, force)
+        .ingest_markdown_with_options(source_path, content, force)
         .await?;
 
     print_import_summary(&summary, SourceOutputFormat::Human)?;
 
     Ok(())
+}
+
+/// File-source identities are UTF-8 URI strings. Reject non-UTF-8 paths at
+/// the CLI boundary rather than collapsing distinct native paths to a sentinel
+/// such as `unknown`.
+fn import_path_utf8(path: &std::path::Path) -> Result<&str> {
+    path.to_str().ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot import a path that is not valid UTF-8: {}; rename the file or use a UTF-8 path",
+            path.display()
+        )
+    })
 }
 
 #[derive(Serialize)]
@@ -983,7 +996,11 @@ async fn cmd_sources(
                     for source in sources {
                         println!(
                             "{}\t{}\t{}\tgeneration={} successful={} status={:?}",
-                            source.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+                            source
+                                .id
+                                .as_ref()
+                                .map(record_id_to_string)
+                                .unwrap_or_default(),
                             source.normalized_uri.or(source.uri).unwrap_or_default(),
                             format!("{:?}", source.source_type).to_lowercase(),
                             source.generation,
@@ -1024,7 +1041,9 @@ async fn cmd_sources(
                 .ok_or_else(|| anyhow::anyhow!("source not found: {id_or_uri}"))?;
             let summary = repo.preview_source_delete(&source).await?;
             if !dry_run && !yes {
-                anyhow::bail!("refusing to delete without --yes; use --dry-run to inspect the cascade");
+                anyhow::bail!(
+                    "refusing to delete without --yes; use --dry-run to inspect the cascade"
+                );
             }
             if !dry_run {
                 repo.delete_source(&source).await?;
@@ -1036,8 +1055,11 @@ async fn cmd_sources(
             force,
             format,
         } => {
-            let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
-            let summary = librarian.reimport_markdown_source(&id_or_uri, force).await?;
+            let librarian =
+                LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
+            let summary = librarian
+                .reimport_markdown_source(&id_or_uri, force)
+                .await?;
             print_import_summary(&summary, format)?;
         }
     }
@@ -1057,7 +1079,11 @@ fn print_delete_summary(
         summary: &'a SourceDeleteSummary,
     }
     let output = Output {
-        source_id: source.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+        source_id: source
+            .id
+            .as_ref()
+            .map(record_id_to_string)
+            .unwrap_or_default(),
         dry_run,
         summary,
     };
@@ -1075,6 +1101,23 @@ fn print_delete_summary(
         ),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::import_path_utf8;
+    use std::path::PathBuf;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_utf8_import_paths_without_identity_collapse() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let first = PathBuf::from(std::ffi::OsString::from_vec(vec![b'a', 0x80]));
+        let second = PathBuf::from(std::ffi::OsString::from_vec(vec![b'b', 0x81]));
+        assert!(import_path_utf8(&first).is_err());
+        assert!(import_path_utf8(&second).is_err());
+    }
 }
 
 async fn cmd_import_chats(

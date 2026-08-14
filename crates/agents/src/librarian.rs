@@ -8,7 +8,7 @@ use graphrag_core::{
 use graphrag_db::compatibility::{EmbeddingIdentity, ExtractionIdentity};
 use graphrag_db::{Repository, SourceDeleteSummary, SourceImportAction};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use surrealdb::types::RecordId;
 use tracing::{debug, info, instrument};
@@ -451,11 +451,15 @@ impl LibrarianAgent {
         let uri = source.normalized_uri.or(source.uri).ok_or_else(|| {
             crate::AgentError::Processing("source has no reimportable URI".into())
         })?;
-        let path = uri.strip_prefix("file://").ok_or_else(|| {
-            crate::AgentError::Processing(format!("source is not a local file: {uri}"))
+        let path = file_uri_to_path(&uri)?;
+        let content = std::fs::read_to_string(&path).map_err(|error| {
+            crate::AgentError::Processing(format!("failed to read {}: {error}", path.display()))
         })?;
-        let content = std::fs::read_to_string(Path::new(path)).map_err(|error| {
-            crate::AgentError::Processing(format!("failed to read {path}: {error}"))
+        let path = path.to_str().ok_or_else(|| {
+            crate::AgentError::Processing(format!(
+                "source path is not valid UTF-8 and cannot be reimported: {}",
+                path.display()
+            ))
         })?;
         self.ingest_markdown_with_options(path, content, force)
             .await
@@ -1769,6 +1773,38 @@ impl LibrarianAgent {
     }
 }
 
+fn file_uri_to_path(uri: &str) -> Result<PathBuf> {
+    let path = decode_file_uri(uri, cfg!(windows))?;
+    Ok(PathBuf::from(path))
+}
+
+/// Decode GraphRAG's normalized local-file URI format. Windows drive letters
+/// need special handling: `file:///C:/notes.md` maps to `C:/notes.md`, while
+/// Unix absolute paths keep their leading slash. The helper is parameterized
+/// for deterministic cross-platform tests.
+fn decode_file_uri(uri: &str, windows: bool) -> Result<String> {
+    let path = uri.strip_prefix("file://").ok_or_else(|| {
+        crate::AgentError::Processing(format!("source is not a local file: {uri}"))
+    })?;
+    if path.is_empty() {
+        return Err(crate::AgentError::Processing(
+            "source file URI has no path".into(),
+        ));
+    }
+
+    if windows {
+        let bytes = path.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
+            return Ok(path[1..].to_string());
+        }
+    }
+    Ok(path.to_string())
+}
+
 /// Result of importing chat conversations
 #[derive(Debug, Default)]
 pub struct ChatImportPreview {
@@ -1841,7 +1877,7 @@ pub struct ChatImportResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_content, truncate_for_extraction, LibrarianRuntimeConfig};
+    use super::{chunk_content, decode_file_uri, truncate_for_extraction, LibrarianRuntimeConfig};
 
     #[test]
     fn runtime_config_defaults_preserve_library_behavior() {
@@ -1866,5 +1902,17 @@ mod tests {
     fn extraction_truncation_uses_runtime_limit() {
         assert_eq!(truncate_for_extraction("abcdef", 0), "abcdef");
         assert_eq!(truncate_for_extraction("abcdef", 3), "abc\n\n[truncated]");
+    }
+
+    #[test]
+    fn decodes_file_uri_drive_letters_without_host_platform_assumptions() {
+        assert_eq!(
+            decode_file_uri("file:///C:/notes/alpha.md", true).unwrap(),
+            "C:/notes/alpha.md"
+        );
+        assert_eq!(
+            decode_file_uri("file:///Users/hunter/notes.md", false).unwrap(),
+            "/Users/hunter/notes.md"
+        );
     }
 }
