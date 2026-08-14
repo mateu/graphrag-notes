@@ -12,7 +12,7 @@ use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 use unicode_casefold::UnicodeCaseFold;
-use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::{char::canonical_combining_class, UnicodeNormalization};
 
 /// Whether token counts were produced by a supplied tokenizer or the safe
 /// local estimate. The mode is deliberately part of diagnostics: an estimate
@@ -847,16 +847,13 @@ fn phrase_match_range(text: &str, phrase: &str) -> Option<Range<usize>> {
             return None;
         }
         let range = folded[start].start..folded[start + wanted.len() - 1].end;
-        (!phrase_requires_lexical_boundaries(phrase) || is_lexical_boundary(text, &range))
-            .then_some(range)
+        phrase_edges_are_bounded(text, &range, phrase).then_some(range)
     })
 }
 
-fn phrase_requires_lexical_boundaries(phrase: &str) -> bool {
-    phrase.chars().any(char::is_alphanumeric) && !phrase.chars().any(is_unspaced_script_char)
-}
-
-fn is_lexical_boundary(text: &str, range: &Range<usize>) -> bool {
+fn phrase_edges_are_bounded(text: &str, range: &Range<usize>, phrase: &str) -> bool {
+    let first = phrase.chars().find(|ch| !ch.is_whitespace());
+    let last = phrase.chars().rev().find(|ch| !ch.is_whitespace());
     let before_is_alphanumeric = text[..range.start]
         .chars()
         .next_back()
@@ -865,7 +862,12 @@ fn is_lexical_boundary(text: &str, range: &Range<usize>) -> bool {
         .chars()
         .next()
         .is_some_and(char::is_alphanumeric);
-    !before_is_alphanumeric && !after_is_alphanumeric
+    let requires_left_boundary =
+        first.is_some_and(|ch| ch.is_alphanumeric() && !is_unspaced_script_char(ch));
+    let requires_right_boundary =
+        last.is_some_and(|ch| ch.is_alphanumeric() && !is_unspaced_script_char(ch));
+    (!requires_left_boundary || !before_is_alphanumeric)
+        && (!requires_right_boundary || !after_is_alphanumeric)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -876,28 +878,24 @@ struct SourceFoldedChar {
 }
 
 fn normalized_casefolded_source(text: &str) -> Vec<SourceFoldedChar> {
-    let mut prefix = String::new();
     let mut normalized = Vec::<SourceFoldedChar>::new();
+    let mut cluster = String::new();
+    let mut cluster_start = 0usize;
+    let mut cluster_end = 0usize;
     for (start, source) in text.char_indices() {
         let end = start + source.len_utf8();
-        prefix.push(source);
-        let next = prefix.nfc().collect::<Vec<_>>();
-        let shared = normalized
-            .iter()
-            .map(|mapped| mapped.value)
-            .zip(&next)
-            .take_while(|(previous, current)| previous == *current)
-            .count();
-        let replacement_start = normalized
-            .get(shared)
-            .map(|mapped| mapped.start)
-            .unwrap_or(start);
-        normalized.truncate(shared);
-        normalized.extend(next.into_iter().skip(shared).map(|value| SourceFoldedChar {
-            value,
-            start: replacement_start,
-            end,
-        }));
+        if canonical_combining_class(source) == 0 && !cluster.is_empty() {
+            append_normalized_cluster(&mut normalized, &cluster, cluster_start, cluster_end);
+            cluster.clear();
+            cluster_start = start;
+        } else if cluster.is_empty() {
+            cluster_start = start;
+        }
+        cluster.push(source);
+        cluster_end = end;
+    }
+    if !cluster.is_empty() {
+        append_normalized_cluster(&mut normalized, &cluster, cluster_start, cluster_end);
     }
 
     normalized
@@ -909,6 +907,19 @@ fn normalized_casefolded_source(text: &str) -> Vec<SourceFoldedChar> {
                 .map(move |value| SourceFoldedChar { value, ..mapped })
         })
         .collect()
+}
+
+fn append_normalized_cluster(
+    output: &mut Vec<SourceFoldedChar>,
+    cluster: &str,
+    start: usize,
+    end: usize,
+) {
+    output.extend(
+        cluster
+            .nfc()
+            .map(|value| SourceFoldedChar { value, start, end }),
+    );
 }
 
 fn centered_character_range(text: &str) -> Option<Range<usize>> {
@@ -1487,6 +1498,13 @@ mod tests {
     }
 
     #[test]
+    fn normalized_source_mapping_handles_long_text_without_prefix_rescanning() {
+        let text = format!("{}cafe\u{301} marker", "filler ".repeat(20_000));
+        let range = phrase_match_range(&text, "CAFÉ marker").unwrap();
+        assert_eq!(&text[range], "cafe\u{301} marker");
+    }
+
+    #[test]
     fn oversized_phrase_window_is_clipped_instead_of_dropped() {
         let text = "prefix oversized phrase target afterword";
         let clipped = clip_query_aware(
@@ -1504,6 +1522,12 @@ mod tests {
     #[test]
     fn whitespace_phrase_matching_rejects_substrings_but_cjk_allows_them() {
         assert!(phrase_match_range("partial", "art").is_none());
+        assert!(phrase_match_range("cart 東京", "art 東京").is_none());
+        let mixed = "art 東京 guide";
+        assert_eq!(
+            &mixed[phrase_match_range(mixed, "art 東京").unwrap()],
+            "art 東京"
+        );
         let cjk = "前綴目標片段後綴";
         assert_eq!(
             &cjk[phrase_match_range(cjk, "目標片段").unwrap()],
