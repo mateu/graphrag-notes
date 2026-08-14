@@ -245,13 +245,16 @@ pub fn evaluate_ranked_results(
         matching_results as f64 / results.len().max(1) as f64
     });
 
-    let has_positive = !relevance.is_empty() || !expected_text.is_empty();
-    let positive_matched = recall_at_k.is_some_and(|recall| recall > 0.0)
-        || substring_expectation_matched.is_some_and(|matched| matched);
+    // Each explicitly configured positive expectation is independently
+    // required. A matching ID must not hide missing expected prompt text (or
+    // vice versa) when a case specifies both categories.
+    let relevance_passed = relevance.is_empty() || recall_at_k.is_some_and(|recall| recall > 0.0);
+    let text_passed =
+        expected_text.is_empty() || substring_expectation_matched.is_some_and(|matched| matched);
     let provenance_passed = provenance_accuracy.is_none_or(|accuracy| accuracy == 1.0);
-    let checks_passed = case.has_checks().then(|| {
-        (!has_positive || positive_matched) && !forbidden_result_found && provenance_passed
-    });
+    let checks_passed = case
+        .has_checks()
+        .then(|| relevance_passed && text_passed && !forbidden_result_found && provenance_passed);
 
     CaseMetrics {
         k,
@@ -627,7 +630,7 @@ pub fn load_baseline(path: &Path) -> Result<EvalRunReport> {
 }
 
 fn normalize_id(value: &str) -> Option<String> {
-    let normalized = value.trim().to_ascii_lowercase();
+    let normalized = value.trim().to_lowercase();
     (!normalized.is_empty()).then_some(normalized)
 }
 
@@ -800,6 +803,45 @@ mod tests {
         let mut metadata_only = result("note:innocuous");
         metadata_only.source_uri = Some("file:///private/notes.md".into());
         assert!(!evaluate_ranked_results(&case, &[metadata_only], 1, 0).forbidden_result_found);
+    }
+
+    #[test]
+    fn every_configured_positive_expectation_must_match() {
+        let case = case(serde_json::json!({
+            "query": "q",
+            "expected_ids": ["note:expected"],
+            "expected_contains": ["required prompt text"]
+        }));
+        let mut correct_id = result("note:expected");
+        correct_id.text = "different text".into();
+        let mut correct_text = result("note:different");
+        correct_text.text = "required prompt text".into();
+
+        assert_eq!(
+            evaluate_ranked_results(&case, &[correct_id], 1, 0).checks_passed,
+            Some(false)
+        );
+        assert_eq!(
+            evaluate_ranked_results(&case, &[correct_text], 1, 0).checks_passed,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn exact_ids_are_unicode_case_insensitive() {
+        let case = case(serde_json::json!({
+            "query": "q",
+            "expected_ids": ["note:CAFÉ"],
+            "forbidden_ids": ["note:СЕКРЕТ"]
+        }));
+        let hit = result("note:café");
+        let forbidden = result("note:секрет");
+
+        assert_eq!(
+            evaluate_ranked_results(&case, &[hit], 1, 0).recall_at_k,
+            Some(1.0)
+        );
+        assert!(evaluate_ranked_results(&case, &[forbidden], 1, 0).forbidden_result_found);
     }
 
     #[test]
