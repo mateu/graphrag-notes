@@ -352,9 +352,24 @@ graphrag search "machine learning" --context
 ### 5. Run the Gardener
 
 ```bash
-graphrag garden --dry-run
-graphrag garden
+# Preview candidates without writing proposals or accepted edges.
+graphrag garden scan --dry-run
+# Persist reviewable related_to proposals; this never mutates accepted edges.
+graphrag garden scan
+graphrag garden proposals list --status pending
+graphrag garden proposals accept proposed_edge:ID --reason "reviewed" --yes
+# Batch acceptance is deliberately guarded and only accepts Gardener related_to proposals.
+graphrag garden proposals accept --all --min-confidence 0.9 --yes
+# Undo an accepted edge without losing the proposal audit trail.
+graphrag edges undo related_to:ID --dry-run
+graphrag edges undo related_to:ID --yes
 ```
+
+`related_to` is symmetric and is stored in lexical note-ID order, so A↔B has
+one canonical accepted edge. `supports` and `contradicts` are directional and
+are never inferred from embedding similarity. Gardener auto-apply is disabled
+by default: enable it only with both `[gardener].auto_apply = true` and an
+appropriate `auto_apply_threshold` (or `GRAPHRAG_GARDENER_AUTO_APPLY=true`).
 
 ### 6. Interactive Mode
 
@@ -375,7 +390,8 @@ graphrag interactive
 | `augment <query>` | Build prompt-ready retrieval context with citations |
 | `eval-augment <file>` | Evaluate augmentation retrieval quality |
 | `list` | List recent notes |
-| `garden` | Run maintenance (find orphans, suggest connections) |
+| `garden scan` / `garden proposals` | Persist, inspect, and review auditable Gardener proposals |
+| `edges delete` / `edges undo` | Safely delete an accepted edge with `--dry-run` or `--yes` |
 | `stats` | Show database statistics |
 | `interactive` | Interactive REPL mode |
 | `embedding-dim` | Show embedding dimension for the active provider |

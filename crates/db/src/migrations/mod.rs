@@ -7,6 +7,7 @@
 mod v001_initial;
 mod v002_embedding_metadata;
 mod v003_source_lifecycle;
+mod v004_edge_proposals;
 
 use crate::{DbConnection, DbError, Result};
 use serde::Deserialize;
@@ -17,7 +18,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 3;
+pub const LATEST_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -36,6 +37,7 @@ const MIGRATIONS: &[Migration] = &[
     v001_initial::MIGRATION,
     v002_embedding_metadata::MIGRATION,
     v003_source_lifecycle::MIGRATION,
+    v004_edge_proposals::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -352,6 +354,7 @@ mod tests {
         assert_eq!(migrations[0].name, "initial_schema");
         assert_eq!(migrations[1].name, "embedding_metadata");
         assert_eq!(migrations[2].name, "source_lifecycle");
+        assert_eq!(migrations[3].name, "edge_proposals");
     }
 
     #[test]
@@ -405,13 +408,13 @@ mod tests {
         let db = raw_memory_db().await;
         apply_all(&db).await.unwrap();
         let invalid = Migration {
-            version: 3,
+            version: 5,
             name: "invalid_test_migration",
             sql: "DEFINE TABLE invalid_test_probe SCHEMAFULL; THIS IS NOT VALID SURREALQL;",
         };
 
         let error = apply_one(&db, invalid).await.unwrap_err();
-        assert!(matches!(error, DbError::MigrationFailed { version: 3, .. }));
+        assert!(matches!(error, DbError::MigrationFailed { version: 5, .. }));
         assert_eq!(
             applied_migrations(&db).await.unwrap().len(),
             LATEST_SCHEMA_VERSION as usize
@@ -422,6 +425,8 @@ mod tests {
             &[
                 v001_initial::MIGRATION,
                 v002_embedding_metadata::MIGRATION,
+                v003_source_lifecycle::MIGRATION,
+                v004_edge_proposals::MIGRATION,
                 invalid,
             ],
         )

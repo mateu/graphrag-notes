@@ -67,8 +67,10 @@ near_duplicate_threshold = 0.85
 [gardener]
 # Minimum similarity score to suggest a connection
 similarity_threshold = 0.7
-# Auto-apply connections above this threshold
+# Auto-apply is disabled by default. When explicitly enabled, only persisted
+# Gardener `related_to` proposals at or above this threshold may be accepted.
 auto_apply_threshold = 0.85
+auto_apply = false
 # Maximum suggestions to generate per run
 max_suggestions = 50
 

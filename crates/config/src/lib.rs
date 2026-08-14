@@ -190,6 +190,8 @@ impl Default for AugmentConfig {
 pub struct GardenerConfig {
     pub similarity_threshold: f32,
     pub auto_apply_threshold: f32,
+    /// Explicit opt-in; a threshold alone never enables mutation.
+    pub auto_apply: bool,
     pub max_suggestions: usize,
 }
 impl Default for GardenerConfig {
@@ -197,6 +199,7 @@ impl Default for GardenerConfig {
         Self {
             similarity_threshold: 0.7,
             auto_apply_threshold: 0.85,
+            auto_apply: false,
             max_suggestions: 50,
         }
     }
@@ -502,6 +505,11 @@ impl RuntimeConfig {
             env,
             "GRAPHRAG_GARDENER_AUTO_APPLY_THRESHOLD",
             &mut self.gardener.auto_apply_threshold,
+        )?;
+        set_bool(
+            env,
+            "GRAPHRAG_GARDENER_AUTO_APPLY",
+            &mut self.gardener.auto_apply,
         )?;
         set_usize(
             env,
@@ -1103,6 +1111,7 @@ mod tests {
                 ("EXTRACT_PROGRESS_EVERY_SECS", "6"),
                 ("IMPORT_PROGRESS_EVERY", "12"),
                 ("IMPORT_PROGRESS_EVERY_SECS", "7"),
+                ("GRAPHRAG_GARDENER_AUTO_APPLY", "true"),
             ]),
             None,
         )
@@ -1131,6 +1140,7 @@ mod tests {
         assert_eq!(config.librarian.extract_progress_every_secs, 6);
         assert_eq!(config.librarian.import_progress_every, 12);
         assert_eq!(config.librarian.import_progress_every_secs, 7);
+        assert!(config.gardener.auto_apply);
     }
 
     #[test]
