@@ -267,6 +267,7 @@ impl Repository {
                     note_type,
                     tags,
                     created_at,
+                    source_id.uri AS source_uri,
                     vector::distance::knn() AS vec_distance
                 FROM note
                 WHERE embedding <|100,COSINE|> $embedding
@@ -311,6 +312,7 @@ impl Repository {
                     note_type,
                     tags,
                     created_at,
+                    source_id.uri AS source_uri,
                     (search::score(0) * 0.7 + search::score(1) * 0.3) AS fts_score
                 FROM note
                 WHERE (content @0@ $query OR title @1@ $query)
@@ -407,6 +409,7 @@ impl Repository {
                     role,
                     content,
                     created_at,
+                    conversation_id.source_uri AS source_uri,
                     vector::distance::knn() AS vec_distance
                 FROM message
                 WHERE embedding <|100,COSINE|> $embedding
@@ -446,6 +449,7 @@ impl Repository {
                     role,
                     content,
                     created_at,
+                    conversation_id.source_uri AS source_uri,
                     search::score(0) AS fts_score
                 FROM message
                 WHERE content @0@ $query
@@ -1306,6 +1310,8 @@ pub struct SearchResult {
     pub tags: Vec<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
+    pub source_uri: Option<String>,
+    #[serde(default)]
     pub vec_distance: Option<f32>,
     #[serde(default)]
     pub fts_score: Option<f32>,
@@ -1321,6 +1327,8 @@ pub struct MessageSearchResult {
     pub content: String,
     #[serde(default)]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub source_uri: Option<String>,
     #[serde(default)]
     pub vec_distance: Option<f32>,
     #[serde(default)]

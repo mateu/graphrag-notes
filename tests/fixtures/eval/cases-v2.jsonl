@@ -1,0 +1,7 @@
+# Sanitized, deterministic v2 evaluation cases. These IDs are fixture identifiers, never user data.
+{"schema_version":2,"name":"note-with-source-filter","query":"local music service","scope":"notes","k":3,"source_uri":"fixture://notes/homelab.md","relevance":[{"id":"note:music","grade":3},{"id":"note:network","grade":1}],"expected_source_uris":["fixture://notes/homelab.md"],"forbidden_ids":["note:unrelated"]}
+{"schema_version":2,"name":"message-provenance","query":"adapter pairing","scope":"messages","k":2,"relevance":[{"id":"message:adapter-1","grade":2}],"expected_conversation_uuids":["fixture-conversation-support"]}
+{"schema_version":2,"name":"conversation-summary","query":"what was decided","scope":"all","k":3,"expected_ids":["conversation:project-summary"],"expected_contains":["migration decision"]}
+{"schema_version":2,"name":"filter-and-budget","query":"gpu power","scope":"notes","limit":2,"k":1,"since_days":30,"entity":"GPU","max_tokens":80,"max_chunk_tokens":40,"expected_ids":["note:gpu-power"]}
+{"schema_version":2,"name":"duplicate-result-guard","query":"duplicate notes","scope":"all","k":3,"expected_ids":["note:canonical"],"forbidden_ids":["note:duplicate"]}
+{"schema_version":2,"name":"graph-related-content","query":"which service depends on the media host","scope":"all","k":3,"expected_contains":["media host"],"forbidden_contains":["private fixture secret"]}

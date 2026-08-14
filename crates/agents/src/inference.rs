@@ -342,6 +342,25 @@ impl TeiClient {
         &self.base_url
     }
 
+    /// Name of the concrete embedding provider selected for this client.
+    pub fn provider_name(&self) -> &'static str {
+        match self.provider {
+            TeiProvider::Tei => "tei",
+            TeiProvider::Ollama => "ollama",
+        }
+    }
+
+    /// Model identifier used by the selected provider.
+    pub fn model(&self) -> &str {
+        match self.provider {
+            // TEI's health/embed API does not expose its serving image or model
+            // identifier. Returning the Ollama fallback here would make an eval
+            // baseline claim a model that was never used.
+            TeiProvider::Tei => "unknown",
+            TeiProvider::Ollama => &self.model,
+        }
+    }
+
     async fn ollama_embed(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/api/embeddings", self.base_url);
         let request = OllamaEmbedRequest {
