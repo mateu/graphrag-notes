@@ -1279,10 +1279,24 @@ impl LibrarianAgent {
         note_ids: &[String],
         force_clear: bool,
     ) -> Result<usize> {
+        // Resolving explicit IDs happens before a durable job exists. A
+        // cancellation in this phase intentionally creates no empty job to
+        // resume, matching `extract-entities --all` snapshot semantics.
+        if self.cancellation_requested.load(Ordering::Acquire) {
+            return Ok(0);
+        }
         let mut item_ids = Vec::new();
         for note_id_raw in note_ids {
+            if self.cancellation_requested.load(Ordering::Acquire) {
+                return Ok(0);
+            }
             let key = note_id_raw.strip_prefix("note:").unwrap_or(note_id_raw);
             let maybe_note = self.repo.get_note(key).await?;
+            // A lookup may have been in flight while Ctrl-C arrived. Do not
+            // retain its result or create a durable job after cancellation.
+            if self.cancellation_requested.load(Ordering::Acquire) {
+                return Ok(0);
+            }
             let Some(note) = maybe_note else {
                 debug!("Note not found for extraction: {}", note_id_raw);
                 continue;
@@ -2923,7 +2937,7 @@ mod tests {
         // a durable job exists, so it must leave no empty job behind.
         assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
         let explicit = LibrarianAgent::new(
-            repo,
+            repo.clone(),
             Arc::new(DeterministicEmbedder::default()),
             Arc::new(FixtureEntityExtractor::default()),
         )
@@ -2940,6 +2954,7 @@ mod tests {
                 .unwrap(),
             0
         );
+        assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2949,7 +2964,7 @@ mod tests {
             .create_note(Note::new("first durable entity selection"))
             .await
             .unwrap();
-        let _second = repo
+        let second = repo
             .create_note(Note::new("second durable entity selection"))
             .await
             .unwrap();
@@ -2990,19 +3005,24 @@ mod tests {
         assert_eq!(resumed_all.completed, 2);
         assert!(!resumed_all.cancelled);
 
+        let explicit_cancelled = Arc::new(AtomicBool::new(false));
         let explicit = LibrarianAgent::new(
             repo.clone(),
             Arc::new(DeterministicEmbedder::default()),
-            Arc::new(FixtureEntityExtractor::default()),
+            Arc::new(CancellingEntityExtractor {
+                calls: Arc::new(AtomicUsize::new(0)),
+                cancellation_requested: explicit_cancelled.clone(),
+            }),
         )
-        .with_cancellation_flag(cancelled);
+        .with_cancellation_flag(explicit_cancelled);
         let first_id = graphrag_core::record_id_to_string(first.id.as_ref().unwrap());
+        let second_id = graphrag_core::record_id_to_string(second.id.as_ref().unwrap());
         assert_eq!(
             explicit
-                .extract_entities_for_note_ids(&[first_id.clone()], false)
+                .extract_entities_for_note_ids(&[first_id.clone(), second_id.clone()], false)
                 .await
                 .unwrap(),
-            0
+            1
         );
         let explicit_job = repo
             .list_processing_jobs(10)
@@ -3012,7 +3032,7 @@ mod tests {
             .find(|job| job.scope.as_deref() == Some("note_ids:force=false"))
             .unwrap();
         assert_eq!(explicit_job.status, ProcessingJobStatus::Cancelled.as_str());
-        assert_eq!(explicit_job.item_ids, vec![first_id]);
+        assert_eq!(explicit_job.item_ids, vec![first_id, second_id]);
         let explicit_job_id = graphrag_core::record_id_to_string(explicit_job.id.as_ref().unwrap());
         let resumed_explicit = LibrarianAgent::new(
             repo,
@@ -3022,7 +3042,7 @@ mod tests {
         .resume_processing_job(&explicit_job_id)
         .await
         .unwrap();
-        assert_eq!(resumed_explicit.completed, 1);
+        assert_eq!(resumed_explicit.completed, 2);
         assert!(!resumed_explicit.cancelled);
     }
 
