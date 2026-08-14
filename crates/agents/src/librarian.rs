@@ -1285,6 +1285,14 @@ impl LibrarianAgent {
                 },
             )
             .await?;
+        // Match embedding jobs: a persisted terminal failure is still an
+        // invocation failure. The durable row above retains the detailed
+        // failed count and first item diagnostic for `jobs show`/retry.
+        if failed > 0 {
+            return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
+                || "one or more entity extraction items failed".to_string(),
+            )));
+        }
         Ok(ProcessingRunResult {
             job_id: record_id_to_string(&job_id),
             completed,
@@ -2961,7 +2969,7 @@ mod tests {
             Arc::new(DeterministicEmbedder::default()),
             Arc::new(FixtureEntityExtractor::default().fail_next_requests(1, "timeout")),
         );
-        assert_eq!(failed_run.extract_entities_for_notes(2).await.unwrap(), 1);
+        assert!(failed_run.extract_entities_for_notes(2).await.is_err());
         let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
         let job_id = job
             .id

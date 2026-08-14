@@ -2860,6 +2860,51 @@ mod tests {
         .contains("Extraction service unavailable"));
     }
 
+    #[tokio::test]
+    async fn resume_entity_failure_returns_non_success_after_persisting_diagnostic() {
+        use graphrag_agents::{DeterministicEmbedder, FixtureEntityExtractor};
+
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(graphrag_core::Note::new("entity extraction that will fail"))
+            .await
+            .unwrap();
+        let job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::EntityExtraction,
+                None,
+                1,
+                Some("note_ids:force=false".into()),
+                vec![record_id_to_string(note.id.as_ref().unwrap())],
+            )
+            .await
+            .unwrap();
+        let job_id = record_id_to_string(job.id.as_ref().unwrap());
+        repo.cancel_processing_job(job.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        let error = cmd_jobs(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().fail_next_requests(1, "timeout")),
+            LibrarianRuntimeConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+            JobsCommand::Resume { id: job_id.clone() },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("timeout"));
+
+        let job = repo.get_processing_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(job.status, "failed");
+        assert_eq!(job.failed_count, 1);
+        assert!(job
+            .last_error
+            .as_deref()
+            .is_some_and(|diagnostic| diagnostic.contains("timeout")));
+    }
+
     #[test]
     fn edge_dry_run_reports_actual_existence() {
         assert_eq!(
