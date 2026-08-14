@@ -818,12 +818,12 @@ impl Repository {
         } else {
             note_id.to_string()
         };
+        let note_record_id = RecordId::new("note", raw);
 
         let entity_ids: Vec<RecordId> = self
             .db
-            .query("SELECT VALUE out FROM mentions WHERE in = type::thing($table, $id)")
-            .bind(("table", "note"))
-            .bind(("id", raw))
+            .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+            .bind(("note_id", note_record_id))
             .await?
             .take(0)?;
 
@@ -1404,6 +1404,7 @@ pub struct DbStats {
 mod tests {
     use super::*;
     use crate::init_memory;
+    use graphrag_core::EntityType;
 
     #[tokio::test]
     async fn test_create_and_get_note() {
@@ -1430,6 +1431,37 @@ mod tests {
 
         let notes = repo.list_notes(10).await.unwrap();
         assert_eq!(notes.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn get_entities_for_note_uses_a_bound_record_id() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db);
+
+        let note = repo
+            .create_note(Note::new("Entity-linked note"))
+            .await
+            .unwrap();
+        let note_id = note.id.unwrap();
+        let mut entity = Entity::new("SurrealDB", EntityType::Technology);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        let entity_id = entity.id.unwrap();
+        repo.link_note_to_entity(&note_id, &entity_id)
+            .await
+            .unwrap();
+
+        let note_key = record_id_to_string(&note_id)
+            .strip_prefix("note:")
+            .unwrap()
+            .to_string();
+
+        for note_reference in [note_key.clone(), format!("note:{note_key}")] {
+            let entities = repo.get_entities_for_note(&note_reference).await.unwrap();
+
+            assert_eq!(entities.len(), 1);
+            assert_eq!(entities[0].id.as_ref(), Some(&entity_id));
+        }
     }
 
     #[tokio::test]
