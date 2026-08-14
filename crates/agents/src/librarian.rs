@@ -168,6 +168,16 @@ fn no_processing_work() -> ProcessingRunResult {
     }
 }
 
+/// Cancellation before durable work is created still needs to reach callers:
+/// command-line entrypoints must not report a successful zero-item run after
+/// Ctrl-C was observed while resolving its scope.
+fn cancelled_before_processing_work() -> ProcessingRunResult {
+    ProcessingRunResult {
+        cancelled: true,
+        ..no_processing_work()
+    }
+}
+
 fn entity_job_force_clear(scope: Option<&str>) -> bool {
     scope
         .and_then(|scope| {
@@ -548,18 +558,32 @@ impl LibrarianAgent {
         let id = job.id.clone().ok_or_else(|| {
             crate::AgentError::Processing(format!("processing job has no record id: {job_id}"))
         })?;
+        // Validate the durable contract before changing a failed/cancelled
+        // job back to `running`. This prevents malformed legacy/publicly
+        // created jobs from becoming wedged in a state the worker cannot run.
+        let job_type = job.job_type_enum().ok_or_else(|| {
+            crate::AgentError::Processing(format!(
+                "unsupported processing job type: {}",
+                job.job_type
+            ))
+        })?;
+        if job.item_ids.is_empty() {
+            return Err(crate::AgentError::Processing(
+                "processing job has no persisted item set; create a new job instead of resuming an ambiguous legacy job".into(),
+            ));
+        }
+        // Failed entity passes retry their full durable scope, while a
+        // cleanly cancelled pass continues after its checkpoint. Capture this
+        // before the repository transition clears neither status nor counts.
+        let resume_from_checkpoint = job_type == ProcessingJobType::EntityExtraction
+            && job.status == ProcessingJobStatus::Cancelled.as_str()
+            && job.failed_count == 0;
         let resumed = self.repo.resume_processing_job(&id).await?;
-        match resumed.job_type_enum() {
-            Some(ProcessingJobType::Embedding) => {
+        match job_type {
+            ProcessingJobType::Embedding => {
                 self.process_pending_embeddings_job(Some(resumed)).await
             }
-            Some(ProcessingJobType::EntityExtraction) => {
-                // Failed entity passes retry their full durable scope, while
-                // a cleanly cancelled pass continues after its checkpoint.
-                // This preserves recovery from provider failures without
-                // replaying already committed force-mode extraction work.
-                let resume_from_checkpoint =
-                    job.status == ProcessingJobStatus::Cancelled.as_str() && job.failed_count == 0;
+            ProcessingJobType::EntityExtraction => {
                 self.extract_entities_for_notes_job(
                     100,
                     Some(resumed),
@@ -568,10 +592,6 @@ impl LibrarianAgent {
                 )
                 .await
             }
-            None => Err(crate::AgentError::Processing(format!(
-                "unsupported processing job type: {}",
-                resumed.job_type
-            ))),
         }
     }
 
@@ -994,10 +1014,19 @@ impl LibrarianAgent {
     /// Extract entities for notes missing entity links
     #[instrument(skip(self))]
     pub async fn extract_entities_for_notes(&self, limit: usize) -> Result<usize> {
-        let result = self
-            .extract_entities_for_notes_job(limit, None, false, false)
-            .await?;
+        let result = self.extract_entities_for_notes_result(limit).await?;
         Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
+    }
+
+    /// Extract entities for notes missing entity links and retain the durable
+    /// run state so callers can distinguish cancellation from zero work.
+    #[instrument(skip(self))]
+    pub async fn extract_entities_for_notes_result(
+        &self,
+        limit: usize,
+    ) -> Result<ProcessingRunResult> {
+        self.extract_entities_for_notes_job(limit, None, false, false)
+            .await
     }
 
     async fn extract_entities_for_notes_job(
@@ -1332,16 +1361,32 @@ impl LibrarianAgent {
         limit: usize,
         force_clear: bool,
     ) -> Result<usize> {
-        let Some(item_ids) = self.all_note_ids_for_entity_extraction(limit).await? else {
-            return Ok(0);
-        };
         let result = self
-            .create_entity_extraction_job(
-                item_ids,
-                format!("all_notes:page_size={limit};force={force_clear}"),
-            )
+            .extract_entities_for_all_notes_result(limit, force_clear)
             .await?;
         Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
+    }
+
+    /// Extract entities for every note while retaining durable cancellation
+    /// state for callers such as the CLI.
+    #[instrument(skip(self))]
+    pub async fn extract_entities_for_all_notes_result(
+        &self,
+        limit: usize,
+        force_clear: bool,
+    ) -> Result<ProcessingRunResult> {
+        let Some(item_ids) = self.all_note_ids_for_entity_extraction(limit).await? else {
+            return Ok(if self.cancellation_requested.load(Ordering::Acquire) {
+                cancelled_before_processing_work()
+            } else {
+                no_processing_work()
+            });
+        };
+        self.create_entity_extraction_job(
+            item_ids,
+            format!("all_notes:page_size={limit};force={force_clear}"),
+        )
+        .await
     }
 
     /// Extract entities for explicit note ids
@@ -1351,23 +1396,37 @@ impl LibrarianAgent {
         note_ids: &[String],
         force_clear: bool,
     ) -> Result<usize> {
+        let result = self
+            .extract_entities_for_note_ids_result(note_ids, force_clear)
+            .await?;
+        Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
+    }
+
+    /// Extract entities for explicit note ids while retaining durable
+    /// cancellation state for callers such as the CLI.
+    #[instrument(skip(self, note_ids))]
+    pub async fn extract_entities_for_note_ids_result(
+        &self,
+        note_ids: &[String],
+        force_clear: bool,
+    ) -> Result<ProcessingRunResult> {
         // Resolving explicit IDs happens before a durable job exists. A
         // cancellation in this phase intentionally creates no empty job to
         // resume, matching `extract-entities --all` snapshot semantics.
         if self.cancellation_requested.load(Ordering::Acquire) {
-            return Ok(0);
+            return Ok(cancelled_before_processing_work());
         }
         let mut item_ids = Vec::new();
         for note_id_raw in note_ids {
             if self.cancellation_requested.load(Ordering::Acquire) {
-                return Ok(0);
+                return Ok(cancelled_before_processing_work());
             }
             let key = note_id_raw.strip_prefix("note:").unwrap_or(note_id_raw);
             let maybe_note = self.repo.get_note(key).await?;
             // A lookup may have been in flight while Ctrl-C arrived. Do not
             // retain its result or create a durable job after cancellation.
             if self.cancellation_requested.load(Ordering::Acquire) {
-                return Ok(0);
+                return Ok(cancelled_before_processing_work());
             }
             let Some(note) = maybe_note else {
                 debug!("Note not found for extraction: {}", note_id_raw);
@@ -1379,10 +1438,8 @@ impl LibrarianAgent {
                 }
             }
         }
-        let result = self
-            .create_entity_extraction_job(item_ids, format!("note_ids:force={force_clear}"))
-            .await?;
-        Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
+        self.create_entity_extraction_job(item_ids, format!("note_ids:force={force_clear}"))
+            .await
     }
 
     /// Chunk content and create notes
@@ -2755,6 +2812,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_rejects_empty_public_job_without_transitioning_to_running() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        // The public constructor predates persisted item scopes and can still
+        // produce a cancelled job with no resumable item set.
+        let job = repo
+            .create_processing_job(ProcessingJobType::Embedding, None, 0)
+            .await
+            .unwrap();
+        let job_id = graphrag_core::record_id_to_string(job.id.as_ref().unwrap());
+        repo.cancel_processing_job(job.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        let error = librarian.resume_processing_job(&job_id).await.unwrap_err();
+        assert!(error.to_string().contains("no persisted item set"));
+
+        let unchanged = repo.get_processing_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(
+            unchanged.status,
+            ProcessingJobStatus::Cancelled.as_str(),
+            "invalid jobs must remain resumable/cancellable rather than being wedged in running"
+        );
+    }
+
+    #[tokio::test]
     async fn pending_embedding_snapshot_pages_ids_and_stops_before_job_on_cancellation() {
         let repo = Repository::new(init_memory().await.unwrap());
         for content in [
@@ -3119,10 +3206,12 @@ mod tests {
             Arc::new(FixtureEntityExtractor::default()),
         )
         .with_cancellation_flag(cancelled.clone());
-        assert_eq!(
-            all.extract_entities_for_all_notes(10, false).await.unwrap(),
-            0
-        );
+        let all_result = all
+            .extract_entities_for_all_notes_result(10, false)
+            .await
+            .unwrap();
+        assert!(all_result.cancelled);
+        assert_eq!(all_result.completed, 0);
         // Cancellation during the initial `--all` ID snapshot happens before
         // a durable job exists, so it must leave no empty job behind.
         assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
@@ -3132,18 +3221,17 @@ mod tests {
             Arc::new(FixtureEntityExtractor::default()),
         )
         .with_cancellation_flag(cancelled);
-        assert_eq!(
-            explicit
-                .extract_entities_for_note_ids(
-                    &[graphrag_core::record_id_to_string(
-                        note.id.as_ref().unwrap()
-                    )],
-                    false,
-                )
-                .await
-                .unwrap(),
-            0
-        );
+        let explicit_result = explicit
+            .extract_entities_for_note_ids_result(
+                &[graphrag_core::record_id_to_string(
+                    note.id.as_ref().unwrap(),
+                )],
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(explicit_result.cancelled);
+        assert_eq!(explicit_result.completed, 0);
         assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
     }
 

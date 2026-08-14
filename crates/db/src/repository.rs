@@ -206,9 +206,14 @@ impl Repository {
     // DURABLE INFERENCE PROCESSING
     // ==========================================
 
-    /// Create a local, resumable unit of inference work. `source_generation`
-    /// is an opaque durable identifier so jobs remain valid even when their
-    /// source record is later reloaded by another process.
+    /// Create a legacy/unscoped inference record. `source_generation` is an
+    /// opaque durable identifier so jobs remain valid even when their source
+    /// record is later reloaded by another process.
+    ///
+    /// This helper has no persisted item set and therefore cannot be resumed
+    /// by a durable worker. New callers must use
+    /// [`Self::create_processing_job_with_scope`] so retries have an exact,
+    /// resumable scope.
     pub async fn create_processing_job(
         &self,
         job_type: ProcessingJobType,

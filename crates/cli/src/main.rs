@@ -15,8 +15,8 @@ use eval::{
 use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
     InferenceProviderConfig, InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig,
-    ProcessingConfig, ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType,
-    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    ProcessingConfig, ProcessingRunResult, ResilientEmbedder, ResilientEntityExtractor,
+    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
@@ -1796,20 +1796,38 @@ async fn cmd_extract_entities(
     let librarian = LibrarianAgent::new(repo, tei, tgi)
         .with_runtime_config(librarian_config)
         .with_cancellation_flag(cancellation_requested);
-    let processed = if !note_ids.is_empty() {
+    let result = if !note_ids.is_empty() {
         librarian
-            .extract_entities_for_note_ids(&note_ids, force)
+            .extract_entities_for_note_ids_result(&note_ids, force)
             .await?
     } else if all {
-        let processed = librarian
-            .extract_entities_for_all_notes(limit, force)
-            .await?;
-        processed
+        librarian
+            .extract_entities_for_all_notes_result(limit, force)
+            .await?
     } else {
-        let processed = librarian.extract_entities_for_notes(limit).await?;
-        processed
+        librarian.extract_entities_for_notes_result(limit).await?
     };
-    println!("✓ Extracted entities for {} notes", processed);
+    report_entity_extraction_result(&result)
+}
+
+/// Render entity extraction only as a success after its durable run reached a
+/// terminal non-cancelled state. A Ctrl-C is resumable work, not a successful
+/// zero-item invocation.
+fn report_entity_extraction_result(result: &ProcessingRunResult) -> Result<()> {
+    if result.cancelled {
+        if result.job_id.is_empty() {
+            eprintln!(
+                "Entity extraction cancelled before durable work was created; no job needs resuming."
+            );
+            anyhow::bail!("Entity extraction cancelled")
+        }
+        eprintln!(
+            "Entity extraction cancelled: job={} completed={} failed={}. Resume with `graphrag jobs resume {}`.",
+            result.job_id, result.completed, result.failed, result.job_id
+        );
+        anyhow::bail!("Entity extraction cancelled")
+    }
+    println!("✓ Extracted entities for {} notes", result.completed);
     Ok(())
 }
 
@@ -2754,6 +2772,26 @@ mod tests {
         assert!(!request_cancellation(&requested));
         assert!(requested.load(Ordering::Acquire));
         assert!(request_cancellation(&requested));
+    }
+
+    #[test]
+    fn cancelled_entity_extraction_is_not_reported_as_success() {
+        let cancelled = ProcessingRunResult {
+            job_id: "processing_job:resume-me".into(),
+            completed: 3,
+            failed: 0,
+            cancelled: true,
+        };
+        assert!(report_entity_extraction_result(&cancelled)
+            .unwrap_err()
+            .to_string()
+            .contains("Entity extraction cancelled"));
+
+        let completed = ProcessingRunResult {
+            cancelled: false,
+            ..cancelled
+        };
+        assert!(report_entity_extraction_result(&completed).is_ok());
     }
 
     #[tokio::test]
