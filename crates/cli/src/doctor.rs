@@ -279,8 +279,11 @@ async fn inspect_database(checks: &mut Vec<Check>, db: &DbConnection) {
         ("conversation", "idx_conversation_summary_embedding"),
     ] {
         match table_info(db, table).await {
-            Ok(response)
-                if serde_json::to_string(&response).is_ok_and(|value| value.contains(index)) => {}
+            Ok(info)
+                if info
+                    .get("indexes")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|indexes| indexes.contains_key(index)) => {}
             _ => missing_indexes.push(index),
         }
     }
@@ -435,7 +438,7 @@ async fn embedding_integrity_counts(db: &DbConnection) -> graphrag_db::Result<(u
     .await?;
     let conversation_count = count_query(
         db,
-        "SELECT count() AS count FROM conversation WHERE summary_embedding IS NONE OR array::len(summary_embedding) != 1024 GROUP ALL",
+        "SELECT count() AS count FROM conversation WHERE summary IS NOT NONE AND summary != '' AND (summary_embedding IS NONE OR array::len(summary_embedding) != 1024) GROUP ALL",
     )
     .await?;
     let interrupted_migrations = count_query(
@@ -461,11 +464,18 @@ async fn count_query(db: &DbConnection, query: &str) -> graphrag_db::Result<usiz
         .unwrap_or(0))
 }
 
-async fn table_info(db: &DbConnection, table: &str) -> graphrag_db::Result<Vec<serde_json::Value>> {
-    Ok(db
-        .query(format!("INFO FOR TABLE {table}"))
-        .await?
-        .take::<Vec<serde_json::Value>>(0usize)?)
+async fn table_info(
+    db: &DbConnection,
+    table: &str,
+) -> graphrag_db::Result<serde_json::Map<String, serde_json::Value>> {
+    let info: Option<serde_json::Value> =
+        db.query(format!("INFO FOR TABLE {table}")).await?.take(0)?;
+    info.and_then(|value| value.as_object().cloned())
+        .ok_or_else(|| {
+            graphrag_db::DbError::QueryFailed(format!(
+                "INFO FOR TABLE {table} did not return a schema object"
+            ))
+        })
 }
 
 fn redact_endpoint(endpoint: &str) -> String {
@@ -530,5 +540,39 @@ mod tests {
             DoctorReport::from_checks(vec![Check::failed("failed", "failed", "detail")]).exit_code,
             EXIT_FAILED
         );
+    }
+
+    #[tokio::test]
+    async fn initialized_database_reports_required_tables_and_indexes() {
+        let db = init_memory().await.unwrap();
+        let mut checks = Vec::new();
+        inspect_database(&mut checks, &db).await;
+        assert_eq!(
+            checks
+                .iter()
+                .find(|check| check.name == "schema_objects")
+                .expect("schema object check")
+                .status,
+            Status::Healthy
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_conversation_summaries_are_not_missing_embeddings() {
+        let db = init_memory().await.unwrap();
+        db.query(
+            "CREATE conversation CONTENT {
+                uuid: 'empty-summary',
+                summary: '',
+                created_at: time::now(),
+                updated_at: time::now()
+            }",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let (missing_embeddings, _) = embedding_integrity_counts(&db).await.unwrap();
+        assert_eq!(missing_embeddings, 0);
     }
 }

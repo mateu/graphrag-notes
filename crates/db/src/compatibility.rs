@@ -153,6 +153,13 @@ pub async fn record_embedding_metadata(
         CompatibilityState::Empty => {}
     }
 
+    let legacy_vector_records = legacy_vector_record_count(db).await?;
+    if legacy_vector_records != 0 {
+        return Err(DbError::LegacyEmbeddingMetadata {
+            vector_records: legacy_vector_records,
+        });
+    }
+
     let insertion = db
         .query(
             "INSERT INTO graphrag_metadata (
@@ -219,6 +226,26 @@ fn metadata_from_record(record: MetadataRecord) -> Result<EmbeddingMetadata> {
     })
 }
 
+async fn legacy_vector_record_count(db: &DbConnection) -> Result<usize> {
+    let mut total = 0_usize;
+    for query in [
+        "SELECT count() AS count FROM note WHERE embedding IS NOT NONE AND array::len(embedding) > 0 GROUP ALL",
+        "SELECT count() AS count FROM entity WHERE embedding IS NOT NONE AND array::len(embedding) > 0 GROUP ALL",
+        "SELECT count() AS count FROM message WHERE embedding IS NOT NONE AND array::len(embedding) > 0 GROUP ALL",
+        "SELECT count() AS count FROM conversation WHERE summary_embedding IS NOT NONE AND array::len(summary_embedding) > 0 GROUP ALL",
+    ] {
+        let rows: Vec<serde_json::Value> = db.query(query).await?.take(0)?;
+        let count = rows
+            .first()
+            .and_then(|row| row.get("count"))
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or(0);
+        total = total.saturating_add(count);
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +297,31 @@ mod tests {
             .await
             .unwrap_err();
         assert!(model_error.to_string().contains("graphrag reindex --all"));
+    }
+
+    #[tokio::test]
+    async fn refuses_to_adopt_legacy_vectors_without_metadata() {
+        let db = init_memory().await.unwrap();
+        db.query(
+            "CREATE entity CONTENT {
+                entity_type: 'other',
+                name: 'legacy',
+                canonical_name: 'legacy',
+                embedding: [1.0]
+            }",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let error = record_embedding_metadata(&db, &identity("fixture", 1024), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DbError::LegacyEmbeddingMetadata { vector_records: 1 }
+        ));
+        assert!(embedding_metadata(&db).await.unwrap().is_none());
     }
 }

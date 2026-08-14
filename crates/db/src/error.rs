@@ -39,6 +39,11 @@ pub enum DbError {
         active_dimension: usize,
     },
 
+    #[error(
+        "database contains {vector_records} legacy vector-bearing records without embedding metadata. Reindex with: graphrag reindex --all"
+    )]
+    LegacyEmbeddingMetadata { vector_records: usize },
+
     #[error("Database schema migration {version} ({name}) failed: {reason}")]
     MigrationFailed {
         version: u32,
