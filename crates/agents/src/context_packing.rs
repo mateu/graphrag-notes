@@ -655,21 +655,22 @@ fn span_text(text: &str, spans: &[Range<usize>], start: usize, end: usize) -> St
 fn sentence_spans(text: &str) -> Vec<Range<usize>> {
     let mut spans = Vec::new();
     let mut line_start = 0;
-    let mut fence_start = None;
+    let mut fence_start = None::<(usize, FenceDelimiter)>;
     for line in text.split_inclusive('\n') {
         let line_end = line_start + line.len();
-        if is_standalone_fence_line(line) {
-            if let Some(start) = fence_start.take() {
+        if let Some((start, delimiter)) = fence_start {
+            if closes_fence_line(line, delimiter) {
                 spans.push(start..line_end);
-            } else {
-                fence_start = Some(line_start);
+                fence_start = None;
             }
-        } else if fence_start.is_none() {
+        } else if let Some(delimiter) = opening_fence_delimiter(line) {
+            fence_start = Some((line_start, delimiter));
+        } else {
             push_sentence_spans(line, line_start, &mut spans);
         }
         line_start = line_end;
     }
-    if let Some(start) = fence_start {
+    if let Some((start, _)) = fence_start {
         spans.push(start..text.len());
     }
     if spans.is_empty() {
@@ -887,33 +888,62 @@ fn render_clipped_segment(segment: &str, omitted_left: bool, omitted_right: bool
 }
 
 fn remove_unmatched_fence_markers(value: &str) -> String {
-    if value.matches("```").count() % 2 == 0 {
-        return value.to_string();
-    }
-    value
-        .lines()
-        .filter_map(|line| {
-            if is_standalone_fence_line(line) {
-                None
-            } else {
-                // An inline marker cannot delimit a whole block. Keep the
-                // prose/code line and remove only the unmatched marker.
-                Some(line.replace("```", ""))
+    let lines = value.lines().collect::<Vec<_>>();
+    let mut matched = vec![false; lines.len()];
+    let mut opening = None::<(usize, FenceDelimiter)>;
+    for (index, line) in lines.iter().enumerate() {
+        if let Some((opening_index, delimiter)) = opening {
+            if closes_fence_line(line, delimiter) {
+                matched[opening_index] = true;
+                matched[index] = true;
+                opening = None;
             }
+        } else if let Some(delimiter) = opening_fence_delimiter(line) {
+            opening = Some((index, delimiter));
+        }
+    }
+    lines
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            // Only unmatched standalone delimiter lines are removed. Inline
+            // backticks and shorter delimiters inside a longer fenced block
+            // are ordinary source text and must remain intact.
+            (!opening_fence_delimiter(line).is_some() || matched[index]).then_some(line)
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn is_standalone_fence_line(line: &str) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FenceDelimiter {
+    marker: char,
+    length: usize,
+}
+
+fn opening_fence_delimiter(line: &str) -> Option<FenceDelimiter> {
     let trimmed = line.trim();
-    let Some(info) = trimmed.strip_prefix("```") else {
+    let marker = trimmed.chars().next()?;
+    if !matches!(marker, '`' | '~') {
+        return None;
+    }
+    let length = trimmed.chars().take_while(|ch| *ch == marker).count();
+    if length < 3 {
+        return None;
+    }
+    Some(FenceDelimiter { marker, length })
+}
+
+fn closes_fence_line(line: &str, opening: FenceDelimiter) -> bool {
+    let trimmed = line.trim();
+    let Some(delimiter) = opening_fence_delimiter(trimmed) else {
         return false;
     };
-    // A regular fence is just the delimiter plus an optional compact info
-    // string (for example `rust` or `rust,ignore`). Lines with prose or code
-    // after an inline marker must remain visible in a clipped snippet.
-    !info.contains("```") && !info.chars().any(char::is_whitespace)
+    delimiter.marker == opening.marker
+        && delimiter.length >= opening.length
+        && trimmed[delimiter.marker.len_utf8() * delimiter.length..]
+            .trim()
+            .is_empty()
 }
 
 fn lexical_anchor(text: &str, terms: &HashSet<String>) -> Option<usize> {
@@ -1853,11 +1883,19 @@ mod tests {
     }
 
     #[test]
-    fn unmatched_fence_cleanup_preserves_lines_with_inline_markers() {
-        let cleaned = remove_unmatched_fence_markers("intro ``` marker\n```rust\nlet x = 1;\n```");
-        assert!(cleaned.contains("intro  marker"));
+    fn unmatched_fence_cleanup_tracks_delimiter_character_and_length() {
+        let four_backtick = "````markdown\nliteral ``` remains code\n````";
+        assert_eq!(remove_unmatched_fence_markers(four_backtick), four_backtick);
+        assert_eq!(sentence_spans(four_backtick), vec![0..four_backtick.len()]);
+
+        let tilde = "~~~rust\nliteral ``` remains code\n~~~";
+        assert_eq!(remove_unmatched_fence_markers(tilde), tilde);
+        assert_eq!(sentence_spans(tilde), vec![0..tilde.len()]);
+
+        let cleaned = remove_unmatched_fence_markers("intro ``` marker\n```rust\nlet x = 1;");
+        assert!(cleaned.contains("intro ``` marker"));
         assert!(cleaned.contains("let x = 1;"));
-        assert!(!cleaned.contains("```"));
+        assert!(!cleaned.contains("```rust"));
     }
 
     #[test]

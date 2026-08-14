@@ -71,13 +71,14 @@ mod tests {
     async fn persistent_database_keeps_schema_version_after_reopen() {
         let temporary_directory = tempfile::tempdir().unwrap();
 
-        {
-            let db = init_persistent(temporary_directory.path()).await.unwrap();
-            assert_eq!(
-                migrations::current_version(&db).await.unwrap(),
-                migrations::LATEST_SCHEMA_VERSION
-            );
-        }
+        let db = init_persistent(temporary_directory.path()).await.unwrap();
+        assert_eq!(
+            migrations::current_version(&db).await.unwrap(),
+            migrations::LATEST_SCHEMA_VERSION
+        );
+        // The embedded engine owns the RocksDB lock through this client. Drop
+        // it before attempting to reopen the same directory.
+        drop(db);
 
         // SurrealDB releases the embedded-engine lock asynchronously after the
         // final client session is dropped.
