@@ -14,7 +14,10 @@ use graphrag_core::{
     ProposedEdgeStatus, Source, SourceIngestionStatus, SourceType,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
@@ -41,6 +44,49 @@ const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM
 fn count_to_i64(count: u64) -> Result<i64> {
     i64::try_from(count)
         .map_err(|_| DbError::QueryFailed("processing count exceeds database integer range".into()))
+}
+
+/// Derive the default full-text value from a note's displayed content and its
+/// Markdown heading metadata.
+fn derived_search_content(note: &Note) -> String {
+    let headings = note
+        .chunk_heading_path
+        .iter()
+        .filter(|heading| !heading.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" > ");
+    if headings.is_empty() {
+        note.content.clone()
+    } else {
+        format!("{headings}\n\n{}", note.content)
+    }
+}
+
+/// Resolve search text for a note update without treating every existing
+/// value as derived. A caller may intentionally supply aliases or other
+/// custom searchable text; keep those for metadata-only updates and explicit
+/// replacements. Rebuild only when the persisted value was the old derived
+/// Markdown/body value carried through a content or heading-context edit.
+fn search_content_for_note_update(existing: &Note, replacement: &Note) -> String {
+    let existing_derived = derived_search_content(existing);
+    let existing_search = existing
+        .search_content
+        .as_deref()
+        .unwrap_or(existing_derived.as_str());
+    if let Some(replacement_search) = replacement.search_content.as_deref() {
+        if replacement_search != existing_search {
+            return replacement_search.to_string();
+        }
+    }
+
+    let source_changed = existing.content != replacement.content
+        || existing.chunk_heading_path != replacement.chunk_heading_path;
+    if source_changed && existing_search == existing_derived {
+        derived_search_content(replacement)
+    } else {
+        existing_search.to_string()
+    }
 }
 
 /// The coarse operation of a durable local processing job.
@@ -395,7 +441,14 @@ impl Repository {
                 "CREATE note SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, source_id = $source_id, \
-                    source_generation = $source_generation, tags = $tags, \
+                    source_generation = $source_generation, chunk_key = $chunk_key, \
+                    chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
+                    source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
+                    source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
+                    chunk_overlap_chars = $chunk_overlap_chars, split_fenced_code = $split_fenced_code, \
+                    content_hash = $content_hash, \
+                    search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
                  RETURN AFTER",
             )
@@ -415,6 +468,19 @@ impl Repository {
                 "source_generation",
                 note.source_generation.map(|generation| generation as i64),
             ))
+            .bind(("chunk_key", note.chunk_key.clone()))
+            .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
+            .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
+            .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
+            .bind(("source_end_line", note.source_end_line.map(|value| value as i64)))
+            .bind(("source_start_byte", note.source_start_byte.map(|value| value as i64)))
+            .bind(("source_end_byte", note.source_end_byte.map(|value| value as i64)))
+            .bind(("chunk_overlap_from", note.chunk_overlap_from.clone()))
+            .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
+            .bind(("split_fenced_code", note.split_fenced_code))
+            .bind(("content_hash", note.content_hash.clone()))
+            .bind(("search_content", note.search_content.clone()))
             .bind(("tags", note.tags.clone()))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
@@ -435,12 +501,24 @@ impl Repository {
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
+        let existing = self
+            .get_note(raw_id)
+            .await?
+            .ok_or_else(|| DbError::NotFound("note".into(), id.into()))?;
+        let search_content = search_content_for_note_update(&existing, &note);
         let updated: Option<Note> = self
             .db
             .query(
                 "UPDATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
-                    embedding = $embedding, tags = $tags, \
+                    embedding = $embedding, chunk_key = $chunk_key, \
+                    chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
+                    source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
+                    source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
+                    chunk_overlap_chars = $chunk_overlap_chars, split_fenced_code = $split_fenced_code, \
+                    content_hash = $content_hash, \
+                    search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
@@ -454,6 +532,19 @@ impl Repository {
             .bind(("tags", note.tags.clone()))
             .bind(("source_id", note.source_id.clone()))
             .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
+            .bind(("chunk_key", note.chunk_key.clone()))
+            .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
+            .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
+            .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
+            .bind(("source_end_line", note.source_end_line.map(|value| value as i64)))
+            .bind(("source_start_byte", note.source_start_byte.map(|value| value as i64)))
+            .bind(("source_end_byte", note.source_end_byte.map(|value| value as i64)))
+            .bind(("chunk_overlap_from", note.chunk_overlap_from.clone()))
+            .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
+            .bind(("split_fenced_code", note.split_fenced_code))
+            .bind(("content_hash", note.content_hash.clone()))
+            .bind(("search_content", search_content))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
             .await?
@@ -599,6 +690,29 @@ impl Repository {
             .await?
             .take(0)?;
 
+        Ok(notes)
+    }
+
+    /// Return the current persisted Markdown chunks for one source. The caller
+    /// uses this before staging a new source generation to retain IDs and
+    /// embeddings for chunks whose deterministic key/content are unchanged.
+    ///
+    /// Pre-v008 Markdown imports did not persist `chunk_key`, but they did set
+    /// `source_generation`. Include those successful legacy notes so their
+    /// first v008-era refresh can reconcile safe successors instead of
+    /// deleting their graph dependents as an unrelated generation.
+    #[instrument(skip(self, source_id))]
+    pub async fn get_source_chunks(&self, source_id: &RecordId) -> Result<Vec<Note>> {
+        let notes: Vec<Note> = self
+            .db
+            .query(
+                "SELECT * FROM note WHERE source_id = $source_id \
+                 AND source_generation = source_id.successful_generation \
+                 ORDER BY chunk_ordinal ASC, created_at ASC, id ASC",
+            )
+            .bind(("source_id", source_id.clone()))
+            .await?
+            .take(0)?;
         Ok(notes)
     }
 
@@ -807,9 +921,9 @@ impl Repository {
                     tags,
                     created_at,
                     source_id.uri AS source_uri,
-                    (search::score(0) * 0.7 + search::score(1) * 0.3) AS fts_score
+                    (search::score(0) * 0.7 + search::score(1) * 0.2 + search::score(2) * 0.1) AS fts_score
                 FROM note
-                WHERE (content @0@ $query OR title @1@ $query)
+                WHERE (search_content @0@ $query OR content @1@ $query OR title @2@ $query)
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
                   AND (
@@ -1157,6 +1271,18 @@ impl Repository {
         edge_type: EdgeType,
         confidence: Option<f32>,
     ) -> Result<()> {
+        // A source reconciliation snapshots old-generation dependents before
+        // atomically promoting and retiring that generation. Serialize manual
+        // graph writes with that transition so a write cannot be accepted in
+        // the snapshot/cleanup window and then silently removed by cleanup.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        validate_note_edge(from_id, to_id, &edge_type)?;
+        if !self.note_is_writable(from_id).await? || !self.note_is_writable(to_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a graph edge endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         self.create_audited_edge(
             from_id,
             to_id,
@@ -1591,7 +1717,7 @@ impl Repository {
     async fn mark_claimed_proposal_stale(&self, id: &RecordId, reason: &str) -> Result<()> {
         self.db
             .query(
-                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = $reason, resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting' AND resulting_edge_id IS NONE",
+                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = $reason, resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting'",
             )
             .bind(("id", id.clone()))
             .bind(("reason", reason.to_string()))
@@ -1603,7 +1729,7 @@ impl Repository {
     async fn mark_claimed_proposal_materialized(&self, id: &RecordId) -> Result<()> {
         self.db
             .query(
-                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = 'equivalent edge already materialized independently', resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting' AND resulting_edge_id IS NONE",
+                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = 'equivalent edge already materialized independently', resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting'",
             )
             .bind(("id", id.clone()))
             .await?
@@ -1849,6 +1975,21 @@ impl Repository {
         Ok(existing.is_some())
     }
 
+    /// A graph/mention write may address a visible note or the source's
+    /// current pending generation. Older hidden and failed generations are
+    /// deliberately not writable, even when physical cleanup is deferred.
+    async fn note_is_writable(&self, id: &RecordId) -> Result<bool> {
+        let existing: Option<Note> = self
+            .db
+            .query(
+                "SELECT * FROM note WHERE id = $id AND (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation OR (source_generation = source_id.generation AND source_id.status = 'pending')) LIMIT 1",
+            )
+            .bind(("id", id.clone()))
+            .await?
+            .take(0)?;
+        Ok(existing.is_some())
+    }
+
     async fn create_audited_edge(
         &self,
         from_id: &RecordId,
@@ -2063,6 +2204,143 @@ impl Repository {
         note_id: &surrealdb::types::RecordId,
         entity_id: &surrealdb::types::RecordId,
     ) -> Result<()> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.link_note_to_entity_locked(note_id, entity_id).await
+    }
+
+    /// Upsert extracted entities and attach the complete result set to a note
+    /// while holding the source lifecycle lock.  Reconciliation snapshots
+    /// dependent records under that same lock, so a concurrent import sees
+    /// either the entire extraction result or none of it; it can never copy a
+    /// prefix of a multi-entity extraction to a successor generation.
+    #[instrument(skip(self, entities))]
+    pub async fn upsert_entities_and_link_note(
+        &self,
+        note_id: &RecordId,
+        entities: Vec<Entity>,
+    ) -> Result<usize> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "an entity-link endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
+
+        // Preserve links that predate this batch: a rollback may only remove
+        // records this call actually added, never a concurrent/manual link
+        // that happened to target the same entity. The lifecycle lock keeps
+        // this snapshot stable with respect to supported graph mutations.
+        let existing_links: HashSet<RecordId> = self
+            .db
+            .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+            .bind(("note_id", note_id.clone()))
+            .await?
+            .take(0)?;
+        let mut created_links = Vec::new();
+        let mut linked = 0;
+        let result: Result<()> = async {
+            for entity in entities {
+                let entity = self.upsert_entity(entity).await?;
+                let entity_id = entity.id.as_ref().ok_or_else(|| {
+                    DbError::CreateFailed("upserted entity did not receive an id".into())
+                })?;
+                if !existing_links.contains(entity_id) {
+                    self.link_note_to_entity_locked(note_id, entity_id).await?;
+                    created_links.push(entity_id.clone());
+                }
+                linked += 1;
+            }
+            Ok(())
+        }
+        .await;
+
+        if let Err(error) = result {
+            for entity_id in created_links {
+                self.db
+                    .query("DELETE mentions WHERE in = $note_id AND out = $entity_id")
+                    .bind(("note_id", note_id.clone()))
+                    .bind(("entity_id", entity_id))
+                    .await?;
+            }
+            return Err(error);
+        }
+        Ok(linked)
+    }
+
+    /// Replace a note's extracted entity mention set after inference has
+    /// completed. The complete replacement is applied under the same source
+    /// lifecycle lock as reconciliation, so a source refresh can snapshot
+    /// either the old complete set or the new complete set, never the old
+    /// delete/infer/insert gap.
+    #[instrument(skip(self, entities))]
+    pub async fn replace_note_entities(
+        &self,
+        note_id: &RecordId,
+        entities: Vec<Entity>,
+    ) -> Result<usize> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "an entity-replacement endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
+
+        // Complete all fallible inference-result persistence before replacing
+        // mentions. A malformed entity therefore leaves the prior extraction
+        // intact instead of clearing it first.
+        let mut entity_ids = Vec::with_capacity(entities.len());
+        let mut seen = HashSet::new();
+        for entity in entities {
+            let entity = self.upsert_entity(entity).await?;
+            let entity_id = entity.id.ok_or_else(|| {
+                DbError::CreateFailed("upserted entity did not receive an id".into())
+            })?;
+            if seen.insert(entity_id.clone()) {
+                entity_ids.push(entity_id);
+            }
+        }
+
+        let previous_ids: Vec<RecordId> = self
+            .db
+            .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+            .bind(("note_id", note_id.clone()))
+            .await?
+            .take(0)?;
+        self.delete_mentions_for_note_locked(note_id).await?;
+
+        let result: Result<()> = async {
+            for entity_id in &entity_ids {
+                self.link_note_to_entity_locked(note_id, entity_id).await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            // Restore the pre-replacement set if a database failure occurs
+            // after deletion. The lock prevents source reconciliation from
+            // observing the transient empty set.
+            self.delete_mentions_for_note_locked(note_id).await?;
+            for entity_id in previous_ids {
+                self.link_note_to_entity_locked(note_id, &entity_id).await?;
+            }
+            return Err(error);
+        }
+        Ok(entity_ids.len())
+    }
+
+    async fn link_note_to_entity_locked(
+        &self,
+        note_id: &surrealdb::types::RecordId,
+        entity_id: &surrealdb::types::RecordId,
+    ) -> Result<()> {
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a mention endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
@@ -2096,6 +2374,20 @@ impl Repository {
         &self,
         note_id: &surrealdb::types::RecordId,
     ) -> Result<()> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.delete_mentions_for_note_locked(note_id).await
+    }
+
+    async fn delete_mentions_for_note_locked(
+        &self,
+        note_id: &surrealdb::types::RecordId,
+    ) -> Result<()> {
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a mention endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         self.db
             .query("DELETE mentions WHERE in = $note_id")
             .bind(("note_id", note_id.clone()))
@@ -2206,6 +2498,122 @@ impl Repository {
         edges.extend(self.query_edges_for_note("derived_from", &note_id).await?);
 
         Ok(edges)
+    }
+
+    /// Copy relationships owned by stable source chunks to their staged
+    /// successors before a copy-on-write source generation is promoted. The
+    /// old generation remains authoritative until promotion/cleanup; should a
+    /// copy fail, removing the staged generation leaves its dependents intact.
+    ///
+    /// The mapping may contain only chunks that reconciled successfully. Its
+    /// third value records whether the successor's displayed content is
+    /// byte-for-byte unchanged. A removed or ambiguous chunk deliberately has
+    /// no successor, so its dependents follow the normal source-lifecycle
+    /// cascade instead of being attached to unrelated content.
+    #[instrument(skip(self, successors))]
+    pub async fn copy_note_dependents_to_successors(
+        &self,
+        successors: &[(RecordId, RecordId, bool)],
+    ) -> Result<()> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.copy_note_dependents_to_successors_locked(successors)
+            .await
+    }
+
+    async fn copy_note_dependents_to_successors_locked(
+        &self,
+        successors: &[(RecordId, RecordId, bool)],
+    ) -> Result<()> {
+        if successors.is_empty() {
+            return Ok(());
+        }
+        let exact_content_successors = successors
+            .iter()
+            .filter_map(|(old_id, _, exact_content)| exact_content.then_some(old_id.clone()))
+            .collect::<HashSet<_>>();
+        let successors = successors
+            .iter()
+            .map(|(old_id, new_id, _)| (old_id.clone(), new_id.clone()))
+            .collect::<HashMap<_, _>>();
+
+        // Entity mentions describe extracted source text, so only carry them
+        // across when that displayed text is exactly unchanged. A changed
+        // successor remains mention-free and is therefore eligible for a new
+        // entity-extraction pass. Chat provenance identifies origin rather
+        // than extracted content, so it follows every safely reconciled chunk.
+        for (old_id, new_id) in &successors {
+            if exact_content_successors.contains(old_id) {
+                let entity_ids: Vec<RecordId> = self
+                    .db
+                    .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+                    .bind(("note_id", old_id.clone()))
+                    .await?
+                    .take(0)?;
+                for entity_id in entity_ids {
+                    self.link_note_to_entity_locked(new_id, &entity_id).await?;
+                }
+            }
+
+            let conversation_ids: Vec<RecordId> = self
+                .db
+                .query("SELECT VALUE out FROM note_from_conversation WHERE in = $note_id")
+                .bind(("note_id", old_id.clone()))
+                .await?
+                .take(0)?;
+            for conversation_id in conversation_ids {
+                self.link_note_to_conversation_locked(new_id, &conversation_id)
+                    .await?;
+            }
+
+            let message_ids: Vec<RecordId> = self
+                .db
+                .query("SELECT VALUE out FROM note_from_message WHERE in = $note_id")
+                .bind(("note_id", old_id.clone()))
+                .await?
+                .take(0)?;
+            for message_id in message_ids {
+                self.link_note_to_message_locked(new_id, &message_id)
+                    .await?;
+            }
+        }
+
+        // Snapshot each edge once before writing successors. This handles an
+        // edge whose two endpoints are both reconciled chunks and preserves
+        // manual as well as generated graph relationships.
+        let mut seen_edges = HashSet::new();
+        let mut edges = Vec::new();
+        for old_id in successors.keys() {
+            for edge in self.get_note_edges(&record_id_to_string(old_id)).await? {
+                if seen_edges.insert(edge.id.clone()) {
+                    edges.push(edge);
+                }
+            }
+        }
+        for edge in edges {
+            let from_id = successors.get(&edge.in_id).cloned().unwrap_or(edge.in_id);
+            let to_id = successors.get(&edge.out_id).cloned().unwrap_or(edge.out_id);
+            if from_id == to_id {
+                // A many-to-one reconciliation must not manufacture an
+                // invalid self-edge. Current Markdown keys are one-to-one,
+                // but retaining this guard makes the copy routine safe for
+                // future reconciliation strategies.
+                continue;
+            }
+            self.create_audited_edge(
+                &from_id,
+                &to_id,
+                persisted_note_edge_type(&edge.edge_type)?,
+                edge.confidence,
+                edge.reason.as_deref(),
+                edge.provenance
+                    .as_deref()
+                    .unwrap_or("source-reconciliation"),
+                edge.proposal_id.as_ref(),
+                edge.is_manual,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     // ==========================================
@@ -2334,6 +2742,35 @@ impl Repository {
     /// Manual and legacy notes have no generation and survive.
     #[instrument(skip(self, source))]
     pub async fn complete_file_import(&self, source: &mut Source) -> Result<SourceDeleteSummary> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.complete_file_import_locked(source).await
+    }
+
+    /// Atomically carry reconciled dependents into a staged source generation,
+    /// promote it, then retire the superseded generation. A graph mutation
+    /// therefore either lands before the dependent snapshot and is copied, or
+    /// observes the completed transition instead of being silently discarded
+    /// during old-generation cleanup.
+    #[instrument(skip(self, source, successors))]
+    pub async fn reconcile_file_import(
+        &self,
+        source: &mut Source,
+        successors: &[(RecordId, RecordId, bool)],
+    ) -> Result<SourceDeleteSummary> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.copy_note_dependents_to_successors_locked(successors)
+            .await?;
+        self.complete_file_import_locked(source).await
+    }
+
+    async fn complete_file_import_locked(
+        &self,
+        source: &mut Source,
+    ) -> Result<SourceDeleteSummary> {
+        // Promotion, proposal retargeting, and old-generation cleanup are one
+        // lifecycle transition. In particular, acceptance/undo must not run
+        // after the old endpoints become hidden but before an accepted
+        // proposal is retargeted to its staged replacement edge.
         let source_id = source
             .id
             .as_ref()
@@ -2342,31 +2779,119 @@ impl Repository {
         let summary = self
             .source_delete_summary(&source_id, Some(source.generation), true)
             .await?;
-        self.promote_file_import(source).await?;
+        self.promote_file_import_locked(source).await?;
+        // Proposal-backed edges are staged copy-on-write with their new note
+        // endpoints. Once promotion makes those endpoints authoritative,
+        // retarget the accepted proposal before deleting the old generation so
+        // its audit row and undo path follow the replacement edge.
+        self.retarget_reconciled_proposals(&source_id, source.generation)
+            .await?;
         // Do this only after durable promotion. A failure here can leave old
         // records behind, but cannot leave the corpus with no visible complete
         // generation; visibility selects `successful_generation`.
-        self.delete_source_notes(&source_id, Some(source.generation), true)
+        self.delete_source_notes_locked(&source_id, Some(source.generation), true)
             .await?;
         Ok(summary)
     }
 
+    async fn retarget_reconciled_proposals(
+        &self,
+        source_id: &RecordId,
+        generation: u64,
+    ) -> Result<()> {
+        let note_ids = self
+            .source_owned_note_ids(source_id, Some(generation), false)
+            .await?;
+        let mut seen_edges = HashSet::new();
+        for note_id in note_ids {
+            for edge in self.get_note_edges(&record_id_to_string(&note_id)).await? {
+                let Some(proposal_id) = edge.proposal_id.as_ref() else {
+                    continue;
+                };
+                if !seen_edges.insert(edge.id.clone()) {
+                    continue;
+                }
+                let edge_type = persisted_note_edge_type(&edge.edge_type)?;
+                let mut from_id = edge.in_id.clone();
+                let mut to_id = edge.out_id.clone();
+                canonicalize_note_edge(&mut from_id, &mut to_id, &edge_type);
+                let dedupe_key = edge_dedupe_key(&from_id, &to_id, &edge_type);
+                #[derive(Deserialize, SurrealValue)]
+                struct UpdatedRow {
+                    id: RecordId,
+                }
+                let updated: Option<UpdatedRow> = self
+                    .db
+                    .query(
+                        "UPDATE $proposal SET in = $from, out = $to, dedupe_key = $dedupe_key, resulting_edge_id = $edge, updated_at = time::now() WHERE status = 'accepted' RETURN AFTER",
+                    )
+                    .bind(("proposal", proposal_id.clone()))
+                    .bind(("from", from_id))
+                    .bind(("to", to_id))
+                    .bind(("dedupe_key", dedupe_key))
+                    .bind(("edge", edge.id.clone()))
+                    .await?
+                    .take(0)?;
+                if updated.is_none() {
+                    let proposal = self.get_edge_proposal(proposal_id).await?.ok_or_else(|| {
+                        DbError::NotFound(
+                            "reconciled proposal".into(),
+                            record_id_to_string(proposal_id),
+                        )
+                    })?;
+                    if matches!(
+                        proposal.status,
+                        ProposedEdgeStatus::Rejected | ProposedEdgeStatus::Superseded
+                    ) {
+                        // A crash can leave a staged copy of an accepted edge
+                        // after the original edge was undone. Its proposal is
+                        // terminal, so preserve that user decision by dropping
+                        // the stale copied edge rather than making recovery
+                        // fail forever trying to retarget it.
+                        self.db
+                            .query("DELETE $edge")
+                            .bind(("edge", edge.id.clone()))
+                            .await?
+                            .check()?;
+                        continue;
+                    }
+                    return Err(DbError::QueryFailed(format!(
+                        "reconciled proposal {} is no longer accepted",
+                        record_id_to_string(proposal_id)
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     async fn promote_file_import(&self, source: &mut Source) -> Result<()> {
         // Promotion changes which source generation is visible. Keep that
         // transition and retirement of proposals for the newly hidden notes
         // atomic with respect to proposal acceptance in this repository.
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.promote_file_import_locked(source).await
+    }
+
+    async fn promote_file_import_locked(&self, source: &mut Source) -> Result<()> {
         let source_id = source
             .id
             .as_ref()
             .ok_or_else(|| DbError::CreateFailed("source id".into()))?
             .clone();
-        source.successful_generation = source.generation;
-        source.status = SourceIngestionStatus::Ready;
-        source.last_error = None;
-        source.updated_at = chrono::Utc::now();
-        source.last_ingested_at = Some(source.updated_at);
-        self.replace_source(source).await?;
+        // Do not update the caller's in-memory source until the visibility
+        // transition is durable. Callers use this state to distinguish a
+        // pre-promotion failure (safe to discard staged notes) from a later
+        // cleanup failure (new generation must remain intact for recovery).
+        let mut promoted = source.clone();
+        promoted.successful_generation = promoted.generation;
+        promoted.status = SourceIngestionStatus::Ready;
+        promoted.last_error = None;
+        promoted.updated_at = chrono::Utc::now();
+        promoted.last_ingested_at = Some(promoted.updated_at);
+        self.replace_source(&promoted).await?;
+        *source = promoted;
         // Promotion makes older source generations invisible even if their
         // destructive cleanup is interrupted. Retire their pending proposals
         // at the same durable boundary so batch acceptance cannot create an
@@ -2382,11 +2907,18 @@ impl Repository {
         &self,
         source: &Source,
     ) -> Result<SourceDeleteSummary> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let source_id = source
             .id
             .as_ref()
             .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
-        self.delete_source_notes(source_id, Some(source.successful_generation), true)
+        // A process can stop after promotion but before proposal retargeting
+        // or old-generation deletion. Retry retargeting before cleanup so an
+        // accepted proposal's audit and undo path follows its visible staged
+        // replacement instead of being retired with the old generation.
+        self.retarget_reconciled_proposals(source_id, source.successful_generation)
+            .await?;
+        self.delete_source_notes_locked(source_id, Some(source.successful_generation), true)
             .await
     }
 
@@ -2471,6 +3003,16 @@ impl Repository {
         // Source cleanup shares the same endpoint/acceptance critical section
         // as single-note deletion.
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.delete_source_notes_locked(source_id, generation, older_than_generation)
+            .await
+    }
+
+    async fn delete_source_notes_locked(
+        &self,
+        source_id: &RecordId,
+        generation: Option<u64>,
+        older_than_generation: bool,
+    ) -> Result<SourceDeleteSummary> {
         let summary = self
             .source_delete_summary(source_id, generation, older_than_generation)
             .await?;
@@ -2835,6 +3377,22 @@ impl Repository {
         note_id: &RecordId,
         conversation_id: &RecordId,
     ) -> Result<bool> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.link_note_to_conversation_locked(note_id, conversation_id)
+            .await
+    }
+
+    async fn link_note_to_conversation_locked(
+        &self,
+        note_id: &RecordId,
+        conversation_id: &RecordId,
+    ) -> Result<bool> {
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a conversation-provenance endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
@@ -2871,6 +3429,21 @@ impl Repository {
         note_id: &RecordId,
         message_id: &RecordId,
     ) -> Result<bool> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.link_note_to_message_locked(note_id, message_id).await
+    }
+
+    async fn link_note_to_message_locked(
+        &self,
+        note_id: &RecordId,
+        message_id: &RecordId,
+    ) -> Result<bool> {
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a message-provenance endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
@@ -2964,6 +3537,8 @@ pub struct NoteEdgeRow {
     pub edge_type: String,
     pub in_id: RecordId,
     pub out_id: RecordId,
+    #[serde(default)]
+    pub proposal_id: Option<RecordId>,
     #[serde(default)]
     pub confidence: Option<f32>,
     #[serde(default)]
@@ -3096,6 +3671,18 @@ fn note_edge_table(edge_type: &EdgeType) -> Result<&'static str> {
     }
 }
 
+fn persisted_note_edge_type(value: &str) -> Result<EdgeType> {
+    match value {
+        "supports" => Ok(EdgeType::Supports),
+        "contradicts" => Ok(EdgeType::Contradicts),
+        "derived_from" => Ok(EdgeType::DerivedFrom),
+        "related_to" => Ok(EdgeType::RelatedTo),
+        other => Err(DbError::QueryFailed(format!(
+            "unknown persisted note edge type {other:?}"
+        ))),
+    }
+}
+
 fn validate_note_edge(from_id: &RecordId, to_id: &RecordId, edge_type: &EdgeType) -> Result<()> {
     if !edge_type.is_note_edge() || matches!(edge_type, EdgeType::References) {
         return Err(DbError::QueryFailed(format!(
@@ -3153,7 +3740,7 @@ pub fn parse_record_id(value: &str, expected_table: Option<&str>) -> Result<Reco
 impl Repository {
     async fn query_edges_table(&self, table: &str, limit: usize) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
-            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, provenance, is_manual, created_at \
+            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
              FROM {table} WHERE {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} LIMIT $limit"
         );
         let edges: Vec<NoteEdgeRow> = self
@@ -3171,7 +3758,7 @@ impl Repository {
         note_id: &RecordId,
     ) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
-            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, provenance, is_manual, created_at \
+            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
              FROM {table} WHERE (in = $note_id OR out = $note_id) \
              AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION}"
         );
@@ -3404,6 +3991,38 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    async fn create_provenance_records(repo: &Repository) -> (RecordId, RecordId) {
+        #[derive(Deserialize, SurrealValue)]
+        struct IdRow {
+            id: RecordId,
+        }
+
+        let conversation: Option<IdRow> = repo
+            .db
+            .query(
+                "CREATE conversation SET uuid = $uuid, title = 'test conversation', summary = NONE, source_uri = NONE, account_uuid = NONE, metadata = {}, summary_embedding = NONE, created_at = time::now(), updated_at = time::now() RETURN AFTER",
+            )
+            .bind(("uuid", "test-conversation"))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let conversation_id = conversation.unwrap().id;
+        let message: Option<IdRow> = repo
+            .db
+            .query(
+                "CREATE message SET message_key = $message_key, message_uuid = NONE, conversation_id = $conversation_id, conversation_uuid = $conversation_uuid, message_index = 0, role = 'human', content = 'test message', embedding = NONE, content_blocks = [], attachments = [], files = [], has_files = false, created_at = NONE, updated_at = NONE RETURN AFTER",
+            )
+            .bind(("message_key", "test-message"))
+            .bind(("conversation_id", conversation_id.clone()))
+            .bind(("conversation_uuid", "test-conversation"))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        (conversation_id, message.unwrap().id)
     }
 
     #[tokio::test]
@@ -3713,6 +4332,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_note_rebuilds_markdown_search_content_without_stale_terms() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut markdown_note = Note::new("obsolete-search-token is removed");
+        markdown_note.chunk_heading_path = vec!["Roadmap".into()];
+        markdown_note.search_content = Some("Roadmap\n\nobsolete-search-token is removed".into());
+        let created = repo.create_note(markdown_note).await.unwrap();
+        let created_id = created.id.as_ref().unwrap().clone();
+
+        let mut edited = created.clone();
+        edited.content = "current-search-token is indexed".into();
+        // Model a caller changing only `content`; this stale field used to
+        // keep removed body terms in the highest-weight FTS column.
+        edited.search_content = created.search_content.clone();
+        let updated = repo
+            .update_note(&record_id_to_string(&created_id), edited)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            updated.search_content.as_deref(),
+            Some("Roadmap\n\ncurrent-search-token is indexed")
+        );
+        assert!(repo
+            .fulltext_search("obsolete-search-token", 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|result| result.id != created_id));
+        let current = repo
+            .fulltext_search("current-search-token", 10)
+            .await
+            .unwrap();
+        assert!(current
+            .iter()
+            .any(|result| { result.id == created_id && result.fts_score.is_some() }));
+    }
+
+    #[tokio::test]
+    async fn update_note_preserves_custom_search_aliases_and_replacements() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut note = Note::new("original body text");
+        note.search_content = Some("legacyalias".into());
+        let created = repo.create_note(note).await.unwrap();
+        let note_id = created.id.as_ref().unwrap().clone();
+
+        // A metadata-only update must not discard an intentional alias just
+        // because it does not equal the default body-derived search value.
+        let mut metadata_only = created.clone();
+        metadata_only.title = Some("Reference note".into());
+        let metadata_updated = repo
+            .update_note(&record_id_to_string(&note_id), metadata_only)
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata_updated.search_content.as_deref(),
+            Some("legacyalias")
+        );
+        assert_eq!(metadata_updated.title.as_deref(), Some("Reference note"));
+        assert!(repo
+            .fulltext_search("legacyalias", 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|result| result.id == note_id));
+
+        // When callers intentionally replace search text alongside a content
+        // edit, retain that replacement instead of overriding it with the
+        // generic body-derived value.
+        let mut content_edit = metadata_updated;
+        content_edit.content = "replacement body text".into();
+        content_edit.search_content = Some("replacementalias".into());
+        let replaced = repo
+            .update_note(&record_id_to_string(&note_id), content_edit)
+            .await
+            .unwrap();
+        assert_eq!(replaced.search_content.as_deref(), Some("replacementalias"));
+        assert!(repo
+            .fulltext_search("legacyalias", 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|result| result.id != note_id));
+        assert!(repo
+            .fulltext_search("replacementalias", 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|result| result.id == note_id));
+    }
+
+    #[tokio::test]
     async fn promotion_selects_the_new_generation_before_old_cleanup() {
         let repo = Repository::new(init_memory().await.unwrap());
         let mut first = begin_markdown(&repo, "first", false).await;
@@ -3919,6 +4629,902 @@ mod tests {
         let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
         assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
         assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn completion_serializes_proposal_retarget_before_old_edge_undo() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old_left = repo
+            .create_note(
+                Note::new("first generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let old_right = repo
+            .create_note(
+                Note::new("first generation right")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                old_left.id.as_ref().unwrap(),
+                old_right.id.as_ref().unwrap(),
+                0.9,
+                "retarget race".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let old_edge_id = repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let new_left = repo
+            .create_note(
+                Note::new("second generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        let new_right = repo
+            .create_note(
+                Note::new("second generation right")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.copy_note_dependents_to_successors(&[
+            (
+                old_left.id.as_ref().unwrap().clone(),
+                new_left.id.as_ref().unwrap().clone(),
+                true,
+            ),
+            (
+                old_right.id.as_ref().unwrap().clone(),
+                new_right.id.as_ref().unwrap().clone(),
+                true,
+            ),
+        ])
+        .await
+        .unwrap();
+
+        // Queue complete before undo while the lifecycle lock is held. The
+        // completion transition must promote, retarget the accepted proposal
+        // to the staged edge, and retire the old edge before undo may act.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let completion_repo = repo.clone();
+        let completion = tokio::spawn(async move {
+            completion_repo
+                .complete_file_import(&mut second.source)
+                .await
+        });
+        tokio::task::yield_now().await;
+        let undo_repo = repo.clone();
+        let undo_edge_id = old_edge_id.clone();
+        let undo = tokio::spawn(async move {
+            undo_repo
+                .undo_edge(&undo_edge_id, Some("concurrent undo".into()))
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        completion.await.unwrap().unwrap();
+        assert!(!undo.await.unwrap().unwrap());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Accepted);
+        let replacement_edge_id = proposal.resulting_edge_id.unwrap();
+        assert_ne!(replacement_edge_id, old_edge_id);
+        assert!(repo.note_edge_exists(&replacement_edge_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_prevents_post_snapshot_graph_writes_from_being_lost() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("manual endpoint"))
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        // Queue reconciliation before a manual graph write. The shared lock
+        // makes the write observe the finished cleanup, where its old endpoint
+        // is absent, instead of allowing it to succeed and be silently swept
+        // away after the dependent snapshot.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let reconciliation_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(&mut second.source, &[(old_id, replacement_id, true)])
+                .await
+        });
+        tokio::task::yield_now().await;
+        let mutation_repo = repo.clone();
+        let mutation_old_id = old.id.as_ref().unwrap().clone();
+        let mutation_manual_id = manual.id.as_ref().unwrap().clone();
+        let mutation = tokio::spawn(async move {
+            mutation_repo
+                .create_edge(
+                    &mutation_old_id,
+                    &mutation_manual_id,
+                    EdgeType::Supports,
+                    Some(0.9),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        reconciliation.await.unwrap().unwrap();
+        assert!(mutation.await.unwrap().is_err());
+        assert!(repo
+            .get_note(&record_id_to_string(old.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_prevents_post_snapshot_mentions_from_being_lost() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        let mut entity = Entity::new("Concurrent Entity", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        // Queue reconciliation before the mention write. The write must see
+        // that the old endpoint is gone after cleanup rather than succeeding
+        // in the snapshot/cleanup window and being silently discarded.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let reconciliation_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(&mut second.source, &[(old_id, replacement_id, true)])
+                .await
+        });
+        tokio::task::yield_now().await;
+        let mention_repo = repo.clone();
+        let old_note_id = old.id.as_ref().unwrap().clone();
+        let entity_id = entity.id.as_ref().unwrap().clone();
+        let mention = tokio::spawn(async move {
+            mention_repo
+                .link_note_to_entity(&old_note_id, &entity_id)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        reconciliation.await.unwrap().unwrap();
+        assert!(mention.await.unwrap().is_err());
+        assert!(repo
+            .get_entities_for_note(&record_id_to_string(replacement.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_snapshots_a_complete_batched_entity_extraction() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        let entities = ["First Extracted Entity", "Second Extracted Entity"]
+            .into_iter()
+            .map(|name| {
+                let mut entity = Entity::new(name, EntityType::Concept);
+                entity.metadata = serde_json::json!({});
+                entity
+            })
+            .collect();
+
+        // Queue the entire extraction result before reconciliation. The
+        // shared lifecycle lock makes reconciliation snapshot both links,
+        // rather than seeing an arbitrary prefix between per-entity writes.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let extraction_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let extraction = tokio::spawn(async move {
+            extraction_repo
+                .upsert_entities_and_link_note(&old_id, entities)
+                .await
+        });
+        tokio::task::yield_now().await;
+        let reconciliation_repo = repo.clone();
+        let reconcile_old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(
+                    &mut second.source,
+                    &[(reconcile_old_id, replacement_id, true)],
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        assert_eq!(extraction.await.unwrap().unwrap(), 2);
+        reconciliation.await.unwrap().unwrap();
+        let entities = repo
+            .get_entities_for_note(&record_id_to_string(replacement.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 2);
+        assert!(entities
+            .iter()
+            .any(|entity| entity.name == "First Extracted Entity"));
+        assert!(entities
+            .iter()
+            .any(|entity| entity.name == "Second Extracted Entity"));
+    }
+
+    #[tokio::test]
+    async fn failed_entity_link_batch_rolls_back_only_its_partial_mentions() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("entity batch rollback target"))
+            .await
+            .unwrap();
+        let mut existing = Entity::new("Preexisting link survives", EntityType::Concept);
+        existing.metadata = serde_json::json!({});
+        let existing = repo.upsert_entity(existing).await.unwrap();
+        repo.link_note_to_entity(note.id.as_ref().unwrap(), existing.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let mut valid = Entity::new("Link must be rolled back", EntityType::Concept);
+        valid.metadata = serde_json::json!({});
+        let mut invalid = Entity::new("Entity write fails after first link", EntityType::Concept);
+        // The entity schema requires an object or NONE. This reliably fails
+        // the second upsert after the first link has been staged.
+        invalid.metadata = serde_json::json!("not an object");
+
+        assert!(repo
+            .upsert_entities_and_link_note(note.id.as_ref().unwrap(), vec![valid, invalid])
+            .await
+            .is_err());
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(note.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "Preexisting link survives");
+    }
+
+    #[tokio::test]
+    async fn failed_entity_replacement_preserves_the_prior_complete_mention_set() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("entity replacement rollback target"))
+            .await
+            .unwrap();
+        let mut existing = Entity::new("Prior extraction survives", EntityType::Concept);
+        existing.metadata = serde_json::json!({});
+        let existing = repo.upsert_entity(existing).await.unwrap();
+        repo.link_note_to_entity(note.id.as_ref().unwrap(), existing.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let mut invalid = Entity::new("Malformed replacement", EntityType::Concept);
+        invalid.metadata = serde_json::json!("not an object");
+
+        assert!(repo
+            .replace_note_entities(note.id.as_ref().unwrap(), vec![invalid])
+            .await
+            .is_err());
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(note.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "Prior extraction survives");
+    }
+
+    #[tokio::test]
+    async fn reconciliation_snapshots_a_complete_replaced_entity_set() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let mut stale = Entity::new("Stale extraction", EntityType::Concept);
+        stale.metadata = serde_json::json!({});
+        let stale = repo.upsert_entity(stale).await.unwrap();
+        repo.link_note_to_entity(old.id.as_ref().unwrap(), stale.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        let entities = ["Fresh extraction one", "Fresh extraction two"]
+            .into_iter()
+            .map(|name| {
+                let mut entity = Entity::new(name, EntityType::Concept);
+                entity.metadata = serde_json::json!({});
+                entity
+            })
+            .collect();
+
+        // Inference has completed before this point. Queue the atomic mention
+        // replacement ahead of reconciliation to prove the source transition
+        // copies the full fresh set, never a transient cleared set.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let replacement_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let refresh = tokio::spawn(async move {
+            replacement_repo
+                .replace_note_entities(&old_id, entities)
+                .await
+        });
+        tokio::task::yield_now().await;
+        let reconciliation_repo = repo.clone();
+        let reconcile_old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(
+                    &mut second.source,
+                    &[(reconcile_old_id, replacement_id, true)],
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        assert_eq!(refresh.await.unwrap().unwrap(), 2);
+        reconciliation.await.unwrap().unwrap();
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(replacement.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 2);
+        assert!(linked
+            .iter()
+            .any(|entity| entity.name == "Fresh extraction one"));
+        assert!(linked
+            .iter()
+            .any(|entity| entity.name == "Fresh extraction two"));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_serializes_provenance_writes_and_copies_them_without_deadlock() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let (conversation_id, message_id) = create_provenance_records(&repo).await;
+        repo.link_note_to_conversation(old.id.as_ref().unwrap(), &conversation_id)
+            .await
+            .unwrap();
+        repo.link_note_to_message(old.id.as_ref().unwrap(), &message_id)
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        // This also exercises the lock-free internal helpers used while the
+        // reconciliation task already owns the lifecycle lock.
+        repo.reconcile_file_import(
+            &mut second.source,
+            &[(
+                old.id.as_ref().unwrap().clone(),
+                replacement.id.as_ref().unwrap().clone(),
+                true,
+            )],
+        )
+        .await
+        .unwrap();
+        assert!(repo
+            .conversation_has_note_links(&conversation_id)
+            .await
+            .unwrap());
+        let copied_messages: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE out FROM note_from_message WHERE in = $note_id")
+            .bind(("note_id", replacement.id.as_ref().unwrap().clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(copied_messages, vec![message_id]);
+
+        // The now-hidden old endpoint must reject later provenance writes;
+        // this prevents a link from being inserted after the copy snapshot
+        // and then lost during cleanup.
+        assert!(repo
+            .link_note_to_conversation(old.id.as_ref().unwrap(), &conversation_id)
+            .await
+            .is_err());
+        assert!(repo
+            .link_note_to_message(old.id.as_ref().unwrap(), &copied_messages[0])
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_prevents_post_snapshot_provenance_writes_from_being_lost() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        let (conversation_id, message_id) = create_provenance_records(&repo).await;
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let reconciliation_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(&mut second.source, &[(old_id, replacement_id, true)])
+                .await
+        });
+        tokio::task::yield_now().await;
+        let conversation_repo = repo.clone();
+        let conversation_note_id = old.id.as_ref().unwrap().clone();
+        let conversation_link = tokio::spawn(async move {
+            conversation_repo
+                .link_note_to_conversation(&conversation_note_id, &conversation_id)
+                .await
+        });
+        tokio::task::yield_now().await;
+        let message_repo = repo.clone();
+        let message_note_id = old.id.as_ref().unwrap().clone();
+        let message_link = tokio::spawn(async move {
+            message_repo
+                .link_note_to_message(&message_note_id, &message_id)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        reconciliation.await.unwrap().unwrap();
+        assert!(conversation_link.await.unwrap().is_err());
+        assert!(message_link.await.unwrap().is_err());
+        let copied_conversations: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE out FROM note_from_conversation WHERE in = $note_id")
+            .bind(("note_id", replacement.id.as_ref().unwrap().clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let copied_messages: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE out FROM note_from_message WHERE in = $note_id")
+            .bind(("note_id", replacement.id.as_ref().unwrap().clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(copied_conversations.is_empty());
+        assert!(copied_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_prevents_post_snapshot_mention_removals_from_being_lost() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Copied Entity", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(old.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let reconciliation_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(&mut second.source, &[(old_id, replacement_id, true)])
+                .await
+        });
+        tokio::task::yield_now().await;
+        let removal_repo = repo.clone();
+        let old_note_id = old.id.as_ref().unwrap().clone();
+        let removal =
+            tokio::spawn(async move { removal_repo.delete_mentions_for_note(&old_note_id).await });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        reconciliation.await.unwrap().unwrap();
+        assert!(removal.await.unwrap().is_err());
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(replacement.id.as_ref().unwrap()))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_writes_reject_hidden_generations_but_allow_current_pending() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("old generation")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("manual endpoint"))
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let current_pending = repo
+            .create_note(
+                Note::new("current pending generation")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.create_edge(
+            current_pending.id.as_ref().unwrap(),
+            manual.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.9),
+        )
+        .await
+        .unwrap();
+
+        // Simulate a crash after durable promotion and before physical old
+        // generation cleanup. The old note remains stored but is hidden.
+        repo.promote_file_import(&mut second.source).await.unwrap();
+        assert!(repo
+            .create_edge(
+                old.id.as_ref().unwrap(),
+                manual.id.as_ref().unwrap(),
+                EdgeType::RelatedTo,
+                Some(0.9),
+            )
+            .await
+            .is_err());
+        repo.create_edge(
+            current_pending.id.as_ref().unwrap(),
+            manual.id.as_ref().unwrap(),
+            EdgeType::RelatedTo,
+            Some(0.9),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_drops_copied_edge_when_its_proposal_was_undone() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old_left = repo
+            .create_note(
+                Note::new("first generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let old_right = repo
+            .create_note(
+                Note::new("first generation right")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                old_left.id.as_ref().unwrap(),
+                old_right.id.as_ref().unwrap(),
+                0.9,
+                "undo before retarget".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let old_edge_id = repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let new_left = repo
+            .create_note(
+                Note::new("second generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        let new_right = repo
+            .create_note(
+                Note::new("second generation right")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.copy_note_dependents_to_successors(&[
+            (
+                old_left.id.as_ref().unwrap().clone(),
+                new_left.id.as_ref().unwrap().clone(),
+                true,
+            ),
+            (
+                old_right.id.as_ref().unwrap().clone(),
+                new_right.id.as_ref().unwrap().clone(),
+                true,
+            ),
+        ])
+        .await
+        .unwrap();
+        let copied_edges: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE id FROM related_to WHERE in = $note OR out = $note")
+            .bind(("note", new_left.id.as_ref().unwrap().clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let copied_edge_id = copied_edges.into_iter().next().unwrap();
+
+        // Reconstruct a crash window from older callers that copied staged
+        // dependents before completion: the original edge was undone before
+        // the copied edge could retarget the proposal audit.
+        assert!(repo
+            .undo_edge(&old_edge_id, Some("undone before retarget".into()))
+            .await
+            .unwrap());
+        repo.complete_file_import(&mut second.source).await.unwrap();
+
+        assert!(!repo.note_edge_exists(&copied_edge_id).await.unwrap());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(proposal.resulting_edge_id, None);
+    }
+
+    #[tokio::test]
+    async fn post_promotion_failure_keeps_new_generation_for_recovery() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut import = begin_markdown(&repo, "durably promoted", false).await;
+        let source_id = import.source.id.as_ref().unwrap().clone();
+        let staged = repo
+            .create_note(
+                Note::new("new generation remains visible")
+                    .with_source(source_id.clone())
+                    .with_source_generation(import.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("manual endpoint"))
+            .await
+            .unwrap();
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                staged.id.as_ref().unwrap(),
+                manual.id.as_ref().unwrap(),
+                0.9,
+                "force a post-promotion retarget failure".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let (edge_id, _) = repo
+            .create_audited_edge(
+                staged.id.as_ref().unwrap(),
+                manual.id.as_ref().unwrap(),
+                EdgeType::RelatedTo,
+                Some(0.9),
+                Some("staged proposal-backed edge"),
+                "test",
+                Some(&proposal_id),
+                false,
+            )
+            .await
+            .unwrap();
+
+        // The proposal is deliberately still pending, so retargeting fails
+        // after `replace_source` durably promoted this generation.
+        assert!(repo.complete_file_import(&mut import.source).await.is_err());
+        let stored = repo
+            .get_source(&record_id_to_string(&source_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, SourceIngestionStatus::Ready);
+        assert_eq!(stored.successful_generation, stored.generation);
+        assert!(repo
+            .get_note(&record_id_to_string(staged.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+
+        // Repair the injected inconsistency, then exercise the unchanged-hash
+        // recovery path. It retries retargeting/cleanup without deleting the
+        // already promoted current generation.
+        repo.db
+            .query(
+                "UPDATE $proposal SET status = 'accepted', resulting_edge_id = $edge, updated_at = time::now()",
+            )
+            .bind(("proposal", proposal_id.clone()))
+            .bind(("edge", edge_id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let recovered = begin_markdown(&repo, "durably promoted", false).await;
+        assert_eq!(recovered.action, SourceImportAction::Unchanged);
+        assert!(repo.note_edge_exists(&edge_id).await.unwrap());
+        assert!(repo
+            .get_note(&record_id_to_string(staged.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]

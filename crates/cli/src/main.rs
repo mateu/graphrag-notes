@@ -713,7 +713,9 @@ fn librarian_runtime_config(
 ) -> LibrarianRuntimeConfig {
     LibrarianRuntimeConfig {
         min_chunk_size: config.librarian.min_chunk_size,
+        target_chunk_size: config.librarian.target_chunk_size,
         max_chunk_size: config.librarian.max_chunk_size,
+        chunk_overlap: config.librarian.chunk_overlap,
         skip_entity_extraction: cli_skip_extraction || config.librarian.skip_entity_extraction,
         extract_log_each: config.librarian.extract_log_each,
         extract_max_chars: config.librarian.extract_max_chars,
@@ -2903,6 +2905,24 @@ mod tests {
             .last_error
             .as_deref()
             .is_some_and(|diagnostic| diagnostic.contains("timeout")));
+    }
+
+    #[test]
+    fn librarian_runtime_config_forwards_legacy_derived_chunking_bounds() {
+        let mut config = RuntimeConfig::default();
+        config.librarian = graphrag_config::LibrarianConfig {
+            min_chunk_size: 40,
+            target_chunk_size: 80,
+            max_chunk_size: 80,
+            chunk_overlap: 79,
+            ..graphrag_config::LibrarianConfig::default()
+        };
+
+        let runtime = librarian_runtime_config(&config, false);
+        assert_eq!(runtime.min_chunk_size, 40);
+        assert_eq!(runtime.target_chunk_size, 80);
+        assert_eq!(runtime.max_chunk_size, 80);
+        assert_eq!(runtime.chunk_overlap, 79);
     }
 
     #[test]

@@ -1,16 +1,21 @@
 //! Librarian Agent - Ingests content and creates notes
 
-use crate::{inference::validate_embedding_dim, Result, SharedEmbedder, SharedEntityExtractor};
+use crate::{
+    chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker},
+    inference::validate_embedding_dim,
+    Result, SharedEmbedder, SharedEntityExtractor,
+};
 use graphrag_core::{
     normalize_file_uri, normalized_content_hash, record_id_to_string, ChatConversation, ChatExport,
-    ChatMessage, Entity, EntityType, MessageRole, Note, NoteType, Source, SourceType,
+    ChatMessage, Entity, EntityType, MessageRole, Note, NoteType, Source, SourceIngestionStatus,
+    SourceType,
 };
 use graphrag_db::compatibility::{EmbeddingIdentity, ExtractionIdentity};
 use graphrag_db::{
     ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository, SourceDeleteSummary,
     SourceImportAction,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -27,6 +32,7 @@ const DEFAULT_MIN_CHUNK_SIZE: usize = 20;
 const DEFAULT_MAX_CHUNK_SIZE: usize = usize::MAX;
 const DEFAULT_ENTITY_JOB_PAGE_SIZE: usize = 100;
 const EMBEDDING_JOB_WINDOW: usize = 32;
+const DEFAULT_TARGET_CHUNK_SIZE: usize = 500;
 
 /// Runtime controls for librarian ingestion and extraction.
 ///
@@ -36,7 +42,12 @@ const EMBEDDING_JOB_WINDOW: usize = 32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibrarianRuntimeConfig {
     pub min_chunk_size: usize,
+    /// Target Markdown chunk size in Unicode scalar values (characters).
+    pub target_chunk_size: usize,
     pub max_chunk_size: usize,
+    /// Tail characters copied into a following Markdown chunk when the hard
+    /// maximum permits it.
+    pub chunk_overlap: usize,
     pub skip_entity_extraction: bool,
     pub extract_log_each: bool,
     /// A value of zero keeps the full note content.
@@ -51,7 +62,9 @@ impl Default for LibrarianRuntimeConfig {
     fn default() -> Self {
         Self {
             min_chunk_size: DEFAULT_MIN_CHUNK_SIZE,
+            target_chunk_size: DEFAULT_TARGET_CHUNK_SIZE,
             max_chunk_size: DEFAULT_MAX_CHUNK_SIZE,
+            chunk_overlap: 0,
             skip_entity_extraction: false,
             extract_log_each: false,
             extract_max_chars: DEFAULT_EXTRACT_MAX_CHARS,
@@ -119,6 +132,258 @@ fn chunk_content(content: &str, min_chunk_size: usize, max_chunk_size: usize) ->
                 start += take;
             }
             chunks
+        })
+        .collect()
+}
+
+fn note_from_markdown_chunk(chunk: &Chunk, embedding: Vec<f32>) -> Note {
+    Note::new(chunk.content.clone())
+        .with_type(NoteType::Raw)
+        .with_embedding(embedding)
+        .with_chunk_metadata(
+            chunk.key.clone(),
+            chunk.location_key.clone(),
+            chunk.ordinal,
+            chunk.heading_path.clone(),
+            chunk.start_line,
+            chunk.end_line,
+            chunk.start_byte,
+            chunk.end_byte,
+            chunk.overlap_from.clone(),
+            chunk.overlap_chars,
+            chunk.split_fenced_code,
+            chunk.content_hash.clone(),
+            chunk.search_text.clone(),
+        )
+}
+
+/// Content and heading context used to align two generations of a Markdown
+/// source. In particular, this deliberately excludes `chunk_ordinal` and
+/// `chunk_location_key`: inserting or removing a chunk changes those values
+/// for every following chunk and must never redirect its dependents.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MarkdownChunkAnchor {
+    heading_path: Vec<String>,
+    content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MarkdownChunkMatch {
+    existing_index: usize,
+    staged_index: usize,
+    exact_content: bool,
+}
+
+fn markdown_chunk_anchors_from_notes(notes: &[Note]) -> Vec<MarkdownChunkAnchor> {
+    notes
+        .iter()
+        .map(|note| MarkdownChunkAnchor {
+            heading_path: note.chunk_heading_path.clone(),
+            content: note.content.clone(),
+        })
+        .collect()
+}
+
+/// Build anchors for an existing source generation. Before v008, sourced
+/// Markdown notes had a successful generation but no chunk provenance. On
+/// their first refresh, recover heading context only from a unique exact
+/// staged-content match. This is deliberately conservative: duplicate or
+/// otherwise ambiguous legacy text receives no inferred structural identity.
+///
+/// A one-chunk edit between two recovered anchors in the same heading is also
+/// safe to align. That mirrors the normal structural-successor rule while
+/// avoiding the mutable ordinal/location fallbacks that could transfer a
+/// dependent to unrelated content after insertions or removals.
+fn markdown_chunk_anchors_from_existing_notes(
+    notes: &[Note],
+    staged: &[MarkdownChunkAnchor],
+) -> Vec<MarkdownChunkAnchor> {
+    let mut anchors = notes
+        .iter()
+        .map(|note| MarkdownChunkAnchor {
+            heading_path: note.chunk_heading_path.clone(),
+            content: note.content.clone(),
+        })
+        .collect::<Vec<_>>();
+    let legacy_without_context = notes
+        .iter()
+        .map(|note| note.chunk_key.is_none() && note.chunk_heading_path.is_empty())
+        .collect::<Vec<_>>();
+
+    for (index, note) in notes.iter().enumerate() {
+        if !legacy_without_context[index] {
+            continue;
+        }
+        let mut candidates = staged
+            .iter()
+            .filter(|candidate| candidate.content == note.content);
+        let Some(candidate) = candidates.next() else {
+            continue;
+        };
+        if candidates.next().is_none() {
+            anchors[index].heading_path = candidate.heading_path.clone();
+        }
+    }
+
+    // A locally changed legacy chunk has no exact content anchor of its own.
+    // Infer only the common context immediately bounded by two recovered
+    // anchors; `align_markdown_chunk_sequences` still requires the same
+    // one-for-one neighborhood in both generations before accepting it.
+    for index in 1..anchors.len().saturating_sub(1) {
+        if !legacy_without_context[index] || !anchors[index].heading_path.is_empty() {
+            continue;
+        }
+        let before = &anchors[index - 1].heading_path;
+        let after = &anchors[index + 1].heading_path;
+        if !before.is_empty() && before == after {
+            anchors[index].heading_path = before.clone();
+        }
+    }
+
+    anchors
+}
+
+fn markdown_chunk_anchors_from_chunks(chunks: &[Chunk]) -> Vec<MarkdownChunkAnchor> {
+    chunks
+        .iter()
+        .map(|chunk| MarkdownChunkAnchor {
+            heading_path: chunk.heading_path.clone(),
+            content: chunk.content.clone(),
+        })
+        .collect()
+}
+
+/// Align Markdown generations using exact, content-aware anchors in document
+/// order. This monotonic alignment remains stable when chunks are inserted or
+/// removed before an unchanged chunk. A changed chunk is a structural
+/// successor only when it is the sole unmatched chunk between two exact
+/// anchors in the same heading context; ambiguous boundary/replacement cases
+/// intentionally receive no successor. Repeated anchors are paired by their
+/// sequence occurrence only when every shared anchor with equal multiplicity
+/// retains the same order. This preserves byte-identical duplicate runs while
+/// rejecting added, removed, or reordered duplicate occurrences.
+fn align_markdown_chunk_sequences(
+    existing: &[MarkdownChunkAnchor],
+    staged: &[MarkdownChunkAnchor],
+) -> Vec<MarkdownChunkMatch> {
+    let mut existing_counts = HashMap::<&MarkdownChunkAnchor, usize>::new();
+    for anchor in existing {
+        *existing_counts.entry(anchor).or_default() += 1;
+    }
+    let mut staged_counts = HashMap::<&MarkdownChunkAnchor, usize>::new();
+    let mut staged_positions = HashMap::<MarkdownChunkAnchor, usize>::new();
+    for (index, anchor) in staged.iter().enumerate() {
+        *staged_counts.entry(anchor).or_default() += 1;
+        staged_positions.insert(anchor.clone(), index);
+    }
+
+    // Ignore changed/multiplicity-mismatched anchors, then compare the
+    // remaining shared structural sequence. Equality proves each duplicate
+    // occurrence has the same multiplicity and relative order, so pairing by
+    // occurrence is safe even when unrelated chunks were inserted elsewhere.
+    let has_equal_multiplicity =
+        |anchor: &&MarkdownChunkAnchor| existing_counts.get(*anchor) == staged_counts.get(*anchor);
+    let existing_structural = existing
+        .iter()
+        .enumerate()
+        .filter(|(_, anchor)| has_equal_multiplicity(anchor))
+        .collect::<Vec<_>>();
+    let staged_structural = staged
+        .iter()
+        .enumerate()
+        .filter(|(_, anchor)| has_equal_multiplicity(anchor))
+        .collect::<Vec<_>>();
+    let exact = if existing_structural
+        .iter()
+        .map(|(_, anchor)| *anchor)
+        .eq(staged_structural.iter().map(|(_, anchor)| *anchor))
+    {
+        existing_structural
+            .into_iter()
+            .zip(staged_structural)
+            .map(
+                |((existing_index, _), (staged_index, _))| MarkdownChunkMatch {
+                    existing_index,
+                    staged_index,
+                    exact_content: true,
+                },
+            )
+            .collect()
+    } else {
+        // A changed ordering is ambiguous for duplicate occurrences. Retain
+        // only the original unique-anchor alignment, which can still safely
+        // bound a one-chunk structural replacement below.
+        let mut exact = Vec::new();
+        let mut last_staged_index = None;
+        for (existing_index, anchor) in existing.iter().enumerate() {
+            if existing_counts.get(anchor) != Some(&1) || staged_counts.get(anchor) != Some(&1) {
+                continue;
+            }
+            let Some(&staged_index) = staged_positions.get(anchor) else {
+                continue;
+            };
+            if last_staged_index.is_some_and(|last| staged_index <= last) {
+                continue;
+            }
+            last_staged_index = Some(staged_index);
+            exact.push(MarkdownChunkMatch {
+                existing_index,
+                staged_index,
+                exact_content: true,
+            });
+        }
+        exact
+    };
+
+    let mut matches = exact.clone();
+    for anchors in exact.windows(2) {
+        let [before, after] = anchors else {
+            continue;
+        };
+        if after.existing_index != before.existing_index + 2
+            || after.staged_index != before.staged_index + 2
+        {
+            continue;
+        }
+        let existing_index = before.existing_index + 1;
+        let staged_index = before.staged_index + 1;
+        let heading_path = &existing[existing_index].heading_path;
+        if heading_path == &staged[staged_index].heading_path
+            && heading_path == &existing[before.existing_index].heading_path
+            && heading_path == &existing[after.existing_index].heading_path
+            && heading_path == &staged[before.staged_index].heading_path
+            && heading_path == &staged[after.staged_index].heading_path
+        {
+            matches.push(MarkdownChunkMatch {
+                existing_index,
+                staged_index,
+                exact_content: false,
+            });
+        }
+    }
+    matches.sort_unstable_by_key(|matched| matched.staged_index);
+    matches
+}
+
+/// Pair each previously successful Markdown chunk with its staged successor.
+/// The boolean marks a byte-for-byte content match. Dependents that describe
+/// extracted content (notably entity mentions) are copied only for those
+/// exact matches; graph/provenance links can also follow a safely anchored
+/// local edit.
+fn markdown_chunk_successors(
+    existing: &[Note],
+    staged: &[Note],
+) -> Vec<(RecordId, RecordId, bool)> {
+    let staged_anchors = markdown_chunk_anchors_from_notes(staged);
+    let existing_anchors = markdown_chunk_anchors_from_existing_notes(existing, &staged_anchors);
+    align_markdown_chunk_sequences(&existing_anchors, &staged_anchors)
+        .into_iter()
+        .filter_map(|matched| {
+            Some((
+                existing.get(matched.existing_index)?.id.clone()?,
+                staged.get(matched.staged_index)?.id.clone()?,
+                matched.exact_content,
+            ))
         })
         .collect()
 }
@@ -476,8 +741,17 @@ impl LibrarianAgent {
         let mut source = plan.source;
         let source_id = source.id.clone();
         let generation = source.generation;
+        let existing_chunks = match source_id.as_ref() {
+            Some(source_id) => self.repo.get_source_chunks(source_id).await?,
+            None => Vec::new(),
+        };
         let notes = match self
-            .chunk_and_create_notes(&content, source_id, Some(generation))
+            .chunk_and_create_markdown_notes(
+                &content,
+                source_id,
+                Some(generation),
+                &existing_chunks,
+            )
             .await
         {
             Ok(notes) => notes,
@@ -487,7 +761,27 @@ impl LibrarianAgent {
                 return Err(error);
             }
         };
-        let cleanup = self.repo.complete_file_import(&mut source).await?;
+        let successors = markdown_chunk_successors(&existing_chunks, &notes);
+        let cleanup = match self
+            .repo
+            .reconcile_file_import(&mut source, &successors)
+            .await
+        {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                // After durable promotion the staged generation is already
+                // the source of truth. A later retarget/cleanup failure is
+                // recoverable on an unchanged reimport; marking it failed
+                // here would delete that newly successful generation.
+                if source.status != SourceIngestionStatus::Ready
+                    || source.successful_generation != source.generation
+                {
+                    let message = error.to_string();
+                    self.repo.fail_file_import(&mut source, &message).await?;
+                }
+                return Err(error.into());
+            }
+        };
         let created = u64::from(plan.action == SourceImportAction::Created) * notes.len() as u64;
         let updated = u64::from(plan.action == SourceImportAction::Updated) * notes.len() as u64;
         Ok(MarkdownImportResult {
@@ -956,15 +1250,29 @@ impl LibrarianAgent {
 
     /// Extract entities from a note and link them
     async fn extract_and_link_entities(&self, note: &Note) -> Result<()> {
-        self.extract_and_link_entities_inner(note, false).await
+        self.extract_and_link_entities_inner(note, false, false)
+            .await
     }
 
     /// Extract entities from a note regardless of skip flag
     async fn extract_and_link_entities_force(&self, note: &Note) -> Result<()> {
-        self.extract_and_link_entities_inner(note, true).await
+        self.extract_and_link_entities_inner(note, true, false)
+            .await
     }
 
-    async fn extract_and_link_entities_inner(&self, note: &Note, force: bool) -> Result<()> {
+    /// Re-extract entities and atomically replace the note's prior extraction
+    /// only after inference succeeds. This avoids exposing an empty mention
+    /// set while a force-clear operation waits on an inference provider.
+    async fn extract_and_replace_entities_force(&self, note: &Note) -> Result<()> {
+        self.extract_and_link_entities_inner(note, true, true).await
+    }
+
+    async fn extract_and_link_entities_inner(
+        &self,
+        note: &Note,
+        force: bool,
+        replace_mentions: bool,
+    ) -> Result<()> {
         if !force && self.runtime.skip_entity_extraction {
             return Ok(());
         }
@@ -973,33 +1281,52 @@ impl LibrarianAgent {
         let extraction = self.extractor.extract(&text).await?;
         let entities = extraction.entities;
         let extracted_count = entities.len();
-        let mut linked_count = 0usize;
+        let entities = entities
+            .into_iter()
+            .map(|extracted| {
+                // Map string type to EntityType
+                let entity_type = match extracted
+                    .entity_type
+                    .as_deref()
+                    .unwrap_or("concept")
+                    .to_lowercase()
+                    .as_str()
+                {
+                    "person" | "per" => EntityType::Person,
+                    "organization" | "org" => EntityType::Organization,
+                    "location" | "loc" | "gpe" => EntityType::Location,
+                    "date" | "time" => EntityType::Date,
+                    _ => EntityType::Concept,
+                };
 
-        for extracted in entities {
-            // Map string type to EntityType
-            let entity_type = match extracted
-                .entity_type
-                .as_deref()
-                .unwrap_or("concept")
-                .to_lowercase()
-                .as_str()
-            {
-                "person" | "per" => EntityType::Person,
-                "organization" | "org" => EntityType::Organization,
-                "location" | "loc" | "gpe" => EntityType::Location,
-                "date" | "time" => EntityType::Date,
-                _ => EntityType::Concept,
-            };
-
-            let entity = Entity::new(&extracted.name, entity_type);
-            let entity = self.repo.upsert_entity(entity).await?;
-
-            // Link note to entity
-            if let (Some(note_id), Some(entity_id)) = (&note.id, &entity.id) {
-                self.repo.link_note_to_entity(note_id, entity_id).await?;
-                linked_count += 1;
+                let mut entity = Entity::new(&extracted.name, entity_type);
+                // The persisted entity schema requires an object (or NONE) for
+                // metadata. Extraction supplies no metadata, so use an empty
+                // object instead of `Entity::new`'s JSON null default.
+                entity.metadata = serde_json::json!({});
+                entity
+            })
+            .collect::<Vec<_>>();
+        let linked_count = match &note.id {
+            Some(note_id) => {
+                if replace_mentions {
+                    self.repo.replace_note_entities(note_id, entities).await?
+                } else {
+                    self.repo
+                        .upsert_entities_and_link_note(note_id, entities)
+                        .await?
+                }
             }
-        }
+            // Notes are normally persisted before extraction. Retain the
+            // former best-effort entity upserts for callers constructing an
+            // in-memory note, while only persisted notes need link batching.
+            None => {
+                for entity in entities {
+                    self.repo.upsert_entity(entity).await?;
+                }
+                0
+            }
+        };
 
         if extracted_count > 0 || linked_count > 0 {
             debug!(
@@ -1196,12 +1523,16 @@ impl LibrarianAgent {
                 }
 
                 let note_start = Instant::now();
-                if force_clear {
-                    if let Some(id) = &note.id {
-                        self.repo.delete_mentions_for_note(id).await?;
-                    }
-                }
-                let item_error = match self.extract_and_link_entities_force(&note).await {
+                // Infer before touching current mentions, then replace the
+                // whole set under the source lifecycle lock. This keeps a
+                // force refresh from exposing a delete/infer/insert gap to a
+                // concurrent source reconciliation.
+                let extraction = if force_clear {
+                    self.extract_and_replace_entities_force(&note).await
+                } else {
+                    self.extract_and_link_entities_force(&note).await
+                };
+                let item_error = match extraction {
                     Ok(()) => {
                         completed += 1;
                         if log_each {
@@ -1505,6 +1836,115 @@ impl LibrarianAgent {
             notes.push(note);
         }
 
+        Ok(notes)
+    }
+
+    /// Chunk Markdown with structural metadata, then reconcile it with the
+    /// previous successful source generation. Exact key/hash matches reuse
+    /// embeddings; each pending generation is written copy-on-write so a
+    /// failed refresh cannot mutate or hide the last successful corpus.
+    /// `complete_file_import` then promotes and safely cascades the prior
+    /// generation.
+    async fn chunk_and_create_markdown_notes(
+        &self,
+        content: &str,
+        source_id: Option<RecordId>,
+        source_generation: Option<u64>,
+        existing_chunks: &[Note],
+    ) -> Result<Vec<Note>> {
+        let Some(source_id) = source_id else {
+            return self
+                .chunk_and_create_notes(content, None, source_generation)
+                .await;
+        };
+        let chunker = MarkdownChunker::new(ChunkingConfig {
+            min_size: self.runtime.min_chunk_size,
+            target_size: self.runtime.target_chunk_size,
+            max_size: self.runtime.max_chunk_size,
+            overlap_size: self.runtime.chunk_overlap,
+        })
+        .map_err(|error| crate::AgentError::Processing(error.to_string()))?;
+        let source_identity = record_id_to_string(&source_id);
+        let chunks = chunker
+            .chunk(&source_identity, content)
+            .map_err(|error| crate::AgentError::Processing(error.to_string()))?;
+
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let staged_anchors = markdown_chunk_anchors_from_chunks(&chunks);
+        let existing_anchors =
+            markdown_chunk_anchors_from_existing_notes(existing_chunks, &staged_anchors);
+        let matches_by_staged = align_markdown_chunk_sequences(&existing_anchors, &staged_anchors)
+            .into_iter()
+            .map(|matched| (matched.staged_index, matched))
+            .collect::<HashMap<_, _>>();
+
+        // Generate every required embedding before mutating any prior record.
+        // This keeps a provider failure from erasing the old visible source
+        // generation during reconciliation.
+        let changed = chunks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                !matches_by_staged
+                    .get(index)
+                    .is_some_and(|matched| matched.exact_content)
+            })
+            .map(|(_, chunk)| chunk)
+            .collect::<Vec<_>>();
+        let embedding_inputs = changed
+            .iter()
+            .map(|chunk| chunk.search_text.clone())
+            .collect::<Vec<_>>();
+        let embeddings = if embedding_inputs.is_empty() {
+            Vec::new()
+        } else {
+            self.embed_batch(&embedding_inputs).await?
+        };
+        let mut embedding_by_key = changed
+            .into_iter()
+            .zip(embeddings)
+            .map(|(chunk, embedding)| (chunk.key.clone(), embedding))
+            .collect::<HashMap<_, _>>();
+
+        let mut notes = Vec::with_capacity(chunks.len());
+        for (staged_index, chunk) in chunks.into_iter().enumerate() {
+            let matched_existing = matches_by_staged
+                .get(&staged_index)
+                .and_then(|matched| existing_chunks.get(matched.existing_index));
+            let is_exact_match = matches_by_staged
+                .get(&staged_index)
+                .is_some_and(|matched| matched.exact_content);
+            let embedding = if !is_exact_match {
+                embedding_by_key.remove(&chunk.key).ok_or_else(|| {
+                    crate::AgentError::Processing(
+                        "missing prepared Markdown chunk embedding".into(),
+                    )
+                })?
+            } else {
+                matched_existing
+                    .expect("exact match has an existing chunk")
+                    .embedding
+                    .clone()
+            };
+            let mut note =
+                note_from_markdown_chunk(&chunk, embedding).with_source(source_id.clone());
+            if let Some(generation) = source_generation {
+                note = note.with_source_generation(generation);
+            }
+            // Exact chunks retain their original creation time despite the
+            // fresh copy-on-write record ID. A content-changed structural
+            // successor must keep its new timestamp so `since` filters can
+            // discover the edited text.
+            if is_exact_match {
+                let existing = matched_existing.expect("exact match has an existing chunk");
+                note.created_at = existing.created_at;
+            }
+            let note = self.repo.create_note(note).await?;
+            notes.push(note);
+        }
         Ok(notes)
     }
 
@@ -2539,11 +2979,18 @@ pub struct ChatImportResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_content, decode_file_uri, entity_job_force_clear, no_processing_work,
-        truncate_for_extraction, LibrarianAgent, LibrarianRuntimeConfig, EMBEDDING_JOB_WINDOW,
+        align_markdown_chunk_sequences, chunk_content, decode_file_uri, entity_job_force_clear,
+        no_processing_work, truncate_for_extraction, LibrarianAgent, LibrarianRuntimeConfig,
+        MarkdownChunkAnchor, EMBEDDING_JOB_WINDOW,
     };
-    use crate::{DeterministicEmbedder, FixtureEntityExtractor, InferenceCapabilities};
-    use graphrag_core::{Entity, EntityType, Note};
+    use crate::{
+        DeterministicEmbedder, EntityExtraction, ExtractedEntity, FixtureEntityExtractor,
+        InferenceCapabilities,
+    };
+    use graphrag_core::{
+        normalized_content_hash, record_id_to_string, EdgeType, Entity, EntityType, Note,
+        ProposedEdgeStatus,
+    };
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
         init_memory, ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository,
@@ -2553,6 +3000,36 @@ mod tests {
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
+
+    /// Seed the shape produced by a pre-v008 Markdown import. Those records
+    /// belonged to a successful source generation but lacked all structural
+    /// chunk provenance; v008 cannot retroactively derive it from stored
+    /// chunk bodies alone.
+    async fn clear_v008_markdown_metadata(repo: &Repository, notes: &[Note]) {
+        for note in notes {
+            let mut legacy = note.clone();
+            legacy.chunk_key = None;
+            legacy.chunk_location_key = None;
+            legacy.chunk_ordinal = None;
+            legacy.chunk_heading_path.clear();
+            legacy.source_start_line = None;
+            legacy.source_end_line = None;
+            legacy.source_start_byte = None;
+            legacy.source_end_byte = None;
+            legacy.chunk_overlap_from = None;
+            legacy.chunk_overlap_chars = None;
+            legacy.split_fenced_code = false;
+            legacy.content_hash = None;
+            // v008's migration fills legacy search text from the body.
+            legacy.search_content = Some(legacy.content.clone());
+            repo.update_note(
+                &record_id_to_string(legacy.id.as_ref().expect("persisted legacy note")),
+                legacy,
+            )
+            .await
+            .unwrap();
+        }
+    }
 
     #[derive(Clone)]
     struct CancellingFallbackEmbedder {
@@ -2971,11 +3448,7 @@ mod tests {
         );
         assert!(failed_run.extract_entities_for_notes(2).await.is_err());
         let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
-        let job_id = job
-            .id
-            .as_ref()
-            .map(graphrag_core::record_id_to_string)
-            .unwrap();
+        let job_id = job.id.as_ref().map(record_id_to_string).unwrap();
         assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
         assert!(
             job.last_error
@@ -2988,11 +3461,11 @@ mod tests {
         assert!(job
             .item_ids
             .iter()
-            .any(|id| id == &graphrag_core::record_id_to_string(first.id.as_ref().unwrap())));
+            .any(|id| id == &record_id_to_string(first.id.as_ref().unwrap())));
         assert!(job
             .item_ids
             .iter()
-            .any(|id| id == &graphrag_core::record_id_to_string(second.id.as_ref().unwrap())));
+            .any(|id| id == &record_id_to_string(second.id.as_ref().unwrap())));
 
         // A failed job retries its entire durable scope. If that retry is
         // immediately cancelled, its stale terminal checkpoint must already
@@ -3333,6 +3806,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn force_clear_replaces_mentions_only_after_successful_extraction() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let content = "force clear replacement fixture";
+        let note = repo.create_note(Note::new(content)).await.unwrap();
+        let mut prior = Entity::new("Prior extracted entity", EntityType::Concept);
+        prior.metadata = serde_json::json!({});
+        let prior = repo.upsert_entity(prior).await.unwrap();
+        repo.link_note_to_entity(note.id.as_ref().unwrap(), prior.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let extractor = FixtureEntityExtractor::default().with_fixture(
+            content,
+            EntityExtraction {
+                entities: vec![ExtractedEntity {
+                    name: "Fresh extracted entity".into(),
+                    entity_type: Some("concept".into()),
+                }],
+                relationships: Vec::new(),
+            },
+        );
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(extractor),
+        );
+
+        assert_eq!(
+            librarian
+                .extract_entities_for_note_ids(
+                    &[record_id_to_string(note.id.as_ref().unwrap())],
+                    true,
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(note.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "Fresh extracted entity");
+    }
+
+    #[tokio::test]
     async fn embedding_fallback_keeps_failure_diagnostic_after_later_success() {
         let repo = Repository::new(init_memory().await.unwrap());
         repo.create_note(Note::new("first embedding"))
@@ -3632,5 +4150,791 @@ mod tests {
             .unwrap()
             .embedding
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn heading_only_markdown_imports_and_refreshes_as_a_searchable_chunk() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+
+        let first_content = "# Roadmap\n\n---";
+        let first = librarian
+            .ingest_markdown_with_options("heading-only.md", first_content, false)
+            .await
+            .unwrap();
+        assert_eq!(first.action, SourceImportAction::Created);
+        assert_eq!(first.notes.len(), 1);
+        assert_eq!(first.notes[0].content, first_content);
+        assert_eq!(first.notes[0].chunk_heading_path, vec!["Roadmap"]);
+        assert!(first.notes[0]
+            .search_content
+            .as_deref()
+            .is_some_and(|text| text.starts_with("Roadmap\n\n")));
+
+        let refreshed_content = "# Roadmap\n\n## Next";
+        let refreshed = librarian
+            .ingest_markdown_with_options("heading-only.md", refreshed_content, false)
+            .await
+            .unwrap();
+        assert_eq!(refreshed.action, SourceImportAction::Updated);
+        assert_eq!(refreshed.notes.len(), 1);
+        assert_eq!(refreshed.notes[0].content, refreshed_content);
+        assert_eq!(
+            refreshed.notes[0].chunk_heading_path,
+            vec!["Roadmap", "Next"]
+        );
+        let source_id = refreshed.notes[0].source_id.as_ref().unwrap();
+        assert_eq!(repo.get_source_chunks(source_id).await.unwrap().len(), 1);
+        assert_eq!(repo.fulltext_search("Next", 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_preserves_unchanged_chunk_identity_and_provenance() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            chunk_overlap: 0,
+            ..Default::default()
+        });
+        let first_content = "# Planning\n\nFirst independently stable paragraph has useful words.\n\nSecond independently stable paragraph has useful words.";
+        let first = librarian
+            .ingest_markdown_with_options("chunk-reconcile.md", first_content, false)
+            .await
+            .unwrap();
+        assert_eq!(first.notes.len(), 2);
+        let stable_key_before = first.notes[1].chunk_key.clone();
+        let stable_embedding_before = first.notes[1].embedding.clone();
+        let stable_created_at = first.notes[1].created_at;
+        assert_eq!(first.notes[1].chunk_heading_path, vec!["Planning"]);
+        assert!(first.notes[1].source_start_byte.is_some());
+        assert!(first.notes[1]
+            .search_content
+            .as_deref()
+            .is_some_and(|text| text.starts_with("Planning\n\n")));
+
+        let second_content = "# Planning\n\nFirst independently changed paragraph has useful words.\n\nSecond independently stable paragraph has useful words.";
+        let second = librarian
+            .ingest_markdown_with_options("chunk-reconcile.md", second_content, false)
+            .await
+            .unwrap();
+        assert_eq!(second.notes.len(), 2);
+        assert_eq!(second.action, SourceImportAction::Updated);
+        assert_eq!(stable_key_before, second.notes[1].chunk_key);
+        assert_eq!(stable_embedding_before, second.notes[1].embedding);
+        assert_eq!(stable_created_at, second.notes[1].created_at);
+        assert_ne!(first.notes[0].id, second.notes[0].id);
+        assert_ne!(first.notes[0].content_hash, second.notes[0].content_hash);
+        assert_ne!(first.notes[0].embedding, second.notes[0].embedding);
+        assert_eq!(repo.fulltext_search("Planning", 10).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_markdown_reconciliation_keeps_the_successful_generation_visible() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let original = "# Plan\n\nFirst stable paragraph has enough content.\n\nSecond stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("copy-on-write.md", original, false)
+            .await
+            .unwrap();
+        let source_id = first.notes[0].source_id.clone().unwrap();
+        let successful = repo.get_source_chunks(&source_id).await.unwrap();
+        let successful_ids = successful
+            .iter()
+            .map(|note| note.id.clone().unwrap())
+            .collect::<Vec<_>>();
+
+        let changed = "# Plan\n\nFirst changed paragraph has enough content.\n\nSecond stable paragraph has enough content.";
+        let mut pending = repo
+            .begin_file_import(
+                graphrag_core::SourceType::Markdown,
+                "copy-on-write.md".into(),
+                first.source_uri.clone(),
+                changed.into(),
+                normalized_content_hash(changed),
+                false,
+            )
+            .await
+            .unwrap();
+        let staged = librarian
+            .chunk_and_create_markdown_notes(
+                changed,
+                pending.source.id.clone(),
+                Some(pending.source.generation),
+                &successful,
+            )
+            .await
+            .unwrap();
+        assert!(staged
+            .iter()
+            .all(|note| !successful_ids.contains(note.id.as_ref().unwrap())));
+
+        repo.fail_file_import(&mut pending.source, "simulated promotion failure")
+            .await
+            .unwrap();
+        let restored = repo.get_source_chunks(&source_id).await.unwrap();
+        assert_eq!(
+            restored
+                .iter()
+                .map(|note| note.id.clone().unwrap())
+                .collect::<Vec<_>>(),
+            successful_ids
+        );
+        assert_eq!(
+            repo.fulltext_search("First stable", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(repo
+            .fulltext_search("First changed", 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_copies_only_safe_dependents_for_changed_chunks() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let replacement = "Middle replacement paragraph has enough content.";
+        let extractor = FixtureEntityExtractor::default().with_fixture(
+            replacement,
+            EntityExtraction {
+                entities: vec![ExtractedEntity {
+                    name: "Replacement Entity".into(),
+                    entity_type: Some("concept".into()),
+                }],
+                relationships: Vec::new(),
+            },
+        );
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(extractor),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let original = "# Plan\n\nBefore stable paragraph has enough content.\n\nMiddle original paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("dependent-copy.md", original, false)
+            .await
+            .unwrap();
+        assert_eq!(first.notes.len(), 3);
+        let middle_old = first.notes[1].id.as_ref().unwrap().clone();
+        let after_old = first.notes[2].id.as_ref().unwrap().clone();
+        let stale_created_at = chrono::Utc::now() - chrono::Duration::days(2);
+        let mut stale_middle = first.notes[1].clone();
+        stale_middle.created_at = stale_created_at;
+        repo.update_note(&record_id_to_string(&middle_old), stale_middle)
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Planning", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(&middle_old, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(&middle_old, &after_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        let changed = format!(
+            "# Plan\n\nBefore stable paragraph has enough content.\n\n{replacement}\n\nAfter stable paragraph has enough content."
+        );
+        let second = librarian
+            .ingest_markdown_with_options("dependent-copy.md", &changed, false)
+            .await
+            .unwrap();
+        assert_eq!(second.notes[1].content, replacement);
+        let middle_new = second.notes[1].id.as_ref().unwrap();
+        let after_new = second.notes[2].id.as_ref().unwrap();
+        assert!(second.notes[1].created_at > stale_created_at);
+        assert!(repo
+            .fulltext_search_notes(
+                replacement,
+                10,
+                Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+                None,
+            )
+            .await
+            .unwrap()
+            .iter()
+            .any(|result| result.id == *middle_new));
+        assert!(repo
+            .get_note(&record_id_to_string(&middle_old))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_entities_for_note(&record_id_to_string(middle_new))
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(repo
+            .get_notes_without_entities(10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|note| note.id.as_ref() == Some(middle_new)));
+        assert_eq!(
+            librarian
+                .extract_entities_for_note_ids(&[record_id_to_string(middle_new)], false)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(middle_new))
+                .await
+                .unwrap()
+                .iter()
+                .map(|entity| entity.canonical_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["replacement entity"]
+        );
+        let edges = repo
+            .get_note_edges(&record_id_to_string(middle_new))
+            .await
+            .unwrap();
+        assert!(edges.iter().any(|edge| {
+            edge.edge_type == EdgeType::Supports.to_string()
+                && edge.in_id == *middle_new
+                && edge.out_id == *after_new
+                && edge.is_manual
+        }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_upgrades_legacy_chunks_on_first_forced_refresh() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            chunk_overlap: 0,
+            ..Default::default()
+        });
+        let original = "# Plan\n\nFirst stable paragraph has enough content.\n\nMiddle stable paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("legacy-forced-refresh.md", original, false)
+            .await
+            .unwrap();
+        let first_old = first.notes[0].id.as_ref().unwrap().clone();
+        let after_old = first.notes[2].id.as_ref().unwrap().clone();
+        let mut entity = Entity::new("Legacy Anchor", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(&first_old, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(&first_old, &after_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        clear_v008_markdown_metadata(&repo, &first.notes).await;
+        let source_id = first.notes[0].source_id.as_ref().unwrap();
+        let legacy = repo.get_source_chunks(source_id).await.unwrap();
+        assert_eq!(legacy.len(), 3);
+        assert!(legacy.iter().all(|note| note.chunk_key.is_none()));
+
+        // A forced identical refresh is the first opportunity to attach v008
+        // metadata. Exact legacy chunks must carry both extracted and manual
+        // dependents into the copy-on-write generation.
+        let refreshed = librarian
+            .ingest_markdown_with_options("legacy-forced-refresh.md", original, true)
+            .await
+            .unwrap();
+        let first_new = refreshed.notes[0].id.as_ref().unwrap();
+        let after_new = refreshed.notes[2].id.as_ref().unwrap();
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(first_new))
+                .await
+                .unwrap()
+                .iter()
+                .map(|entity| entity.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Legacy Anchor"]
+        );
+        assert!(repo
+            .get_note_edges(&record_id_to_string(first_new))
+            .await
+            .unwrap()
+            .iter()
+            .any(|edge| {
+                edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *first_new
+                    && edge.out_id == *after_new
+            }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_upgrades_legacy_chunks_on_first_changed_refresh() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            chunk_overlap: 0,
+            ..Default::default()
+        });
+        let original = "# Plan\n\nBefore stable paragraph has enough content.\n\nMiddle original paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("legacy-changed-refresh.md", original, false)
+            .await
+            .unwrap();
+        let middle_old = first.notes[1].id.as_ref().unwrap().clone();
+        let after_old = first.notes[2].id.as_ref().unwrap().clone();
+        repo.create_edge(&middle_old, &after_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+        clear_v008_markdown_metadata(&repo, &first.notes).await;
+
+        let replacement = "Middle replacement paragraph has enough content.";
+        let changed = format!(
+            "# Plan\n\nBefore stable paragraph has enough content.\n\n{replacement}\n\nAfter stable paragraph has enough content."
+        );
+        // The changed middle chunk is structurally bounded by two unique
+        // recovered anchors. Its graph edge is safe to preserve, while its
+        // content-derived mentions remain eligible for new extraction.
+        let refreshed = librarian
+            .ingest_markdown_with_options("legacy-changed-refresh.md", &changed, false)
+            .await
+            .unwrap();
+        let middle_new = refreshed.notes[1].id.as_ref().unwrap();
+        let after_new = refreshed.notes[2].id.as_ref().unwrap();
+        assert_eq!(refreshed.notes[1].content, replacement);
+        assert!(repo
+            .get_note_edges(&record_id_to_string(middle_new))
+            .await
+            .unwrap()
+            .iter()
+            .any(|edge| {
+                edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *middle_new
+                    && edge.out_id == *after_new
+            }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_aligns_unchanged_chunks_across_insertions_and_removals() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let first_chunk = "First stable paragraph has enough content.";
+        let second_chunk = "Second stable paragraph has enough content.";
+        let original = format!("# Plan\n\n{first_chunk}\n\n{second_chunk}");
+        let first = librarian
+            .ingest_markdown_with_options("sequence-alignment.md", &original, false)
+            .await
+            .unwrap();
+        assert_eq!(first.notes.len(), 2);
+        let first_old = first.notes[0].id.as_ref().unwrap().clone();
+        let second_old = first.notes[1].id.as_ref().unwrap().clone();
+        let mut entity = Entity::new("First", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(&first_old, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(&first_old, &second_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        let inserted = format!(
+            "# Plan\n\nInserted unrelated paragraph has enough content.\n\n{first_chunk}\n\n{second_chunk}"
+        );
+        let after_insert = librarian
+            .ingest_markdown_with_options("sequence-alignment.md", &inserted, false)
+            .await
+            .unwrap();
+        let inserted_note = after_insert
+            .notes
+            .iter()
+            .find(|note| note.content == "Inserted unrelated paragraph has enough content.")
+            .unwrap();
+        let first_after_insert = after_insert
+            .notes
+            .iter()
+            .find(|note| note.content == first_chunk)
+            .unwrap();
+        let second_after_insert = after_insert
+            .notes
+            .iter()
+            .find(|note| note.content == second_chunk)
+            .unwrap();
+        assert!(repo
+            .get_entities_for_note(&record_id_to_string(inserted_note.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(
+                first_after_insert.id.as_ref().unwrap()
+            ))
+            .await
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(repo
+            .get_note_edges(&record_id_to_string(
+                first_after_insert.id.as_ref().unwrap()
+            ))
+            .await
+            .unwrap()
+            .iter()
+            .any(|edge| {
+                edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *first_after_insert.id.as_ref().unwrap()
+                    && edge.out_id == *second_after_insert.id.as_ref().unwrap()
+            }));
+
+        let after_removal = librarian
+            .ingest_markdown_with_options("sequence-alignment.md", &original, false)
+            .await
+            .unwrap();
+        let first_after_removal = after_removal
+            .notes
+            .iter()
+            .find(|note| note.content == first_chunk)
+            .unwrap();
+        let second_after_removal = after_removal
+            .notes
+            .iter()
+            .find(|note| note.content == second_chunk)
+            .unwrap();
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(
+                first_after_removal.id.as_ref().unwrap()
+            ))
+            .await
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(repo
+            .get_note_edges(&record_id_to_string(
+                first_after_removal.id.as_ref().unwrap()
+            ))
+            .await
+            .unwrap()
+            .iter()
+            .any(|edge| {
+                edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *first_after_removal.id.as_ref().unwrap()
+                    && edge.out_id == *second_after_removal.id.as_ref().unwrap()
+            }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_rejects_ambiguous_duplicate_anchors_after_deletion() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let duplicate = "Duplicated paragraph has enough source content.";
+        let tail = "Tail paragraph has distinct source content.";
+        let original = format!("# Plan\n\n{duplicate}\n\n{duplicate}\n\n{tail}");
+        let first = librarian
+            .ingest_markdown_with_options("duplicate-anchor.md", &original, false)
+            .await
+            .unwrap();
+        assert_eq!(first.notes.len(), 3);
+        let duplicate_old = first.notes[0].id.as_ref().unwrap().clone();
+        let tail_old = first.notes[2].id.as_ref().unwrap().clone();
+        let mut entity = Entity::new("Duplicate", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(&duplicate_old, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(&duplicate_old, &tail_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        let after_deletion = format!("# Plan\n\n{duplicate}\n\n{tail}");
+        let refreshed = librarian
+            .ingest_markdown_with_options("duplicate-anchor.md", &after_deletion, false)
+            .await
+            .unwrap();
+        let duplicate_new = refreshed
+            .notes
+            .iter()
+            .find(|note| note.content == duplicate)
+            .unwrap();
+        let tail_new = refreshed
+            .notes
+            .iter()
+            .find(|note| note.content == tail)
+            .unwrap();
+        assert!(repo
+            .get_entities_for_note(&record_id_to_string(duplicate_new.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(repo
+            .get_note_edges(&record_id_to_string(duplicate_new.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .iter()
+            .all(|edge| {
+                !(edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *duplicate_new.id.as_ref().unwrap()
+                    && edge.out_id == *tail_new.id.as_ref().unwrap())
+            }));
+    }
+
+    #[test]
+    fn markdown_reconciliation_rejects_reordered_duplicate_anchors() {
+        let duplicate = MarkdownChunkAnchor {
+            heading_path: vec!["Plan".into()],
+            content: "Repeated source paragraph.".into(),
+        };
+        let tail = MarkdownChunkAnchor {
+            heading_path: vec!["Plan".into()],
+            content: "Distinct trailing paragraph.".into(),
+        };
+
+        let matches = align_markdown_chunk_sequences(
+            &[duplicate.clone(), duplicate.clone(), tail.clone()],
+            &[duplicate.clone(), tail.clone(), duplicate],
+        );
+
+        // The unique tail remains safe, but neither duplicate occurrence has
+        // a trustworthy successor after its relative ordering changes.
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].existing_index, 2);
+        assert_eq!(matches[0].staged_index, 1);
+        assert!(matches[0].exact_content);
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_preserves_duplicate_anchors_on_identical_refresh() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let duplicate = "Duplicated paragraph has enough source content.";
+        let tail = "Tail paragraph has distinct source content.";
+        let original = format!("# Plan\n\n{duplicate}\n\n{duplicate}\n\n{tail}");
+        let first = librarian
+            .ingest_markdown_with_options("duplicate-anchor-stable.md", &original, false)
+            .await
+            .unwrap();
+        let first_duplicate = first.notes[0].id.as_ref().unwrap().clone();
+        let second_duplicate = first.notes[1].id.as_ref().unwrap().clone();
+        let tail_old = first.notes[2].id.as_ref().unwrap().clone();
+        for (name, note_id) in [
+            ("First duplicate entity", &first_duplicate),
+            ("Second duplicate entity", &second_duplicate),
+        ] {
+            let mut entity = Entity::new(name, EntityType::Concept);
+            entity.metadata = serde_json::json!({});
+            let entity = repo.upsert_entity(entity).await.unwrap();
+            repo.link_note_to_entity(note_id, entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        repo.create_edge(&first_duplicate, &tail_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        // A forced refresh stages a copy-on-write generation even though the
+        // source bytes are unchanged. Each duplicate occurrence must retain
+        // the dependents belonging to its same-order structural successor.
+        let refreshed = librarian
+            .ingest_markdown_with_options("duplicate-anchor-stable.md", &original, true)
+            .await
+            .unwrap();
+        let first_new = refreshed.notes[0].id.as_ref().unwrap();
+        let second_new = refreshed.notes[1].id.as_ref().unwrap();
+        let tail_new = refreshed.notes[2].id.as_ref().unwrap();
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(first_new))
+                .await
+                .unwrap()[0]
+                .name,
+            "First duplicate entity"
+        );
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(second_new))
+                .await
+                .unwrap()[0]
+                .name,
+            "Second duplicate entity"
+        );
+        assert!(repo
+            .get_note_edges(&record_id_to_string(first_new))
+            .await
+            .unwrap()
+            .iter()
+            .any(|edge| {
+                edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *first_new
+                    && edge.out_id == *tail_new
+            }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_retargets_proposal_backed_edges_for_cleanup_and_undo() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let content = "# Plan\n\nFirst stable paragraph has enough content.\n\nSecond stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("proposal-edge.md", content, false)
+            .await
+            .unwrap();
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                first.notes[0].id.as_ref().unwrap(),
+                first.notes[1].id.as_ref().unwrap(),
+                0.9,
+                "stable source relationship".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let accepted = repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .unwrap();
+        let old_edge_id = accepted.resulting_edge_id.unwrap();
+
+        let refreshed = librarian
+            .ingest_markdown_with_options("proposal-edge.md", content, true)
+            .await
+            .unwrap();
+        let first_new = refreshed.notes[0].id.as_ref().unwrap();
+        let second_new = refreshed.notes[1].id.as_ref().unwrap();
+        let new_edge = repo
+            .get_note_edges(&record_id_to_string(first_new))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|edge| {
+                edge.edge_type == EdgeType::RelatedTo.to_string()
+                    && ((edge.in_id == *first_new && edge.out_id == *second_new)
+                        || (edge.in_id == *second_new && edge.out_id == *first_new))
+                    && edge.proposal_id.as_ref() == Some(&proposal_id)
+            })
+            .expect("reconciled edge retains its proposal association");
+        assert_ne!(new_edge.id, old_edge_id);
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Accepted);
+        assert_eq!(proposal.resulting_edge_id, Some(new_edge.id.clone()));
+
+        assert!(repo
+            .undo_edge(&new_edge.id, Some("undo refreshed relationship".into()))
+            .await
+            .unwrap());
+        let undone = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(undone.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(undone.resulting_edge_id, None);
+    }
+
+    #[tokio::test]
+    async fn oversized_fenced_code_split_marker_is_persisted() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 5,
+            target_chunk_size: 10,
+            max_chunk_size: 16,
+            ..Default::default()
+        });
+        let imported = librarian
+            .ingest_markdown_with_options(
+                "split-fence.md",
+                "```text\n0123456789012345678901234567890123456789\n```",
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(!imported.notes.is_empty());
+        assert!(imported.notes.iter().all(|note| note.split_fenced_code));
     }
 }

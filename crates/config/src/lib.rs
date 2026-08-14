@@ -40,6 +40,17 @@ pub struct RuntimeConfig {
     pub logging: LoggingConfig,
 }
 
+/// Tracks whether the newer chunking controls appeared in the TOML layer
+/// while configuration is being resolved. It intentionally stays outside the
+/// public configuration structs so downstream callers can continue using
+/// `LibrarianConfig { ..Default::default() }` without exposing resolution
+/// internals as configuration fields.
+#[derive(Debug, Clone, Copy, Default)]
+struct LibrarianChunkingControlPresence {
+    target_chunk_size: bool,
+    chunk_overlap: bool,
+}
+
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
@@ -221,7 +232,12 @@ impl Default for GardenerConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct LibrarianConfig {
     pub min_chunk_size: usize,
+    /// Target Markdown chunk size in Unicode scalar values (characters).
+    pub target_chunk_size: usize,
     pub max_chunk_size: usize,
+    /// Tail characters copied from the preceding chunk when it fits under the
+    /// hard maximum.
+    pub chunk_overlap: usize,
     pub skip_entity_extraction: bool,
     pub extract_log_each: bool,
     /// Maximum characters sent to entity extraction. Zero preserves the
@@ -236,7 +252,9 @@ impl Default for LibrarianConfig {
     fn default() -> Self {
         Self {
             min_chunk_size: 50,
+            target_chunk_size: 700,
             max_chunk_size: 1000,
+            chunk_overlap: 100,
             skip_entity_extraction: false,
             extract_log_each: false,
             extract_max_chars: 8000,
@@ -291,19 +309,21 @@ impl RuntimeConfig {
         env: &impl Fn(&str) -> Option<String>,
         default_path: Option<PathBuf>,
     ) -> Result<Self, ConfigError> {
-        let mut config = match explicit_path.map(Path::to_path_buf).or_else(|| {
-            env("GRAPHRAG_CONFIG")
-                .filter(|value| !value.trim().is_empty())
-                .map(|value| expand_home_directory(Path::new(&value)))
-        }) {
-            Some(path) => Self::from_file(&path)?,
+        let (mut config, librarian_controls_from_file) = match explicit_path
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                env("GRAPHRAG_CONFIG")
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| expand_home_directory(Path::new(&value)))
+            }) {
+            Some(path) => Self::from_file_with_librarian_control_presence(&path)?,
             None => default_path
                 .filter(|path| path.exists())
-                .map(|path| Self::from_file(&path))
+                .map(|path| Self::from_file_with_librarian_control_presence(&path))
                 .transpose()?
-                .unwrap_or_default(),
+                .unwrap_or_else(|| (Self::default(), LibrarianChunkingControlPresence::default())),
         };
-        config.apply_env(env)?;
+        config.apply_env_with_librarian_control_presence(env, librarian_controls_from_file)?;
         if let Some(path) = &overrides.database_path {
             config.database.path = path.clone();
         }
@@ -312,6 +332,12 @@ impl RuntimeConfig {
     }
 
     pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
+        Self::from_file_with_librarian_control_presence(path).map(|(config, _)| config)
+    }
+
+    fn from_file_with_librarian_control_presence(
+        path: &Path,
+    ) -> Result<(Self, LibrarianChunkingControlPresence), ConfigError> {
         let content = std::fs::read_to_string(path).map_err(|source| ConfigError::ReadFile {
             path: path.into(),
             source,
@@ -333,12 +359,52 @@ impl RuntimeConfig {
             inference.is_some_and(|table| table.contains_key("embedding_url"));
         config.inference.extraction_url_from_file =
             inference.is_some_and(|table| table.contains_key("extraction_url"));
+        let mut librarian_controls_from_file = LibrarianChunkingControlPresence::default();
+        if let Some(librarian) = raw.get("librarian").and_then(toml::Value::as_table) {
+            librarian_controls_from_file.target_chunk_size =
+                librarian.contains_key("target_chunk_size");
+            librarian_controls_from_file.chunk_overlap = librarian.contains_key("chunk_overlap");
+            // `target_chunk_size` and `chunk_overlap` were added after the
+            // original min/max-only configuration. Derive omitted values from
+            // the explicit legacy bounds before validation, rather than
+            // rejecting an otherwise valid existing config because today's
+            // global defaults do not fit its smaller maximum.
+            if !librarian_controls_from_file.target_chunk_size {
+                // `usize::clamp` panics when its lower bound exceeds its
+                // upper bound. Leave an invalid legacy min/max pair intact
+                // for normal configuration validation to report, instead of
+                // panicking while deriving an omitted newer field.
+                if config.librarian.min_chunk_size <= config.librarian.max_chunk_size {
+                    config.librarian.target_chunk_size = config.librarian.target_chunk_size.clamp(
+                        config.librarian.min_chunk_size,
+                        config.librarian.max_chunk_size,
+                    );
+                }
+            }
+            if !librarian_controls_from_file.chunk_overlap {
+                config.librarian.chunk_overlap = config
+                    .librarian
+                    .chunk_overlap
+                    .min(config.librarian.max_chunk_size.saturating_sub(1));
+            }
+        }
         config.normalize_provider_names();
         config.database.path = expand_home_directory(&config.database.path);
-        Ok(config)
+        Ok((config, librarian_controls_from_file))
     }
 
     pub fn apply_env(&mut self, env: &impl Fn(&str) -> Option<String>) -> Result<(), ConfigError> {
+        self.apply_env_with_librarian_control_presence(
+            env,
+            LibrarianChunkingControlPresence::default(),
+        )
+    }
+
+    fn apply_env_with_librarian_control_presence(
+        &mut self,
+        env: &impl Fn(&str) -> Option<String>,
+        librarian_controls_from_file: LibrarianChunkingControlPresence,
+    ) -> Result<(), ConfigError> {
         set_path(env, "GRAPHRAG_DB_PATH", &mut self.database.path);
         set_string(env, "GRAPHRAG_LOG_LEVEL", &mut self.logging.level);
 
@@ -553,6 +619,8 @@ impl RuntimeConfig {
             "GRAPHRAG_GARDENER_MAX_SUGGESTIONS",
             &mut self.gardener.max_suggestions,
         )?;
+        let target_chunk_size_from_env = env("GRAPHRAG_LIBRARIAN_TARGET_CHUNK_SIZE").is_some();
+        let chunk_overlap_from_env = env("GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP").is_some();
         set_usize(
             env,
             "GRAPHRAG_LIBRARIAN_MIN_CHUNK_SIZE",
@@ -560,9 +628,38 @@ impl RuntimeConfig {
         )?;
         set_usize(
             env,
+            "GRAPHRAG_LIBRARIAN_TARGET_CHUNK_SIZE",
+            &mut self.librarian.target_chunk_size,
+        )?;
+        set_usize(
+            env,
             "GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE",
             &mut self.librarian.max_chunk_size,
         )?;
+        set_usize(
+            env,
+            "GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP",
+            &mut self.librarian.chunk_overlap,
+        )?;
+        // Existing installations could set the historical min/max pair
+        // without the newer target/overlap controls. Re-clamp only controls
+        // omitted across both TOML and the environment after every override
+        // has landed. An explicit control from either source must remain
+        // visible to validation instead of being silently rewritten.
+        if self.librarian.min_chunk_size <= self.librarian.max_chunk_size {
+            if !librarian_controls_from_file.target_chunk_size && !target_chunk_size_from_env {
+                self.librarian.target_chunk_size = self
+                    .librarian
+                    .target_chunk_size
+                    .clamp(self.librarian.min_chunk_size, self.librarian.max_chunk_size);
+            }
+            if !librarian_controls_from_file.chunk_overlap && !chunk_overlap_from_env {
+                self.librarian.chunk_overlap = self
+                    .librarian
+                    .chunk_overlap
+                    .min(self.librarian.max_chunk_size.saturating_sub(1));
+            }
+        }
 
         self.normalize_provider_names();
 
@@ -689,7 +786,11 @@ impl RuntimeConfig {
             || self.augment.max_tokens == 0
             || self.augment.max_chunk_tokens == 0
             || self.librarian.min_chunk_size == 0
+            || self.librarian.target_chunk_size == 0
             || self.librarian.max_chunk_size < self.librarian.min_chunk_size
+            || self.librarian.target_chunk_size < self.librarian.min_chunk_size
+            || self.librarian.target_chunk_size > self.librarian.max_chunk_size
+            || self.librarian.chunk_overlap >= self.librarian.max_chunk_size
             || (self.librarian.max_chunk_size != usize::MAX
                 && self.librarian.max_chunk_size < self.librarian.min_chunk_size.saturating_mul(2))
             || self.librarian.extract_progress_every == 0
@@ -698,7 +799,7 @@ impl RuntimeConfig {
             || self.librarian.import_progress_every_secs == 0
             || self.gardener.max_suggestions == 0
         {
-            return Err(ConfigError::Validation("limits must be positive; librarian.max_chunk_size must be at least min_chunk_size and, when bounded, at least twice min_chunk_size".into()));
+            return Err(ConfigError::Validation("limits must be positive; librarian.min_chunk_size <= target_chunk_size <= max_chunk_size, overlap must be below max_chunk_size, and a bounded max_chunk_size must be at least twice min_chunk_size".into()));
         }
         if !(0.0..=1.0).contains(&self.search.vector_weight)
             || !(0.0..=1.0).contains(&self.search.fulltext_weight)
@@ -970,6 +1071,96 @@ mod tests {
         assert_eq!(config.augment.max_tokens, 1200);
         assert_eq!(config.augment.novelty_weight, 0.25);
         assert_eq!(config.logging.level, "warn");
+    }
+
+    #[test]
+    fn legacy_librarian_bounds_derive_feasible_chunking_controls() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.toml");
+        fs::write(
+            &path,
+            "[librarian]\nmin_chunk_size = 40\nmax_chunk_size = 80\n",
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::from_file(&path).unwrap();
+        assert_eq!(config.librarian.min_chunk_size, 40);
+        assert_eq!(config.librarian.max_chunk_size, 80);
+        assert_eq!(config.librarian.target_chunk_size, 80);
+        assert_eq!(config.librarian.chunk_overlap, 79);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn invalid_legacy_librarian_bounds_do_not_panic_while_deriving_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("invalid-legacy.toml");
+        fs::write(
+            &path,
+            "[librarian]\nmin_chunk_size = 80\nmax_chunk_size = 40\n",
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::from_file(&path).unwrap();
+        assert_eq!(config.librarian.min_chunk_size, 80);
+        assert_eq!(config.librarian.max_chunk_size, 40);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_environment_only_librarian_bounds_derive_feasible_chunking_controls() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[
+                ("GRAPHRAG_LIBRARIAN_MIN_CHUNK_SIZE", "40"),
+                ("GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE", "80"),
+            ]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.librarian.min_chunk_size, 40);
+        assert_eq!(config.librarian.max_chunk_size, 80);
+        assert_eq!(config.librarian.target_chunk_size, 80);
+        assert_eq!(config.librarian.chunk_overlap, 79);
+    }
+
+    #[test]
+    fn legacy_environment_bounds_do_not_clamp_explicit_file_chunking_controls() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("explicit-chunking.toml");
+        fs::write(
+            &path,
+            "[librarian]\ntarget_chunk_size = 700\nchunk_overlap = 100\n",
+        )
+        .unwrap();
+
+        let (mut config, librarian_controls_from_file) =
+            RuntimeConfig::from_file_with_librarian_control_presence(&path).unwrap();
+        config
+            .apply_env_with_librarian_control_presence(
+                &env(&[("GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE", "80")]),
+                librarian_controls_from_file,
+            )
+            .unwrap();
+
+        // TOML values remain explicit even when a legacy environment bound
+        // is the only override. They must fail validation rather than be
+        // silently clamped as though they were omitted controls.
+        assert_eq!(config.librarian.max_chunk_size, 80);
+        assert_eq!(config.librarian.target_chunk_size, 700);
+        assert_eq!(config.librarian.chunk_overlap, 100);
+        assert!(config.validate().is_err());
+
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            Some(&path),
+            &CliOverrides::default(),
+            &env(&[("GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE", "80")]),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::Validation(_)));
     }
 
     #[test]

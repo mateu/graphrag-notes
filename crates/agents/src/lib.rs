@@ -5,6 +5,7 @@
 //! - Search: Handles user queries with hybrid search
 //! - Gardener: Maintains graph connections
 
+pub mod chunking;
 pub mod context_packing;
 pub mod error;
 pub mod gardener;
@@ -13,6 +14,7 @@ pub mod librarian;
 pub mod processing;
 pub mod search;
 
+pub use chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker};
 pub use error::{AgentError, Result};
 pub use gardener::GardenerAgent;
 pub use inference::{
