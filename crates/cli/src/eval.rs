@@ -625,8 +625,19 @@ pub fn load_eval_cases(path: &Path) -> Result<Vec<EvalAugmentCase>> {
 pub fn load_baseline(path: &Path) -> Result<EvalRunReport> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read baseline file: {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse baseline report: {}", path.display()))
+    let report: EvalRunReport = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse baseline report: {}", path.display()))?;
+    validate_baseline_version(report)
+}
+
+fn validate_baseline_version(report: EvalRunReport) -> Result<EvalRunReport> {
+    if report.metadata.schema_version > EVAL_SCHEMA_VERSION {
+        bail!(
+            "Baseline report uses unsupported schema version {}; this binary supports up to {EVAL_SCHEMA_VERSION}",
+            report.metadata.schema_version
+        );
+    }
+    Ok(report)
 }
 
 fn normalize_id(value: &str) -> Option<String> {
@@ -1009,5 +1020,18 @@ mod tests {
     fn rejects_future_case_schema_versions() {
         let future = case(serde_json::json!({"schema_version": 3, "query": "q"}));
         assert!(validate_case_versions(vec![future]).is_err());
+    }
+
+    #[test]
+    fn rejects_baselines_from_newer_evaluator_schemas() {
+        let report = EvalRunReport::from_cases(
+            EvalMetadata {
+                schema_version: EVAL_SCHEMA_VERSION + 1,
+                provider: "future".into(),
+                model: "future".into(),
+            },
+            vec![],
+        );
+        assert!(validate_baseline_version(report).is_err());
     }
 }
