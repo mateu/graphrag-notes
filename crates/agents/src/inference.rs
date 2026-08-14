@@ -63,33 +63,82 @@ pub struct InferenceProviders {
     pub extractor: SharedEntityExtractor,
 }
 
+/// Small, typed factory input that configuration code can construct without
+/// coupling agents to process environment reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InferenceProviderConfig {
+    pub embedding_provider: String,
+    pub embedding_url: String,
+    pub embedding_model: String,
+    pub extraction_provider: String,
+    pub extraction_url: String,
+    pub extraction_model: String,
+}
+
+impl Default for InferenceProviderConfig {
+    fn default() -> Self {
+        Self {
+            embedding_provider: DEFAULT_TEI_PROVIDER.to_string(),
+            embedding_url: DEFAULT_TEI_URL.to_string(),
+            embedding_model: DEFAULT_OLLAMA_EMBED_MODEL.to_string(),
+            extraction_provider: DEFAULT_TGI_PROVIDER.to_string(),
+            extraction_url: DEFAULT_TGI_URL.to_string(),
+            extraction_model: DEFAULT_OLLAMA_MODEL.to_string(),
+        }
+    }
+}
+
 impl InferenceProviders {
     /// Build the local TEI/TGI or Ollama adapters using the established
     /// `TEI_*` and `TGI_*` environment variables.
     pub fn from_environment() -> Self {
-        let embedder: SharedEmbedder = if env_or_default("TEI_PROVIDER", DEFAULT_TEI_PROVIDER)
-            .eq_ignore_ascii_case("ollama")
-        {
+        let embedding_provider = env_or_default("TEI_PROVIDER", DEFAULT_TEI_PROVIDER);
+        let extraction_provider = env_or_default("TGI_PROVIDER", DEFAULT_TGI_PROVIDER);
+        Self::from_config(&InferenceProviderConfig {
+            embedding_url: env_or_default(
+                "TEI_URL",
+                if embedding_provider.eq_ignore_ascii_case("ollama") {
+                    "http://localhost:11434"
+                } else {
+                    DEFAULT_TEI_URL
+                },
+            ),
+            embedding_model: env_or_default("TEI_MODEL", DEFAULT_OLLAMA_EMBED_MODEL),
+            extraction_url: env_or_default(
+                "TGI_URL",
+                if extraction_provider.eq_ignore_ascii_case("ollama") {
+                    "http://localhost:11434"
+                } else {
+                    DEFAULT_TGI_URL
+                },
+            ),
+            extraction_model: env_or_default("TGI_MODEL", DEFAULT_OLLAMA_MODEL),
+            embedding_provider,
+            extraction_provider,
+        })
+    }
+
+    /// Construct adapters from resolved settings without consulting the process
+    /// environment. This keeps the factory deterministic under test and is the
+    /// integration point for typed runtime configuration.
+    pub fn from_config(config: &InferenceProviderConfig) -> Self {
+        let embedder: SharedEmbedder = if config.embedding_provider.eq_ignore_ascii_case("ollama") {
             Arc::new(TeiClient::ollama(
-                env_or_default("TEI_URL", "http://localhost:11434"),
-                env_or_default("TEI_MODEL", DEFAULT_OLLAMA_EMBED_MODEL),
+                &config.embedding_url,
+                &config.embedding_model,
             ))
         } else {
-            Arc::new(TeiClient::new(env_or_default("TEI_URL", DEFAULT_TEI_URL)))
+            Arc::new(TeiClient::new(&config.embedding_url))
         };
-        let extractor: SharedEntityExtractor = if env_or_default(
-            "TGI_PROVIDER",
-            DEFAULT_TGI_PROVIDER,
-        )
-        .eq_ignore_ascii_case("ollama")
-        {
-            Arc::new(TgiClient::ollama(
-                env_or_default("TGI_URL", "http://localhost:11434"),
-                env_or_default("TGI_MODEL", DEFAULT_OLLAMA_MODEL),
-            ))
-        } else {
-            Arc::new(TgiClient::new(env_or_default("TGI_URL", DEFAULT_TGI_URL)))
-        };
+        let extractor: SharedEntityExtractor =
+            if config.extraction_provider.eq_ignore_ascii_case("ollama") {
+                Arc::new(TgiClient::ollama(
+                    &config.extraction_url,
+                    &config.extraction_model,
+                ))
+            } else {
+                Arc::new(TgiClient::new(&config.extraction_url))
+            };
 
         Self {
             embedder,
@@ -1197,8 +1246,8 @@ mod tests {
     }
 
     #[test]
-    fn provider_factory_uses_local_defaults() {
-        let providers = InferenceProviders::from_environment();
+    fn provider_factory_uses_explicit_defaults() {
+        let providers = InferenceProviders::from_config(&InferenceProviderConfig::default());
         assert_eq!(providers.embedder.capabilities().provider, "tei");
         assert_eq!(providers.extractor.capabilities().provider, "tgi");
         assert_eq!(
