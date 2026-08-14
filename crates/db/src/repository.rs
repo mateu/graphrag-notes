@@ -1219,6 +1219,18 @@ impl Repository {
         edge_type: EdgeType,
         confidence: Option<f32>,
     ) -> Result<()> {
+        // A source reconciliation snapshots old-generation dependents before
+        // atomically promoting and retiring that generation. Serialize manual
+        // graph writes with that transition so a write cannot be accepted in
+        // the snapshot/cleanup window and then silently removed by cleanup.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        validate_note_edge(from_id, to_id, &edge_type)?;
+        if !self.note_exists(from_id).await? || !self.note_exists(to_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a graph edge endpoint no longer exists".into(),
+            ));
+        }
         self.create_audited_edge(
             from_id,
             to_id,
@@ -1911,6 +1923,14 @@ impl Repository {
         Ok(existing.is_some())
     }
 
+    /// Staged source notes are valid graph endpoints; only physically removed
+    /// notes must be rejected. Visibility is deliberately not required here
+    /// because import assembly may attach a staged graph before promotion.
+    async fn note_exists(&self, id: &RecordId) -> Result<bool> {
+        let existing: Option<Note> = self.db.select(id.clone()).await?;
+        Ok(existing.is_some())
+    }
+
     async fn create_audited_edge(
         &self,
         from_id: &RecordId,
@@ -2285,6 +2305,15 @@ impl Repository {
         &self,
         successors: &[(RecordId, RecordId, bool)],
     ) -> Result<()> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.copy_note_dependents_to_successors_locked(successors)
+            .await
+    }
+
+    async fn copy_note_dependents_to_successors_locked(
+        &self,
+        successors: &[(RecordId, RecordId, bool)],
+    ) -> Result<()> {
         if successors.is_empty() {
             return Ok(());
         }
@@ -2502,11 +2531,35 @@ impl Repository {
     /// Manual and legacy notes have no generation and survive.
     #[instrument(skip(self, source))]
     pub async fn complete_file_import(&self, source: &mut Source) -> Result<SourceDeleteSummary> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.complete_file_import_locked(source).await
+    }
+
+    /// Atomically carry reconciled dependents into a staged source generation,
+    /// promote it, then retire the superseded generation. A graph mutation
+    /// therefore either lands before the dependent snapshot and is copied, or
+    /// observes the completed transition instead of being silently discarded
+    /// during old-generation cleanup.
+    #[instrument(skip(self, source, successors))]
+    pub async fn reconcile_file_import(
+        &self,
+        source: &mut Source,
+        successors: &[(RecordId, RecordId, bool)],
+    ) -> Result<SourceDeleteSummary> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.copy_note_dependents_to_successors_locked(successors)
+            .await?;
+        self.complete_file_import_locked(source).await
+    }
+
+    async fn complete_file_import_locked(
+        &self,
+        source: &mut Source,
+    ) -> Result<SourceDeleteSummary> {
         // Promotion, proposal retargeting, and old-generation cleanup are one
         // lifecycle transition. In particular, acceptance/undo must not run
         // after the old endpoints become hidden but before an accepted
         // proposal is retargeted to its staged replacement edge.
-        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let source_id = source
             .id
             .as_ref()
@@ -4281,6 +4334,75 @@ mod tests {
         let replacement_edge_id = proposal.resulting_edge_id.unwrap();
         assert_ne!(replacement_edge_id, old_edge_id);
         assert!(repo.note_edge_exists(&replacement_edge_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_prevents_post_snapshot_graph_writes_from_being_lost() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("manual endpoint"))
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        // Queue reconciliation before a manual graph write. The shared lock
+        // makes the write observe the finished cleanup, where its old endpoint
+        // is absent, instead of allowing it to succeed and be silently swept
+        // away after the dependent snapshot.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let reconciliation_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(&mut second.source, &[(old_id, replacement_id, true)])
+                .await
+        });
+        tokio::task::yield_now().await;
+        let mutation_repo = repo.clone();
+        let mutation_old_id = old.id.as_ref().unwrap().clone();
+        let mutation_manual_id = manual.id.as_ref().unwrap().clone();
+        let mutation = tokio::spawn(async move {
+            mutation_repo
+                .create_edge(
+                    &mutation_old_id,
+                    &mutation_manual_id,
+                    EdgeType::Supports,
+                    Some(0.9),
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        reconciliation.await.unwrap().unwrap();
+        assert!(mutation.await.unwrap().is_err());
+        assert!(repo
+            .get_note(&record_id_to_string(old.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo.list_note_edges(10).await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -109,6 +109,9 @@ struct Block {
     /// Exact source bytes between the preceding content block and this block.
     /// It is empty for the first block and for fragments split from one block.
     separator_before: String,
+    /// A thematic break ended the preceding assembly region. The delimiter is
+    /// structural rather than displayed content, but chunks may not span it.
+    assembly_boundary_before: bool,
     content: String,
     kind: BlockKind,
 }
@@ -129,6 +132,7 @@ struct Draft {
     end_byte: usize,
     heading_path: Vec<String>,
     separator_before: String,
+    assembly_boundary_before: bool,
     content: String,
     split_fenced_code: bool,
 }
@@ -202,6 +206,7 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut headings: Vec<String> = Vec::new();
     let mut previous_end_byte = None;
+    let mut assembly_boundary_before = false;
     let mut index = 0;
     while index < lines.len() {
         let line = lines[index].text;
@@ -221,6 +226,7 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
             continue;
         }
         if thematic_boundary(line) {
+            assembly_boundary_before = true;
             index += 1;
             continue;
         }
@@ -311,9 +317,11 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
                     end_byte,
                     heading_path: headings.clone(),
                     separator_before,
+                    assembly_boundary_before,
                     content,
                     kind,
                 });
+                assembly_boundary_before = false;
                 previous_end_byte = Some(end_byte);
             }
         }
@@ -327,9 +335,9 @@ fn assemble_blocks(blocks: &[Block], config: ChunkingConfig) -> Vec<Draft> {
     for block in blocks {
         let parts = split_block(block, config);
         for part in parts {
-            let should_boundary = current
-                .as_ref()
-                .is_some_and(|draft| draft.heading_path != part.heading_path);
+            let should_boundary = current.as_ref().is_some_and(|draft| {
+                part.assembly_boundary_before || draft.heading_path != part.heading_path
+            });
             if should_boundary {
                 flush(&mut current, &mut output);
             }
@@ -429,6 +437,7 @@ fn draft_from_block(block: &Block, content: String, split_fenced_code: bool) -> 
         end_byte: block.end_byte,
         heading_path: block.heading_path.clone(),
         separator_before: block.separator_before.clone(),
+        assembly_boundary_before: block.assembly_boundary_before,
         content,
         split_fenced_code,
     }
@@ -454,6 +463,7 @@ fn draft_with_offset(
         } else {
             String::new()
         },
+        assembly_boundary_before: offset == 0 && block.assembly_boundary_before,
         content: content.to_string(),
         split_fenced_code,
     }
@@ -772,6 +782,33 @@ mod tests {
             &markdown[chunks[0].start_byte..chunks[0].end_byte],
             chunks[0].content
         );
+    }
+
+    #[test]
+    fn thematic_breaks_are_assembly_boundaries() {
+        let markdown =
+            "# H\n\nAlpha stays on the first side.\n\n---\n\nBeta stays on the second side.";
+        let chunks = chunk(
+            markdown,
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 200,
+                max_size: 240,
+                overlap_size: 0,
+            },
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].content, "Alpha stays on the first side.");
+        assert_eq!(chunks[1].content, "Beta stays on the second side.");
+        assert!(chunks.iter().all(|chunk| !chunk.content.contains("---")));
+        for chunk in chunks {
+            assert_eq!(
+                &markdown[chunk.start_byte..chunk.end_byte],
+                chunk.content,
+                "thematic-break boundaries must retain exact source spans"
+            );
+        }
     }
 
     #[test]
