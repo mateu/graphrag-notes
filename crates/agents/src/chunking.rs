@@ -106,6 +106,9 @@ struct Block {
     start_byte: usize,
     end_byte: usize,
     heading_path: Vec<String>,
+    /// Exact source bytes between the preceding content block and this block.
+    /// It is empty for the first block and for fragments split from one block.
+    separator_before: String,
     content: String,
     kind: BlockKind,
 }
@@ -125,6 +128,7 @@ struct Draft {
     start_byte: usize,
     end_byte: usize,
     heading_path: Vec<String>,
+    separator_before: String,
     content: String,
     split_fenced_code: bool,
 }
@@ -145,7 +149,7 @@ impl Chunker for MarkdownChunker {
         let mut previous_key: Option<String> = None;
         let mut previous_content = String::new();
         for (ordinal, draft) in drafts.drain(..).enumerate() {
-            let mut content = draft.content.trim().to_owned();
+            let mut content = draft.content;
             let mut overlap_from = None;
             let mut overlap_chars = 0;
             if self.config.overlap_size > 0 && !previous_content.is_empty() {
@@ -197,6 +201,7 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
     let lines = lines_with_offsets(markdown);
     let mut blocks = Vec::new();
     let mut headings: Vec<String> = Vec::new();
+    let mut previous_end_byte = None;
     let mut index = 0;
     while index < lines.len() {
         let line = lines[index].text;
@@ -280,17 +285,36 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
             let first = &lines[start];
             let last = &lines[end - 1];
             let raw_end = last.end_byte;
-            let content = markdown[first.start_byte..raw_end].trim().to_string();
+            let raw = &markdown[first.start_byte..raw_end];
+            let (trim_start, trim_end) = trim_byte_bounds(raw);
+            let content = raw[trim_start..trim_end].to_string();
             if !content.is_empty() {
+                let start_byte = first.start_byte + trim_start;
+                let end_byte = first.start_byte + trim_end;
+                let start_line = first.number
+                    + raw[..trim_start]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count();
+                let end_line = first.number
+                    + raw[..trim_end]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count();
+                let separator_before = previous_end_byte
+                    .map(|previous_end| markdown[previous_end..start_byte].to_string())
+                    .unwrap_or_default();
                 blocks.push(Block {
-                    start_line: first.number,
-                    end_line: last.number,
-                    start_byte: first.start_byte,
-                    end_byte: raw_end,
+                    start_line,
+                    end_line,
+                    start_byte,
+                    end_byte,
                     heading_path: headings.clone(),
+                    separator_before,
                     content,
                     kind,
                 });
+                previous_end_byte = Some(end_byte);
             }
         }
     }
@@ -311,7 +335,8 @@ fn assemble_blocks(blocks: &[Block], config: ChunkingConfig) -> Vec<Draft> {
             }
             let candidate_len = current
                 .as_ref()
-                .map_or(0, |draft| char_count(&draft.content) + 2)
+                .map_or(0, |draft| char_count(&draft.content))
+                + char_count(&part.separator_before)
                 + char_count(&part.content);
             if current.is_some() && candidate_len > config.target_size {
                 if current
@@ -325,7 +350,7 @@ fn assemble_blocks(blocks: &[Block], config: ChunkingConfig) -> Vec<Draft> {
             }
             match current.as_mut() {
                 Some(draft) => {
-                    draft.content.push_str("\n\n");
+                    draft.content.push_str(&part.separator_before);
                     draft.content.push_str(&part.content);
                     draft.end_line = part.end_line;
                     draft.end_byte = part.end_byte;
@@ -359,43 +384,18 @@ fn split_block(block: &Block, config: ChunkingConfig) -> Vec<Draft> {
 }
 
 fn split_prose(block: &Block, max_size: usize) -> Vec<Draft> {
-    let sentences = sentence_slices(&block.content);
-    if sentences.len() <= 1 {
-        return split_at_char_boundaries(block, max_size, false);
-    }
     let mut output = Vec::new();
-    let mut current = String::new();
-    let mut current_start = 0;
-    for (sentence_start, sentence) in sentences {
-        let additional = if current.is_empty() {
-            char_count(sentence)
-        } else {
-            char_count(sentence) + 1
-        };
-        if !current.is_empty() && char_count(&current) + additional > max_size {
-            output.push(draft_with_offset(block, current_start, &current, false));
-            current.clear();
-            current_start = sentence_start;
+    let mut start = 0;
+    while start < block.content.len() {
+        let remaining = &block.content[start..];
+        if char_count(remaining) <= max_size {
+            output.push(draft_with_offset(block, start, remaining, false));
+            break;
         }
-        if current.is_empty() {
-            current_start = sentence_start;
-        } else {
-            current.push(' ');
-        }
-        if char_count(sentence) > max_size {
-            let temp = Block {
-                content: sentence.to_string(),
-                start_byte: block.start_byte + sentence_start,
-                ..block.clone()
-            };
-            output.extend(split_at_char_boundaries(&temp, max_size, false));
-            current.clear();
-        } else {
-            current.push_str(sentence);
-        }
-    }
-    if !current.is_empty() {
-        output.push(draft_with_offset(block, current_start, &current, false));
+        let limit = nth_char_byte(remaining, max_size);
+        let end = preferred_prose_break(remaining, limit).unwrap_or(limit);
+        output.push(draft_with_offset(block, start, &remaining[..end], false));
+        start += end;
     }
     output
 }
@@ -411,28 +411,12 @@ fn split_at_char_boundaries(block: &Block, max_size: usize, split_fenced_code: b
             // For prose/list/quote prefer a whitespace break inside the safe
             // prefix. Fenced code remains exact because syntax is opaque.
             if !split_fenced_code {
-                if let Some(space) = remaining[..end].rfind(char::is_whitespace) {
-                    if space > 0 {
-                        end = space;
-                    }
-                }
+                end = whitespace_break(remaining, end).unwrap_or(end);
             }
         }
-        let piece = remaining[..end].trim();
-        if !piece.is_empty() {
-            output.push(draft_with_offset(
-                block,
-                start + leading_bytes(&remaining[..end]),
-                piece,
-                split_fenced_code,
-            ));
-        }
+        let piece = &remaining[..end];
+        output.push(draft_with_offset(block, start, piece, split_fenced_code));
         start += end;
-        while start < block.content.len() && block.content[start..].starts_with(char::is_whitespace)
-        {
-            let ch = block.content[start..].chars().next().expect("nonempty");
-            start += ch.len_utf8();
-        }
     }
     output
 }
@@ -444,6 +428,7 @@ fn draft_from_block(block: &Block, content: String, split_fenced_code: bool) -> 
         start_byte: block.start_byte,
         end_byte: block.end_byte,
         heading_path: block.heading_path.clone(),
+        separator_before: block.separator_before.clone(),
         content,
         split_fenced_code,
     }
@@ -464,6 +449,11 @@ fn draft_with_offset(
         start_byte: block.start_byte + offset,
         end_byte: block.start_byte + offset + content.len(),
         heading_path: block.heading_path.clone(),
+        separator_before: if offset == 0 {
+            block.separator_before.clone()
+        } else {
+            String::new()
+        },
         content: content.to_string(),
         split_fenced_code,
     }
@@ -570,29 +560,37 @@ fn is_list_item(line: &str) -> bool {
             .is_some_and(u8::is_ascii_whitespace)
 }
 
-fn sentence_slices(text: &str) -> Vec<(usize, &str)> {
-    let mut slices = Vec::new();
-    let mut start = 0;
-    for (offset, ch) in text.char_indices() {
+fn trim_byte_bounds(text: &str) -> (usize, usize) {
+    let start = text.len() - text.trim_start().len();
+    let end = text.trim_end().len();
+    (start, end)
+}
+
+/// Return a source-preserving sentence boundary inside `text[..limit]`. The
+/// returned index is immediately after punctuation, leaving following source
+/// whitespace at the beginning of the next fragment instead of normalizing it.
+fn preferred_prose_break(text: &str, limit: usize) -> Option<usize> {
+    let mut boundary = None;
+    for (offset, ch) in text[..limit].char_indices() {
         if matches!(ch, '.' | '!' | '?') {
             let end = offset + ch.len_utf8();
-            let next = text[end..].chars().next();
-            if next.is_none_or(char::is_whitespace) {
-                let sentence = text[start..end].trim();
-                if !sentence.is_empty() {
-                    let leading = text[start..end].len() - text[start..end].trim_start().len();
-                    slices.push((start + leading, sentence));
-                }
-                start = end;
+            if text[end..].chars().next().is_none_or(char::is_whitespace) {
+                boundary = Some(end);
             }
         }
     }
-    let rest = text[start..].trim();
-    if !rest.is_empty() {
-        let leading = text[start..].len() - text[start..].trim_start().len();
-        slices.push((start + leading, rest));
-    }
-    slices
+    boundary.or_else(|| whitespace_break(text, limit))
+}
+
+/// Prefer splitting after whitespace so every character remains in exactly one
+/// fragment. Returning the byte after whitespace avoids the old trim-and-skip
+/// behavior that silently dropped separators.
+fn whitespace_break(text: &str, limit: usize) -> Option<usize> {
+    text[..limit]
+        .char_indices()
+        .filter_map(|(offset, ch)| ch.is_whitespace().then_some(offset + ch.len_utf8()))
+        .last()
+        .filter(|offset| *offset > 0)
 }
 
 fn char_count(text: &str) -> usize {
@@ -602,9 +600,6 @@ fn nth_char_byte(text: &str, chars: usize) -> usize {
     text.char_indices()
         .nth(chars)
         .map_or(text.len(), |(idx, _)| idx)
-}
-fn leading_bytes(text: &str) -> usize {
-    text.len() - text.trim_start().len()
 }
 fn tail_chars(text: &str, chars: usize) -> String {
     text.chars()
@@ -712,9 +707,58 @@ mod tests {
     }
 
     #[test]
-    fn merges_short_adjacent_blocks_under_the_same_heading() {
+    fn oversized_prose_preserves_original_whitespace_across_fragments() {
+        let markdown = "  Alpha sentence. \t Beta sentence.  Gamma sentence.   ";
         let chunks = chunk(
-            "# H\n\nshort one.\n\nshort two.\n\nThis is a longer paragraph that makes the combined chunk useful.",
+            markdown,
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 18,
+                max_size: 20,
+                overlap_size: 0,
+            },
+        );
+        assert!(chunks.len() >= 2);
+        let trimmed = markdown.trim();
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.content.as_str())
+                .collect::<String>(),
+            trimmed
+        );
+        assert!(chunks
+            .iter()
+            .all(|chunk| { markdown[chunk.start_byte..chunk.end_byte] == chunk.content }));
+    }
+
+    #[test]
+    fn source_byte_spans_reproduce_trimmed_chunk_content() {
+        let markdown = "# Heading\n\n  First sentence is intentionally long.\nSecond sentence keeps its exact newline.  ";
+        let chunks = chunk(
+            markdown,
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 24,
+                max_size: 28,
+                overlap_size: 0,
+            },
+        );
+        assert!(chunks.len() >= 2);
+        for chunk in chunks {
+            assert_eq!(
+                &markdown[chunk.start_byte..chunk.end_byte],
+                chunk.content,
+                "chunk source span must reproduce displayed primary content"
+            );
+        }
+    }
+
+    #[test]
+    fn merges_short_adjacent_blocks_under_the_same_heading() {
+        let markdown = "# H\n\nshort one.\n\nshort two.\n\nThis is a longer paragraph that makes the combined chunk useful.";
+        let chunks = chunk(
+            markdown,
             ChunkingConfig {
                 min_size: 20,
                 target_size: 150,
@@ -724,6 +768,10 @@ mod tests {
         );
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].content.contains("short one.\n\nshort two."));
+        assert_eq!(
+            &markdown[chunks[0].start_byte..chunks[0].end_byte],
+            chunks[0].content
+        );
     }
 
     #[test]

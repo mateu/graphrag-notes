@@ -60,9 +60,13 @@ its persisted chunk metadata. Displayed note content remains source text;
 heading context is added only to the text embedded and indexed for search.
 
 Each chunk records a deterministic key, ordinal, heading path, source line and
-byte span, overlap predecessor, and content hash. On a changed reimport, exact
-matches retain their note IDs and embeddings, changed structural locations are
-re-embedded in place, and removed chunks are deleted through the source
+byte span, overlap predecessor, and content hash. Without configured overlap,
+its source span reproduces the displayed source substring exactly; copied
+overlap text is identified separately. Refreshes are copy-on-write: the previous successful
+generation remains searchable until a complete pending generation promotes.
+Exact chunks retain their deterministic key, embedding, and original creation
+time, but receive a new note record ID in the promoted generation; changed/new
+chunks are re-embedded and removed chunks are deleted through the source
 lifecycle cascade. Tune these settings in `config.toml` or with
 `GRAPHRAG_LIBRARIAN_{MIN,TARGET,MAX}_CHUNK_SIZE` and
 `GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP`.
