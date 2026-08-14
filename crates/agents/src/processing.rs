@@ -739,6 +739,7 @@ mod tests {
     struct OllamaBatchProbe {
         provider: String,
         max_batch_size: Option<usize>,
+        fail_on_batch: Option<usize>,
         individual_requests: Arc<AtomicUsize>,
         batch_requests: Arc<AtomicUsize>,
     }
@@ -752,7 +753,10 @@ mod tests {
         }
 
         async fn embed_batch(&self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>> {
-            self.batch_requests.fetch_add(1, Ordering::SeqCst);
+            let batch_number = self.batch_requests.fetch_add(1, Ordering::SeqCst) + 1;
+            if self.fail_on_batch == Some(batch_number) {
+                return Err(AgentError::InferenceService("timeout".into()));
+            }
             if self.provider.eq_ignore_ascii_case("tei") {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 return Ok(vec![vec![0.0; 1024]; texts.len()]);
@@ -819,6 +823,7 @@ mod tests {
         let inner: Arc<dyn Embedder> = Arc::new(OllamaBatchProbe {
             provider: "ollama".into(),
             max_batch_size: None,
+            fail_on_batch: None,
             individual_requests: individual_requests.clone(),
             batch_requests: batch_requests.clone(),
         });
@@ -847,6 +852,7 @@ mod tests {
         let inner: Arc<dyn Embedder> = Arc::new(OllamaBatchProbe {
             provider: "tei".into(),
             max_batch_size: Some(2),
+            fail_on_batch: None,
             individual_requests: individual_requests.clone(),
             batch_requests: batch_requests.clone(),
         });
@@ -875,5 +881,45 @@ mod tests {
         assert_eq!(embeddings.len(), 5);
         assert_eq!(individual_requests.load(Ordering::SeqCst), 0);
         assert_eq!(batch_requests.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn successful_tei_chunks_remain_cached_after_a_later_chunk_fails() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first_batches = Arc::new(AtomicUsize::new(0));
+        let failing: Arc<dyn Embedder> = Arc::new(OllamaBatchProbe {
+            provider: "tei".into(),
+            max_batch_size: Some(2),
+            fail_on_batch: Some(2),
+            individual_requests: Arc::new(AtomicUsize::new(0)),
+            batch_requests: first_batches.clone(),
+        });
+        let config = ProcessingConfig {
+            retry_attempts: 1,
+            ..Default::default()
+        };
+        let texts = vec!["one".into(), "two".into(), "three".into()];
+        assert!(
+            ResilientEmbedder::new(failing, Some(repo.clone()), config.clone())
+                .embed_batch(&texts, false)
+                .await
+                .is_err()
+        );
+        assert_eq!(first_batches.load(Ordering::SeqCst), 2);
+
+        let restart_batches = Arc::new(AtomicUsize::new(0));
+        let healthy: Arc<dyn Embedder> = Arc::new(OllamaBatchProbe {
+            provider: "tei".into(),
+            max_batch_size: Some(2),
+            fail_on_batch: None,
+            individual_requests: Arc::new(AtomicUsize::new(0)),
+            batch_requests: restart_batches.clone(),
+        });
+        let embeddings = ResilientEmbedder::new(healthy, Some(repo), config)
+            .embed_batch(&texts, false)
+            .await
+            .unwrap();
+        assert_eq!(embeddings.len(), 3);
+        assert_eq!(restart_batches.load(Ordering::SeqCst), 1);
     }
 }
