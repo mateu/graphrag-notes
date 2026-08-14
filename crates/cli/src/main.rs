@@ -1145,30 +1145,6 @@ fn print_delete_summary(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{delete_is_dry_run, import_path_utf8};
-    use std::path::PathBuf;
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_non_utf8_import_paths_without_identity_collapse() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let first = PathBuf::from(std::ffi::OsString::from_vec(vec![b'a', 0x80]));
-        let second = PathBuf::from(std::ffi::OsString::from_vec(vec![b'b', 0x81]));
-        assert!(import_path_utf8(&first).is_err());
-        assert!(import_path_utf8(&second).is_err());
-    }
-
-    #[test]
-    fn source_delete_defaults_to_a_non_mutating_preview() {
-        assert!(delete_is_dry_run(false, false));
-        assert!(delete_is_dry_run(true, false));
-        assert!(!delete_is_dry_run(false, true));
-    }
-}
-
 async fn cmd_import_chats(
     repo: Repository,
     tei: SharedEmbedder,
@@ -2173,6 +2149,25 @@ async fn cmd_interactive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_utf8_import_paths_without_identity_collapse() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let first = PathBuf::from(std::ffi::OsString::from_vec(vec![b'a', 0x80]));
+        let second = PathBuf::from(std::ffi::OsString::from_vec(vec![b'b', 0x81]));
+        assert!(import_path_utf8(&first).is_err());
+        assert!(import_path_utf8(&second).is_err());
+    }
+
+    #[test]
+    fn source_delete_defaults_to_a_non_mutating_preview() {
+        assert!(delete_is_dry_run(false, false));
+        assert!(delete_is_dry_run(true, false));
+        assert!(!delete_is_dry_run(false, true));
+    }
 
     #[test]
     fn augment_commands_forward_runtime_tuning_to_packing_options() {
