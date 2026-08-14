@@ -1699,10 +1699,10 @@ mod tests {
     #[test]
     fn chunking_honors_resolved_minimum_and_maximum_sizes() {
         assert_eq!(
-            chunk_content("abcdefghijk", 3, 5),
-            vec!["abcde", "fgh", "ijk"]
+            chunk_content("abcdefghijk", 2, 5),
+            vec!["abcde", "fghi", "jk"]
         );
-        assert_eq!(chunk_content("abcdef", 3, 5), vec!["abc", "def"]);
+        assert_eq!(chunk_content("abcdef", 2, 5), vec!["abcd", "ef"]);
         let content = "tiny\n\nabcdefghijkl";
         assert_eq!(chunk_content(content, 11, 20), vec!["abcdefghijkl"]);
     }

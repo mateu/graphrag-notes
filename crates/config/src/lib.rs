@@ -250,7 +250,9 @@ impl RuntimeConfig {
         default_path: Option<PathBuf>,
     ) -> Result<Self, ConfigError> {
         let mut config = match explicit_path.map(Path::to_path_buf).or_else(|| {
-            env("GRAPHRAG_CONFIG").map(|value| expand_home_directory(Path::new(&value)))
+            env("GRAPHRAG_CONFIG")
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| expand_home_directory(Path::new(&value)))
         }) {
             Some(path) => Self::from_file(&path)?,
             None => default_path
@@ -466,6 +468,18 @@ impl RuntimeConfig {
         {
             self.inference.extraction_url = self.inference.ollama_url.clone();
         }
+        if env("TEI_PROVIDER")
+            .is_some_and(|provider| !provider.trim().eq_ignore_ascii_case("ollama"))
+            && env("TEI_URL").is_none_or(|url| url.trim().is_empty())
+        {
+            self.inference.embedding_url = "http://localhost:8081".into();
+        }
+        if env("TGI_PROVIDER")
+            .is_some_and(|provider| !provider.trim().eq_ignore_ascii_case("ollama"))
+            && env("TGI_URL").is_none_or(|url| url.trim().is_empty())
+        {
+            self.inference.extraction_url = "http://localhost:8082".into();
+        }
         Ok(())
     }
 
@@ -545,13 +559,15 @@ impl RuntimeConfig {
             || self.augment.max_chunk_tokens == 0
             || self.librarian.min_chunk_size == 0
             || self.librarian.max_chunk_size < self.librarian.min_chunk_size
+            || (self.librarian.max_chunk_size != usize::MAX
+                && self.librarian.max_chunk_size < self.librarian.min_chunk_size.saturating_mul(2))
             || self.librarian.extract_progress_every == 0
             || self.librarian.extract_progress_every_secs == 0
             || self.librarian.import_progress_every == 0
             || self.librarian.import_progress_every_secs == 0
             || self.gardener.max_suggestions == 0
         {
-            return Err(ConfigError::Validation("limits must be positive and librarian.max_chunk_size must be at least min_chunk_size".into()));
+            return Err(ConfigError::Validation("limits must be positive; librarian.max_chunk_size must be at least min_chunk_size and, when bounded, at least twice min_chunk_size".into()));
         }
         if !(0.0..=1.0).contains(&self.search.vector_weight)
             || !(0.0..=1.0).contains(&self.search.fulltext_weight)
@@ -754,6 +770,16 @@ mod tests {
         let mut config = RuntimeConfig::default();
         config.search.vector_weight = 0.8;
         assert!(config.validate().is_err());
+
+        config.search.vector_weight = 0.7;
+        config.search.fulltext_weight = 0.3;
+        config.librarian.min_chunk_size = 600;
+        config.librarian.max_chunk_size = 1000;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("at least twice min_chunk_size"));
     }
 
     #[test]
@@ -1119,5 +1145,44 @@ mod tests {
         fs::remove_file(&config_path).unwrap();
 
         assert_eq!(config.logging.level, "info");
+    }
+
+    #[test]
+    fn blank_graphrag_config_is_treated_as_absent() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("GRAPHRAG_CONFIG", " \t ")]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.logging.level, "warn");
+    }
+
+    #[test]
+    fn legacy_provider_overrides_restore_dedicated_default_endpoints() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("graphrag.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [inference]
+                embedding_provider = "ollama"
+                embedding_url = "http://ollama.example:11434"
+                extraction_provider = "ollama"
+                extraction_url = "http://ollama.example:11434"
+            "#,
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            Some(&config_path),
+            &CliOverrides::default(),
+            &env(&[("TEI_PROVIDER", "tei"), ("TGI_PROVIDER", "tgi")]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.inference.embedding_url, "http://localhost:8081");
+        assert_eq!(config.inference.extraction_url, "http://localhost:8082");
     }
 }
