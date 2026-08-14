@@ -1153,15 +1153,29 @@ impl LibrarianAgent {
 
     /// Extract entities from a note and link them
     async fn extract_and_link_entities(&self, note: &Note) -> Result<()> {
-        self.extract_and_link_entities_inner(note, false).await
+        self.extract_and_link_entities_inner(note, false, false)
+            .await
     }
 
     /// Extract entities from a note regardless of skip flag
     async fn extract_and_link_entities_force(&self, note: &Note) -> Result<()> {
-        self.extract_and_link_entities_inner(note, true).await
+        self.extract_and_link_entities_inner(note, true, false)
+            .await
     }
 
-    async fn extract_and_link_entities_inner(&self, note: &Note, force: bool) -> Result<()> {
+    /// Re-extract entities and atomically replace the note's prior extraction
+    /// only after inference succeeds. This avoids exposing an empty mention
+    /// set while a force-clear operation waits on an inference provider.
+    async fn extract_and_replace_entities_force(&self, note: &Note) -> Result<()> {
+        self.extract_and_link_entities_inner(note, true, true).await
+    }
+
+    async fn extract_and_link_entities_inner(
+        &self,
+        note: &Note,
+        force: bool,
+        replace_mentions: bool,
+    ) -> Result<()> {
         if !force && self.runtime.skip_entity_extraction {
             return Ok(());
         }
@@ -1198,9 +1212,13 @@ impl LibrarianAgent {
             .collect::<Vec<_>>();
         let linked_count = match &note.id {
             Some(note_id) => {
-                self.repo
-                    .upsert_entities_and_link_note(note_id, entities)
-                    .await?
+                if replace_mentions {
+                    self.repo.replace_note_entities(note_id, entities).await?
+                } else {
+                    self.repo
+                        .upsert_entities_and_link_note(note_id, entities)
+                        .await?
+                }
             }
             // Notes are normally persisted before extraction. Retain the
             // former best-effort entity upserts for callers constructing an
@@ -1408,12 +1426,16 @@ impl LibrarianAgent {
                 }
 
                 let note_start = Instant::now();
-                if force_clear {
-                    if let Some(id) = &note.id {
-                        self.repo.delete_mentions_for_note(id).await?;
-                    }
-                }
-                let item_error = match self.extract_and_link_entities_force(&note).await {
+                // Infer before touching current mentions, then replace the
+                // whole set under the source lifecycle lock. This keeps a
+                // force refresh from exposing a delete/infer/insert gap to a
+                // concurrent source reconciliation.
+                let extraction = if force_clear {
+                    self.extract_and_replace_entities_force(&note).await
+                } else {
+                    self.extract_and_link_entities_force(&note).await
+                };
+                let item_error = match extraction {
                     Ok(()) => {
                         completed += 1;
                         if log_each {
@@ -3651,6 +3673,51 @@ mod tests {
         .unwrap();
         assert_eq!(resumed_explicit.completed, 2);
         assert!(!resumed_explicit.cancelled);
+    }
+
+    #[tokio::test]
+    async fn force_clear_replaces_mentions_only_after_successful_extraction() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let content = "force clear replacement fixture";
+        let note = repo.create_note(Note::new(content)).await.unwrap();
+        let mut prior = Entity::new("Prior extracted entity", EntityType::Concept);
+        prior.metadata = serde_json::json!({});
+        let prior = repo.upsert_entity(prior).await.unwrap();
+        repo.link_note_to_entity(note.id.as_ref().unwrap(), prior.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let extractor = FixtureEntityExtractor::default().with_fixture(
+            content,
+            EntityExtraction {
+                entities: vec![ExtractedEntity {
+                    name: "Fresh extracted entity".into(),
+                    entity_type: Some("concept".into()),
+                }],
+                relationships: Vec::new(),
+            },
+        );
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(extractor),
+        );
+
+        assert_eq!(
+            librarian
+                .extract_entities_for_note_ids(
+                    &[record_id_to_string(note.id.as_ref().unwrap())],
+                    true,
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(note.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "Fresh extracted entity");
     }
 
     #[tokio::test]
