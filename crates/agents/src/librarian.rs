@@ -8,7 +8,8 @@ use crate::{
 };
 use graphrag_core::{
     normalize_file_uri, normalized_content_hash, record_id_to_string, ChatConversation, ChatExport,
-    ChatMessage, Entity, EntityType, MessageRole, Note, NoteType, Source, SourceType,
+    ChatMessage, Entity, EntityType, MessageRole, Note, NoteType, Source, SourceIngestionStatus,
+    SourceType,
 };
 use graphrag_db::compatibility::{EmbeddingIdentity, ExtractionIdentity};
 use graphrag_db::{
@@ -653,8 +654,16 @@ impl LibrarianAgent {
         {
             Ok(cleanup) => cleanup,
             Err(error) => {
-                let message = error.to_string();
-                self.repo.fail_file_import(&mut source, &message).await?;
+                // After durable promotion the staged generation is already
+                // the source of truth. A later retarget/cleanup failure is
+                // recoverable on an unchanged reimport; marking it failed
+                // here would delete that newly successful generation.
+                if source.status != SourceIngestionStatus::Ready
+                    || source.successful_generation != source.generation
+                {
+                    let message = error.to_string();
+                    self.repo.fail_file_import(&mut source, &message).await?;
+                }
                 return Err(error.into());
             }
         };

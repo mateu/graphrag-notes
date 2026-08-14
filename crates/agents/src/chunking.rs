@@ -510,7 +510,13 @@ fn lines_with_offsets(markdown: &str) -> Vec<Line<'_>> {
 }
 
 fn heading(line: &str) -> Option<(usize, &str)> {
-    let trimmed = line.trim_start_matches(|ch: char| ch == ' ' || ch == '\t');
+    // CommonMark permits at most three leading spaces for an ATX heading.
+    // Four spaces or a tab are indented code/content, not document structure.
+    let leading_spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+    if leading_spaces > 3 {
+        return None;
+    }
+    let trimmed = &line[leading_spaces..];
     let count = trimmed.chars().take_while(|ch| *ch == '#').count();
     if !(1..=6).contains(&count)
         || !trimmed
@@ -525,8 +531,35 @@ fn heading(line: &str) -> Option<(usize, &str)> {
 }
 
 fn thematic_boundary(line: &str) -> bool {
-    let compact: String = line.chars().filter(|ch| !ch.is_whitespace()).collect();
-    compact.len() >= 3 && compact.chars().all(|ch| matches!(ch, '-' | '_' | '*'))
+    // A thematic break has at most three leading spaces, then three or more
+    // instances of one marker. Tabs in the indentation position represent an
+    // indented code block, and mixed markers are ordinary prose.
+    let leading_spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+    if leading_spaces > 3 {
+        return false;
+    }
+    let body = &line[leading_spaces..];
+    if body.chars().next().is_some_and(char::is_whitespace) {
+        return false;
+    }
+
+    let mut marker = None;
+    let mut count = 0;
+    for character in body.chars() {
+        if character.is_whitespace() {
+            continue;
+        }
+        if !matches!(character, '-' | '_' | '*') {
+            return false;
+        }
+        match marker {
+            Some(expected) if expected != character => return false,
+            Some(_) => {}
+            None => marker = Some(character),
+        }
+        count += 1;
+    }
+    count >= 3
 }
 
 fn fence_marker(line: &str) -> Option<(char, usize)> {
@@ -672,6 +705,26 @@ mod tests {
     }
 
     #[test]
+    fn indented_hashes_remain_content_not_headings() {
+        let markdown = "    # Four-space code\n\n\t# Tab code\n\n# Actual Heading\n\nBody under the actual heading.";
+        let chunks = chunk(
+            markdown,
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 200,
+                max_size: 240,
+                overlap_size: 0,
+            },
+        );
+
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].heading_path.is_empty());
+        assert!(chunks[0].content.contains("# Four-space code"));
+        assert!(chunks[0].content.contains("# Tab code"));
+        assert_eq!(chunks[1].heading_path, ["Actual Heading"]);
+    }
+
+    #[test]
     fn keeps_lists_quotes_and_fences_atomic_when_feasible() {
         let markdown = "# H\n\n- one list item\n- another list item\n\n> quoted material remains one block\n> with two lines\n\n```rust\nlet value = 42;\nprintln!(\"{value}\");\n```";
         let chunks = chunk(
@@ -809,6 +862,30 @@ mod tests {
                 "thematic-break boundaries must retain exact source spans"
             );
         }
+    }
+
+    #[test]
+    fn only_valid_unindented_thematic_breaks_are_structural() {
+        assert!(thematic_boundary("---"));
+        assert!(thematic_boundary("  * * *"));
+        assert!(thematic_boundary("___"));
+        assert!(!thematic_boundary("-_*"));
+        assert!(!thematic_boundary("    ---"));
+        assert!(!thematic_boundary("\t---"));
+
+        let markdown = "Alpha prose stays together.\n\n-_*\n\nBeta prose stays together.\n\n    ---\n\nGamma prose stays together.";
+        let chunks = chunk(
+            markdown,
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 240,
+                max_size: 280,
+                overlap_size: 0,
+            },
+        );
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].content.contains("-_*"));
+        assert!(chunks[0].content.contains("    ---"));
     }
 
     #[test]
