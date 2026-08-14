@@ -2496,7 +2496,8 @@ impl Repository {
                 WHERE canonical_name = $query
                    OR $query CONTAINS canonical_name
                    OR canonical_name CONTAINS $query
-                   OR metadata.aliases CONTAINS $query
+                   OR array::any(metadata.aliases ?? [], |$alias| $query CONTAINS string::lowercase($alias))
+                   OR array::any(metadata.aliases ?? [], |$alias| string::lowercase($alias) CONTAINS $query)
                 ORDER BY canonical_name ASC, id ASC
                 LIMIT $limit
                 "#,
@@ -2516,16 +2517,21 @@ impl Repository {
         &self,
         entity_ids: &[RecordId],
         limit: usize,
-    ) -> Result<Vec<RecordId>> {
+    ) -> Result<Vec<GraphEntityNoteSeed>> {
         if entity_ids.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit).map_err(|_| {
+        // A note can be mentioned by each selected entity at most once. Fetch
+        // enough relation rows to retain `limit` unique notes even when every
+        // seed shares all bounded entity matches; the caller then applies the
+        // unique-note cap while preserving the exact entity association.
+        let relation_limit = limit.saturating_mul(entity_ids.len());
+        let limit = i64::try_from(relation_limit).map_err(|_| {
             DbError::QueryFailed("graph note limit exceeds database integer range".into())
         })?;
         self.db
             .query(format!(
-                "SELECT VALUE in FROM mentions WHERE out IN $entity_ids AND in IN (SELECT VALUE id FROM note WHERE {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC LIMIT $limit"
+                "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out IN $entity_ids AND in IN (SELECT VALUE id FROM note WHERE {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC, out ASC LIMIT $limit"
             ))
             .bind(("entity_ids", entity_ids.to_vec()))
             .bind(("limit", limit))
@@ -2534,9 +2540,10 @@ impl Repository {
             .map_err(Into::into)
     }
 
-    /// Fetch accepted persisted note-edge rows for many frontier notes. This
-    /// performs a constant number of table queries per hop rather than one
-    /// query per note. Proposal tables are deliberately never consulted.
+    /// Fetch accepted persisted note-edge rows for many frontier notes.
+    /// Every frontier note gets its own deterministic per-table budget; a
+    /// high-degree early note cannot consume a shared table `LIMIT` and starve
+    /// later seeds. Proposal tables are deliberately never consulted.
     #[instrument(skip(self, note_ids, edge_types))]
     pub async fn graph_note_edges(
         &self,
@@ -2547,7 +2554,7 @@ impl Repository {
         if note_ids.is_empty() || edge_types.is_empty() || per_table_limit == 0 {
             return Ok(Vec::new());
         }
-        let mut rows = Vec::new();
+        let mut rows = HashMap::<String, NoteEdgeRow>::new();
         for table in ["supports", "contradicts", "related_to", "derived_from"] {
             if !edge_types.iter().any(|edge_type| edge_type == table) {
                 continue;
@@ -2555,20 +2562,33 @@ impl Repository {
             let limit = i64::try_from(per_table_limit).map_err(|_| {
                 DbError::QueryFailed("graph edge limit exceeds database integer range".into())
             })?;
-            let query = format!(
-                "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
-                 FROM {table} WHERE (in IN $note_ids OR out IN $note_ids) AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} \
-                 ORDER BY id ASC LIMIT $limit"
-            );
-            let mut edges: Vec<NoteEdgeRow> = self
-                .db
-                .query(query)
-                .bind(("note_ids", note_ids.to_vec()))
-                .bind(("limit", limit))
-                .await?
-                .take(0)?;
-            rows.append(&mut edges);
+            // SurrealDB executes these per-source bounded statements in one
+            // request/response. A single global `LIMIT` is incorrect here:
+            // it can return only high-degree early sources. Keeping the
+            // statements batched avoids client round-trips while making the
+            // per-source budget exact and deterministic.
+            let query = (0..note_ids.len())
+                .map(|index| {
+                    format!(
+                        "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
+                         FROM {table} WHERE (in = $note_{index} OR out = $note_{index}) AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} \
+                         ORDER BY id ASC LIMIT $limit;"
+                    )
+                })
+                .collect::<String>();
+            let mut query = self.db.query(query).bind(("limit", limit));
+            for (index, note_id) in note_ids.iter().enumerate() {
+                query = query.bind((format!("note_{index}"), note_id.clone()));
+            }
+            let mut response = query.await?;
+            for index in 0..note_ids.len() {
+                let edges: Vec<NoteEdgeRow> = response.take(index)?;
+                for edge in edges {
+                    rows.entry(record_id_to_string(&edge.id)).or_insert(edge);
+                }
+            }
         }
+        let mut rows = rows.into_values().collect::<Vec<_>>();
         rows.sort_by(|left, right| {
             left.edge_type
                 .cmp(&right.edge_type)
@@ -3733,6 +3753,15 @@ pub struct GraphEntityMatch {
     pub canonical_name: String,
     #[serde(default)]
     pub metadata: serde_json::Value,
+}
+
+/// A visible note directly mentioned by one query-matched entity. Retaining
+/// both IDs prevents query-wide entity labels from being attached to unrelated
+/// seeds when several matched entities are present.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+pub struct GraphEntityNoteSeed {
+    pub note_id: RecordId,
+    pub entity_id: RecordId,
 }
 
 fn normalize_note_id(note_id: &str) -> RecordId {

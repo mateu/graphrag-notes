@@ -556,8 +556,8 @@ impl SearchAgent {
             .collect::<Vec<_>>();
         let entity_names = entities
             .iter()
-            .map(|entity| entity.name.clone())
-            .collect::<Vec<_>>();
+            .map(|entity| (record_id_to_string(&entity.id), entity.name.clone()))
+            .collect::<HashMap<_, _>>();
         let entity_seed_ids = self
             .repo
             .graph_notes_for_entities(&entity_ids, self.graph.max_seed_notes)
@@ -567,12 +567,23 @@ impl SearchAgent {
         // local entity match provides useful graph evidence. Explicit `on`
         // may additionally use ordinary hybrid notes as bounded seeds.
         let mut frontier = BTreeMap::<String, GraphFrontier>::new();
-        for note_id in entity_seed_ids {
-            let id = record_id_to_string(&note_id);
-            frontier.insert(
-                id.clone(),
-                GraphFrontier::seed(note_id, id, entity_names.clone(), self.graph.seed_score),
-            );
+        for seed in entity_seed_ids {
+            let id = record_id_to_string(&seed.note_id);
+            let entity_name = entity_names
+                .get(&record_id_to_string(&seed.entity_id))
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(existing) = frontier.get_mut(&id) {
+                existing.query_entities.extend(entity_name);
+                existing.query_entities.sort();
+                existing.query_entities.dedup();
+            } else {
+                frontier.insert(
+                    id.clone(),
+                    GraphFrontier::seed(seed.note_id, id, entity_name, self.graph.seed_score),
+                );
+            }
         }
         if !require_entity_seed {
             for hit in baseline
@@ -616,13 +627,13 @@ impl SearchAgent {
                 .values()
                 .map(|state| state.note_id.clone())
                 .collect::<Vec<_>>();
-            let per_table_limit = current
-                .len()
-                .saturating_mul(self.graph.per_node_fanout)
-                .max(1);
             let edges = self
                 .repo
-                .graph_note_edges(&ids, &self.graph.allowed_edge_types, per_table_limit)
+                .graph_note_edges(
+                    &ids,
+                    &self.graph.allowed_edge_types,
+                    self.graph.per_node_fanout,
+                )
                 .await?;
             let mut next = BTreeMap::<String, GraphFrontier>::new();
             let mut fanout = HashMap::<String, usize>::new();
@@ -1184,7 +1195,14 @@ mod tests {
         .unwrap();
 
         let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
-            .search_with_scope_graph("atlas", 10, SearchScope::Notes, None, None, GraphMode::On)
+            .search_with_scope_graph(
+                "where is atlas deployed",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
             .await
             .unwrap();
         let target_id = record_id_to_string(target.id.as_ref().unwrap());
@@ -1242,6 +1260,85 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn graph_fanout_is_applied_per_frontier_seed_not_as_a_global_table_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first_seed = repo.create_note(Note::new("first seed")).await.unwrap();
+        let second_seed = repo.create_note(Note::new("second seed")).await.unwrap();
+        let mut first_entity = Entity::new("Alpha", EntityType::Project);
+        first_entity.metadata = serde_json::json!({});
+        let first_entity = repo.upsert_entity(first_entity).await.unwrap();
+        let mut second_entity = Entity::new("Beta", EntityType::Project);
+        second_entity.metadata = serde_json::json!({});
+        let second_entity = repo.upsert_entity(second_entity).await.unwrap();
+        repo.link_note_to_entity(
+            first_seed.id.as_ref().unwrap(),
+            first_entity.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        repo.link_note_to_entity(
+            second_seed.id.as_ref().unwrap(),
+            second_entity.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        // Create several first-seed edges first so a former shared LIMIT
+        // would return only these and starve the second frontier seed.
+        for index in 0..3 {
+            let neighbor = repo
+                .create_note(Note::new(format!("first-seed neighbor {index}")))
+                .await
+                .unwrap();
+            repo.create_edge(
+                first_seed.id.as_ref().unwrap(),
+                neighbor.id.as_ref().unwrap(),
+                EdgeType::Supports,
+                Some(1.0),
+            )
+            .await
+            .unwrap();
+        }
+        let second_neighbor = repo
+            .create_note(Note::new("second-seed reachable neighbor"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            second_seed.id.as_ref().unwrap(),
+            second_neighbor.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 2;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 4;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Alpha Beta",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let second_neighbor_id = record_id_to_string(second_neighbor.id.as_ref().unwrap());
+        let second_graph = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == second_neighbor_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the second seed must retain its own per-node fanout");
+        assert_eq!(second_graph.hops, 1);
+        assert_eq!(second_graph.query_entities, vec!["Beta"]);
     }
 
     #[tokio::test]

@@ -23,10 +23,12 @@ use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
 use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
-    init_memory, init_persistent, migrations, parse_record_id, ProcessingJob, ProcessingJobType,
-    Repository, SourceDeleteSummary,
+    init_memory, init_persistent, migrations, parse_record_id,
+    repository::RelatedNotes,
+    ProcessingJob, ProcessingJobType, Repository, SourceDeleteSummary,
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{
@@ -2007,7 +2009,7 @@ async fn cmd_search(
     graph: GraphModeArg,
     search_config: SearchConfig,
 ) -> Result<()> {
-    let search = configured_search_agent(repo, tei, &search_config);
+    let search = configured_search_agent(repo.clone(), tei, &search_config);
     let scope = match scope {
         SearchScopeArg::Notes => SearchScope::Notes,
         SearchScopeArg::Messages => SearchScope::Messages,
@@ -2073,6 +2075,25 @@ async fn cmd_search(
             results.summary.candidates_dropped,
         );
 
+        // `--context` predates graph retrieval and remains an independent
+        // accepted-edge summary. Keep it for the default `--graph=auto`
+        // path as well as explicit modes; graph evidence is additive, not a
+        // replacement for get_related_notes output.
+        let related_by_note = if context && scope == SearchScope::Notes {
+            let mut related = HashMap::<String, RelatedNotes>::new();
+            for hit in results
+                .hits
+                .iter()
+                .filter(|hit| hit.hit_type == SearchHitType::Note)
+            {
+                let note_id = parse_record_id(&hit.id, Some("note"))?;
+                related.insert(hit.id.clone(), repo.get_related_notes(&note_id).await?);
+            }
+            related
+        } else {
+            HashMap::new()
+        };
+
         for (i, r) in results.hits.iter().enumerate() {
             let kind = match r.hit_type {
                 SearchHitType::Note => "note",
@@ -2104,6 +2125,13 @@ async fn cmd_search(
                         .join(" -> "),
                     graph.provenance_ids.join(", "),
                 );
+            }
+            if let Some(related) = related_by_note.get(&r.id) {
+                let total =
+                    related.supporting.len() + related.contradicting.len() + related.related.len();
+                if total > 0 {
+                    println!("   → {} related notes", total);
+                }
             }
             if let Some(ref conversation_uuid) = r.conversation_uuid {
                 println!("   Conversation UUID: {}", conversation_uuid);
