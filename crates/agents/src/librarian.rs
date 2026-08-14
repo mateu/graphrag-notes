@@ -1874,11 +1874,12 @@ impl LibrarianAgent {
             if let Some(generation) = source_generation {
                 note = note.with_source_generation(generation);
             }
-            // Keep the creation time for a structural successor. Even though
-            // staged generations use a fresh record ID for crash-safe
-            // copy-on-write, creation ordering and `since` search semantics
-            // remain stable for unchanged/reconciled chunks.
-            if let Some(existing) = matched_existing {
+            // Exact chunks retain their original creation time despite the
+            // fresh copy-on-write record ID. A content-changed structural
+            // successor must keep its new timestamp so `since` filters can
+            // discover the edited text.
+            if is_exact_match {
+                let existing = matched_existing.expect("exact match has an existing chunk");
                 note.created_at = existing.created_at;
             }
             let note = self.repo.create_note(note).await?;
@@ -4263,6 +4264,12 @@ mod tests {
         assert_eq!(first.notes.len(), 3);
         let middle_old = first.notes[1].id.as_ref().unwrap().clone();
         let after_old = first.notes[2].id.as_ref().unwrap().clone();
+        let stale_created_at = chrono::Utc::now() - chrono::Duration::days(2);
+        let mut stale_middle = first.notes[1].clone();
+        stale_middle.created_at = stale_created_at;
+        repo.update_note(&record_id_to_string(&middle_old), stale_middle)
+            .await
+            .unwrap();
         let mut entity = Entity::new("Planning", EntityType::Concept);
         entity.metadata = serde_json::json!({});
         let entity = repo.upsert_entity(entity).await.unwrap();
@@ -4283,6 +4290,18 @@ mod tests {
         assert_eq!(second.notes[1].content, replacement);
         let middle_new = second.notes[1].id.as_ref().unwrap();
         let after_new = second.notes[2].id.as_ref().unwrap();
+        assert!(second.notes[1].created_at > stale_created_at);
+        assert!(repo
+            .fulltext_search_notes(
+                replacement,
+                10,
+                Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+                None,
+            )
+            .await
+            .unwrap()
+            .iter()
+            .any(|result| result.id == *middle_new));
         assert!(repo
             .get_note(&record_id_to_string(&middle_old))
             .await
