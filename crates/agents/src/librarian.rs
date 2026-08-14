@@ -26,6 +26,7 @@ const DEFAULT_EXTRACT_MAX_CHARS: usize = 8000;
 const DEFAULT_MIN_CHUNK_SIZE: usize = 20;
 const DEFAULT_MAX_CHUNK_SIZE: usize = usize::MAX;
 const DEFAULT_ENTITY_JOB_PAGE_SIZE: usize = 100;
+const EMBEDDING_JOB_WINDOW: usize = 32;
 
 /// Runtime controls for librarian ingestion and extraction.
 ///
@@ -578,7 +579,6 @@ impl LibrarianAgent {
         &self,
         existing: Option<graphrag_db::ProcessingJob>,
     ) -> Result<ProcessingRunResult> {
-        const WINDOW: usize = 32;
         let (job, resumed) = match existing {
             Some(job) => {
                 if job.item_ids.is_empty() {
@@ -589,11 +589,12 @@ impl LibrarianAgent {
                 (job, true)
             }
             None => {
-                let notes = self.repo.get_notes_without_embeddings().await?;
-                let item_ids = notes
-                    .iter()
-                    .filter_map(|note| note.id.as_ref().map(record_id_to_string))
-                    .collect::<Vec<_>>();
+                let Some(item_ids) = self
+                    .pending_embedding_note_ids(EMBEDDING_JOB_WINDOW)
+                    .await?
+                else {
+                    return Ok(no_processing_work());
+                };
                 if item_ids.is_empty() {
                     return Ok(no_processing_work());
                 }
@@ -653,8 +654,8 @@ impl LibrarianAgent {
             }
             let completed_before_reconciliation = completed;
             let failed_before_reconciliation = failed;
-            let mut notes = Vec::with_capacity(WINDOW);
-            while notes.len() < WINDOW {
+            let mut notes = Vec::with_capacity(EMBEDDING_JOB_WINDOW);
+            while notes.len() < EMBEDDING_JOB_WINDOW {
                 let Some(item_id) = item_ids.pop_front() else {
                     break;
                 };
@@ -800,6 +801,42 @@ impl LibrarianAgent {
                 }
             }
         }
+    }
+
+    /// Snapshot pending embedding IDs in bounded pages before creating a
+    /// durable job. A cancellation during this pre-job phase returns `None`,
+    /// intentionally leaving no empty job to resume.
+    async fn pending_embedding_note_ids(&self, page_size: usize) -> Result<Option<Vec<String>>> {
+        if page_size == 0 || self.cancellation_requested.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        let mut item_ids = Vec::new();
+        let mut offset = 0;
+        loop {
+            if self.cancellation_requested.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+            let notes = self
+                .repo
+                .get_notes_without_embeddings_page(page_size, offset)
+                .await?;
+            // Ctrl-C can arrive while a page query is in flight. Do not retain
+            // it or create a durable job after that request.
+            if self.cancellation_requested.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+            if notes.is_empty() {
+                break;
+            }
+            let count = notes.len();
+            item_ids.extend(
+                notes
+                    .into_iter()
+                    .filter_map(|note| note.id.as_ref().map(record_id_to_string)),
+            );
+            offset += count;
+        }
+        Ok(Some(item_ids))
     }
 
     /// Persist one embedding outcome before asking whether cancellation should
@@ -2686,6 +2723,43 @@ mod tests {
                 .unwrap(),
             no_processing_work()
         );
+        assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_embedding_snapshot_pages_ids_and_stops_before_job_on_cancellation() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        for content in [
+            "first pending embedding",
+            "second pending embedding",
+            "third pending embedding",
+        ] {
+            repo.create_note(Note::new(content)).await.unwrap();
+        }
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        // A one-item page forces a multi-page snapshot without materializing
+        // all notes in the initial pending query.
+        assert_eq!(
+            librarian
+                .pending_embedding_note_ids(1)
+                .await
+                .unwrap()
+                .unwrap()
+                .len(),
+            3
+        );
+
+        let cancelled = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(Arc::new(AtomicBool::new(true)));
+        assert_eq!(cancelled.process_pending_embeddings().await.unwrap(), 0);
         assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
     }
 

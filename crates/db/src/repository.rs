@@ -507,6 +507,31 @@ impl Repository {
         Ok(notes)
     }
 
+    /// Read one stable page while building a durable pending-embedding
+    /// snapshot. Callers persist only the page's record IDs, keeping initial
+    /// job selection bounded before any inference work begins.
+    pub async fn get_notes_without_embeddings_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Note>> {
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("embedding page limit exceeds database integer range".into())
+        })?;
+        let offset = i64::try_from(offset).map_err(|_| {
+            DbError::QueryFailed("embedding page offset exceeds database integer range".into())
+        })?;
+        Ok(self
+            .db
+            .query(format!(
+                "SELECT * FROM note WHERE ({VISIBLE_NOTE_CONDITION}) AND (embedding IS NONE OR array::len(embedding) = 0) ORDER BY created_at ASC, id ASC LIMIT $limit START $offset"
+            ))
+            .bind(("limit", limit))
+            .bind(("offset", offset))
+            .await?
+            .take(0)?)
+    }
+
     /// Fetch one bounded work window. Repeating this query is safe because a
     /// successful item no longer matches it, avoiding an unbounded in-memory
     /// import queue and making interruption reconciliation natural.
