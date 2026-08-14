@@ -13,14 +13,17 @@ use graphrag_core::{
     ProposedEdgeStatus, Source, SourceIngestionStatus, SourceType,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
+use tokio::sync::Mutex;
 use tracing::instrument;
 
 /// Repository for all database operations
 #[derive(Clone)]
 pub struct Repository {
     db: DbConnection,
+    proposal_acceptance_lock: Arc<Mutex<()>>,
 }
 
 // A source generation becomes visible only after promotion. Legacy/manual
@@ -67,7 +70,10 @@ fn source_content_value(source: &Source) -> Result<serde_json::Value> {
 impl Repository {
     /// Create a new repository
     pub fn new(db: DbConnection) -> Self {
-        Self { db }
+        Self {
+            db,
+            proposal_acceptance_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     /// Check the active embedding identity before a vector read or write.
@@ -855,20 +861,26 @@ impl Repository {
 
         if let Some(existing) = self.find_proposal_by_dedupe_key(&dedupe_key).await? {
             if existing.status == ProposedEdgeStatus::Pending {
-                self.db
+                #[derive(Deserialize, SurrealValue)]
+                struct UpdatedRow {
+                    id: RecordId,
+                }
+                let id = existing.id.clone().expect("stored proposal has id");
+                let updated: Option<UpdatedRow> = self
+                    .db
                     .query(
-                        "UPDATE $id SET confidence = $confidence, reason = $reason, generator = $generator, generator_version = $generator_version, model = $model, updated_at = time::now()",
+                        "UPDATE $id SET confidence = $confidence, reason = $reason, generator = $generator, generator_version = $generator_version, model = $model, updated_at = time::now() WHERE status = 'pending' RETURN AFTER",
                     )
-                    .bind(("id", existing.id.clone().expect("stored proposal has id")))
+                    .bind(("id", id.clone()))
                     .bind(("confidence", draft.confidence))
                     .bind(("reason", draft.reason))
                     .bind(("generator", draft.generator))
                     .bind(("generator_version", draft.generator_version))
                     .bind(("model", draft.model))
                     .await?
-                    .check()?;
+                    .take(0)?;
                 return self
-                    .get_edge_proposal(&existing.id.expect("stored proposal has id"))
+                    .get_edge_proposal(&updated.map(|row| row.id).unwrap_or(id))
                     .await?
                     .ok_or_else(|| DbError::QueryFailed("updated proposal disappeared".into()));
             }
@@ -972,6 +984,10 @@ impl Repository {
         action_reason: Option<String>,
         is_manual: bool,
     ) -> Result<ProposedEdge> {
+        // All clones of one repository serialize completion. The database
+        // state claim below remains the cross-process guard, while this lock
+        // prevents an in-process loser from releasing a shared claim.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let proposal = self
             .get_edge_proposal(id)
             .await?
@@ -1048,10 +1064,10 @@ impl Repository {
             .await
         {
             Ok(edge_id) => edge_id,
-            Err(error) => {
-                self.release_acceptance_claim(id).await?;
-                return Err(error);
-            }
+            // Keep the durable `accepting` claim intact. A transient failure
+            // is recoverable by a later retry/batch run; releasing it here
+            // could clear another caller's in-flight completion.
+            Err(error) => return Err(error),
         };
         if !self.finalize_acceptance_claim(id, edge_id).await? {
             let current = self.get_edge_proposal(id).await?.ok_or_else(|| {
@@ -1217,18 +1233,6 @@ impl Repository {
         )))
     }
 
-    /// Restore a failed acceptance claim only while it remains unfinalized.
-    async fn release_acceptance_claim(&self, id: &RecordId) -> Result<()> {
-        self.db
-            .query(
-                "UPDATE $id SET status = 'pending', reviewed_at = NONE, reviewer = NONE, action_reason = NONE, acceptance_is_manual = NONE, updated_at = time::now() WHERE status = 'accepting' AND resulting_edge_id IS NONE",
-            )
-            .bind(("id", id.clone()))
-            .await?
-            .check()?;
-        Ok(())
-    }
-
     async fn mark_claimed_proposal_stale(&self, id: &RecordId, reason: &str) -> Result<()> {
         self.db
             .query(
@@ -1377,17 +1381,42 @@ impl Repository {
                 record_id_to_string(edge_id)
             )));
         }
-        if !self.note_edge_exists(edge_id).await? {
-            return Ok(false);
+        let reason = action_reason.unwrap_or_else(|| "accepted edge undone".into());
+        let edge_existed = self.note_edge_exists(edge_id).await?;
+        if edge_existed {
+            self.db
+                .query("DELETE $id")
+                .bind(("id", edge_id.clone()))
+                .await?
+                .check()?;
         }
-        self.db
-            .query("DELETE $id")
+        // If a prior attempt deleted the edge but failed before this update,
+        // a retry sees the absent edge and still repairs the proposal audit.
+        let proposal_updated = self
+            .supersede_proposal_for_undone_edge(edge_id, &reason)
+            .await?;
+        Ok(edge_existed || proposal_updated)
+    }
+
+    async fn supersede_proposal_for_undone_edge(
+        &self,
+        edge_id: &RecordId,
+        reason: &str,
+    ) -> Result<bool> {
+        #[derive(Deserialize, SurrealValue)]
+        struct UpdatedRow {
+            id: RecordId,
+        }
+        let updated: Option<UpdatedRow> = self
+            .db
+            .query(
+                "UPDATE proposed_edge SET status = 'superseded', superseded_at = time::now(), supersession_reason = $reason, resulting_edge_id = NONE, updated_at = time::now() WHERE resulting_edge_id = $id RETURN AFTER",
+            )
             .bind(("id", edge_id.clone()))
+            .bind(("reason", reason.to_string()))
             .await?
-            .check()?;
-        self.db.query("UPDATE proposed_edge SET status = 'superseded', superseded_at = time::now(), supersession_reason = $reason, resulting_edge_id = NONE, updated_at = time::now() WHERE resulting_edge_id = $id")
-            .bind(("id", edge_id.clone())).bind(("reason", action_reason.unwrap_or_else(|| "accepted edge undone".into()))).await?.check()?;
-        Ok(true)
+            .take(0)?;
+        Ok(updated.is_some())
     }
 
     /// Return whether a supported note-edge record currently exists. This is
@@ -1469,10 +1498,31 @@ impl Repository {
         if let Some(existing) = existing {
             return Ok(existing.id);
         }
-        let created: Vec<IdRow> = self.db.query(format!("INSERT INTO {table} (in, out, confidence, reason, provenance, proposal_id, is_manual, dedupe_key, created_at) VALUES ($from, $to, $confidence, $reason, $provenance, $proposal_id, $is_manual, $dedupe_key, time::now()) RETURN id"))
+        let insert = self.db.query(format!("INSERT INTO {table} (in, out, confidence, reason, provenance, proposal_id, is_manual, dedupe_key, created_at) VALUES ($from, $to, $confidence, $reason, $provenance, $proposal_id, $is_manual, $dedupe_key, time::now()) RETURN id"))
             .bind(("from", from_id)).bind(("to", to_id)).bind(("confidence", confidence.map(|value| value.clamp(0.0, 1.0))))
             .bind(("reason", reason.map(str::to_owned))).bind(("provenance", provenance.to_string())).bind(("proposal_id", proposal_id.cloned()))
-            .bind(("is_manual", is_manual)).bind(("dedupe_key", dedupe_key)).await?.take(0)?;
+            .bind(("is_manual", is_manual)).bind(("dedupe_key", dedupe_key.clone())).await;
+        let created_result: Result<Vec<IdRow>> = match insert {
+            Ok(mut response) => response.take(0).map_err(Into::into),
+            Err(error) => Err(error.into()),
+        };
+        let created = match created_result {
+            Ok(created) => created,
+            Err(error) => {
+                let existing: Option<IdRow> = self
+                    .db
+                    .query(format!(
+                        "SELECT id FROM {table} WHERE dedupe_key = $dedupe_key LIMIT 1"
+                    ))
+                    .bind(("dedupe_key", dedupe_key))
+                    .await?
+                    .take(0)?;
+                if let Some(existing) = existing {
+                    return Ok(existing.id);
+                }
+                return Err(error);
+            }
+        };
         created
             .into_iter()
             .next()
@@ -3631,6 +3681,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proposal_refresh_preserves_terminal_decision_audit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (first, second) = two_notes(&repo).await;
+        let proposal = repo
+            .upsert_gardener_proposal(
+                &first,
+                &second,
+                0.8,
+                "original scan".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let proposal_id = proposal.id.unwrap();
+        let rejected = repo
+            .reject_edge_proposal(
+                &proposal_id,
+                Some("reviewer".into()),
+                Some("not appropriate".into()),
+            )
+            .await
+            .unwrap();
+        let refreshed = repo
+            .upsert_gardener_proposal(
+                &second,
+                &first,
+                0.99,
+                "later scan must not overwrite the decision".into(),
+                Some("new-test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(refreshed.id, Some(proposal_id));
+        assert_eq!(refreshed.status, ProposedEdgeStatus::Rejected);
+        assert_eq!(refreshed.reason, "original scan");
+        assert_eq!(refreshed.reviewer, rejected.reviewer);
+        assert_eq!(refreshed.action_reason, rejected.action_reason);
+    }
+
+    #[tokio::test]
     async fn concurrent_proposal_upserts_reload_the_unique_index_winner() {
         let repo = Repository::new(init_memory().await.unwrap());
         let (first, second) = two_notes(&repo).await;
@@ -3749,6 +3841,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_accepts_share_one_stable_edge_and_completion() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (first, second) = two_notes(&repo).await;
+        let proposal = repo
+            .upsert_gardener_proposal(
+                &first,
+                &second,
+                0.9,
+                "same proposal".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let proposal_id = proposal.id.unwrap();
+        let left_repo = repo.clone();
+        let right_repo = repo.clone();
+        let left_id = proposal_id.clone();
+        let right_id = proposal_id.clone();
+
+        let (left, right) = tokio::join!(
+            left_repo.accept_edge_proposal(
+                &left_id,
+                Some("left reviewer".into()),
+                Some("left acceptance".into()),
+                true,
+            ),
+            right_repo.accept_edge_proposal(
+                &right_id,
+                Some("right reviewer".into()),
+                Some("right acceptance".into()),
+                false,
+            ),
+        );
+        let left = left.unwrap();
+        let right = right.unwrap();
+        assert_eq!(left.status, ProposedEdgeStatus::Accepted);
+        assert_eq!(left.resulting_edge_id, right.resulting_edge_id);
+        assert_eq!(repo.list_note_edges(10).await.unwrap().len(), 1);
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Accepted);
+        assert!(proposal.resulting_edge_id.is_some());
+    }
+
+    #[tokio::test]
     async fn proposal_accept_reject_and_undo_are_auditable_and_idempotent() {
         let repo = Repository::new(init_memory().await.unwrap());
         let (first, second) = two_notes(&repo).await;
@@ -3827,6 +3964,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected.status, ProposedEdgeStatus::Superseded);
+    }
+
+    #[tokio::test]
+    async fn undo_repairs_a_proposal_after_a_prior_edge_only_delete() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (first, second) = two_notes(&repo).await;
+        let proposal = repo
+            .upsert_gardener_proposal(
+                &first,
+                &second,
+                0.9,
+                "accepted then interrupted undo".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let proposal_id = proposal.id.unwrap();
+        let edge_id = repo
+            .accept_edge_proposal(
+                &proposal_id,
+                Some("reviewer".into()),
+                Some("accepted".into()),
+                true,
+            )
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
+        // Simulate an interruption after undo's physical deletion but before
+        // it could supersede the proposal record.
+        repo.db
+            .query("DELETE $id")
+            .bind(("id", edge_id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        assert!(repo
+            .undo_edge(&edge_id, Some("recovered undo".into()))
+            .await
+            .unwrap());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(proposal.resulting_edge_id, None);
+        assert_eq!(
+            proposal.supersession_reason.as_deref(),
+            Some("recovered undo")
+        );
+        assert!(!repo.undo_edge(&edge_id, None).await.unwrap());
     }
 
     #[tokio::test]
