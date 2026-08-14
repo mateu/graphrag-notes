@@ -169,6 +169,10 @@ fn no_processing_work() -> ProcessingRunResult {
     }
 }
 
+fn entity_job_force_clear(scope: Option<&str>) -> bool {
+    scope.is_some_and(|scope| scope.split(';').any(|part| part == "force=true"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatImportMode {
     Qa,
@@ -271,10 +275,6 @@ impl LibrarianAgent {
     pub fn with_cancellation_flag(mut self, cancellation_requested: Arc<AtomicBool>) -> Self {
         self.cancellation_requested = cancellation_requested;
         self
-    }
-
-    fn cancellation_requested(&self) -> bool {
-        self.cancellation_requested.load(Ordering::Acquire)
     }
 
     async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
@@ -930,7 +930,7 @@ impl LibrarianAgent {
         limit: usize,
         existing: Option<graphrag_db::ProcessingJob>,
     ) -> Result<ProcessingRunResult> {
-        let (notes, job, resumed, missing_items) = match existing {
+        let (notes, job, resumed, missing_items, force_clear) = match existing {
             Some(job) => {
                 if job.item_ids.is_empty() {
                     return Err(crate::AgentError::Processing(
@@ -946,7 +946,13 @@ impl LibrarianAgent {
                         missing_items += 1;
                     }
                 }
-                (notes, job, true, missing_items)
+                (
+                    notes,
+                    job.clone(),
+                    true,
+                    missing_items,
+                    entity_job_force_clear(job.scope.as_deref()),
+                )
             }
             None => {
                 let notes = self.repo.get_notes_without_entities(limit).await?;
@@ -967,7 +973,7 @@ impl LibrarianAgent {
                         item_ids,
                     )
                     .await?;
-                (notes, job, false, 0)
+                (notes, job, false, 0, false)
             }
         };
         let job_id = job.id.clone().ok_or_else(|| {
@@ -1062,6 +1068,11 @@ impl LibrarianAgent {
             }
 
             let note_start = Instant::now();
+            if force_clear {
+                if let Some(id) = &note.id {
+                    self.repo.delete_mentions_for_note(id).await?;
+                }
+            }
             let item_error = match self.extract_and_link_entities_force(&note).await {
                 Ok(()) => {
                     completed += 1;
@@ -1153,6 +1164,52 @@ impl LibrarianAgent {
         })
     }
 
+    async fn create_entity_extraction_job(
+        &self,
+        item_ids: Vec<String>,
+        scope: String,
+    ) -> Result<ProcessingRunResult> {
+        if item_ids.is_empty() {
+            return Ok(no_processing_work());
+        }
+        let job = self
+            .repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::EntityExtraction,
+                None,
+                item_ids.len() as u64,
+                Some(scope),
+                item_ids,
+            )
+            .await?;
+        // Reuse the same persisted-item execution path as resume. Resetting
+        // a just-created job is harmless, and ensures every entity mode has
+        // the same checkpoints, cancellation state, and retry behavior.
+        self.extract_entities_for_notes_job(0, Some(job)).await
+    }
+
+    async fn all_note_ids_for_entity_extraction(&self, page_size: usize) -> Result<Vec<String>> {
+        if page_size == 0 {
+            return Ok(Vec::new());
+        }
+        let mut item_ids = Vec::new();
+        let mut offset = 0;
+        loop {
+            let notes = self.repo.get_notes_page(page_size, offset).await?;
+            if notes.is_empty() {
+                break;
+            }
+            let count = notes.len();
+            item_ids.extend(
+                notes
+                    .into_iter()
+                    .filter_map(|note| note.id.as_ref().map(record_id_to_string)),
+            );
+            offset += count;
+        }
+        Ok(item_ids)
+    }
+
     /// Extract entities for all notes (optionally clearing existing mentions first)
     #[instrument(skip(self))]
     pub async fn extract_entities_for_all_notes(
@@ -1160,100 +1217,14 @@ impl LibrarianAgent {
         limit: usize,
         force_clear: bool,
     ) -> Result<usize> {
-        let progress_every = self.runtime.extract_progress_every;
-        let progress_every_secs = self.runtime.extract_progress_every_secs;
-        let log_each = self.runtime.extract_log_each;
-
-        let mut processed = 0usize;
-        let start = Instant::now();
-        let mut last_progress = Instant::now();
-        let mut offset = 0usize;
-
-        loop {
-            let notes = self.repo.get_notes_page(limit, offset).await?;
-            if notes.is_empty() {
-                break;
-            }
-
-            let total = notes.len();
-            for (index, note) in notes.into_iter().enumerate() {
-                if self.cancellation_requested() {
-                    return Ok(processed);
-                }
-                let note_id = note
-                    .id
-                    .as_ref()
-                    .map(record_id_to_string)
-                    .unwrap_or_else(|| "<unknown>".to_string());
-                let note_len = note.content.len();
-                if log_each {
-                    info!(
-                        "Entity extraction start: {}/{} note_id={} chars={}",
-                        index + 1,
-                        total,
-                        note_id,
-                        note_len
-                    );
-                }
-
-                if self.cancellation_requested() {
-                    return Ok(processed);
-                }
-
-                if force_clear {
-                    if let Some(ref id) = note.id {
-                        self.repo.delete_mentions_for_note(id).await?;
-                    }
-                }
-
-                let note_start = Instant::now();
-                match self.extract_and_link_entities_force(&note).await {
-                    Ok(()) => {
-                        processed += 1;
-                        if log_each {
-                            info!(
-                                "Entity extraction done: {}/{} note_id={} elapsed={:.2}s",
-                                index + 1,
-                                total,
-                                note_id,
-                                note_start.elapsed().as_secs_f32()
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        if log_each {
-                            info!(
-                                "Entity extraction failed: {}/{} note_id={} elapsed={:.2}s error={}",
-                                index + 1,
-                                total,
-                                note_id,
-                                note_start.elapsed().as_secs_f32(),
-                                e
-                            );
-                        } else {
-                            debug!("Entity extraction failed (non-fatal): {}", e);
-                        }
-                    }
-                }
-
-                if processed % progress_every == 0
-                    || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
-                {
-                    let elapsed = start.elapsed().as_secs_f32().max(0.001);
-                    let rate = processed as f32 / elapsed;
-                    let eta_secs = 0;
-                    info!(
-                        "Entity extraction progress: {} processed (rate: {:.2}/s, eta: {}s)",
-                        processed, rate, eta_secs
-                    );
-                    last_progress = Instant::now();
-                }
-            }
-
-            offset += limit;
-        }
-
-        Ok(processed)
+        let item_ids = self.all_note_ids_for_entity_extraction(limit).await?;
+        let result = self
+            .create_entity_extraction_job(
+                item_ids,
+                format!("all_notes:page_size={limit};force={force_clear}"),
+            )
+            .await?;
+        Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
     }
 
     /// Extract entities for explicit note ids
@@ -1263,69 +1234,24 @@ impl LibrarianAgent {
         note_ids: &[String],
         force_clear: bool,
     ) -> Result<usize> {
-        if note_ids.is_empty() {
-            return Ok(0);
-        }
-
-        let log_each = self.runtime.extract_log_each;
-        let mut processed = 0usize;
-
-        for (index, note_id_raw) in note_ids.iter().enumerate() {
-            if self.cancellation_requested() {
-                return Ok(processed);
-            }
+        let mut item_ids = Vec::new();
+        for note_id_raw in note_ids {
             let key = note_id_raw.strip_prefix("note:").unwrap_or(note_id_raw);
             let maybe_note = self.repo.get_note(key).await?;
             let Some(note) = maybe_note else {
                 debug!("Note not found for extraction: {}", note_id_raw);
                 continue;
             };
-
-            let note_id = note
-                .id
-                .as_ref()
-                .map(record_id_to_string)
-                .unwrap_or_else(|| "<unknown>".to_string());
-            let note_len = note.content.len();
-            if log_each {
-                info!(
-                    "Entity extraction start: {}/{} note_id={} chars={}",
-                    index + 1,
-                    note_ids.len(),
-                    note_id,
-                    note_len
-                );
-            }
-
-            if force_clear {
-                if let Some(ref id) = note.id {
-                    self.repo.delete_mentions_for_note(id).await?;
+            if let Some(id) = note.id.as_ref().map(record_id_to_string) {
+                if !item_ids.contains(&id) {
+                    item_ids.push(id);
                 }
-            }
-
-            match self.extract_and_link_entities_force(&note).await {
-                Ok(()) => {
-                    processed += 1;
-                    if log_each {
-                        info!(
-                            "Entity extraction done: {}/{} note_id={}",
-                            index + 1,
-                            note_ids.len(),
-                            note_id
-                        );
-                    }
-                }
-                Err(e) => {
-                    debug!("Entity extraction failed for {}: {}", note_id_raw, e);
-                }
-            }
-
-            if self.cancellation_requested() {
-                return Ok(processed);
             }
         }
-
-        Ok(processed)
+        let result = self
+            .create_entity_extraction_job(item_ids, format!("note_ids:force={force_clear}"))
+            .await?;
+        Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
     }
 
     /// Chunk content and create notes
@@ -2725,6 +2651,86 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn all_and_explicit_entity_modes_persist_resumable_job_scopes() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first = repo
+            .create_note(Note::new("first durable entity selection"))
+            .await
+            .unwrap();
+        let _second = repo
+            .create_note(Note::new("second durable entity selection"))
+            .await
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let all = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(cancelled.clone());
+        assert_eq!(
+            all.extract_entities_for_all_notes(1, true).await.unwrap(),
+            0
+        );
+
+        let all_job = repo
+            .list_processing_jobs(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|job| job.scope.as_deref() == Some("all_notes:page_size=1;force=true"))
+            .unwrap();
+        assert_eq!(all_job.status, ProcessingJobStatus::Cancelled.as_str());
+        assert_eq!(all_job.item_ids.len(), 2);
+        let all_job_id = graphrag_core::record_id_to_string(all_job.id.as_ref().unwrap());
+        let resumed_all = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .resume_processing_job(&all_job_id)
+        .await
+        .unwrap();
+        assert_eq!(resumed_all.completed, 2);
+        assert!(!resumed_all.cancelled);
+
+        let explicit = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(cancelled);
+        let first_id = graphrag_core::record_id_to_string(first.id.as_ref().unwrap());
+        assert_eq!(
+            explicit
+                .extract_entities_for_note_ids(&[first_id.clone()], false)
+                .await
+                .unwrap(),
+            0
+        );
+        let explicit_job = repo
+            .list_processing_jobs(10)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|job| job.scope.as_deref() == Some("note_ids:force=false"))
+            .unwrap();
+        assert_eq!(explicit_job.status, ProcessingJobStatus::Cancelled.as_str());
+        assert_eq!(explicit_job.item_ids, vec![first_id]);
+        let explicit_job_id = graphrag_core::record_id_to_string(explicit_job.id.as_ref().unwrap());
+        let resumed_explicit = LibrarianAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .resume_processing_job(&explicit_job_id)
+        .await
+        .unwrap();
+        assert_eq!(resumed_explicit.completed, 1);
+        assert!(!resumed_explicit.cancelled);
     }
 
     #[tokio::test]
