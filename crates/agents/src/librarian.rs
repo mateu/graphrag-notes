@@ -646,16 +646,18 @@ impl LibrarianAgent {
             }
         };
         let successors = markdown_chunk_successors(&existing_chunks, &notes);
-        if let Err(error) = self
+        let cleanup = match self
             .repo
-            .copy_note_dependents_to_successors(&successors)
+            .reconcile_file_import(&mut source, &successors)
             .await
         {
-            let message = error.to_string();
-            self.repo.fail_file_import(&mut source, &message).await?;
-            return Err(error.into());
-        }
-        let cleanup = self.repo.complete_file_import(&mut source).await?;
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                let message = error.to_string();
+                self.repo.fail_file_import(&mut source, &message).await?;
+                return Err(error.into());
+            }
+        };
         let created = u64::from(plan.action == SourceImportAction::Created) * notes.len() as u64;
         let updated = u64::from(plan.action == SourceImportAction::Updated) * notes.len() as u64;
         Ok(MarkdownImportResult {
