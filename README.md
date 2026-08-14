@@ -328,8 +328,12 @@ graphrag jobs resume processing_job:example
 graphrag jobs cancel processing_job:example
 ```
 
-Jobs persist aggregate counts, checkpoint, timestamps, and last error. A
-cancel request takes effect between atomic item updates. The current item is
+Jobs persist aggregate counts, checkpoint, timestamps, the selected item set,
+and last error. For an actively running persistent job, press `Ctrl-C` in the
+same `graphrag` process: RocksDB intentionally prevents a second CLI process
+from opening that database concurrently. The in-process cancellation request
+takes effect between atomic item updates. `jobs cancel` remains useful for a
+stale/runnable job once the owning process has exited. The current item is
 either committed before its checkpoint advances or left pending for the next
 resume; source lifecycle generations remain searchable until their staged
 import is promoted.

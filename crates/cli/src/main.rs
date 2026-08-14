@@ -27,7 +27,10 @@ use graphrag_db::{
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -591,6 +594,40 @@ fn processing_config(
     .normalized()
 }
 
+/// Ollama extraction has its own typed request timeout because structured
+/// generation is materially slower than a TEI embedding request. The outer
+/// resilient wrapper must never shorten that provider contract.
+fn extraction_processing_config(
+    config: &RuntimeConfig,
+    concurrency: Option<usize>,
+    retry_attempts: Option<usize>,
+    no_cache: bool,
+) -> ProcessingConfig {
+    let mut processing = processing_config(config, concurrency, retry_attempts, no_cache);
+    if config
+        .inference
+        .extraction_provider
+        .eq_ignore_ascii_case("ollama")
+    {
+        processing.request_timeout = Duration::from_secs(config.inference.ollama_timeout_secs);
+    }
+    processing
+}
+
+fn install_cancellation_handler() -> Arc<AtomicBool> {
+    let requested = Arc::new(AtomicBool::new(false));
+    let listener = requested.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            listener.store(true, Ordering::Release);
+            eprintln!(
+                "Cancellation requested; finishing the current item and saving its checkpoint..."
+            );
+        }
+    });
+    requested
+}
+
 fn configured_search_agent(
     repo: Repository,
     embedder: SharedEmbedder,
@@ -807,6 +844,8 @@ async fn main() -> Result<()> {
     let repo = Repository::new(db);
     let providers = InferenceProviders::from_config(&inference_config);
     let processing = processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache);
+    let extraction_processing =
+        extraction_processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache);
     // The wrappers share their semaphores and counters across every clone in
     // this invocation, so imports, extraction, and search cannot overload a
     // local provider merely by arriving through different commands.
@@ -818,7 +857,7 @@ async fn main() -> Result<()> {
     let tgi: SharedEntityExtractor = Arc::new(ResilientEntityExtractor::new(
         providers.extractor,
         Some(repo.clone()),
-        processing,
+        extraction_processing,
     ));
 
     // Check inference services only when needed
@@ -872,6 +911,19 @@ async fn main() -> Result<()> {
             anyhow::bail!("Extraction service unavailable");
         }
     }
+
+    // A persistent RocksDB database is exclusively owned by this process, so
+    // a second `graphrag jobs cancel` process cannot reliably attach while work
+    // is active. Ctrl-C is the in-process control plane: it requests a safe
+    // stop and the Librarian observes it between atomic item mutations.
+    let cancellation_requested = matches!(
+        &cli.command,
+        Commands::ExtractEntities { .. }
+            | Commands::Jobs {
+                command: JobsCommand::Resume { .. }
+            }
+    )
+    .then(install_cancellation_handler);
 
     // Execute command
     match cli.command {
@@ -1004,7 +1056,17 @@ async fn main() -> Result<()> {
             .await?;
         }
         Commands::Jobs { command } => {
-            cmd_jobs(repo, tei, tgi, librarian_config, command).await?;
+            cmd_jobs(
+                repo,
+                tei,
+                tgi,
+                librarian_config,
+                cancellation_requested
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+                command,
+            )
+            .await?;
         }
         Commands::Stats => {
             cmd_stats(repo).await?;
@@ -1038,6 +1100,9 @@ async fn main() -> Result<()> {
                 tei,
                 tgi,
                 librarian_config,
+                cancellation_requested
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
                 limit,
                 all,
                 note_ids,
@@ -1078,6 +1143,8 @@ struct JobOutput {
     id: String,
     job_type: String,
     source_generation: Option<String>,
+    scope: Option<String>,
+    item_count: usize,
     status: String,
     total_count: i64,
     completed_count: i64,
@@ -1095,6 +1162,8 @@ impl From<&graphrag_db::ProcessingJob> for JobOutput {
             id: job.id.as_ref().map(record_id_to_string).unwrap_or_default(),
             job_type: job.job_type.clone(),
             source_generation: job.source_generation.clone(),
+            scope: job.scope.clone(),
+            item_count: job.item_ids.len(),
             status: job.status.clone(),
             total_count: job.total_count,
             completed_count: job.completed_count,
@@ -1112,10 +1181,12 @@ fn print_job(job: &graphrag_db::ProcessingJob, format: JobOutputFormat) -> Resul
     match format {
         JobOutputFormat::Json => println!("{}", serde_json::to_string(&JobOutput::from(job))?),
         JobOutputFormat::Human => println!(
-            "{} {} status={} completed={}/{} failed={} checkpoint={}{}",
+            "{} {} status={} scope={} items={} completed={}/{} failed={} checkpoint={}{}",
             job.id.as_ref().map(record_id_to_string).unwrap_or_default(),
             job.job_type,
             job.status,
+            job.scope.as_deref().unwrap_or("-"),
+            job.item_ids.len(),
             job.completed_count,
             job.total_count,
             job.failed_count,
@@ -1134,6 +1205,7 @@ async fn cmd_jobs(
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
     librarian_config: LibrarianRuntimeConfig,
+    cancellation_requested: Arc<AtomicBool>,
     command: JobsCommand,
 ) -> Result<()> {
     match command {
@@ -1163,8 +1235,9 @@ async fn cmd_jobs(
             print_job(&job, JobOutputFormat::Human)?;
         }
         JobsCommand::Resume { id } => {
-            let librarian =
-                LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
+            let librarian = LibrarianAgent::new(repo, tei, tgi)
+                .with_runtime_config(librarian_config)
+                .with_cancellation_flag(cancellation_requested);
             let result = librarian.resume_processing_job(&id).await?;
             println!(
                 "job={} completed={} failed={} cancelled={}",
@@ -1658,6 +1731,7 @@ async fn cmd_extract_entities(
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
     librarian_config: LibrarianRuntimeConfig,
+    cancellation_requested: Arc<AtomicBool>,
     limit: usize,
     all: bool,
     note_ids: Vec<String>,
@@ -1669,7 +1743,9 @@ async fn cmd_extract_entities(
     if force && !all && note_ids.is_empty() {
         anyhow::bail!("--force requires --all or at least one --note-id");
     }
-    let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
+    let librarian = LibrarianAgent::new(repo, tei, tgi)
+        .with_runtime_config(librarian_config)
+        .with_cancellation_flag(cancellation_requested);
     let processed = if !note_ids.is_empty() {
         librarian
             .extract_entities_for_note_ids(&note_ids, force)
@@ -2678,5 +2754,22 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["graphrag", "garden", "apply"]).is_err());
+    }
+
+    #[test]
+    fn ollama_extraction_wrapper_keeps_the_provider_timeout() {
+        let mut config = RuntimeConfig::default();
+        config.inference.timeout_secs = 30;
+        config.inference.ollama_timeout_secs = 120;
+        config.inference.extraction_provider = "ollama".into();
+        assert_eq!(
+            extraction_processing_config(&config, None, None, false).request_timeout,
+            Duration::from_secs(120)
+        );
+        config.inference.extraction_provider = "tgi".into();
+        assert_eq!(
+            extraction_processing_config(&config, None, None, false).request_timeout,
+            Duration::from_secs(30)
+        );
     }
 }

@@ -15,6 +15,10 @@ use graphrag_db::{
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use surrealdb::types::RecordId;
 use tracing::{debug, info, instrument};
@@ -126,6 +130,7 @@ pub struct LibrarianAgent {
     embedder: SharedEmbedder,
     extractor: SharedEntityExtractor,
     runtime: LibrarianRuntimeConfig,
+    cancellation_requested: Arc<AtomicBool>,
 }
 
 /// Stable, machine-readable result of a Markdown import. Counts describe the
@@ -240,12 +245,21 @@ impl LibrarianAgent {
             embedder,
             extractor,
             runtime: LibrarianRuntimeConfig::default(),
+            cancellation_requested: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Supply resolved runtime controls for this agent instance.
     pub fn with_runtime_config(mut self, runtime: LibrarianRuntimeConfig) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    /// The CLI installs this flag from its Ctrl-C handler. Workers check it
+    /// only between atomic database item mutations, preserving an in-flight
+    /// provider call and its source-generation invariants.
+    pub fn with_cancellation_flag(mut self, cancellation_requested: Arc<AtomicBool>) -> Self {
+        self.cancellation_requested = cancellation_requested;
         self
     }
 
@@ -677,6 +691,10 @@ impl LibrarianAgent {
     }
 
     async fn processing_job_cancelled(&self, id: &RecordId) -> Result<bool> {
+        if self.cancellation_requested.load(Ordering::Acquire) {
+            self.repo.cancel_processing_job(id).await?;
+            return Ok(true);
+        }
         let current = self
             .repo
             .get_processing_job(&record_id_to_string(id))
@@ -754,24 +772,69 @@ impl LibrarianAgent {
         limit: usize,
         existing: Option<graphrag_db::ProcessingJob>,
     ) -> Result<ProcessingRunResult> {
-        let notes = self.repo.get_notes_without_entities(limit).await?;
-        let job = match existing {
-            Some(job) => job,
+        let (notes, job, resumed) = match existing {
+            Some(job) => {
+                if job.item_ids.is_empty() {
+                    return Err(crate::AgentError::Processing(
+                        "entity extraction job has no persisted item set; create a new job instead of resuming an ambiguous legacy job".into(),
+                    ));
+                }
+                let mut notes = Vec::with_capacity(job.item_ids.len());
+                for id in &job.item_ids {
+                    if let Some(note) = self.repo.get_note(id).await? {
+                        notes.push(note);
+                    }
+                }
+                (notes, job, true)
+            }
             None => {
-                self.repo
-                    .create_processing_job(
+                let notes = self.repo.get_notes_without_entities(limit).await?;
+                let item_ids = notes
+                    .iter()
+                    .filter_map(|note| note.id.as_ref().map(record_id_to_string))
+                    .collect::<Vec<_>>();
+                let job = self
+                    .repo
+                    .create_processing_job_with_scope(
                         ProcessingJobType::EntityExtraction,
                         None,
-                        notes.len() as u64,
+                        item_ids.len() as u64,
+                        Some(format!("missing_entities:limit={limit}")),
+                        item_ids,
                     )
-                    .await?
+                    .await?;
+                (notes, job, false)
             }
         };
         let job_id = job.id.clone().ok_or_else(|| {
             crate::AgentError::Processing("created processing job has no record id".into())
         })?;
-        let mut completed = u64::try_from(job.completed_count.max(0)).unwrap_or(0);
-        let mut failed = u64::try_from(job.failed_count.max(0)).unwrap_or(0);
+        // A resume reconciles the persisted item set from scratch. Historical
+        // failures are diagnostic evidence, not a terminal verdict: a repaired
+        // provider must be able to move the job back to `completed`.
+        let mut completed = if resumed {
+            0
+        } else {
+            u64::try_from(job.completed_count.max(0)).unwrap_or(0)
+        };
+        let mut failed = if resumed {
+            0
+        } else {
+            u64::try_from(job.failed_count.max(0)).unwrap_or(0)
+        };
+        if resumed {
+            self.repo
+                .update_processing_job(
+                    &job_id,
+                    ProcessingJobUpdate {
+                        completed_count: Some(0),
+                        failed_count: Some(0),
+                        last_error: Some(None),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+        }
         if notes.is_empty() {
             self.repo
                 .update_processing_job(
@@ -2170,8 +2233,8 @@ mod tests {
     };
     use crate::{DeterministicEmbedder, FixtureEntityExtractor};
     use graphrag_core::Note;
-    use graphrag_db::{init_memory, Repository, SourceImportAction};
-    use std::sync::Arc;
+    use graphrag_db::{init_memory, ProcessingJobStatus, Repository, SourceImportAction};
+    use std::sync::{atomic::AtomicBool, Arc};
 
     #[test]
     fn runtime_config_defaults_preserve_library_behavior() {
@@ -2246,5 +2309,79 @@ mod tests {
         assert_eq!(retry.cleanup.note_edges, 0);
         assert_eq!(retry.cleanup.note_conversation_provenance, 0);
         assert_eq!(retry.cleanup.note_message_provenance, 0);
+    }
+
+    #[tokio::test]
+    async fn entity_resume_reuses_its_persisted_scope_and_reconciles_prior_failures() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first = repo
+            .create_note(Note::new("first pending entity extraction"))
+            .await
+            .unwrap();
+        let second = repo
+            .create_note(Note::new("second pending entity extraction"))
+            .await
+            .unwrap();
+        let failed_run = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().fail_next_requests(1, "timeout")),
+        );
+        assert_eq!(failed_run.extract_entities_for_notes(2).await.unwrap(), 1);
+        let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
+        let job_id = job
+            .id
+            .as_ref()
+            .map(graphrag_core::record_id_to_string)
+            .unwrap();
+        assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
+        assert_eq!(job.scope.as_deref(), Some("missing_entities:limit=2"));
+        assert_eq!(job.item_ids.len(), 2);
+        assert!(job
+            .item_ids
+            .iter()
+            .any(|id| id == &graphrag_core::record_id_to_string(first.id.as_ref().unwrap())));
+        assert!(job
+            .item_ids
+            .iter()
+            .any(|id| id == &graphrag_core::record_id_to_string(second.id.as_ref().unwrap())));
+
+        let resumed = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .resume_processing_job(&job_id)
+        .await
+        .unwrap();
+        assert_eq!(resumed.completed, 2);
+        assert_eq!(resumed.failed, 0);
+        assert!(!resumed.cancelled);
+        assert_eq!(
+            repo.get_processing_job(&job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProcessingJobStatus::Completed.as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn in_process_cancellation_is_observed_between_job_items() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("pending entity extraction"))
+            .await
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(cancelled);
+        assert_eq!(librarian.extract_entities_for_notes(1).await.unwrap(), 0);
+        let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.status, ProcessingJobStatus::Cancelled.as_str());
     }
 }

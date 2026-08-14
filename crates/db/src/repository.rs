@@ -98,6 +98,9 @@ pub struct ProcessingJob {
     pub id: Option<RecordId>,
     pub job_type: String,
     pub source_generation: Option<String>,
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub item_ids: Vec<String>,
     pub status: String,
     pub total_count: i64,
     pub completed_count: i64,
@@ -212,16 +215,38 @@ impl Repository {
         source_generation: Option<String>,
         total_count: u64,
     ) -> Result<ProcessingJob> {
+        self.create_processing_job_with_scope(
+            job_type,
+            source_generation,
+            total_count,
+            None,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Persist the exact item set selected for a bounded job. Resume uses this
+    /// durable scope instead of silently substituting a new page of notes.
+    pub async fn create_processing_job_with_scope(
+        &self,
+        job_type: ProcessingJobType,
+        source_generation: Option<String>,
+        total_count: u64,
+        scope: Option<String>,
+        item_ids: Vec<String>,
+    ) -> Result<ProcessingJob> {
         let job: Option<ProcessingJob> = self
             .db
             .query(
-                "CREATE processing_job SET job_type = $job_type, source_generation = $source_generation, \
+                "CREATE processing_job SET job_type = $job_type, source_generation = $source_generation, scope = $scope, item_ids = $item_ids, \
                  status = 'running', total_count = $total_count, completed_count = 0, failed_count = 0, \
                  checkpoint = NONE, last_error = NONE, created_at = time::now(), updated_at = time::now(), \
                  finished_at = NONE RETURN AFTER",
             )
             .bind(("job_type", job_type.as_str()))
             .bind(("source_generation", source_generation))
+            .bind(("scope", scope))
+            .bind(("item_ids", item_ids))
             .bind(("total_count", count_to_i64(total_count)?))
             .await?
             .take(0)?;
@@ -5084,10 +5109,18 @@ mod tests {
     async fn processing_job_checkpoint_cancel_and_resume_are_durable() {
         let repo = Repository::new(init_memory().await.unwrap());
         let job = repo
-            .create_processing_job(ProcessingJobType::Embedding, Some("source:7/2".into()), 3)
+            .create_processing_job_with_scope(
+                ProcessingJobType::Embedding,
+                Some("source:7/2".into()),
+                3,
+                Some("missing_embeddings".into()),
+                vec!["note:one".into(), "note:two".into(), "note:three".into()],
+            )
             .await
             .unwrap();
         let id = job.id.clone().unwrap();
+        assert_eq!(job.scope.as_deref(), Some("missing_embeddings"));
+        assert_eq!(job.item_ids.len(), 3);
         let updated = repo
             .update_processing_job(
                 &id,

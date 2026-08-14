@@ -221,8 +221,8 @@ impl CacheKey {
             .collect::<String>();
         let input_hash = hash(&normalized);
         let semantic = format!(
-            "operation={operation}\0provider={}\0model={}\0version={version}\0input={input_hash}",
-            capability.provider, capability.model
+            "operation={operation}\0provider={}\0model={}\0provider_settings={}\0version={version}\0input={input_hash}",
+            capability.provider, capability.model, capability.cache_identity
         );
         Self {
             key: hash(&semantic),
@@ -511,7 +511,7 @@ impl EntityExtractor for ResilientEntityExtractor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DeterministicEmbedder;
+    use crate::{DeterministicEmbedder, FixtureEntityExtractor};
     use graphrag_db::init_memory;
     use std::sync::atomic::AtomicUsize;
 
@@ -572,6 +572,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn structured_cache_key_includes_schema_and_provider_settings() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first: Arc<dyn EntityExtractor> = Arc::new(
+            FixtureEntityExtractor::default().with_cache_identity("strict=true;max_entities=5"),
+        );
+        let first =
+            ResilientEntityExtractor::new(first, Some(repo.clone()), ProcessingConfig::default());
+        first.extract("same input").await.unwrap();
+        assert_eq!(first.stats().cache_hits, 0);
+
+        let changed: Arc<dyn EntityExtractor> = Arc::new(
+            FixtureEntityExtractor::default().with_cache_identity("strict=false;max_entities=5"),
+        );
+        let changed =
+            ResilientEntityExtractor::new(changed, Some(repo), ProcessingConfig::default());
+        changed.extract("same input").await.unwrap();
+        assert_eq!(
+            changed.stats().cache_hits,
+            0,
+            "setting change must miss cache"
+        );
+    }
+
+    #[tokio::test]
     async fn retries_stop_at_attempt_ceiling() {
         let inner: Arc<dyn Embedder> =
             Arc::new(DeterministicEmbedder::default().fail_next_requests(10, "timeout"));
@@ -622,6 +646,7 @@ mod tests {
                 model: "probe".into(),
                 endpoint: "offline://probe".into(),
                 known_dimension: Some(1024),
+                cache_identity: "probe-v1".into(),
             }
         }
     }
