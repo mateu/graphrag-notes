@@ -809,8 +809,32 @@ fn nearest_boundary_right(text: &str, mut index: usize) -> usize {
 fn normalized_tokens(text: &str) -> HashSet<String> {
     text.split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
-        .map(|token| token.to_lowercase())
+        .flat_map(|token| {
+            // Whitespace-delimited scripts retain word tokens. A run in a
+            // script that normally omits spaces (CJK/Japanese/Korean) is
+            // represented by Unicode scalars so nearly identical records
+            // still share most of their evidence.
+            if token.chars().any(is_unspaced_script_char) {
+                token
+                    .chars()
+                    .map(|ch| ch.to_lowercase().to_string())
+                    .collect()
+            } else {
+                vec![token.to_lowercase()]
+            }
+        })
         .collect()
+}
+
+fn is_unspaced_script_char(ch: char) -> bool {
+    matches!(ch as u32,
+        0x3040..=0x30ff // Hiragana and Katakana
+        | 0x3400..=0x4dbf // CJK Unified Ideographs Extension A
+        | 0x4e00..=0x9fff // CJK Unified Ideographs
+        | 0xac00..=0xd7af // Hangul syllables
+        | 0xf900..=0xfaff // CJK compatibility ideographs
+        | 0x20000..=0x2ebef // supplementary CJK extensions
+    )
 }
 
 fn jaccard_similarity(left: &HashSet<String>, right: &HashSet<String>) -> f32 {
@@ -991,6 +1015,30 @@ mod tests {
             0,
         );
 
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
+    }
+
+    #[test]
+    fn near_identical_unspaced_cjk_records_share_granular_tokens() {
+        let first = "天地玄黃宇宙洪荒日月盈昃辰宿列張";
+        let second = "天地玄黃宇宙洪荒日月盈昃辰宿列章";
+        let first_tokens = normalized_tokens(first);
+        let second_tokens = normalized_tokens(second);
+        assert!(jaccard_similarity(&first_tokens, &second_tokens) >= 0.85);
+        assert_eq!(normalized_tokens("alpha beta").len(), 2);
+        assert_eq!(normalized_tokens("привет мир").len(), 2);
+
+        let mut duplicate_options = options();
+        duplicate_options.near_duplicate_threshold = 0.85;
+        let context = build_augment_context_from_hits(
+            "天地".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit("n:cjk-a", 0.9, first), hit("n:cjk-b", 0.8, second)],
+            duplicate_options,
+            0,
+        );
         assert_eq!(context.chunks.len(), 1);
         assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
     }
