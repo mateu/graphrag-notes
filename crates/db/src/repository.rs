@@ -2647,12 +2647,18 @@ impl Repository {
             .as_ref()
             .ok_or_else(|| DbError::CreateFailed("source id".into()))?
             .clone();
-        source.successful_generation = source.generation;
-        source.status = SourceIngestionStatus::Ready;
-        source.last_error = None;
-        source.updated_at = chrono::Utc::now();
-        source.last_ingested_at = Some(source.updated_at);
-        self.replace_source(source).await?;
+        // Do not update the caller's in-memory source until the visibility
+        // transition is durable. Callers use this state to distinguish a
+        // pre-promotion failure (safe to discard staged notes) from a later
+        // cleanup failure (new generation must remain intact for recovery).
+        let mut promoted = source.clone();
+        promoted.successful_generation = promoted.generation;
+        promoted.status = SourceIngestionStatus::Ready;
+        promoted.last_error = None;
+        promoted.updated_at = chrono::Utc::now();
+        promoted.last_ingested_at = Some(promoted.updated_at);
+        self.replace_source(&promoted).await?;
+        *source = promoted;
         // Promotion makes older source generations invisible even if their
         // destructive cleanup is interrupted. Retire their pending proposals
         // at the same durable boundary so batch acceptance cannot create an
@@ -2672,6 +2678,12 @@ impl Repository {
             .id
             .as_ref()
             .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+        // A process can stop after promotion but before proposal retargeting
+        // or old-generation deletion. Retry retargeting before cleanup so an
+        // accepted proposal's audit and undo path follows its visible staged
+        // replacement instead of being retired with the old generation.
+        self.retarget_reconciled_proposals(source_id, source.successful_generation)
+            .await?;
         self.delete_source_notes(source_id, Some(source.successful_generation), true)
             .await
     }
@@ -4403,6 +4415,89 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn post_promotion_failure_keeps_new_generation_for_recovery() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut import = begin_markdown(&repo, "durably promoted", false).await;
+        let source_id = import.source.id.as_ref().unwrap().clone();
+        let staged = repo
+            .create_note(
+                Note::new("new generation remains visible")
+                    .with_source(source_id.clone())
+                    .with_source_generation(import.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("manual endpoint"))
+            .await
+            .unwrap();
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                staged.id.as_ref().unwrap(),
+                manual.id.as_ref().unwrap(),
+                0.9,
+                "force a post-promotion retarget failure".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let (edge_id, _) = repo
+            .create_audited_edge(
+                staged.id.as_ref().unwrap(),
+                manual.id.as_ref().unwrap(),
+                EdgeType::RelatedTo,
+                Some(0.9),
+                Some("staged proposal-backed edge"),
+                "test",
+                Some(&proposal_id),
+                false,
+            )
+            .await
+            .unwrap();
+
+        // The proposal is deliberately still pending, so retargeting fails
+        // after `replace_source` durably promoted this generation.
+        assert!(repo.complete_file_import(&mut import.source).await.is_err());
+        let stored = repo
+            .get_source(&record_id_to_string(&source_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, SourceIngestionStatus::Ready);
+        assert_eq!(stored.successful_generation, stored.generation);
+        assert!(repo
+            .get_note(&record_id_to_string(staged.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+
+        // Repair the injected inconsistency, then exercise the unchanged-hash
+        // recovery path. It retries retargeting/cleanup without deleting the
+        // already promoted current generation.
+        repo.db
+            .query(
+                "UPDATE $proposal SET status = 'accepted', resulting_edge_id = $edge, updated_at = time::now()",
+            )
+            .bind(("proposal", proposal_id.clone()))
+            .bind(("edge", edge_id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let recovered = begin_markdown(&repo, "durably promoted", false).await;
+        assert_eq!(recovered.action, SourceImportAction::Unchanged);
+        assert!(repo.note_edge_exists(&edge_id).await.unwrap());
+        assert!(repo
+            .get_note(&record_id_to_string(staged.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
