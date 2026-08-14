@@ -184,6 +184,65 @@ fn markdown_chunk_anchors_from_notes(notes: &[Note]) -> Vec<MarkdownChunkAnchor>
         .collect()
 }
 
+/// Build anchors for an existing source generation. Before v008, sourced
+/// Markdown notes had a successful generation but no chunk provenance. On
+/// their first refresh, recover heading context only from a unique exact
+/// staged-content match. This is deliberately conservative: duplicate or
+/// otherwise ambiguous legacy text receives no inferred structural identity.
+///
+/// A one-chunk edit between two recovered anchors in the same heading is also
+/// safe to align. That mirrors the normal structural-successor rule while
+/// avoiding the mutable ordinal/location fallbacks that could transfer a
+/// dependent to unrelated content after insertions or removals.
+fn markdown_chunk_anchors_from_existing_notes(
+    notes: &[Note],
+    staged: &[MarkdownChunkAnchor],
+) -> Vec<MarkdownChunkAnchor> {
+    let mut anchors = notes
+        .iter()
+        .map(|note| MarkdownChunkAnchor {
+            heading_path: note.chunk_heading_path.clone(),
+            content: note.content.clone(),
+        })
+        .collect::<Vec<_>>();
+    let legacy_without_context = notes
+        .iter()
+        .map(|note| note.chunk_key.is_none() && note.chunk_heading_path.is_empty())
+        .collect::<Vec<_>>();
+
+    for (index, note) in notes.iter().enumerate() {
+        if !legacy_without_context[index] {
+            continue;
+        }
+        let mut candidates = staged
+            .iter()
+            .filter(|candidate| candidate.content == note.content);
+        let Some(candidate) = candidates.next() else {
+            continue;
+        };
+        if candidates.next().is_none() {
+            anchors[index].heading_path = candidate.heading_path.clone();
+        }
+    }
+
+    // A locally changed legacy chunk has no exact content anchor of its own.
+    // Infer only the common context immediately bounded by two recovered
+    // anchors; `align_markdown_chunk_sequences` still requires the same
+    // one-for-one neighborhood in both generations before accepting it.
+    for index in 1..anchors.len().saturating_sub(1) {
+        if !legacy_without_context[index] || !anchors[index].heading_path.is_empty() {
+            continue;
+        }
+        let before = &anchors[index - 1].heading_path;
+        let after = &anchors[index + 1].heading_path;
+        if !before.is_empty() && before == after {
+            anchors[index].heading_path = before.clone();
+        }
+    }
+
+    anchors
+}
+
 fn markdown_chunk_anchors_from_chunks(chunks: &[Chunk]) -> Vec<MarkdownChunkAnchor> {
     chunks
         .iter()
@@ -315,8 +374,8 @@ fn markdown_chunk_successors(
     existing: &[Note],
     staged: &[Note],
 ) -> Vec<(RecordId, RecordId, bool)> {
-    let existing_anchors = markdown_chunk_anchors_from_notes(existing);
     let staged_anchors = markdown_chunk_anchors_from_notes(staged);
+    let existing_anchors = markdown_chunk_anchors_from_existing_notes(existing, &staged_anchors);
     align_markdown_chunk_sequences(&existing_anchors, &staged_anchors)
         .into_iter()
         .filter_map(|matched| {
@@ -1814,8 +1873,9 @@ impl LibrarianAgent {
             return Ok(Vec::new());
         }
 
-        let existing_anchors = markdown_chunk_anchors_from_notes(existing_chunks);
         let staged_anchors = markdown_chunk_anchors_from_chunks(&chunks);
+        let existing_anchors =
+            markdown_chunk_anchors_from_existing_notes(existing_chunks, &staged_anchors);
         let matches_by_staged = align_markdown_chunk_sequences(&existing_anchors, &staged_anchors)
             .into_iter()
             .map(|matched| (matched.staged_index, matched))
@@ -2940,6 +3000,36 @@ mod tests {
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
+
+    /// Seed the shape produced by a pre-v008 Markdown import. Those records
+    /// belonged to a successful source generation but lacked all structural
+    /// chunk provenance; v008 cannot retroactively derive it from stored
+    /// chunk bodies alone.
+    async fn clear_v008_markdown_metadata(repo: &Repository, notes: &[Note]) {
+        for note in notes {
+            let mut legacy = note.clone();
+            legacy.chunk_key = None;
+            legacy.chunk_location_key = None;
+            legacy.chunk_ordinal = None;
+            legacy.chunk_heading_path.clear();
+            legacy.source_start_line = None;
+            legacy.source_end_line = None;
+            legacy.source_start_byte = None;
+            legacy.source_end_byte = None;
+            legacy.chunk_overlap_from = None;
+            legacy.chunk_overlap_chars = None;
+            legacy.split_fenced_code = false;
+            legacy.content_hash = None;
+            // v008's migration fills legacy search text from the body.
+            legacy.search_content = Some(legacy.content.clone());
+            repo.update_note(
+                &record_id_to_string(legacy.id.as_ref().expect("persisted legacy note")),
+                legacy,
+            )
+            .await
+            .unwrap();
+        }
+    }
 
     #[derive(Clone)]
     struct CancellingFallbackEmbedder {
@@ -4344,6 +4434,127 @@ mod tests {
                 && edge.out_id == *after_new
                 && edge.is_manual
         }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_upgrades_legacy_chunks_on_first_forced_refresh() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            chunk_overlap: 0,
+            ..Default::default()
+        });
+        let original = "# Plan\n\nFirst stable paragraph has enough content.\n\nMiddle stable paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("legacy-forced-refresh.md", original, false)
+            .await
+            .unwrap();
+        let first_old = first.notes[0].id.as_ref().unwrap().clone();
+        let after_old = first.notes[2].id.as_ref().unwrap().clone();
+        let mut entity = Entity::new("Legacy Anchor", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(&first_old, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(&first_old, &after_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        clear_v008_markdown_metadata(&repo, &first.notes).await;
+        let source_id = first.notes[0].source_id.as_ref().unwrap();
+        let legacy = repo.get_source_chunks(source_id).await.unwrap();
+        assert_eq!(legacy.len(), 3);
+        assert!(legacy.iter().all(|note| note.chunk_key.is_none()));
+
+        // A forced identical refresh is the first opportunity to attach v008
+        // metadata. Exact legacy chunks must carry both extracted and manual
+        // dependents into the copy-on-write generation.
+        let refreshed = librarian
+            .ingest_markdown_with_options("legacy-forced-refresh.md", original, true)
+            .await
+            .unwrap();
+        let first_new = refreshed.notes[0].id.as_ref().unwrap();
+        let after_new = refreshed.notes[2].id.as_ref().unwrap();
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(first_new))
+                .await
+                .unwrap()
+                .iter()
+                .map(|entity| entity.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Legacy Anchor"]
+        );
+        assert!(repo
+            .get_note_edges(&record_id_to_string(first_new))
+            .await
+            .unwrap()
+            .iter()
+            .any(|edge| {
+                edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *first_new
+                    && edge.out_id == *after_new
+            }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_upgrades_legacy_chunks_on_first_changed_refresh() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            chunk_overlap: 0,
+            ..Default::default()
+        });
+        let original = "# Plan\n\nBefore stable paragraph has enough content.\n\nMiddle original paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("legacy-changed-refresh.md", original, false)
+            .await
+            .unwrap();
+        let middle_old = first.notes[1].id.as_ref().unwrap().clone();
+        let after_old = first.notes[2].id.as_ref().unwrap().clone();
+        repo.create_edge(&middle_old, &after_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+        clear_v008_markdown_metadata(&repo, &first.notes).await;
+
+        let replacement = "Middle replacement paragraph has enough content.";
+        let changed = format!(
+            "# Plan\n\nBefore stable paragraph has enough content.\n\n{replacement}\n\nAfter stable paragraph has enough content."
+        );
+        // The changed middle chunk is structurally bounded by two unique
+        // recovered anchors. Its graph edge is safe to preserve, while its
+        // content-derived mentions remain eligible for new extraction.
+        let refreshed = librarian
+            .ingest_markdown_with_options("legacy-changed-refresh.md", &changed, false)
+            .await
+            .unwrap();
+        let middle_new = refreshed.notes[1].id.as_ref().unwrap();
+        let after_new = refreshed.notes[2].id.as_ref().unwrap();
+        assert_eq!(refreshed.notes[1].content, replacement);
+        assert!(repo
+            .get_note_edges(&record_id_to_string(middle_new))
+            .await
+            .unwrap()
+            .iter()
+            .any(|edge| {
+                edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *middle_new
+                    && edge.out_id == *after_new
+            }));
     }
 
     #[tokio::test]

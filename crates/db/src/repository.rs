@@ -696,15 +696,19 @@ impl Repository {
     /// Return the current persisted Markdown chunks for one source. The caller
     /// uses this before staging a new source generation to retain IDs and
     /// embeddings for chunks whose deterministic key/content are unchanged.
+    ///
+    /// Pre-v008 Markdown imports did not persist `chunk_key`, but they did set
+    /// `source_generation`. Include those successful legacy notes so their
+    /// first v008-era refresh can reconcile safe successors instead of
+    /// deleting their graph dependents as an unrelated generation.
     #[instrument(skip(self, source_id))]
     pub async fn get_source_chunks(&self, source_id: &RecordId) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
             .query(
                 "SELECT * FROM note WHERE source_id = $source_id \
-                 AND chunk_key IS NOT NONE \
                  AND source_generation = source_id.successful_generation \
-                 ORDER BY chunk_ordinal ASC, id ASC",
+                 ORDER BY chunk_ordinal ASC, created_at ASC, id ASC",
             )
             .bind(("source_id", source_id.clone()))
             .await?
