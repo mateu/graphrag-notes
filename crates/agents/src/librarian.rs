@@ -2,9 +2,8 @@
 
 use crate::{
     chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker},
-    classify_retry,
     inference::validate_embedding_dim,
-    Result, RetryClassification, SharedEmbedder, SharedEntityExtractor,
+    Result, SharedEmbedder, SharedEntityExtractor,
 };
 use graphrag_core::{
     normalize_file_uri, normalized_content_hash, record_id_to_string, ChatConversation, ChatExport,
