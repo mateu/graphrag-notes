@@ -34,23 +34,16 @@ pub trait TokenCounter: Send + Sync {
 
 /// A deterministic, deliberately conservative tokenizer-free estimate.
 ///
-/// Every ASCII non-whitespace scalar is charged separately, while non-ASCII
-/// scalars are charged by UTF-8 byte length. This deliberately treats hashes,
-/// URLs, opaque identifiers, CJK, and emoji as a safe upper bound rather than
-/// under-counting a model tokenizer. This is suitable for hard-budget fallback
-/// mode.
+/// Every scalar, including whitespace, is charged by its UTF-8 byte length.
+/// This deliberately treats hashes, URLs, opaque identifiers, CJK, emoji, and
+/// long indentation as a safe upper bound rather than under-counting a model
+/// tokenizer. This is suitable for hard-budget fallback mode.
 #[derive(Debug, Default)]
 pub struct ConservativeTokenCounter;
 
 impl TokenCounter for ConservativeTokenCounter {
     fn count(&self, text: &str) -> usize {
-        let mut count = 0usize;
-        for ch in text.chars() {
-            if !ch.is_whitespace() {
-                count += if ch.is_ascii() { 1 } else { ch.len_utf8() };
-            }
-        }
-        count
+        text.chars().map(char::len_utf8).sum()
     }
 
     fn mode(&self) -> TokenCountMode {
@@ -1046,7 +1039,7 @@ mod tests {
     #[test]
     fn late_query_span_is_preferred_without_invalid_utf8_or_unbalanced_fences() {
         let text = "irrelevant first sentence. ```rust\nlet early = true;\n```\nmore filler. the unicode café target phrase is here. trailing filler.";
-        let clipped = clip_query_aware(text, "café target", 18, &ConservativeTokenCounter);
+        let clipped = clip_query_aware(text, "café target", 20, &ConservativeTokenCounter);
         assert!(clipped.snippet.contains("café target"));
         assert_eq!(clipped.snippet.matches("```").count() % 2, 0);
         assert!(std::str::from_utf8(clipped.snippet.as_bytes()).is_ok());
@@ -1101,7 +1094,7 @@ mod tests {
         ]
         .join(". ");
         let mut duplicate_options = options();
-        duplicate_options.max_chunk_tokens = 8;
+        duplicate_options.max_chunk_tokens = 16;
         duplicate_options.near_duplicate_threshold = 0.95;
         let context = build_augment_context_from_hits(
             "target".into(),
@@ -1202,9 +1195,9 @@ mod tests {
     #[test]
     fn full_cjk_query_beats_an_earlier_shared_character() {
         let text = "目甲乙丙丁戊己庚辛壬癸目標片段後續說明";
-        let clipped = clip_query_aware(text, "目標片段", 18, &ConservativeTokenCounter);
+        let clipped = clip_query_aware(text, "目標片段", 20, &ConservativeTokenCounter);
         assert!(clipped.snippet.contains("目標片段"));
-        assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 18);
+        assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 20);
     }
 
     #[test]
@@ -1227,7 +1220,7 @@ mod tests {
         assert_eq!(ConservativeTokenCounter.count("😀"), 4);
         let mut multilingual_options = options();
         multilingual_options.max_total_tokens = 80;
-        multilingual_options.max_chunk_tokens = 18;
+        multilingual_options.max_chunk_tokens = 20;
         let context = build_augment_context_from_hits(
             "搜尋目標".into(),
             SearchScope::Notes,
@@ -1243,7 +1236,7 @@ mod tests {
         assert!(context.total_tokens <= 80);
         assert_eq!(context.chunks.len(), 1);
         assert!(context.chunks[0].snippet.contains("搜尋目標"));
-        assert!(context.chunks[0].approx_tokens <= 18);
+        assert!(context.chunks[0].approx_tokens <= 20);
         assert!(std::str::from_utf8(context.chunks[0].snippet.as_bytes()).is_ok());
     }
 
@@ -1263,6 +1256,32 @@ mod tests {
         assert_eq!(context.chunks.len(), 1);
         assert!(context.total_tokens <= 80);
         assert!(std::str::from_utf8(context.chunks[0].snippet.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn whitespace_heavy_context_is_counted_and_stays_within_budget() {
+        assert_eq!(ConservativeTokenCounter.count("a          b"), 12);
+        let mut whitespace_options = options();
+        whitespace_options.max_total_tokens = 100;
+        whitespace_options.max_chunk_tokens = 30;
+        let context = build_augment_context_from_hits(
+            "needle".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit(
+                "n:whitespace",
+                0.9,
+                "needle\n                        deeply indented context that must be clipped",
+            )],
+            whitespace_options,
+            0,
+        );
+        assert_eq!(context.chunks.len(), 1);
+        assert!(context.total_tokens <= 100);
+        assert_eq!(
+            context.total_tokens,
+            ConservativeTokenCounter.count(&context.render_prompt_block())
+        );
     }
 
     #[test]
