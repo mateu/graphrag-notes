@@ -90,6 +90,12 @@ pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunk_overlap_chars: Option<u64>,
 
+    /// True only when an oversized fenced code block had to be split to
+    /// satisfy the configured hard chunk limit.
+    #[serde(default)]
+    #[surreal(default)]
+    pub split_fenced_code: bool,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
 
@@ -141,6 +147,7 @@ impl Note {
             source_end_byte: None,
             chunk_overlap_from: None,
             chunk_overlap_chars: None,
+            split_fenced_code: false,
             content_hash: None,
             search_content: None,
             entity_ids: Vec::new(),
@@ -193,6 +200,7 @@ impl Note {
         end_byte: usize,
         overlap_from: Option<String>,
         overlap_chars: usize,
+        split_fenced_code: bool,
         content_hash: String,
         search_content: String,
     ) -> Self {
@@ -206,6 +214,7 @@ impl Note {
         self.source_end_byte = Some(end_byte as u64);
         self.chunk_overlap_from = overlap_from;
         self.chunk_overlap_chars = (overlap_chars > 0).then_some(overlap_chars as u64);
+        self.split_fenced_code = split_fenced_code;
         self.content_hash = Some(content_hash);
         self.search_content = Some(search_content);
         self

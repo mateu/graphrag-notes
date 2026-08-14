@@ -150,6 +150,7 @@ fn note_from_markdown_chunk(chunk: &Chunk, embedding: Vec<f32>) -> Note {
             chunk.end_byte,
             chunk.overlap_from.clone(),
             chunk.overlap_chars,
+            chunk.split_fenced_code,
             chunk.content_hash.clone(),
             chunk.search_text.clone(),
         )
@@ -1414,10 +1415,11 @@ impl LibrarianAgent {
     }
 
     /// Chunk Markdown with structural metadata, then reconcile it with the
-    /// previous successful source generation. Exact key/hash matches preserve
-    /// the note record and its embedding; a changed structural location keeps
-    /// the record but receives a new embedding; only new locations are
-    /// created. `complete_file_import` then safely cascades removed chunks.
+    /// previous successful source generation. Exact key/hash matches reuse
+    /// embeddings; each pending generation is written copy-on-write so a
+    /// failed refresh cannot mutate or hide the last successful corpus.
+    /// `complete_file_import` then promotes and safely cascades the prior
+    /// generation.
     async fn chunk_and_create_markdown_notes(
         &self,
         content: &str,
@@ -1521,16 +1523,14 @@ impl LibrarianAgent {
             if let Some(generation) = source_generation {
                 note = note.with_source_generation(generation);
             }
-            let note = if let Some(existing) = existing {
-                let existing_id = existing.id.as_ref().ok_or_else(|| {
-                    crate::AgentError::Processing("existing chunk has no note id".into())
-                })?;
-                self.repo
-                    .update_note(&record_id_to_string(existing_id), note)
-                    .await?
-            } else {
-                self.repo.create_note(note).await?
-            };
+            // Keep the creation time for a structural successor. Even though
+            // staged generations use a fresh record ID for crash-safe
+            // copy-on-write, creation ordering and `since` search semantics
+            // remain stable for unchanged/reconciled chunks.
+            if let Some(existing) = existing {
+                note.created_at = existing.created_at;
+            }
+            let note = self.repo.create_note(note).await?;
             notes.push(note);
         }
         Ok(notes)
@@ -2571,7 +2571,7 @@ mod tests {
         LibrarianAgent, LibrarianRuntimeConfig,
     };
     use crate::{DeterministicEmbedder, FixtureEntityExtractor, InferenceCapabilities};
-    use graphrag_core::{record_id_to_string, Note};
+    use graphrag_core::{normalized_content_hash, record_id_to_string, Note};
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
         init_memory, ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository,
@@ -3516,7 +3516,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.notes.len(), 2);
-        let stable_before = first.notes[1].id.as_ref().map(record_id_to_string).unwrap();
+        let stable_key_before = first.notes[1].chunk_key.clone();
+        let stable_embedding_before = first.notes[1].embedding.clone();
+        let stable_created_at = first.notes[1].created_at;
         assert_eq!(first.notes[1].chunk_heading_path, vec!["Planning"]);
         assert!(first.notes[1].source_start_byte.is_some());
         assert!(first.notes[1]
@@ -3531,15 +3533,114 @@ mod tests {
             .unwrap();
         assert_eq!(second.notes.len(), 2);
         assert_eq!(second.action, SourceImportAction::Updated);
-        let stable_after = second.notes[1]
-            .id
-            .as_ref()
-            .map(record_id_to_string)
-            .unwrap();
-        assert_eq!(stable_before, stable_after);
-        assert_eq!(first.notes[0].id, second.notes[0].id);
+        assert_eq!(stable_key_before, second.notes[1].chunk_key);
+        assert_eq!(stable_embedding_before, second.notes[1].embedding);
+        assert_eq!(stable_created_at, second.notes[1].created_at);
+        assert_ne!(first.notes[0].id, second.notes[0].id);
         assert_ne!(first.notes[0].content_hash, second.notes[0].content_hash);
         assert_ne!(first.notes[0].embedding, second.notes[0].embedding);
         assert_eq!(repo.fulltext_search("Planning", 10).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_markdown_reconciliation_keeps_the_successful_generation_visible() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let original = "# Plan\n\nFirst stable paragraph has enough content.\n\nSecond stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("copy-on-write.md", original, false)
+            .await
+            .unwrap();
+        let source_id = first.notes[0].source_id.clone().unwrap();
+        let successful = repo.get_source_chunks(&source_id).await.unwrap();
+        let successful_ids = successful
+            .iter()
+            .map(|note| note.id.clone().unwrap())
+            .collect::<Vec<_>>();
+
+        let changed = "# Plan\n\nFirst changed paragraph has enough content.\n\nSecond stable paragraph has enough content.";
+        let mut pending = repo
+            .begin_file_import(
+                graphrag_core::SourceType::Markdown,
+                "copy-on-write.md".into(),
+                first.source_uri.clone(),
+                changed.into(),
+                normalized_content_hash(changed),
+                false,
+            )
+            .await
+            .unwrap();
+        let staged = librarian
+            .chunk_and_create_markdown_notes(
+                changed,
+                pending.source.id.clone(),
+                Some(pending.source.generation),
+                &successful,
+            )
+            .await
+            .unwrap();
+        assert!(staged
+            .iter()
+            .all(|note| !successful_ids.contains(note.id.as_ref().unwrap())));
+
+        repo.fail_file_import(&mut pending.source, "simulated promotion failure")
+            .await
+            .unwrap();
+        let restored = repo.get_source_chunks(&source_id).await.unwrap();
+        assert_eq!(
+            restored
+                .iter()
+                .map(|note| note.id.clone().unwrap())
+                .collect::<Vec<_>>(),
+            successful_ids
+        );
+        assert_eq!(
+            repo.fulltext_search("First stable", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(repo
+            .fulltext_search("First changed", 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn oversized_fenced_code_split_marker_is_persisted() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 5,
+            target_chunk_size: 10,
+            max_chunk_size: 16,
+            ..Default::default()
+        });
+        let imported = librarian
+            .ingest_markdown_with_options(
+                "split-fence.md",
+                "```text\n0123456789012345678901234567890123456789\n```",
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(!imported.notes.is_empty());
+        assert!(imported.notes.iter().all(|note| note.split_fenced_code));
     }
 }
