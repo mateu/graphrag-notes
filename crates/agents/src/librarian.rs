@@ -2,9 +2,8 @@
 
 use crate::{
     chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker},
-    classify_retry,
     inference::validate_embedding_dim,
-    Result, RetryClassification, SharedEmbedder, SharedEntityExtractor,
+    Result, SharedEmbedder, SharedEntityExtractor,
 };
 use graphrag_core::{
     normalize_file_uri, normalized_content_hash, record_id_to_string, ChatConversation, ChatExport,
@@ -336,7 +335,7 @@ fn no_processing_work() -> ProcessingRunResult {
 }
 
 fn entity_job_force_clear(scope: Option<&str>) -> bool {
-    scope.is_some_and(|scope| scope.split(';').any(|part| part == "force=true"))
+    scope.is_some_and(|scope| scope.split([';', ':']).any(|part| part == "force=true"))
 }
 
 fn entity_job_page_size(scope: Option<&str>, fallback: usize) -> usize {
