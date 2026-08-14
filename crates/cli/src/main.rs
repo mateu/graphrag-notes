@@ -621,14 +621,23 @@ fn extraction_processing_config(
     Ok(processing)
 }
 
+/// Record an interrupt and return whether graceful cancellation was already
+/// requested. A second interrupt is therefore an explicit force-exit signal.
+fn request_cancellation(requested: &AtomicBool) -> bool {
+    requested.swap(true, Ordering::AcqRel)
+}
+
 fn install_cancellation_handler() -> Arc<AtomicBool> {
     let requested = Arc::new(AtomicBool::new(false));
     let listener = requested.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            listener.store(true, Ordering::Release);
+        while tokio::signal::ctrl_c().await.is_ok() {
+            if request_cancellation(&listener) {
+                eprintln!("Second Ctrl-C received; exiting immediately.");
+                std::process::exit(130);
+            }
             eprintln!(
-                "Cancellation requested; finishing the current item and saving its checkpoint..."
+                "Cancellation requested; finishing the current item and saving its checkpoint. Press Ctrl-C again to exit immediately."
             );
         }
     });
@@ -2703,6 +2712,14 @@ mod tests {
         assert!(delete_is_dry_run(false, false));
         assert!(delete_is_dry_run(true, false));
         assert!(!delete_is_dry_run(false, true));
+    }
+
+    #[test]
+    fn second_cancellation_request_is_a_force_exit_signal() {
+        let requested = AtomicBool::new(false);
+        assert!(!request_cancellation(&requested));
+        assert!(requested.load(Ordering::Acquire));
+        assert!(request_cancellation(&requested));
     }
 
     #[test]
