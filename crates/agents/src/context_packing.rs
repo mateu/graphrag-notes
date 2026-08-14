@@ -34,9 +34,10 @@ pub trait TokenCounter: Send + Sync {
 
 /// A deterministic, deliberately conservative tokenizer-free estimate.
 ///
-/// Word-like runs are split into three-character pieces and punctuation is
-/// charged separately. This modestly over-counts common BPE tokenizers and is
-/// suitable for enforcing a hard budget in fallback mode.
+/// ASCII word-like runs are split into three-character pieces; every non-ASCII
+/// alphanumeric scalar and punctuation mark is charged separately. The latter
+/// avoids under-counting CJK and other scripts that do not use whitespace. This
+/// is suitable for enforcing a hard budget in fallback mode.
 #[derive(Debug, Default)]
 pub struct ConservativeTokenCounter;
 
@@ -45,14 +46,14 @@ impl TokenCounter for ConservativeTokenCounter {
         let mut count = 0usize;
         let mut word_len = 0usize;
         for ch in text.chars() {
-            if ch.is_alphanumeric() || ch == '_' {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
                 word_len += 1;
             } else {
                 if word_len > 0 {
                     count += word_len.div_ceil(3);
                     word_len = 0;
                 }
-                if !ch.is_whitespace() {
+                if ch.is_alphanumeric() || !ch.is_whitespace() {
                     count += 1;
                 }
             }
@@ -213,14 +214,14 @@ pub(crate) fn build_augment_context_from_hits(
         candidates.push(candidate);
     }
 
-    let mut chunks = Vec::new();
+    let mut selected = Vec::new();
     let mut dropped_near_duplicates = 0usize;
     let mut dropped_for_budget = 0usize;
 
-    while !candidates.is_empty() && chunks.len() < options.max_chunks {
-        let selected_tokens = chunks
+    while !candidates.is_empty() && selected.len() < options.max_chunks {
+        let selected_tokens = selected
             .iter()
-            .map(|chunk: &AugmentChunk| normalized_tokens(&chunk.snippet))
+            .map(|selected: &SelectedChunk| selected.full_tokens.clone())
             .collect::<Vec<_>>();
         let next_index = candidates
             .iter()
@@ -240,21 +241,33 @@ pub(crate) fn build_augment_context_from_hits(
         let candidate = candidates.swap_remove(next_index);
 
         let tokens = normalized_tokens(candidate.content());
-        if chunks.iter().any(|chunk| {
-            jaccard_similarity(&tokens, &normalized_tokens(&chunk.snippet))
-                >= options.near_duplicate_threshold
+        if selected.iter().any(|selected| {
+            jaccard_similarity(&tokens, &selected.full_tokens) >= options.near_duplicate_threshold
         }) {
             dropped_near_duplicates += 1;
             continue;
         }
 
-        let citation = chunks.len() + 1;
-        let Some(chunk) = fit_candidate(&candidate, &query, citation, &chunks, &options) else {
+        let citation = selected.len() + 1;
+        let rendered_chunks = selected
+            .iter()
+            .map(|selected| selected.chunk.clone())
+            .collect::<Vec<_>>();
+        let Some(chunk) = fit_candidate(&candidate, &query, citation, &rendered_chunks, &options)
+        else {
             dropped_for_budget += 1;
             continue;
         };
-        chunks.push(chunk);
+        selected.push(SelectedChunk {
+            chunk,
+            full_tokens: tokens,
+        });
     }
+
+    let chunks = selected
+        .into_iter()
+        .map(|selected| selected.chunk)
+        .collect::<Vec<_>>();
 
     let total_tokens = counter.count(&render_prompt_block(&chunks));
     let snippet_tokens = chunks
@@ -317,6 +330,14 @@ struct Candidate {
     hit: ScopedSearchResult,
     content_start: usize,
     rank: usize,
+}
+
+#[derive(Debug)]
+struct SelectedChunk {
+    chunk: AugmentChunk,
+    /// The full untruncated record token set. Diversity and duplicate checks
+    /// deliberately never compare a new record to only a selected snippet.
+    full_tokens: HashSet<String>,
 }
 
 impl Candidate {
@@ -558,6 +579,8 @@ fn clip_around_match(
         end = segment.len();
     }
     let mut best = String::new();
+    let mut best_start = start;
+    let mut best_end = end;
     loop {
         let candidate =
             render_clipped_segment(&segment[start..end], start > 0, end < segment.len());
@@ -565,6 +588,8 @@ fn clip_around_match(
             break;
         }
         best = candidate;
+        best_start = start;
+        best_end = end;
         let next_start = if start > 0 {
             nearest_boundary_left(segment, start.saturating_sub(1))
         } else {
@@ -592,8 +617,8 @@ fn clip_around_match(
     ClippedSpan {
         snippet: best,
         truncated: true,
-        start: Some(span.start + start),
-        end: Some(span.start + end),
+        start: Some(span.start + best_start),
+        end: Some(span.start + best_end),
     }
 }
 
@@ -631,8 +656,15 @@ fn nearest_boundary_left(text: &str, mut index: usize) -> usize {
     while index > 0 && !text.is_char_boundary(index) {
         index -= 1;
     }
-    while index > 0 && !text[..index].ends_with(char::is_whitespace) {
-        index -= 1;
+    while index > 0 {
+        let previous = text[..index]
+            .chars()
+            .next_back()
+            .expect("non-empty prefix has a final character");
+        if previous.is_whitespace() {
+            break;
+        }
+        index -= previous.len_utf8();
     }
     index
 }
@@ -815,6 +847,66 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(first.diagnostics.dropped_near_duplicates >= 1);
+    }
+
+    #[test]
+    fn long_identical_records_are_compared_as_full_records_not_clipped_snippets() {
+        let long_record = [
+            "introductory material repeated across the record",
+            "the query target appears in this deliberately distant sentence",
+            "additional unique-looking tail material that does not fit the snippet cap",
+        ]
+        .join(". ");
+        let mut duplicate_options = options();
+        duplicate_options.max_chunk_tokens = 8;
+        duplicate_options.near_duplicate_threshold = 0.95;
+        let context = build_augment_context_from_hits(
+            "target".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit("n:1", 0.9, &long_record), hit("n:2", 0.8, &long_record)],
+            duplicate_options,
+            0,
+        );
+
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
+    }
+
+    #[test]
+    fn clipped_span_offsets_match_the_last_fitting_window() {
+        let text = "alpha beta gamma target delta epsilon zeta eta theta iota";
+        let clipped = clip_query_aware(text, "target", 5, &ExactWords);
+        let selected = &text[clipped.start.unwrap()..clipped.end.unwrap()];
+        assert!(clipped.truncated);
+        assert_eq!(
+            clipped.snippet.trim().trim_matches('…').trim(),
+            selected.trim()
+        );
+        assert!(ExactWords.count(&clipped.snippet) <= 5);
+    }
+
+    #[test]
+    fn fallback_counts_non_ascii_per_character_and_respects_budget() {
+        assert_eq!(ConservativeTokenCounter.count("你好世界"), 4);
+        assert_eq!(ConservativeTokenCounter.count("café"), 2);
+        let mut multilingual_options = options();
+        multilingual_options.max_total_tokens = 24;
+        multilingual_options.max_chunk_tokens = 6;
+        let context = build_augment_context_from_hits(
+            "搜尋目標".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit(
+                "n:cjk",
+                0.9,
+                "這是一段很長的中文內容，包含搜尋目標以及額外說明文字。",
+            )],
+            multilingual_options,
+            0,
+        );
+        assert!(context.total_tokens <= 24);
+        assert!(context.chunks.iter().all(|chunk| chunk.approx_tokens <= 6));
     }
 
     #[test]
