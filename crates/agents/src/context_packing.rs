@@ -922,7 +922,7 @@ struct FenceDelimiter {
 }
 
 fn opening_fence_delimiter(line: &str) -> Option<FenceDelimiter> {
-    let trimmed = line.trim();
+    let trimmed = fence_line_content(line)?;
     let marker = trimmed.chars().next()?;
     if !matches!(marker, '`' | '~') {
         return None;
@@ -935,15 +935,32 @@ fn opening_fence_delimiter(line: &str) -> Option<FenceDelimiter> {
 }
 
 fn closes_fence_line(line: &str, opening: FenceDelimiter) -> bool {
-    let trimmed = line.trim();
-    let Some(delimiter) = opening_fence_delimiter(trimmed) else {
+    let Some(delimiter) = opening_fence_delimiter(line) else {
         return false;
     };
+    let trimmed = fence_line_content(line).expect("recognized fence has valid indentation");
     delimiter.marker == opening.marker
         && delimiter.length >= opening.length
         && trimmed[delimiter.marker.len_utf8() * delimiter.length..]
             .trim()
             .is_empty()
+}
+
+/// Markdown permits at most three leading spaces before a fenced-code
+/// delimiter. Keep the original indentation intact while classifying lines so
+/// an indented code block containing ``` or ~~~ is never stripped as a fence.
+fn fence_line_content(line: &str) -> Option<&str> {
+    let indentation = line.bytes().take_while(|byte| *byte == b' ').count();
+    if indentation > 3 {
+        return None;
+    }
+    let content = &line[indentation..];
+    // A tab advances to a code-block indentation column in Markdown and is
+    // likewise literal content, even after up to three spaces.
+    if content.starts_with('\t') {
+        return None;
+    }
+    Some(content.trim_end())
 }
 
 fn lexical_anchor(text: &str, terms: &HashSet<String>) -> Option<usize> {
@@ -1896,6 +1913,10 @@ mod tests {
         assert!(cleaned.contains("intro ``` marker"));
         assert!(cleaned.contains("let x = 1;"));
         assert!(!cleaned.contains("```rust"));
+
+        let indented_code = "    ```rust\n    literal fenced-looking code\n    ```";
+        assert!(opening_fence_delimiter("    ```rust").is_none());
+        assert_eq!(remove_unmatched_fence_markers(indented_code), indented_code);
     }
 
     #[test]
