@@ -80,10 +80,10 @@ impl Default for InferenceProviderConfig {
         Self {
             embedding_provider: DEFAULT_TEI_PROVIDER.to_string(),
             embedding_url: DEFAULT_TEI_URL.to_string(),
-            embedding_model: DEFAULT_OLLAMA_EMBED_MODEL.to_string(),
+            embedding_model: "unknown".to_string(),
             extraction_provider: DEFAULT_TGI_PROVIDER.to_string(),
             extraction_url: DEFAULT_TGI_URL.to_string(),
-            extraction_model: DEFAULT_OLLAMA_MODEL.to_string(),
+            extraction_model: "unknown".to_string(),
         }
     }
 }
@@ -103,7 +103,14 @@ impl InferenceProviders {
                     DEFAULT_TEI_URL
                 },
             ),
-            embedding_model: env_or_default("TEI_MODEL", DEFAULT_OLLAMA_EMBED_MODEL),
+            embedding_model: env_or_default(
+                "TEI_MODEL",
+                if embedding_provider.eq_ignore_ascii_case("ollama") {
+                    DEFAULT_OLLAMA_EMBED_MODEL
+                } else {
+                    "unknown"
+                },
+            ),
             extraction_url: env_or_default(
                 "TGI_URL",
                 if extraction_provider.eq_ignore_ascii_case("ollama") {
@@ -112,7 +119,14 @@ impl InferenceProviders {
                     DEFAULT_TGI_URL
                 },
             ),
-            extraction_model: env_or_default("TGI_MODEL", DEFAULT_OLLAMA_MODEL),
+            extraction_model: env_or_default(
+                "TGI_MODEL",
+                if extraction_provider.eq_ignore_ascii_case("ollama") {
+                    DEFAULT_OLLAMA_MODEL
+                } else {
+                    "unknown"
+                },
+            ),
             embedding_provider,
             extraction_provider,
         })
@@ -128,7 +142,10 @@ impl InferenceProviders {
                 &config.embedding_model,
             ))
         } else {
-            Arc::new(TeiClient::new(&config.embedding_url))
+            Arc::new(TeiClient::configured(
+                &config.embedding_url,
+                &config.embedding_model,
+            ))
         };
         let extractor: SharedEntityExtractor =
             if config.extraction_provider.eq_ignore_ascii_case("ollama") {
@@ -137,7 +154,10 @@ impl InferenceProviders {
                     &config.extraction_model,
                 ))
             } else {
-                Arc::new(TgiClient::new(&config.extraction_url))
+                Arc::new(TgiClient::configured(
+                    &config.extraction_url,
+                    &config.extraction_model,
+                ))
             };
 
         Self {
@@ -186,11 +206,15 @@ pub struct TeiClient {
 
 impl TeiClient {
     pub fn new(base_url: impl Into<String>) -> Self {
+        Self::configured(base_url, "unknown")
+    }
+
+    pub fn configured(base_url: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             base_url: base_url.into(),
             provider: TeiProvider::Tei,
-            model: DEFAULT_OLLAMA_EMBED_MODEL.to_string(),
+            model: model.into(),
         }
     }
 
@@ -378,12 +402,16 @@ pub struct TgiClient {
 
 impl TgiClient {
     pub fn new(base_url: impl Into<String>) -> Self {
+        Self::configured(base_url, "unknown")
+    }
+
+    pub fn configured(base_url: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             base_url: base_url.into(),
             json_schema: None,
             provider: TgiProvider::Tgi,
-            model: DEFAULT_OLLAMA_MODEL.to_string(),
+            model: model.into(),
         }
     }
 
@@ -1254,6 +1282,17 @@ mod tests {
             providers.embedder.capabilities().known_dimension,
             Some(EMBEDDING_DIMENSION)
         );
+
+        let configured = InferenceProviders::from_config(&InferenceProviderConfig {
+            embedding_model: "intfloat/e5-large-v2".into(),
+            extraction_model: "mistral-small".into(),
+            ..InferenceProviderConfig::default()
+        });
+        assert_eq!(
+            configured.embedder.capabilities().model,
+            "intfloat/e5-large-v2"
+        );
+        assert_eq!(configured.extractor.capabilities().model, "mistral-small");
     }
 }
 
