@@ -11,8 +11,8 @@ pub mod schema;
 
 pub use error::{DbError, Result};
 pub use repository::{
-    parse_record_id, InferenceCacheEntry, Repository, SourceDeleteSummary, SourceImportAction,
-    SourceImportPlan,
+    parse_record_id, InferenceCacheEntry, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
+    ProcessingJobUpdate, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
 };
 
 use std::ops::Deref;

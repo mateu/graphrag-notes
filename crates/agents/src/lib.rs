@@ -22,7 +22,7 @@ pub use inference::{
 };
 pub use librarian::{
     ChatImportMode, ChatImportPreview, ChatImportResult, ChatIngestOptions, LibrarianAgent,
-    LibrarianRuntimeConfig, MarkdownImportResult,
+    LibrarianRuntimeConfig, MarkdownImportResult, ProcessingRunResult,
 };
 pub use processing::{
     classify_retry, retry_delay, ProcessingConfig, ProcessingStatsSnapshot, ResilientEmbedder,
