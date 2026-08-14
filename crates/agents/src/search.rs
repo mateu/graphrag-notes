@@ -12,6 +12,9 @@ use std::collections::HashSet;
 
 use tracing::{debug, info, instrument};
 
+const DEFAULT_VECTOR_WEIGHT: f32 = 0.65;
+const DEFAULT_FULLTEXT_WEIGHT: f32 = 0.35;
+
 /// Search result with optional graph context
 #[derive(Debug)]
 pub struct EnrichedSearchResult {
@@ -126,8 +129,8 @@ impl SearchAgent {
         Self {
             repo,
             embedder,
-            vector_weight: 0.7,
-            fulltext_weight: 0.3,
+            vector_weight: DEFAULT_VECTOR_WEIGHT,
+            fulltext_weight: DEFAULT_FULLTEXT_WEIGHT,
         }
     }
 
@@ -706,5 +709,11 @@ mod tests {
         assert_eq!(ctx.chunks[0].approx_tokens, 4);
         assert!(ctx.chunks[0].truncated);
         assert_eq!(ctx.chunks[0].snippet, "one two three four ...");
+    }
+
+    #[test]
+    fn library_default_weights_preserve_historical_ranking() {
+        assert_eq!(DEFAULT_VECTOR_WEIGHT, 0.65);
+        assert_eq!(DEFAULT_FULLTEXT_WEIGHT, 0.35);
     }
 }

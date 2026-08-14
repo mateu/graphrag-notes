@@ -90,12 +90,23 @@ fn chunk_content(content: &str, min_chunk_size: usize, max_chunk_size: usize) ->
                 return vec![paragraph.to_string()];
             }
 
-            paragraph
-                .chars()
-                .collect::<Vec<_>>()
-                .chunks(max_chunk_size)
-                .map(|chunk| chunk.iter().collect())
-                .collect()
+            let chars: Vec<char> = paragraph.chars().collect();
+            let mut chunks = Vec::new();
+            let mut start = 0;
+            while start < chars.len() {
+                let remaining = chars.len() - start;
+                let take = if min_chunk_size <= max_chunk_size
+                    && remaining > max_chunk_size
+                    && remaining - max_chunk_size < min_chunk_size
+                {
+                    remaining - min_chunk_size
+                } else {
+                    remaining.min(max_chunk_size)
+                };
+                chunks.push(chars[start..start + take].iter().collect());
+                start += take;
+            }
+            chunks
         })
         .collect()
 }
@@ -1687,11 +1698,12 @@ mod tests {
 
     #[test]
     fn chunking_honors_resolved_minimum_and_maximum_sizes() {
-        let content = "tiny\n\nabcdefghij\n\nabcdefghijkl";
         assert_eq!(
-            chunk_content(content, 10, 5),
-            vec!["abcde", "fghij", "abcde", "fghij", "kl"]
+            chunk_content("abcdefghijk", 3, 5),
+            vec!["abcde", "fgh", "ijk"]
         );
+        assert_eq!(chunk_content("abcdef", 3, 5), vec!["abc", "def"]);
+        let content = "tiny\n\nabcdefghijkl";
         assert_eq!(chunk_content(content, 11, 20), vec!["abcdefghijkl"]);
     }
 
