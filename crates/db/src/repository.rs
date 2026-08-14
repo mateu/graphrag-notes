@@ -2502,6 +2502,11 @@ impl Repository {
     /// Manual and legacy notes have no generation and survive.
     #[instrument(skip(self, source))]
     pub async fn complete_file_import(&self, source: &mut Source) -> Result<SourceDeleteSummary> {
+        // Promotion, proposal retargeting, and old-generation cleanup are one
+        // lifecycle transition. In particular, acceptance/undo must not run
+        // after the old endpoints become hidden but before an accepted
+        // proposal is retargeted to its staged replacement edge.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let source_id = source
             .id
             .as_ref()
@@ -2510,7 +2515,7 @@ impl Repository {
         let summary = self
             .source_delete_summary(&source_id, Some(source.generation), true)
             .await?;
-        self.promote_file_import(source).await?;
+        self.promote_file_import_locked(source).await?;
         // Proposal-backed edges are staged copy-on-write with their new note
         // endpoints. Once promotion makes those endpoints authoritative,
         // retarget the accepted proposal before deleting the old generation so
@@ -2520,7 +2525,7 @@ impl Repository {
         // Do this only after durable promotion. A failure here can leave old
         // records behind, but cannot leave the corpus with no visible complete
         // generation; visibility selects `successful_generation`.
-        self.delete_source_notes(&source_id, Some(source.generation), true)
+        self.delete_source_notes_locked(&source_id, Some(source.generation), true)
             .await?;
         Ok(summary)
     }
@@ -2574,11 +2579,16 @@ impl Repository {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn promote_file_import(&self, source: &mut Source) -> Result<()> {
         // Promotion changes which source generation is visible. Keep that
         // transition and retirement of proposals for the newly hidden notes
         // atomic with respect to proposal acceptance in this repository.
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.promote_file_import_locked(source).await
+    }
+
+    async fn promote_file_import_locked(&self, source: &mut Source) -> Result<()> {
         let source_id = source
             .id
             .as_ref()
@@ -2694,6 +2704,16 @@ impl Repository {
         // Source cleanup shares the same endpoint/acceptance critical section
         // as single-note deletion.
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.delete_source_notes_locked(source_id, generation, older_than_generation)
+            .await
+    }
+
+    async fn delete_source_notes_locked(
+        &self,
+        source_id: &RecordId,
+        generation: Option<u64>,
+        older_than_generation: bool,
+    ) -> Result<SourceDeleteSummary> {
         let summary = self
             .source_delete_summary(source_id, generation, older_than_generation)
             .await?;
@@ -4156,6 +4176,111 @@ mod tests {
         let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
         assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
         assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn completion_serializes_proposal_retarget_before_old_edge_undo() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old_left = repo
+            .create_note(
+                Note::new("first generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let old_right = repo
+            .create_note(
+                Note::new("first generation right")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                old_left.id.as_ref().unwrap(),
+                old_right.id.as_ref().unwrap(),
+                0.9,
+                "retarget race".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let old_edge_id = repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let new_left = repo
+            .create_note(
+                Note::new("second generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        let new_right = repo
+            .create_note(
+                Note::new("second generation right")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.copy_note_dependents_to_successors(&[
+            (
+                old_left.id.as_ref().unwrap().clone(),
+                new_left.id.as_ref().unwrap().clone(),
+                true,
+            ),
+            (
+                old_right.id.as_ref().unwrap().clone(),
+                new_right.id.as_ref().unwrap().clone(),
+                true,
+            ),
+        ])
+        .await
+        .unwrap();
+
+        // Queue complete before undo while the lifecycle lock is held. The
+        // completion transition must promote, retarget the accepted proposal
+        // to the staged edge, and retire the old edge before undo may act.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let completion_repo = repo.clone();
+        let completion = tokio::spawn(async move {
+            completion_repo
+                .complete_file_import(&mut second.source)
+                .await
+        });
+        tokio::task::yield_now().await;
+        let undo_repo = repo.clone();
+        let undo_edge_id = old_edge_id.clone();
+        let undo = tokio::spawn(async move {
+            undo_repo
+                .undo_edge(&undo_edge_id, Some("concurrent undo".into()))
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        completion.await.unwrap().unwrap();
+        assert!(!undo.await.unwrap().unwrap());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Accepted);
+        let replacement_edge_id = proposal.resulting_edge_id.unwrap();
+        assert_ne!(replacement_edge_id, old_edge_id);
+        assert!(repo.note_edge_exists(&replacement_edge_id).await.unwrap());
     }
 
     #[tokio::test]

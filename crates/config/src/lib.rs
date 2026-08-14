@@ -579,6 +579,8 @@ impl RuntimeConfig {
             "GRAPHRAG_GARDENER_MAX_SUGGESTIONS",
             &mut self.gardener.max_suggestions,
         )?;
+        let target_chunk_size_from_env = env("GRAPHRAG_LIBRARIAN_TARGET_CHUNK_SIZE").is_some();
+        let chunk_overlap_from_env = env("GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP").is_some();
         set_usize(
             env,
             "GRAPHRAG_LIBRARIAN_MIN_CHUNK_SIZE",
@@ -599,6 +601,24 @@ impl RuntimeConfig {
             "GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP",
             &mut self.librarian.chunk_overlap,
         )?;
+        // Existing environment-only installations could set the historical
+        // min/max pair without the newer target/overlap controls. Re-clamp
+        // omitted controls after all environment overrides have landed; an
+        // explicitly supplied target or overlap remains subject to validation.
+        if self.librarian.min_chunk_size <= self.librarian.max_chunk_size {
+            if !target_chunk_size_from_env {
+                self.librarian.target_chunk_size = self
+                    .librarian
+                    .target_chunk_size
+                    .clamp(self.librarian.min_chunk_size, self.librarian.max_chunk_size);
+            }
+            if !chunk_overlap_from_env {
+                self.librarian.chunk_overlap = self
+                    .librarian
+                    .chunk_overlap
+                    .min(self.librarian.max_chunk_size.saturating_sub(1));
+            }
+        }
 
         self.normalize_provider_names();
 
@@ -1028,6 +1048,25 @@ mod tests {
         assert_eq!(config.librarian.target_chunk_size, 80);
         assert_eq!(config.librarian.chunk_overlap, 79);
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn legacy_environment_only_librarian_bounds_derive_feasible_chunking_controls() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[
+                ("GRAPHRAG_LIBRARIAN_MIN_CHUNK_SIZE", "40"),
+                ("GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE", "80"),
+            ]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.librarian.min_chunk_size, 40);
+        assert_eq!(config.librarian.max_chunk_size, 80);
+        assert_eq!(config.librarian.target_chunk_size, 80);
+        assert_eq!(config.librarian.chunk_overlap, 79);
     }
 
     #[test]

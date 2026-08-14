@@ -199,31 +199,36 @@ fn markdown_chunk_anchors_from_chunks(chunks: &[Chunk]) -> Vec<MarkdownChunkAnch
 /// removed before an unchanged chunk. A changed chunk is a structural
 /// successor only when it is the sole unmatched chunk between two exact
 /// anchors in the same heading context; ambiguous boundary/replacement cases
-/// intentionally receive no successor.
+/// intentionally receive no successor. Repeated identical anchors are also
+/// intentionally rejected: after a duplicate is deleted, there is no stable
+/// evidence that the remaining copy is the same logical source occurrence.
 fn align_markdown_chunk_sequences(
     existing: &[MarkdownChunkAnchor],
     staged: &[MarkdownChunkAnchor],
 ) -> Vec<MarkdownChunkMatch> {
-    let mut staged_positions = HashMap::<MarkdownChunkAnchor, VecDeque<usize>>::new();
-    for (index, anchor) in staged.iter().cloned().enumerate() {
-        staged_positions.entry(anchor).or_default().push_back(index);
+    let mut existing_counts = HashMap::<&MarkdownChunkAnchor, usize>::new();
+    for anchor in existing {
+        *existing_counts.entry(anchor).or_default() += 1;
+    }
+    let mut staged_positions = HashMap::<MarkdownChunkAnchor, usize>::new();
+    let mut staged_counts = HashMap::<&MarkdownChunkAnchor, usize>::new();
+    for (index, anchor) in staged.iter().enumerate() {
+        *staged_counts.entry(anchor).or_default() += 1;
+        staged_positions.insert(anchor.clone(), index);
     }
 
     let mut exact = Vec::new();
     let mut last_staged_index = None;
     for (existing_index, anchor) in existing.iter().enumerate() {
-        let Some(candidates) = staged_positions.get_mut(anchor) else {
+        if existing_counts.get(anchor) != Some(&1) || staged_counts.get(anchor) != Some(&1) {
             continue;
-        };
-        while candidates
-            .front()
-            .is_some_and(|index| last_staged_index.is_some_and(|last| *index <= last))
-        {
-            candidates.pop_front();
         }
-        let Some(staged_index) = candidates.pop_front() else {
+        let Some(&staged_index) = staged_positions.get(anchor) else {
             continue;
         };
+        if last_staged_index.is_some_and(|last| staged_index <= last) {
+            continue;
+        }
         last_staged_index = Some(staged_index);
         exact.push(MarkdownChunkMatch {
             existing_index,
@@ -4265,6 +4270,72 @@ mod tests {
                 edge.edge_type == EdgeType::Supports.to_string()
                     && edge.in_id == *first_after_removal.id.as_ref().unwrap()
                     && edge.out_id == *second_after_removal.id.as_ref().unwrap()
+            }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_rejects_ambiguous_duplicate_anchors_after_deletion() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let duplicate = "Duplicated paragraph has enough source content.";
+        let tail = "Tail paragraph has distinct source content.";
+        let original = format!("# Plan\n\n{duplicate}\n\n{duplicate}\n\n{tail}");
+        let first = librarian
+            .ingest_markdown_with_options("duplicate-anchor.md", &original, false)
+            .await
+            .unwrap();
+        assert_eq!(first.notes.len(), 3);
+        let duplicate_old = first.notes[0].id.as_ref().unwrap().clone();
+        let tail_old = first.notes[2].id.as_ref().unwrap().clone();
+        let mut entity = Entity::new("Duplicate", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(&duplicate_old, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(&duplicate_old, &tail_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        let after_deletion = format!("# Plan\n\n{duplicate}\n\n{tail}");
+        let refreshed = librarian
+            .ingest_markdown_with_options("duplicate-anchor.md", &after_deletion, false)
+            .await
+            .unwrap();
+        let duplicate_new = refreshed
+            .notes
+            .iter()
+            .find(|note| note.content == duplicate)
+            .unwrap();
+        let tail_new = refreshed
+            .notes
+            .iter()
+            .find(|note| note.content == tail)
+            .unwrap();
+        assert!(repo
+            .get_entities_for_note(&record_id_to_string(duplicate_new.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(repo
+            .get_note_edges(&record_id_to_string(duplicate_new.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .iter()
+            .all(|edge| {
+                !(edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *duplicate_new.id.as_ref().unwrap()
+                    && edge.out_id == *tail_new.id.as_ref().unwrap())
             }));
     }
 
