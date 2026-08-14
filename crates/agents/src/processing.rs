@@ -407,30 +407,30 @@ impl Embedder for ResilientEmbedder {
                 .map(|index| texts[*index].clone())
                 .collect::<Vec<_>>();
             let batch_size = self.inner.max_batch_size().unwrap_or(inputs.len()).max(1);
-            let mut embeddings = Vec::with_capacity(inputs.len());
-            for chunk in inputs.chunks(batch_size) {
+            for (chunk_index, chunk) in inputs.chunks(batch_size).enumerate() {
                 let inner = self.inner.clone();
                 let chunk = chunk.to_vec();
-                let mut chunk_embeddings =
+                let chunk_embeddings =
                     execute_with_retry(&self.config, &self.limiter, &self.stats, || {
                         let inner = inner.clone();
                         let chunk = chunk.clone();
                         async move { inner.embed_batch(&chunk, is_query).await }
                     })
                     .await?;
-                embeddings.append(&mut chunk_embeddings);
-            }
-            if embeddings.len() != misses.len() {
-                return Err(AgentError::Processing(format!(
-                    "embedding provider returned {} embeddings for a batch of {} inputs",
-                    embeddings.len(),
-                    misses.len()
-                )));
-            }
-            for (miss_index, embedding) in misses.into_iter().zip(embeddings) {
-                self.store_embedding(&keys[miss_index], &embedding).await?;
-                for position in &miss_positions[&keys[miss_index].key] {
-                    output[*position] = Some(embedding.clone());
+                if chunk_embeddings.len() != chunk.len() {
+                    return Err(AgentError::Processing(format!(
+                        "embedding provider returned {} embeddings for a batch of {} inputs",
+                        chunk_embeddings.len(),
+                        chunk.len()
+                    )));
+                }
+                let start = chunk_index * batch_size;
+                for (offset, embedding) in chunk_embeddings.into_iter().enumerate() {
+                    let miss_index = misses[start + offset];
+                    self.store_embedding(&keys[miss_index], &embedding).await?;
+                    for position in &miss_positions[&keys[miss_index].key] {
+                        output[*position] = Some(embedding.clone());
+                    }
                 }
             }
         }
