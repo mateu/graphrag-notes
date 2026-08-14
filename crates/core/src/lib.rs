@@ -11,7 +11,7 @@ pub mod note;
 pub mod source;
 
 pub use chat_export::{ChatConversation, ChatExport, ChatMessage, MessageRole};
-pub use edge::{Edge, EdgeType};
+pub use edge::{Edge, EdgeType, ProposedEdge, ProposedEdgeStatus};
 pub use entity::{Entity, EntityType};
 pub use error::{CoreError, Result};
 pub use note::{AtomicNote, Note, NoteType};

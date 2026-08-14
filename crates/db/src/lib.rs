@@ -10,7 +10,9 @@ pub mod repository;
 pub mod schema;
 
 pub use error::{DbError, Result};
-pub use repository::{Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan};
+pub use repository::{
+    parse_record_id, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
+};
 
 #[cfg(feature = "rocksdb")]
 use std::path::Path;

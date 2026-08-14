@@ -18,10 +18,10 @@ use graphrag_agents::{
     SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
-use graphrag_core::{record_id_to_string, ChatExport, Source};
+use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
 use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
-    init_memory, init_persistent, migrations, Repository, SourceDeleteSummary,
+    init_memory, init_persistent, migrations, parse_record_id, Repository, SourceDeleteSummary,
 };
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
@@ -254,11 +254,10 @@ enum Commands {
         limit: usize,
     },
 
-    /// Run the gardener (maintenance)
+    /// Scan and review persistent Gardener edge proposals
     Garden {
-        /// Only show suggestions, don't apply
-        #[arg(long)]
-        dry_run: bool,
+        #[command(subcommand)]
+        command: GardenCommand,
     },
 
     /// Show database statistics
@@ -320,6 +319,12 @@ enum Commands {
         note_id: String,
     },
 
+    /// Safely inspect or remove accepted note-to-note edges
+    Edges {
+        #[command(subcommand)]
+        command: EdgesCommand,
+    },
+
     /// Delete the local database (fresh start)
     ResetDb {
         /// Database path (defaults to ~/.graphrag/data-v3)
@@ -375,6 +380,105 @@ enum SourcesCommand {
 enum SourceOutputFormat {
     Human,
     Json,
+}
+
+#[derive(Subcommand)]
+enum GardenCommand {
+    /// Generate reviewable proposals; accepted edge tables are never mutated
+    Scan {
+        /// Preview candidate count without persisting proposals
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Scan and apply the explicitly configured auto-apply policy
+    Apply {
+        /// Confirm mutation of accepted edges under the configured policy
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+    /// Inspect or act on persisted proposals
+    Proposals {
+        #[command(subcommand)]
+        command: ProposalCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProposalCommand {
+    List {
+        #[arg(long, value_enum)]
+        status: Option<ProposalStatusArg>,
+        #[arg(short, long, default_value_t = 50)]
+        limit: usize,
+    },
+    Show {
+        id: String,
+    },
+    Accept {
+        /// Proposal ID. Omit only with --all.
+        id: Option<String>,
+        /// Accept every pending Gardener proposal meeting --min-confidence.
+        #[arg(long)]
+        all: bool,
+        /// Required with --all; values are in [0, 1].
+        #[arg(long)]
+        min_confidence: Option<f32>,
+        /// Confirm a mutating acceptance.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    Reject {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+        /// Confirm a mutating rejection.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum EdgesCommand {
+    Delete {
+        id: String,
+        /// Show whether the edge exists without deleting it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Confirm deletion.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Alias for `edges delete`; preserves proposal audit state.
+    Undo {
+        id: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProposalStatusArg {
+    Pending,
+    Accepting,
+    Accepted,
+    Rejected,
+    Superseded,
+}
+
+impl From<ProposalStatusArg> for ProposedEdgeStatus {
+    fn from(value: ProposalStatusArg) -> Self {
+        match value {
+            ProposalStatusArg::Pending => Self::Pending,
+            ProposalStatusArg::Accepting => Self::Accepting,
+            ProposalStatusArg::Accepted => Self::Accepted,
+            ProposalStatusArg::Rejected => Self::Rejected,
+            ProposalStatusArg::Superseded => Self::Superseded,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -814,12 +918,13 @@ async fn main() -> Result<()> {
         Commands::List { limit } => {
             cmd_list(repo, limit).await?;
         }
-        Commands::Garden { dry_run } => {
+        Commands::Garden { command } => {
             cmd_garden(
                 repo,
-                dry_run,
+                command,
                 config.gardener.similarity_threshold,
                 config.gardener.auto_apply_threshold,
+                config.gardener.auto_apply,
                 config.gardener.max_suggestions,
             )
             .await?;
@@ -840,6 +945,7 @@ async fn main() -> Result<()> {
                 config.search.clone(),
                 config.gardener.similarity_threshold,
                 config.gardener.auto_apply_threshold,
+                config.gardener.auto_apply,
                 config.gardener.max_suggestions,
             )
             .await?;
@@ -873,6 +979,9 @@ async fn main() -> Result<()> {
         }
         Commands::ShowNoteEdges { note_id } => {
             cmd_show_note_edges(repo, note_id).await?;
+        }
+        Commands::Edges { command } => {
+            cmd_edges(repo, command).await?;
         }
         Commands::EmbeddingDim { .. } => {
             // Handled before database init.
@@ -1000,7 +1109,7 @@ fn print_import_summary(
     };
     match format {
         SourceOutputFormat::Human => println!(
-            "Source {} generation {}: {} (created {}, unchanged {}, updated {}, deleted {}, failed {}; cleanup notes {}, mentions {}, note edges {}, conversation provenance {}, message provenance {})",
+            "Source {} generation {}: {} (created {}, unchanged {}, updated {}, deleted {}, failed {}; cleanup notes {}, mentions {}, note edges {}, proposals {}, conversation provenance {}, message provenance {})",
             output.source_uri,
             output.generation,
             output.action,
@@ -1012,6 +1121,7 @@ fn print_import_summary(
             output.cleanup.notes,
             output.cleanup.mentions,
             output.cleanup.note_edges,
+            output.cleanup.proposals,
             output.cleanup.note_conversation_provenance,
             output.cleanup.note_message_provenance,
         ),
@@ -1132,12 +1242,13 @@ fn print_delete_summary(
     match format {
         SourceOutputFormat::Json => println!("{}", serde_json::to_string(&output)?),
         SourceOutputFormat::Human => println!(
-            "{} source {}: notes={}, mentions={}, note_edges={}, conversation_provenance={}, message_provenance={}",
+            "{} source {}: notes={}, mentions={}, note_edges={}, proposals={}, conversation_provenance={}, message_provenance={}",
             if dry_run { "Would delete" } else { "Deleted" },
             output.source_id,
             summary.notes,
             summary.mentions,
             summary.note_edges,
+            summary.proposals,
             summary.note_conversation_provenance,
             summary.note_message_provenance,
         ),
@@ -1914,65 +2025,226 @@ async fn cmd_list(repo: Repository, limit: usize) -> Result<()> {
 
 async fn cmd_garden(
     repo: Repository,
-    dry_run: bool,
+    command: GardenCommand,
     similarity_threshold: f32,
     auto_apply_threshold: f32,
+    auto_apply: bool,
     max_suggestions: usize,
 ) -> Result<()> {
-    let gardener = GardenerAgent::new(repo)
+    let gardener = GardenerAgent::new(repo.clone())
         .with_threshold(similarity_threshold)
-        .with_auto_apply_threshold(auto_apply_threshold)
+        .with_auto_apply_policy(auto_apply, auto_apply_threshold)
         .with_max_suggestions(max_suggestions);
 
-    if dry_run {
-        println!("Finding orphan notes...\n");
-
-        let orphans = gardener.find_orphans().await?;
-
-        if orphans.is_empty() {
-            println!("No orphan notes found. Your knowledge graph is well connected!");
-            return Ok(());
-        }
-
-        println!("Found {} orphan notes:", orphans.len());
-        for orphan in &orphans {
-            println!("  • {}", orphan.title.as_deref().unwrap_or("(untitled)"));
-        }
-
-        println!("\nGenerating suggestions...\n");
-
-        let suggestions = gardener.suggest_connections().await?;
-
-        if suggestions.is_empty() {
-            println!("No connection suggestions found.");
-        } else {
-            println!("Suggested connections:");
-            for s in &suggestions {
+    match command {
+        GardenCommand::Scan { dry_run } => {
+            let report = gardener.scan(dry_run).await?;
+            if report.dry_run {
+                println!("Dry run: no proposals or accepted edges were changed.");
+            } else {
                 println!(
-                    "  {} → {} ({:.0}%: {})",
-                    s.from_note.title.as_deref().unwrap_or("(untitled)"),
-                    s.to_note.title.as_deref().unwrap_or("(untitled)"),
-                    s.similarity * 100.0,
-                    s.reason,
+                    "Scan persisted {} proposal(s); accepted edges were not changed.",
+                    report.proposals.len()
                 );
             }
+            println!("  • Orphans found: {}", report.orphans_found);
+            println!(
+                "  • Similarity suggestions: {}",
+                report.suggestions_generated
+            );
         }
-    } else {
-        println!("Running maintenance...\n");
-
-        let report = gardener.run_maintenance().await?;
-
-        println!("Maintenance complete:");
-        println!("  • Orphans found: {}", report.orphans_found);
-        println!(
-            "  • Suggestions generated: {}",
-            report.suggestions_generated
-        );
-        println!("  • Connections applied: {}", report.connections_applied);
-        println!("  • Orphans remaining: {}", report.orphans_remaining);
+        GardenCommand::Apply { yes } => {
+            if !yes {
+                anyhow::bail!("refusing to apply Gardener proposals without --yes");
+            }
+            if !auto_apply {
+                anyhow::bail!("Gardener auto-apply is disabled; set [gardener].auto_apply = true before using `garden apply`");
+            }
+            let report = gardener.run_maintenance().await?;
+            println!(
+                "Maintenance applied {} policy-approved related_to proposal(s).",
+                report.connections_applied
+            );
+            println!("  • Orphans found: {}", report.orphans_found);
+            println!("  • Proposals generated: {}", report.suggestions_generated);
+            println!("  • Orphans remaining: {}", report.orphans_remaining);
+        }
+        GardenCommand::Proposals { command } => {
+            cmd_proposals(repo, command).await?;
+        }
     }
 
     Ok(())
+}
+
+async fn cmd_proposals(repo: Repository, command: ProposalCommand) -> Result<()> {
+    match command {
+        ProposalCommand::List { status, limit } => {
+            let proposals = repo
+                .list_edge_proposals(status.map(Into::into), limit)
+                .await?;
+            if proposals.is_empty() {
+                println!("No matching edge proposals.");
+                return Ok(());
+            }
+            for proposal in proposals {
+                println!(
+                    "{}  {}  {} → {}  {:.0}%  {}",
+                    proposal
+                        .id
+                        .as_ref()
+                        .map(record_id_to_string)
+                        .unwrap_or_default(),
+                    proposal.status,
+                    record_id_to_string(&proposal.from_id),
+                    record_id_to_string(&proposal.to_id),
+                    proposal.confidence * 100.0,
+                    proposal.reason,
+                );
+            }
+        }
+        ProposalCommand::Show { id } => {
+            let id = parse_record_id(&id, Some("proposed_edge"))?;
+            let proposal = repo.get_edge_proposal(&id).await?.ok_or_else(|| {
+                anyhow::anyhow!("proposal {} was not found", record_id_to_string(&id))
+            })?;
+            println!("ID: {}", record_id_to_string(&id));
+            println!("Status: {}", proposal.status);
+            println!(
+                "Edge: {} {} → {}",
+                proposal.edge_type,
+                record_id_to_string(&proposal.from_id),
+                record_id_to_string(&proposal.to_id)
+            );
+            println!("Confidence: {:.1}%", proposal.confidence * 100.0);
+            println!("Reason: {}", proposal.reason);
+            println!(
+                "Generator: {}{}",
+                proposal.generator,
+                proposal
+                    .generator_version
+                    .as_deref()
+                    .map(|version| format!(" ({version})"))
+                    .unwrap_or_default()
+            );
+            if let Some(edge_id) = proposal.resulting_edge_id.as_ref() {
+                println!("Accepted edge: {}", record_id_to_string(edge_id));
+            }
+            if let Some(reason) = proposal.action_reason.as_deref() {
+                println!("Action reason: {reason}");
+            }
+            if let Some(reason) = proposal.supersession_reason.as_deref() {
+                println!("Supersession reason: {reason}");
+            }
+        }
+        ProposalCommand::Accept {
+            id,
+            all,
+            min_confidence,
+            yes,
+            reason,
+        } => {
+            if !yes {
+                anyhow::bail!("refusing to accept proposals without --yes");
+            }
+            if all {
+                if id.is_some() {
+                    anyhow::bail!("use either a proposal id or --all, not both");
+                }
+                let threshold = min_confidence
+                    .ok_or_else(|| anyhow::anyhow!("--all requires --min-confidence"))?;
+                if !(0.0..=1.0).contains(&threshold) {
+                    anyhow::bail!("--min-confidence must be between 0 and 1");
+                }
+                let count = repo
+                    .accept_gardener_proposals_above_with_audit(
+                        threshold,
+                        Some("cli batch acceptance".into()),
+                        reason.unwrap_or_else(|| "explicit CLI batch acceptance".into()),
+                        true,
+                    )
+                    .await?;
+                println!("Accepted {count} policy-approved related_to proposal(s).");
+            } else {
+                if min_confidence.is_some() {
+                    anyhow::bail!("--min-confidence is only valid with --all");
+                }
+                let id = id.ok_or_else(|| anyhow::anyhow!("provide a proposal id or --all"))?;
+                let id = parse_record_id(&id, Some("proposed_edge"))?;
+                let proposal = repo
+                    .accept_edge_proposal(&id, Some("cli".into()), reason, true)
+                    .await?;
+                println!(
+                    "Proposal {} is {}.",
+                    record_id_to_string(&id),
+                    proposal.status
+                );
+            }
+        }
+        ProposalCommand::Reject { id, reason, yes } => {
+            if !yes {
+                anyhow::bail!("refusing to reject a proposal without --yes");
+            }
+            let id = parse_record_id(&id, Some("proposed_edge"))?;
+            let proposal = repo
+                .reject_edge_proposal(&id, Some("cli".into()), reason)
+                .await?;
+            println!(
+                "Proposal {} is {}.",
+                record_id_to_string(&id),
+                proposal.status
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_edges(repo: Repository, command: EdgesCommand) -> Result<()> {
+    let (id, dry_run, yes) = match command {
+        EdgesCommand::Delete { id, dry_run, yes } | EdgesCommand::Undo { id, dry_run, yes } => {
+            (id, dry_run, yes)
+        }
+    };
+    let id = parse_record_id(&id, None)?;
+    if !matches!(
+        id.table.as_str(),
+        "supports" | "contradicts" | "derived_from" | "related_to"
+    ) {
+        anyhow::bail!("{} is not a note-edge id", record_id_to_string(&id));
+    }
+    if dry_run {
+        println!(
+            "{}",
+            edge_dry_run_message(&record_id_to_string(&id), repo.note_edge_exists(&id).await?)
+        );
+        return Ok(());
+    }
+    if !yes {
+        anyhow::bail!("refusing to delete an edge without --yes (or use --dry-run)");
+    }
+    if repo
+        .undo_edge(&id, Some("edge deleted through CLI".into()))
+        .await?
+    {
+        println!(
+            "Deleted {} and preserved its proposal audit trail.",
+            record_id_to_string(&id)
+        );
+    } else {
+        println!(
+            "{} was already absent; no changes made.",
+            record_id_to_string(&id)
+        );
+    }
+    Ok(())
+}
+
+fn edge_dry_run_message(id: &str, exists: bool) -> String {
+    if exists {
+        format!("Dry run: {id} exists and would be deleted; no changes made.")
+    } else {
+        format!("Dry run: {id} is absent; no changes made.")
+    }
 }
 
 async fn cmd_stats(repo: Repository) -> Result<()> {
@@ -2004,6 +2276,7 @@ async fn cmd_interactive(
     search_config: SearchConfig,
     similarity_threshold: f32,
     auto_apply_threshold: f32,
+    auto_apply: bool,
     max_suggestions: usize,
 ) -> Result<()> {
     let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone())
@@ -2011,7 +2284,7 @@ async fn cmd_interactive(
     let search = configured_search_agent(repo.clone(), tei.clone(), &search_config);
     let gardener = GardenerAgent::new(repo.clone())
         .with_threshold(similarity_threshold)
-        .with_auto_apply_threshold(auto_apply_threshold)
+        .with_auto_apply_policy(auto_apply, auto_apply_threshold)
         .with_max_suggestions(max_suggestions);
 
     println!("GraphRAG Notes - Interactive Mode");
@@ -2171,6 +2444,18 @@ mod tests {
     }
 
     #[test]
+    fn edge_dry_run_reports_actual_existence() {
+        assert_eq!(
+            edge_dry_run_message("related_to:example", true),
+            "Dry run: related_to:example exists and would be deleted; no changes made."
+        );
+        assert_eq!(
+            edge_dry_run_message("related_to:example", false),
+            "Dry run: related_to:example is absent; no changes made."
+        );
+    }
+
+    #[test]
     fn augment_commands_forward_runtime_tuning_to_packing_options() {
         let config = AugmentConfig {
             novelty_weight: 0.4,
@@ -2202,5 +2487,17 @@ mod tests {
             packing_diagnostics_text(&diagnostics),
             "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5"
         );
+    }
+
+    #[test]
+    fn garden_apply_requires_the_explicit_confirmation_flag() {
+        let cli = Cli::try_parse_from(["graphrag", "garden", "apply", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Garden {
+                command: GardenCommand::Apply { yes: true }
+            }
+        ));
+        assert!(Cli::try_parse_from(["graphrag", "garden", "apply"]).is_err());
     }
 }

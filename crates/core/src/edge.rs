@@ -25,6 +25,26 @@ pub enum EdgeType {
     TaggedWith,
 }
 
+impl EdgeType {
+    /// Whether an edge type is symmetric. `related_to` is stored in canonical
+    /// lexical record-id order so A↔B is represented by exactly one edge.
+    pub const fn is_symmetric(&self) -> bool {
+        matches!(self, Self::RelatedTo)
+    }
+
+    /// Whether the type can connect two note records.
+    pub const fn is_note_edge(&self) -> bool {
+        matches!(
+            self,
+            Self::Supports
+                | Self::Contradicts
+                | Self::DerivedFrom
+                | Self::References
+                | Self::RelatedTo
+        )
+    }
+}
+
 impl std::fmt::Display for EdgeType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -105,6 +125,69 @@ pub struct SuggestedEdge {
     pub reason: String,
 }
 
+/// Lifecycle state for a persisted edge proposal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, SurrealValue)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposedEdgeStatus {
+    Pending,
+    /// An acceptance claim is being completed. Retries finish this state
+    /// idempotently; it is never presented as a completed acceptance.
+    Accepting,
+    Accepted,
+    Rejected,
+    Superseded,
+}
+
+impl std::fmt::Display for ProposedEdgeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Pending => "pending",
+            Self::Accepting => "accepting",
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Superseded => "superseded",
+        })
+    }
+}
+
+/// A reviewable, auditable proposal to create a note-to-note edge.
+///
+/// Gardener's similarity scan creates only `related_to` proposals. Logical
+/// relationships such as `supports` and `contradicts` must originate from an
+/// explicit manual decision or future evidence-producing workflow.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+pub struct ProposedEdge {
+    pub id: Option<RecordId>,
+    pub dedupe_key: String,
+    pub from_id: RecordId,
+    pub to_id: RecordId,
+    pub edge_type: EdgeType,
+    pub confidence: f32,
+    pub reason: String,
+    pub generator: String,
+    #[serde(default)]
+    pub generator_version: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub status: ProposedEdgeStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub reviewed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub reviewer: Option<String>,
+    #[serde(default)]
+    pub action_reason: Option<String>,
+    #[serde(default)]
+    pub acceptance_is_manual: Option<bool>,
+    #[serde(default)]
+    pub resulting_edge_id: Option<RecordId>,
+    #[serde(default)]
+    pub superseded_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub supersession_reason: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +207,13 @@ mod tests {
     fn test_edge_type_display() {
         assert_eq!(EdgeType::Supports.to_string(), "supports");
         assert_eq!(EdgeType::Contradicts.to_string(), "contradicts");
+    }
+
+    #[test]
+    fn only_related_to_is_symmetric() {
+        assert!(EdgeType::RelatedTo.is_symmetric());
+        assert!(!EdgeType::Supports.is_symmetric());
+        assert!(EdgeType::Supports.is_note_edge());
+        assert!(!EdgeType::Mentions.is_note_edge());
     }
 }

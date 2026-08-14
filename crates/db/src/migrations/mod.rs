@@ -7,17 +7,21 @@
 mod v001_initial;
 mod v002_embedding_metadata;
 mod v003_source_lifecycle;
+mod v004_edge_proposals;
+mod v005_proposal_supersession_audit;
 
 use crate::{DbConnection, DbError, Result};
+use graphrag_core::record_id_to_string;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
+use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 3;
+pub const LATEST_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -36,6 +40,8 @@ const MIGRATIONS: &[Migration] = &[
     v001_initial::MIGRATION,
     v002_embedding_metadata::MIGRATION,
     v003_source_lifecycle::MIGRATION,
+    v004_edge_proposals::MIGRATION,
+    v005_proposal_supersession_audit::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -297,6 +303,12 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
         .check()
         .map_err(|error| migration_failed(migration, error))?;
 
+    if migration.version == v004_edge_proposals::MIGRATION.version {
+        backfill_note_edge_dedupe_keys(db)
+            .await
+            .map_err(|error| migration_failed(migration, error))?;
+    }
+
     let recorded = db
         .query(
             "INSERT INTO schema_migration (version, name, checksum, applied_at) \
@@ -321,6 +333,64 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
     Ok(())
 }
 
+/// Normalize legacy note-edge rows before their unique dedupe keys are
+/// introduced. The runner keeps the lowest record id deterministically,
+/// canonicalizing only the symmetric `related_to` endpoints.
+async fn backfill_note_edge_dedupe_keys(db: &DbConnection) -> Result<()> {
+    #[derive(Deserialize, SurrealValue)]
+    struct RelatedEdgeRow {
+        id: RecordId,
+        r#in: RecordId,
+        out: RecordId,
+    }
+
+    for (table, symmetric) in [
+        ("related_to", true),
+        ("supports", false),
+        ("contradicts", false),
+        ("derived_from", false),
+    ] {
+        let edges: Vec<RelatedEdgeRow> = db
+            .query(format!("SELECT id, in, out FROM {table} ORDER BY id ASC"))
+            .await?
+            .take(0)?;
+        let mut retained_keys = BTreeSet::new();
+        for edge in edges {
+            let (from, to) =
+                if symmetric && record_id_to_string(&edge.r#in) > record_id_to_string(&edge.out) {
+                    (edge.out, edge.r#in)
+                } else {
+                    (edge.r#in, edge.out)
+                };
+            let dedupe_key = format!(
+                "{table}:{}:{}",
+                record_id_to_string(&from),
+                record_id_to_string(&to)
+            );
+            if !retained_keys.insert(dedupe_key.clone()) {
+                db.query("DELETE $id")
+                    .bind(("id", edge.id))
+                    .await?
+                    .check()?;
+                continue;
+            }
+            db.query("UPDATE $id SET in = $from, out = $to, dedupe_key = $dedupe_key")
+                .bind(("id", edge.id))
+                .bind(("from", from))
+                .bind(("to", to))
+                .bind(("dedupe_key", dedupe_key))
+                .await?
+                .check()?;
+        }
+        db.query(format!(
+            "DEFINE INDEX IF NOT EXISTS idx_{table}_dedupe ON {table} FIELDS dedupe_key UNIQUE"
+        ))
+        .await?
+        .check()?;
+    }
+    Ok(())
+}
+
 fn migration_failed(migration: Migration, error: impl std::fmt::Display) -> DbError {
     DbError::MigrationFailed {
         version: migration.version,
@@ -332,7 +402,10 @@ fn migration_failed(migration: Migration, error: impl std::fmt::Display) -> DbEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Repository;
+    use graphrag_core::{record_id_to_string, EdgeType};
     use surrealdb::engine::local::Mem;
+    use surrealdb::types::RecordId;
     use surrealdb::Surreal;
 
     async fn raw_memory_db() -> DbConnection {
@@ -352,6 +425,7 @@ mod tests {
         assert_eq!(migrations[0].name, "initial_schema");
         assert_eq!(migrations[1].name, "embedding_metadata");
         assert_eq!(migrations[2].name, "source_lifecycle");
+        assert_eq!(migrations[3].name, "edge_proposals");
     }
 
     #[test]
@@ -405,13 +479,13 @@ mod tests {
         let db = raw_memory_db().await;
         apply_all(&db).await.unwrap();
         let invalid = Migration {
-            version: 3,
+            version: 5,
             name: "invalid_test_migration",
             sql: "DEFINE TABLE invalid_test_probe SCHEMAFULL; THIS IS NOT VALID SURREALQL;",
         };
 
         let error = apply_one(&db, invalid).await.unwrap_err();
-        assert!(matches!(error, DbError::MigrationFailed { version: 3, .. }));
+        assert!(matches!(error, DbError::MigrationFailed { version: 5, .. }));
         assert_eq!(
             applied_migrations(&db).await.unwrap().len(),
             LATEST_SCHEMA_VERSION as usize
@@ -422,6 +496,8 @@ mod tests {
             &[
                 v001_initial::MIGRATION,
                 v002_embedding_metadata::MIGRATION,
+                v003_source_lifecycle::MIGRATION,
+                v004_edge_proposals::MIGRATION,
                 invalid,
             ],
         )
@@ -469,6 +545,137 @@ mod tests {
         assert_eq!(notes.len(), 1);
         let migrations = load_applied_migrations(&db).await.unwrap();
         assert_eq!(migrations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn v004_backfills_and_deduplicates_legacy_note_edge_keys_before_indexes() {
+        #[derive(Deserialize, SurrealValue)]
+        struct IdRow {
+            id: RecordId,
+        }
+        #[derive(Deserialize, SurrealValue)]
+        struct RelatedRow {
+            id: RecordId,
+            r#in: RecordId,
+            out: RecordId,
+            dedupe_key: String,
+        }
+
+        let db = raw_memory_db().await;
+        apply_migrations(
+            &db,
+            &[
+                v001_initial::MIGRATION,
+                v002_embedding_metadata::MIGRATION,
+                v003_source_lifecycle::MIGRATION,
+            ],
+        )
+        .await
+        .unwrap();
+        let created: Vec<IdRow> = db
+            .query("CREATE note CONTENT { content: 'legacy related note' } RETURN id")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let first = created[0].id.clone();
+        let second: Vec<IdRow> = db
+            .query("CREATE note CONTENT { content: 'another legacy related note' } RETURN id")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let second = second.into_iter().next().unwrap();
+        db.query("CREATE related_to SET in = $in, out = $out, confidence = 0.8")
+            .bind(("in", first.clone()))
+            .bind(("out", second.id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        db.query("CREATE related_to SET in = $in, out = $out, confidence = 0.9")
+            .bind(("in", second.id.clone()))
+            .bind(("out", first.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        for table in ["supports", "contradicts", "derived_from"] {
+            for _ in 0..2 {
+                db.query(format!("CREATE {table} SET in = $in, out = $out"))
+                    .bind(("in", first.clone()))
+                    .bind(("out", second.id.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
+        }
+
+        apply_migrations(&db, MIGRATIONS).await.unwrap();
+        let rows: Vec<RelatedRow> = db
+            .query("SELECT id, in, out, dedupe_key FROM related_to")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        let from = record_id_to_string(&row.r#in);
+        let to = record_id_to_string(&row.out);
+        assert!(from < to);
+        assert_eq!(row.dedupe_key, format!("related_to:{from}:{to}"));
+        for table in ["supports", "contradicts", "derived_from"] {
+            #[derive(Deserialize, SurrealValue)]
+            struct DirectedRow {
+                dedupe_key: String,
+            }
+            let rows: Vec<DirectedRow> = db
+                .query(format!("SELECT dedupe_key FROM {table}"))
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            assert_eq!(rows.len(), 1, "{table} should retain one directed row");
+            assert_eq!(
+                rows[0].dedupe_key,
+                format!(
+                    "{table}:{}:{}",
+                    record_id_to_string(&first),
+                    record_id_to_string(&second.id)
+                )
+            );
+        }
+
+        let repo = Repository::new(db);
+        let proposal = repo
+            .upsert_gardener_proposal(
+                &first,
+                &second.id,
+                0.95,
+                "legacy pair re-scan".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(repo
+            .accept_edge_proposal(&proposal.id.clone().unwrap(), None, None, false)
+            .await
+            .is_err());
+        assert_eq!(
+            repo.get_edge_proposal(&proposal.id.unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            graphrag_core::ProposedEdgeStatus::Superseded
+        );
+        let edges = repo.list_note_edges(10).await.unwrap();
+        assert_eq!(edges.len(), 4);
+        assert!(edges
+            .iter()
+            .any(|edge| edge.edge_type == EdgeType::RelatedTo.to_string()));
     }
 
     #[tokio::test]
