@@ -33,9 +33,25 @@ ollama_timeout_secs = 120
 [search]
 # Default number of results to return
 default_limit = 10
-# Weights for hybrid search (vector vs full-text)
+# `rrf` combines independently ranked vector and full-text results without
+# treating their raw distance/BM25 scores as a common scale. `weighted` exists
+# only for controlled comparisons with the legacy behavior.
+fusion_strategy = "rrf"
+# RRF score = vector_weight / (rrf_k + vector_rank) +
+#             fulltext_weight / (rrf_k + fulltext_rank)
+rrf_k = 60
+# Weights for vector vs full-text ranks; they must sum to 1.
 vector_weight = 0.7
 fulltext_weight = 0.3
+# Candidate queries request clamp(limit * multiplier, min, max) rows from each
+# retriever. The same value is used in the database KNN clause and SQL LIMIT.
+candidate_pool_multiplier = 4
+candidate_pool_min = 50
+candidate_pool_max = 200
+# Scope=all applies these weights after each hit type has been fused.
+note_weight = 1.0
+message_weight = 1.0
+conversation_summary_weight = 1.0
 
 [augment]
 # Defaults for `augment` and `eval-augment` when their flags are omitted.

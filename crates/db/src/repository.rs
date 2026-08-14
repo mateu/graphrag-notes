@@ -5,6 +5,7 @@ use crate::{
         check_embedding_compatibility, record_embedding_metadata, CompatibilityState,
         EmbeddingIdentity, ExtractionIdentity,
     },
+    fusion::{self, FusionConfig, FusionEvidence, FusionRecord},
     DbConnection, DbError, Result,
 };
 use graphrag_core::{
@@ -227,8 +228,29 @@ impl Repository {
         vector_weight: f32,
         fulltext_weight: f32,
     ) -> Result<Vec<SearchResult>> {
-        // Pull a wider candidate pool from each retrieval mode, then rerank.
-        let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
+        let fusion = FusionConfig {
+            vector_weight,
+            fulltext_weight,
+            ..FusionConfig::default()
+        };
+        self.hybrid_search_notes_with_fusion(
+            query_text, embedding, limit, since, source_uri, &fusion,
+        )
+        .await
+    }
+
+    /// Hybrid note search with one configurable, deterministic fusion policy.
+    #[instrument(skip(self, embedding, fusion))]
+    pub async fn hybrid_search_notes_with_fusion(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        fusion: &FusionConfig,
+    ) -> Result<Vec<SearchResult>> {
+        let candidate_limit = fusion.candidate_limit(limit);
 
         let vec_results = self
             .vector_search_notes(
@@ -243,45 +265,19 @@ impl Repository {
             .fulltext_search_notes(query_text, candidate_limit, since, source_uri)
             .await?;
 
-        use std::collections::hash_map::Entry;
-        let mut map = std::collections::HashMap::new();
-
-        for r in vec_results {
-            map.insert(r.id.clone(), r);
-        }
-
-        for r in fts_results {
-            match map.entry(r.id.clone()) {
-                Entry::Occupied(mut e) => {
-                    let existing = e.get_mut();
-                    if existing.title.is_none() {
-                        existing.title = r.title.clone();
-                    }
-                    if existing.content.is_empty() {
-                        existing.content = r.content.clone();
-                    }
-                    if existing.tags.is_empty() {
-                        existing.tags = r.tags.clone();
-                    }
-                    if let Some(score) = r.fts_score {
-                        existing.fts_score = Some(score);
-                    }
-                }
-                Entry::Vacant(e) => {
-                    e.insert(r);
-                }
+        let mut results = fusion::fuse(vec_results, fts_results, fusion, |existing, incoming| {
+            if existing.title.is_none() {
+                existing.title = incoming.title;
             }
-        }
-
-        let mut results: Vec<SearchResult> = map.into_values().collect();
-        results.sort_by(|a, b| {
-            hybrid_rank_score(b.vec_distance, b.fts_score, vector_weight, fulltext_weight)
-                .total_cmp(&hybrid_rank_score(
-                    a.vec_distance,
-                    a.fts_score,
-                    vector_weight,
-                    fulltext_weight,
-                ))
+            if existing.content.is_empty() {
+                existing.content = incoming.content;
+            }
+            if existing.tags.is_empty() {
+                existing.tags = incoming.tags;
+            }
+            if incoming.fts_score.is_some() {
+                existing.fts_score = incoming.fts_score;
+            }
         });
         if results.len() > limit {
             results.truncate(limit);
@@ -307,10 +303,11 @@ impl Repository {
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
         let since = since.map(|ts| ts.to_rfc3339());
-        let results: Vec<SearchResult> = self
-            .db
-            .query(
-                r#"
+        // SurrealQL requires a literal KNN candidate count. `limit` is a
+        // usize calculated by FusionConfig, so interpolating it is safe and
+        // keeps KNN's pool aligned with the query LIMIT.
+        let query = format!(
+            r#"
                 SELECT 
                     id,
                     title,
@@ -321,12 +318,15 @@ impl Repository {
                     source_id.uri AS source_uri,
                     vector::distance::knn() AS vec_distance
                 FROM note
-                WHERE embedding <|100,COSINE|> $embedding
+                WHERE embedding <|{limit},COSINE|> $embedding
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
                 LIMIT $limit
-            "#,
-            )
+            "#
+        );
+        let results: Vec<SearchResult> = self
+            .db
+            .query(query)
             .bind(("embedding", embedding))
             .bind(("limit", limit))
             .bind(("since", since))
@@ -411,7 +411,29 @@ impl Repository {
         vector_weight: f32,
         fulltext_weight: f32,
     ) -> Result<Vec<MessageSearchResult>> {
-        let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
+        let fusion = FusionConfig {
+            vector_weight,
+            fulltext_weight,
+            ..FusionConfig::default()
+        };
+        self.hybrid_search_messages_with_fusion(
+            query_text, embedding, limit, since, source_uri, &fusion,
+        )
+        .await
+    }
+
+    /// Hybrid message search with one configurable, deterministic fusion policy.
+    #[instrument(skip(self, embedding, fusion))]
+    pub async fn hybrid_search_messages_with_fusion(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        fusion: &FusionConfig,
+    ) -> Result<Vec<MessageSearchResult>> {
+        let candidate_limit = fusion.candidate_limit(limit);
 
         let vec_results = self
             .vector_search_messages(
@@ -425,35 +447,10 @@ impl Repository {
             .fulltext_search_messages(query_text, candidate_limit, since, source_uri)
             .await?;
 
-        use std::collections::hash_map::Entry;
-        let mut map = std::collections::HashMap::new();
-
-        for r in vec_results {
-            map.insert(r.id.clone(), r);
-        }
-
-        for r in fts_results {
-            match map.entry(r.id.clone()) {
-                Entry::Occupied(mut e) => {
-                    if let Some(score) = r.fts_score {
-                        e.get_mut().fts_score = Some(score);
-                    }
-                }
-                Entry::Vacant(e) => {
-                    e.insert(r);
-                }
+        let mut results = fusion::fuse(vec_results, fts_results, fusion, |existing, incoming| {
+            if incoming.fts_score.is_some() {
+                existing.fts_score = incoming.fts_score;
             }
-        }
-
-        let mut results: Vec<MessageSearchResult> = map.into_values().collect();
-        results.sort_by(|a, b| {
-            hybrid_rank_score(b.vec_distance, b.fts_score, vector_weight, fulltext_weight)
-                .total_cmp(&hybrid_rank_score(
-                    a.vec_distance,
-                    a.fts_score,
-                    vector_weight,
-                    fulltext_weight,
-                ))
         });
         if results.len() > limit {
             results.truncate(limit);
@@ -471,10 +468,8 @@ impl Repository {
         source_uri: Option<String>,
     ) -> Result<Vec<MessageSearchResult>> {
         let since = since.map(|ts| ts.to_rfc3339());
-        let results: Vec<MessageSearchResult> = self
-            .db
-            .query(
-                r#"
+        let query = format!(
+            r#"
                 SELECT
                     id,
                     conversation_id,
@@ -486,12 +481,15 @@ impl Repository {
                     conversation_id.source_uri AS source_uri,
                     vector::distance::knn() AS vec_distance
                 FROM message
-                WHERE embedding <|100,COSINE|> $embedding
+                WHERE embedding <|{limit},COSINE|> $embedding
                   AND ($since = NONE OR (created_at != NONE AND created_at >= <datetime>$since))
                   AND ($source_uri = NONE OR conversation_id.source_uri = $source_uri)
                 LIMIT $limit
-            "#,
-            )
+            "#
+        );
+        let results: Vec<MessageSearchResult> = self
+            .db
+            .query(query)
             .bind(("embedding", embedding))
             .bind(("limit", limit))
             .bind(("since", since))
@@ -571,7 +569,30 @@ impl Repository {
         vector_weight: f32,
         fulltext_weight: f32,
     ) -> Result<Vec<ConversationSearchResult>> {
-        let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
+        let fusion = FusionConfig {
+            vector_weight,
+            fulltext_weight,
+            ..FusionConfig::default()
+        };
+        self.hybrid_search_conversation_summaries_with_fusion(
+            query_text, embedding, limit, since, source_uri, &fusion,
+        )
+        .await
+    }
+
+    /// Hybrid conversation-summary search with one configurable, deterministic
+    /// fusion policy.
+    #[instrument(skip(self, embedding, fusion))]
+    pub async fn hybrid_search_conversation_summaries_with_fusion(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        fusion: &FusionConfig,
+    ) -> Result<Vec<ConversationSearchResult>> {
+        let candidate_limit = fusion.candidate_limit(limit);
 
         let vec_results = self
             .vector_search_conversation_summaries(
@@ -585,35 +606,10 @@ impl Repository {
             .fulltext_search_conversation_summaries(query_text, candidate_limit, since, source_uri)
             .await?;
 
-        use std::collections::hash_map::Entry;
-        let mut map = std::collections::HashMap::new();
-
-        for r in vec_results {
-            map.insert(r.id.clone(), r);
-        }
-
-        for r in fts_results {
-            match map.entry(r.id.clone()) {
-                Entry::Occupied(mut e) => {
-                    if let Some(score) = r.fts_score {
-                        e.get_mut().fts_score = Some(score);
-                    }
-                }
-                Entry::Vacant(e) => {
-                    e.insert(r);
-                }
+        let mut results = fusion::fuse(vec_results, fts_results, fusion, |existing, incoming| {
+            if incoming.fts_score.is_some() {
+                existing.fts_score = incoming.fts_score;
             }
-        }
-
-        let mut results: Vec<ConversationSearchResult> = map.into_values().collect();
-        results.sort_by(|a, b| {
-            hybrid_rank_score(b.vec_distance, b.fts_score, vector_weight, fulltext_weight)
-                .total_cmp(&hybrid_rank_score(
-                    a.vec_distance,
-                    a.fts_score,
-                    vector_weight,
-                    fulltext_weight,
-                ))
         });
         if results.len() > limit {
             results.truncate(limit);
@@ -631,10 +627,8 @@ impl Repository {
         source_uri: Option<String>,
     ) -> Result<Vec<ConversationSearchResult>> {
         let since = since.map(|ts| ts.to_rfc3339());
-        let results: Vec<ConversationSearchResult> = self
-            .db
-            .query(
-                r#"
+        let query = format!(
+            r#"
                 SELECT
                     id,
                     uuid,
@@ -644,12 +638,15 @@ impl Repository {
                     updated_at,
                     vector::distance::knn() AS vec_distance
                 FROM conversation
-                WHERE summary_embedding <|100,COSINE|> $embedding
+                WHERE summary_embedding <|{limit},COSINE|> $embedding
                   AND ($since = NONE OR updated_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_uri = $source_uri)
                 LIMIT $limit
-            "#,
-            )
+            "#
+        );
+        let results: Vec<ConversationSearchResult> = self
+            .db
+            .query(query)
             .bind(("embedding", embedding))
             .bind(("limit", limit))
             .bind(("since", since))
@@ -1419,6 +1416,9 @@ pub struct SearchResult {
     pub vec_distance: Option<f32>,
     #[serde(default)]
     pub fts_score: Option<f32>,
+    #[serde(skip, default)]
+    #[surreal(default)]
+    pub fusion: FusionEvidence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -1437,6 +1437,9 @@ pub struct MessageSearchResult {
     pub vec_distance: Option<f32>,
     #[serde(default)]
     pub fts_score: Option<f32>,
+    #[serde(skip, default)]
+    #[surreal(default)]
+    pub fusion: FusionEvidence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -1454,21 +1457,63 @@ pub struct ConversationSearchResult {
     pub vec_distance: Option<f32>,
     #[serde(default)]
     pub fts_score: Option<f32>,
+    #[serde(skip, default)]
+    #[surreal(default)]
+    pub fusion: FusionEvidence,
 }
 
-fn hybrid_rank_score(
-    vec_distance: Option<f32>,
-    fts_score: Option<f32>,
-    vector_weight: f32,
-    fulltext_weight: f32,
-) -> f32 {
-    let vec_component = vec_distance
-        .map(|distance| 1.0 / (1.0 + distance.max(0.0)))
-        .unwrap_or(0.0);
-    let fts_component = fts_score
-        .map(|score| (score / 10.0).min(1.0))
-        .unwrap_or(0.0);
-    (vec_component * vector_weight) + (fts_component * fulltext_weight)
+impl FusionRecord for SearchResult {
+    fn fusion_id(&self) -> String {
+        record_id_to_string(&self.id)
+    }
+
+    fn vector_distance(&self) -> Option<f32> {
+        self.vec_distance
+    }
+
+    fn fulltext_score(&self) -> Option<f32> {
+        self.fts_score
+    }
+
+    fn set_fusion_evidence(&mut self, evidence: FusionEvidence) {
+        self.fusion = evidence;
+    }
+}
+
+impl FusionRecord for MessageSearchResult {
+    fn fusion_id(&self) -> String {
+        record_id_to_string(&self.id)
+    }
+
+    fn vector_distance(&self) -> Option<f32> {
+        self.vec_distance
+    }
+
+    fn fulltext_score(&self) -> Option<f32> {
+        self.fts_score
+    }
+
+    fn set_fusion_evidence(&mut self, evidence: FusionEvidence) {
+        self.fusion = evidence;
+    }
+}
+
+impl FusionRecord for ConversationSearchResult {
+    fn fusion_id(&self) -> String {
+        record_id_to_string(&self.id)
+    }
+
+    fn vector_distance(&self) -> Option<f32> {
+        self.vec_distance
+    }
+
+    fn fulltext_score(&self) -> Option<f32> {
+        self.fts_score
+    }
+
+    fn set_fusion_evidence(&mut self, evidence: FusionEvidence) {
+        self.fusion = evidence;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, SurrealValue)]

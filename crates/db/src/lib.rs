@@ -4,6 +4,7 @@
 
 pub mod compatibility;
 pub mod error;
+pub mod fusion;
 pub mod migrations;
 pub mod repository;
 pub mod schema;

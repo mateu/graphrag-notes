@@ -7,14 +7,14 @@ use graphrag_db::compatibility::EmbeddingIdentity;
 use graphrag_db::repository::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };
-use graphrag_db::Repository;
+use graphrag_db::{
+    fusion::{self, FusionConfig, FusionEvidence},
+    Repository,
+};
 
 use std::collections::HashSet;
 
 use tracing::{debug, info, instrument};
-
-const DEFAULT_VECTOR_WEIGHT: f32 = 0.65;
-const DEFAULT_FULLTEXT_WEIGHT: f32 = 0.35;
 
 /// Search result with optional graph context
 #[derive(Debug)]
@@ -46,6 +46,9 @@ pub struct ScopedSearchResult {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     pub source_uri: Option<String>,
     pub score: f32,
+    /// Retrieval evidence is intentionally retained for a later `--explain`
+    /// surface while current CLI output remains unchanged.
+    pub fusion: FusionEvidence,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
@@ -120,8 +123,10 @@ impl AugmentContext {
 pub struct SearchAgent {
     repo: Repository,
     embedder: SharedEmbedder,
-    vector_weight: f32,
-    fulltext_weight: f32,
+    fusion: FusionConfig,
+    note_weight: f32,
+    message_weight: f32,
+    conversation_summary_weight: f32,
 }
 
 impl SearchAgent {
@@ -130,17 +135,34 @@ impl SearchAgent {
         Self {
             repo,
             embedder,
-            vector_weight: DEFAULT_VECTOR_WEIGHT,
-            fulltext_weight: DEFAULT_FULLTEXT_WEIGHT,
+            fusion: FusionConfig::default(),
+            note_weight: 1.0,
+            message_weight: 1.0,
+            conversation_summary_weight: 1.0,
         }
     }
 
-    /// Set the weights used when ranking mixed search scopes. The CLI obtains
-    /// validated values from `graphrag-config`; this builder retains the
-    /// historic defaults for library callers.
+    /// Set vector and full-text weights while retaining the RRF default.
+    /// Prefer [`Self::with_fusion_config`] for all runtime controls.
     pub fn with_hybrid_weights(mut self, vector_weight: f32, fulltext_weight: f32) -> Self {
-        self.vector_weight = vector_weight;
-        self.fulltext_weight = fulltext_weight;
+        self.fusion.vector_weight = vector_weight;
+        self.fusion.fulltext_weight = fulltext_weight;
+        self
+    }
+
+    /// Configure the one fusion component used for repository and all-scope
+    /// search. Callers obtain validated values from `graphrag-config`.
+    pub fn with_fusion_config(
+        mut self,
+        fusion: FusionConfig,
+        note_weight: f32,
+        message_weight: f32,
+        conversation_summary_weight: f32,
+    ) -> Self {
+        self.fusion = fusion;
+        self.note_weight = note_weight;
+        self.message_weight = message_weight;
+        self.conversation_summary_weight = conversation_summary_weight;
         self
     }
 
@@ -181,14 +203,13 @@ impl SearchAgent {
         // Perform hybrid search
         let results = self
             .repo
-            .hybrid_search_notes_with_weights(
+            .hybrid_search_notes_with_fusion(
                 query,
                 embedding,
                 limit,
                 since,
                 source_uri,
-                self.vector_weight,
-                self.fulltext_weight,
+                &self.fusion,
             )
             .await?;
 
@@ -269,14 +290,13 @@ impl SearchAgent {
         if matches!(scope, SearchScope::Notes | SearchScope::All) {
             let notes = self
                 .repo
-                .hybrid_search_notes_with_weights(
+                .hybrid_search_notes_with_fusion(
                     query,
                     embedding.clone(),
                     limit,
                     since,
                     source_uri.clone(),
-                    self.vector_weight,
-                    self.fulltext_weight,
+                    &self.fusion,
                 )
                 .await?;
             scoped_results.extend(
@@ -289,14 +309,13 @@ impl SearchAgent {
         if matches!(scope, SearchScope::Messages | SearchScope::All) {
             let messages = self
                 .repo
-                .hybrid_search_messages_with_weights(
+                .hybrid_search_messages_with_fusion(
                     query,
                     embedding.clone(),
                     limit,
                     since,
                     source_uri.clone(),
-                    self.vector_weight,
-                    self.fulltext_weight,
+                    &self.fusion,
                 )
                 .await?;
             scoped_results.extend(
@@ -309,14 +328,13 @@ impl SearchAgent {
         if matches!(scope, SearchScope::All) {
             let conversations = self
                 .repo
-                .hybrid_search_conversation_summaries_with_weights(
+                .hybrid_search_conversation_summaries_with_fusion(
                     query,
                     embedding,
                     limit,
                     since,
                     source_uri,
-                    self.vector_weight,
-                    self.fulltext_weight,
+                    &self.fusion,
                 )
                 .await?;
             scoped_results.extend(
@@ -326,7 +344,7 @@ impl SearchAgent {
             );
         }
 
-        scoped_results.sort_by(|a, b| b.score.total_cmp(&a.score));
+        rank_scoped_results(&mut scoped_results);
         if scoped_results.len() > limit {
             scoped_results.truncate(limit);
         }
@@ -390,7 +408,6 @@ impl SearchAgent {
     }
 
     fn from_note_result(&self, result: SearchResult) -> ScopedSearchResult {
-        let score = self.rank_score(result.vec_distance, result.fts_score);
         ScopedSearchResult {
             hit_type: SearchHitType::Note,
             id: record_id_to_string(&result.id),
@@ -398,7 +415,8 @@ impl SearchAgent {
             content: result.content,
             created_at: Some(result.created_at),
             source_uri: result.source_uri,
-            score,
+            score: fusion::apply_hit_type_weight(&result.fusion, self.note_weight),
+            fusion: result.fusion,
             conversation_uuid: None,
             message_index: None,
             role: None,
@@ -406,7 +424,6 @@ impl SearchAgent {
     }
 
     fn from_message_result(&self, result: MessageSearchResult) -> ScopedSearchResult {
-        let score = self.rank_score(result.vec_distance, result.fts_score);
         ScopedSearchResult {
             hit_type: SearchHitType::Message,
             id: record_id_to_string(&result.id),
@@ -418,7 +435,8 @@ impl SearchAgent {
             content: result.content,
             created_at: result.created_at,
             source_uri: result.source_uri,
-            score,
+            score: fusion::apply_hit_type_weight(&result.fusion, self.message_weight),
+            fusion: result.fusion,
             conversation_uuid: Some(result.conversation_uuid),
             message_index: Some(result.message_index),
             role: Some(result.role),
@@ -426,7 +444,6 @@ impl SearchAgent {
     }
 
     fn from_conversation_result(&self, result: ConversationSearchResult) -> ScopedSearchResult {
-        let score = self.rank_score(result.vec_distance, result.fts_score);
         let title = result
             .title
             .clone()
@@ -439,21 +456,12 @@ impl SearchAgent {
             content,
             created_at: Some(result.updated_at),
             source_uri: result.source_uri,
-            score,
+            score: fusion::apply_hit_type_weight(&result.fusion, self.conversation_summary_weight),
+            fusion: result.fusion,
             conversation_uuid: Some(result.uuid),
             message_index: None,
             role: None,
         }
-    }
-
-    fn rank_score(&self, vec_distance: Option<f32>, fts_score: Option<f32>) -> f32 {
-        let vec_component = vec_distance
-            .map(|distance| 1.0 / (1.0 + distance.max(0.0)))
-            .unwrap_or(0.0);
-        let fts_component = fts_score
-            .map(|score| (score / 10.0).min(1.0))
-            .unwrap_or(0.0);
-        (vec_component * self.vector_weight) + (fts_component * self.fulltext_weight)
     }
 
     /// Find notes similar to a given note
@@ -479,6 +487,32 @@ impl SearchAgent {
     }
 }
 
+fn hit_type_order(hit_type: SearchHitType) -> usize {
+    match hit_type {
+        SearchHitType::Note => 0,
+        SearchHitType::Message => 1,
+        SearchHitType::ConversationSummary => 2,
+    }
+}
+
+fn rank_scoped_results(results: &mut [ScopedSearchResult]) {
+    results.sort_by(|left, right| {
+        fusion::compare_scoped(
+            left.score,
+            &left.fusion,
+            hit_type_order(left.hit_type),
+            &left.id,
+            right.score,
+            &right.fusion,
+            hit_type_order(right.hit_type),
+            &right.id,
+        )
+    });
+    for (index, result) in results.iter_mut().enumerate() {
+        result.fusion.final_rank = index + 1;
+    }
+}
+
 fn build_augment_context_from_hits(
     query: String,
     scope: SearchScope,
@@ -487,7 +521,7 @@ fn build_augment_context_from_hits(
     options: AugmentOptions,
     dropped_for_entity_filter: usize,
 ) -> AugmentContext {
-    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    rank_scoped_results(&mut hits);
 
     let mut chunks = Vec::new();
     let mut seen_ids = HashSet::new();
@@ -659,6 +693,10 @@ mod tests {
             created_at: None,
             source_uri: None,
             score,
+            fusion: FusionEvidence {
+                fused_score: score,
+                ..FusionEvidence::default()
+            },
             conversation_uuid: None,
             message_index: None,
             role: None,
@@ -713,6 +751,23 @@ mod tests {
     }
 
     #[test]
+    fn scope_ties_are_stable_by_hit_type_then_record_id() {
+        let mut message = make_hit("message:z", 0.5, "message");
+        message.hit_type = SearchHitType::Message;
+        let note_b = make_hit("note:b", 0.5, "note b");
+        let note_a = make_hit("note:a", 0.5, "note a");
+        let mut hits = vec![message, note_b, note_a];
+
+        rank_scoped_results(&mut hits);
+
+        assert_eq!(
+            hits.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(),
+            vec!["note:a", "note:b", "message:z"]
+        );
+        assert_eq!(hits[0].fusion.final_rank, 1);
+    }
+
+    #[test]
     fn enforces_total_token_budget() {
         let hits = vec![
             make_hit("note:a", 0.9, "one two three four five six"),
@@ -761,8 +816,11 @@ mod tests {
     }
 
     #[test]
-    fn library_default_weights_preserve_historical_ranking() {
-        assert_eq!(DEFAULT_VECTOR_WEIGHT, 0.65);
-        assert_eq!(DEFAULT_FULLTEXT_WEIGHT, 0.35);
+    fn library_defaults_use_rrf_with_balanced_scope_weights() {
+        let config = FusionConfig::default();
+        assert_eq!(config.strategy, fusion::FusionStrategy::ReciprocalRank);
+        assert_eq!(config.rrf_k, 60);
+        assert_eq!(config.vector_weight, 0.7);
+        assert_eq!(config.fulltext_weight, 0.3);
     }
 }
