@@ -2,13 +2,15 @@
 
 use crate::{inference::validate_embedding_dim, Result, SharedEmbedder, SharedEntityExtractor};
 use graphrag_core::{
-    record_id_to_string, ChatConversation, ChatExport, ChatMessage, Entity, EntityType,
-    MessageRole, Note, NoteType, Source, SourceType,
+    normalize_file_uri, normalized_content_hash, record_id_to_string, ChatConversation, ChatExport,
+    ChatMessage, Entity, EntityType, MessageRole, Note, NoteType, Source, SourceType,
 };
 use graphrag_db::compatibility::{EmbeddingIdentity, ExtractionIdentity};
-use graphrag_db::Repository;
+use graphrag_db::{Repository, SourceDeleteSummary, SourceImportAction};
 use std::collections::HashSet;
+use std::path::Path;
 use std::time::{Duration, Instant};
+use surrealdb::types::RecordId;
 use tracing::{debug, info, instrument};
 
 const DEFAULT_PROGRESS_EVERY: usize = 10;
@@ -118,6 +120,23 @@ pub struct LibrarianAgent {
     embedder: SharedEmbedder,
     extractor: SharedEntityExtractor,
     runtime: LibrarianRuntimeConfig,
+}
+
+/// Stable, machine-readable result of a Markdown import. Counts describe the
+/// lifecycle transition; `notes` contains only notes created in this attempt.
+#[derive(Debug, Clone)]
+pub struct MarkdownImportResult {
+    pub source_id: String,
+    pub source_uri: String,
+    pub generation: u64,
+    pub action: SourceImportAction,
+    pub created: u64,
+    pub unchanged: u64,
+    pub updated: u64,
+    pub deleted: u64,
+    pub failed: u64,
+    pub cleanup: SourceDeleteSummary,
+    pub notes: Vec<Note>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -304,7 +323,7 @@ impl LibrarianAgent {
         }
 
         if let Some(sid) = source_id {
-            note = note.with_source(record_id_to_string(&sid));
+            note = note.with_source(sid);
         }
 
         let note = self.repo.create_note(note).await?;
@@ -325,21 +344,121 @@ impl LibrarianAgent {
     where
         C: Into<String> + std::fmt::Debug,
     {
+        Ok(self
+            .ingest_markdown_with_options(path, content, false)
+            .await?
+            .notes)
+    }
+
+    /// Import a Markdown file idempotently. The content hash is SHA-256 after
+    /// newline normalization; an unchanged ready source is a no-op unless
+    /// `force` is supplied. Refreshes stage a new generation before old notes
+    /// are removed, so failed work leaves the prior generation searchable.
+    #[instrument(skip(self, content))]
+    pub async fn ingest_markdown_with_options<C>(
+        &self,
+        path: &str,
+        content: C,
+        force: bool,
+    ) -> Result<MarkdownImportResult>
+    where
+        C: Into<String> + std::fmt::Debug,
+    {
         let content = content.into();
-        info!("Ingesting markdown from: {}", path);
+        let normalized_uri = normalize_file_uri(path);
+        info!("Ingesting markdown from: {}", normalized_uri);
+        let plan = self
+            .repo
+            .begin_file_import(
+                SourceType::Markdown,
+                path.to_string(),
+                normalized_uri.clone(),
+                content.clone(),
+                normalized_content_hash(&content),
+                force,
+            )
+            .await?;
 
-        // Create source
-        let source = Source::from_file(path, SourceType::Markdown).with_content(content.clone());
-        let source = self.repo.create_source(source).await?;
-        let source_id = source.id.as_ref().map(record_id_to_string);
+        if plan.action == SourceImportAction::Unchanged {
+            return Ok(MarkdownImportResult {
+                source_id: plan
+                    .source
+                    .id
+                    .as_ref()
+                    .map(record_id_to_string)
+                    .unwrap_or_default(),
+                source_uri: normalized_uri,
+                generation: plan.source.successful_generation,
+                action: plan.action,
+                created: 0,
+                unchanged: 1,
+                updated: 0,
+                deleted: 0,
+                failed: 0,
+                cleanup: SourceDeleteSummary::default(),
+                notes: Vec::new(),
+            });
+        }
 
-        // For MVP, treat the whole file as one note
-        // Future: parse markdown and create atomic notes
-        let notes = self.chunk_and_create_notes(&content, source_id).await?;
+        let mut source = plan.source;
+        let source_id = source.id.clone();
+        let generation = source.generation;
+        let notes = match self
+            .chunk_and_create_notes(&content, source_id, Some(generation))
+            .await
+        {
+            Ok(notes) => notes,
+            Err(error) => {
+                let message = error.to_string();
+                self.repo.fail_file_import(&mut source, &message).await?;
+                return Err(error);
+            }
+        };
+        let cleanup = self.repo.complete_file_import(&mut source).await?;
+        let created = u64::from(plan.action == SourceImportAction::Created) * notes.len() as u64;
+        let updated = u64::from(plan.action == SourceImportAction::Updated) * notes.len() as u64;
+        Ok(MarkdownImportResult {
+            source_id: source
+                .id
+                .as_ref()
+                .map(record_id_to_string)
+                .unwrap_or_default(),
+            source_uri: normalized_uri,
+            generation,
+            action: plan.action,
+            created,
+            unchanged: 0,
+            updated,
+            deleted: cleanup.notes,
+            failed: 0,
+            cleanup,
+            notes,
+        })
+    }
 
-        info!("Created {} notes from markdown", notes.len());
-
-        Ok(notes)
+    /// Reimport a file source using its stored normalized file URI. Sources
+    /// with non-file URIs are intentionally rejected rather than guessing how
+    /// to retrieve remote content.
+    #[instrument(skip(self))]
+    pub async fn reimport_markdown_source(
+        &self,
+        id_or_uri: &str,
+        force: bool,
+    ) -> Result<MarkdownImportResult> {
+        let source = self.repo.get_source(id_or_uri).await?.ok_or_else(|| {
+            crate::AgentError::Processing(format!("source not found: {id_or_uri}"))
+        })?;
+        let uri = source.normalized_uri.or(source.uri).ok_or_else(|| {
+            crate::AgentError::Processing("source has no reimportable URI".into())
+        })?;
+        let path = uri.strip_prefix("file://").ok_or_else(|| {
+            crate::AgentError::Processing(format!("source is not a local file: {uri}"))
+        })?;
+        let content = std::fs::read_to_string(Path::new(path)).map_err(|error| {
+            crate::AgentError::Processing(format!("failed to read {path}: {error}"))
+        })?;
+        self.ingest_markdown_with_options(path, content, force)
+            .await
     }
 
     /// Process notes that don't have embeddings yet
@@ -675,7 +794,8 @@ impl LibrarianAgent {
     async fn chunk_and_create_notes(
         &self,
         content: &str,
-        source_id: Option<String>,
+        source_id: Option<RecordId>,
+        source_generation: Option<u64>,
     ) -> Result<Vec<Note>> {
         // Split by paragraphs and apply the resolved size limits. Long
         // paragraphs are bounded by characters to keep embedding requests
@@ -696,6 +816,9 @@ impl LibrarianAgent {
             if let Some(ref sid) = source_id {
                 note = note.with_source(sid.clone());
             }
+            if let Some(generation) = source_generation {
+                note = note.with_source_generation(generation);
+            }
 
             let note = self.repo.create_note(note).await?;
             return Ok(vec![note]);
@@ -713,6 +836,9 @@ impl LibrarianAgent {
 
             if let Some(ref sid) = source_id {
                 note = note.with_source(sid.clone());
+            }
+            if let Some(generation) = source_generation {
+                note = note.with_source_generation(generation);
             }
 
             let note = self.repo.create_note(note).await?;
@@ -1043,7 +1169,7 @@ impl LibrarianAgent {
             "summary": &conversation.summary,
         }));
         let source = self.repo.create_source(source).await?;
-        let source_id = source.id.as_ref().map(record_id_to_string);
+        let source_id = source.id.clone();
 
         if !conversation.summary.is_empty() {
             let summary_stats = self
@@ -1067,7 +1193,9 @@ impl LibrarianAgent {
             ChatImportMode::Qa => {
                 if qa.pairs.is_empty() {
                     let markdown = conversation.to_markdown();
-                    let fallback_notes = self.chunk_and_create_notes(&markdown, source_id).await?;
+                    let fallback_notes = self
+                        .chunk_and_create_notes(&markdown, source_id, None)
+                        .await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
                     outcome.note_conversation_links_created += self
@@ -1093,7 +1221,9 @@ impl LibrarianAgent {
             ChatImportMode::Message => {
                 if conversation.messages.is_empty() {
                     let markdown = conversation.to_markdown();
-                    let fallback_notes = self.chunk_and_create_notes(&markdown, source_id).await?;
+                    let fallback_notes = self
+                        .chunk_and_create_notes(&markdown, source_id, None)
+                        .await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
                     outcome.note_conversation_links_created += self
@@ -1170,7 +1300,9 @@ impl LibrarianAgent {
 
                 if outcome.notes_from_qa == 0 && outcome.notes_from_messages == 0 {
                     let markdown = conversation.to_markdown();
-                    let fallback_notes = self.chunk_and_create_notes(&markdown, source_id).await?;
+                    let fallback_notes = self
+                        .chunk_and_create_notes(&markdown, source_id, None)
+                        .await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
                     outcome.note_conversation_links_created += self
@@ -1191,7 +1323,7 @@ impl LibrarianAgent {
     async fn create_qa_notes(
         &self,
         qa_pairs: &[QaPair],
-        source_id: Option<String>,
+        source_id: Option<RecordId>,
         conversation_title: &str,
         conversation_record_id: &surrealdb::types::RecordId,
         message_record_ids: &[surrealdb::types::RecordId],
@@ -1265,7 +1397,7 @@ impl LibrarianAgent {
     async fn create_summary_note(
         &self,
         conversation: &ChatConversation,
-        source_id: Option<String>,
+        source_id: Option<RecordId>,
         conversation_record_id: &surrealdb::types::RecordId,
     ) -> Result<NoteCreationStats> {
         let summary_title = format!("Summary: {}", conversation.display_title());
@@ -1306,7 +1438,7 @@ impl LibrarianAgent {
         conversation: &ChatConversation,
         messages: &[ChatMessage],
         indices: &[usize],
-        source_id: Option<String>,
+        source_id: Option<RecordId>,
         conversation_record_id: &surrealdb::types::RecordId,
         message_record_ids: &[surrealdb::types::RecordId],
     ) -> Result<NoteCreationStats> {

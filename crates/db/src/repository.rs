@@ -10,6 +10,7 @@ use crate::{
 };
 use graphrag_core::{
     record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, Source,
+    SourceIngestionStatus, SourceType,
 };
 use serde::{Deserialize, Serialize};
 use surrealdb::types::RecordId;
@@ -28,15 +29,42 @@ fn note_content_value(note: &Note) -> Result<serde_json::Value> {
     if let Some(obj) = value.as_object_mut() {
         // Always remove id – the record id is determined by the create/update target
         obj.remove("id");
-        if note.source_id.is_none() {
-            obj.remove("source_id");
-        }
+        // RecordId serializes as a structural JSON object, while SurrealQL
+        // requires a typed record value. `create_note` binds it separately.
+        obj.remove("source_id");
         if note.title.is_none() {
             obj.remove("title");
         }
         if note.embedding.is_empty() {
             obj.remove("embedding");
         }
+    }
+    Ok(value)
+}
+
+fn source_content_value(source: &Source) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(source)
+        .map_err(|error| DbError::QueryFailed(format!("source serialization failed: {error}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| DbError::QueryFailed("source did not serialize as an object".into()))?;
+    object.remove("id");
+    object.remove("created_at");
+    object.remove("updated_at");
+    object.remove("last_ingested_at");
+    for key in [
+        "uri",
+        "content",
+        "normalized_uri",
+        "content_hash",
+        "last_error",
+    ] {
+        if object.get(key).is_some_and(serde_json::Value::is_null) {
+            object.remove(key);
+        }
+    }
+    if object.get("metadata").is_some_and(serde_json::Value::is_null) {
+        object.remove("metadata");
     }
     Ok(value)
 }
@@ -75,19 +103,36 @@ impl Repository {
     pub async fn create_note(&self, note: Note) -> Result<Note> {
         // Use SurrealDB's high-level create API so we get back the stored
         // record including its generated `id`.
+        let source_id = note.source_id.clone();
         let created: Option<Note> = self
             .db
             .create("note")
             .content(note_content_value(&note)?)
             .await?;
-
-        created.ok_or_else(|| DbError::QueryFailed("create_note".into()))
+        let mut created = created.ok_or_else(|| DbError::QueryFailed("create_note".into()))?;
+        if let Some(source_id) = source_id {
+            self.db
+                .query("UPDATE $note SET source_id = $source")
+                .bind((
+                    "note",
+                    created
+                        .id
+                        .clone()
+                        .ok_or_else(|| DbError::CreateFailed("note id".into()))?,
+                ))
+                .bind(("source", source_id.clone()))
+                .await?
+                .check()?;
+            created.source_id = Some(source_id);
+        }
+        Ok(created)
     }
 
     /// Get a note by ID
     #[instrument(skip(self))]
     pub async fn get_note(&self, id: &str) -> Result<Option<Note>> {
-        let note: Option<Note> = self.db.select(("note", id)).await?;
+        let raw_id = id.strip_prefix("note:").unwrap_or(id);
+        let note: Option<Note> = self.db.select(("note", raw_id)).await?;
         Ok(note)
     }
 
@@ -1026,17 +1071,290 @@ impl Repository {
     // SOURCE OPERATIONS
     // ==========================================
 
-    /// Create a source
+    /// Create a source and return its database-assigned id.
     #[instrument(skip(self, source))]
     pub async fn create_source(&self, source: Source) -> Result<Source> {
-        // Insert source via a raw query and ignore the returned record; we only
-        // need the data persisted, not the generated SurrealDB `id` value.
-        self.db
-            .query("CREATE source CONTENT $source")
-            .bind(("source", source.clone()))
-            .await?;
+        let created: Option<Source> = self
+            .db
+            .query("CREATE source CONTENT $source RETURN AFTER")
+            .bind(("source", source_content_value(&source)?))
+            .await?
+            .take(0)?;
+        created.ok_or_else(|| DbError::CreateFailed("source".into()))
+    }
 
+    /// List sources in stable identity order for human and JSON CLI output.
+    #[instrument(skip(self))]
+    pub async fn list_sources(&self) -> Result<Vec<Source>> {
+        Ok(self
+            .db
+            .query("SELECT * FROM source ORDER BY normalized_uri, created_at, id")
+            .await?
+            .take(0)?)
+    }
+
+    /// Resolve a source by record id or by its normalized/legacy URI.
+    #[instrument(skip(self))]
+    pub async fn get_source(&self, id_or_uri: &str) -> Result<Option<Source>> {
+        if let Some(raw_id) = id_or_uri.strip_prefix("source:") {
+            let source: Option<Source> = self.db.select(("source", raw_id)).await?;
+            return Ok(source);
+        }
+
+        let source: Option<Source> = self
+            .db
+            .query(
+                "SELECT * FROM source WHERE normalized_uri = $key OR uri = $key LIMIT 1",
+            )
+            .bind(("key", id_or_uri.to_string()))
+            .await?
+            .take(0)?;
         Ok(source)
+    }
+
+    /// Begin a staged import. The old successful generation remains untouched
+    /// until `complete_file_import` succeeds, making failed refreshes safe.
+    #[instrument(skip(self, content))]
+    pub async fn begin_file_import(
+        &self,
+        source_type: SourceType,
+        title: String,
+        normalized_uri: String,
+        content: String,
+        content_hash: String,
+        force: bool,
+    ) -> Result<SourceImportPlan> {
+        if let Some(mut existing) = self.get_source(&normalized_uri).await? {
+            if existing.source_type == SourceType::Manual {
+                return Err(DbError::QueryFailed(format!(
+                    "refusing to replace manual source at {normalized_uri}"
+                )));
+            }
+            if !force
+                && existing.status == SourceIngestionStatus::Ready
+                && existing.content_hash.as_deref() == Some(content_hash.as_str())
+            {
+                return Ok(SourceImportPlan {
+                    source: existing,
+                    action: SourceImportAction::Unchanged,
+                });
+            }
+
+            existing.generation = existing.generation.saturating_add(1).max(1);
+            existing.source_type = source_type;
+            existing.title = Some(title);
+            existing.uri = Some(normalized_uri.clone());
+            existing.normalized_uri = Some(normalized_uri);
+            existing.content = Some(content);
+            existing.content_hash = Some(content_hash);
+            existing.status = SourceIngestionStatus::Pending;
+            existing.last_error = None;
+            existing.updated_at = chrono::Utc::now();
+            self.replace_source(&existing).await?;
+            return Ok(SourceImportPlan {
+                source: existing,
+                action: SourceImportAction::Updated,
+            });
+        }
+
+        let now = chrono::Utc::now();
+        let source = Source {
+            id: None,
+            source_type,
+            title: Some(title),
+            uri: Some(normalized_uri.clone()),
+            normalized_uri: Some(normalized_uri),
+            content: Some(content),
+            content_hash: Some(content_hash),
+            generation: 1,
+            successful_generation: 0,
+            status: SourceIngestionStatus::Pending,
+            last_error: None,
+            metadata: serde_json::json!({}),
+            created_at: now,
+            updated_at: now,
+            last_ingested_at: None,
+        };
+        Ok(SourceImportPlan {
+            source: self.create_source(source).await?,
+            action: SourceImportAction::Created,
+        })
+    }
+
+    /// Mark an import successful and remove only derived records from older
+    /// generations. Manual and legacy notes have no generation and survive.
+    #[instrument(skip(self, source))]
+    pub async fn complete_file_import(&self, source: &mut Source) -> Result<SourceDeleteSummary> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+        let summary = self
+            .delete_source_notes(source_id, Some(source.generation), true)
+            .await?;
+        source.successful_generation = source.generation;
+        source.status = SourceIngestionStatus::Ready;
+        source.last_error = None;
+        source.updated_at = chrono::Utc::now();
+        source.last_ingested_at = Some(source.updated_at);
+        self.replace_source(source).await?;
+        Ok(summary)
+    }
+
+    /// Remove partially-created notes for a failed generation and retain the
+    /// last successful generation. The source remains resumable via reimport.
+    #[instrument(skip(self, source, error))]
+    pub async fn fail_file_import(&self, source: &mut Source, error: impl ToString) -> Result<()> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+        self.delete_source_notes(source_id, Some(source.generation), false)
+            .await?;
+        source.status = SourceIngestionStatus::Failed;
+        source.last_error = Some(error.to_string());
+        source.updated_at = chrono::Utc::now();
+        self.replace_source(source).await
+    }
+
+    /// Count every record that source deletion would mutate. This is used for
+    /// dry-run output and intentionally excludes manual/legacy notes.
+    #[instrument(skip(self, source))]
+    pub async fn preview_source_delete(&self, source: &Source) -> Result<SourceDeleteSummary> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::NotFound("source".into(), "missing id".into()))?;
+        self.source_delete_summary(source_id, None, false).await
+    }
+
+    /// Delete a source and the records it owns. Edges/provenance/mentions are
+    /// removed before notes, so no dangling graph records remain. Shared entity
+    /// records are deliberately retained: without per-source entity ownership,
+    /// deleting an unmentioned entity could erase a user-authored entity.
+    #[instrument(skip(self, source))]
+    pub async fn delete_source(&self, source: &Source) -> Result<SourceDeleteSummary> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::NotFound("source".into(), "missing id".into()))?;
+        let summary = self.delete_source_notes(source_id, None, false).await?;
+        let _: Option<Source> = self.db.delete(source_id.clone()).await?;
+        Ok(summary)
+    }
+
+    async fn replace_source(&self, source: &Source) -> Result<()> {
+        let id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+        let content = source_content_value(source)?;
+        self.db
+            .query("UPDATE $id MERGE $source")
+            .bind(("id", id.clone()))
+            .bind(("source", content))
+            .await?
+            .check()?;
+        self.db
+            .query(
+                "UPDATE $id SET updated_at = <datetime>$updated_at, \
+                 last_error = $last_error, \
+                 last_ingested_at = IF $last_ingested_at = NONE THEN NONE ELSE <datetime>$last_ingested_at END",
+            )
+            .bind(("id", id.clone()))
+            .bind(("updated_at", source.updated_at.to_rfc3339()))
+            .bind(("last_error", source.last_error.clone()))
+            .bind((
+                "last_ingested_at",
+                source.last_ingested_at.map(|time| time.to_rfc3339()),
+            ))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn delete_source_notes(
+        &self,
+        source_id: &RecordId,
+        generation: Option<u64>,
+        older_than_generation: bool,
+    ) -> Result<SourceDeleteSummary> {
+        let summary = self
+            .source_delete_summary(source_id, generation, older_than_generation)
+            .await?;
+        let notes = self.source_owned_note_ids(source_id, generation, older_than_generation).await?;
+        for note_id in notes {
+            self.db
+                .query(
+                    "DELETE supports WHERE in = $note OR out = $note; \
+                     DELETE contradicts WHERE in = $note OR out = $note; \
+                     DELETE derived_from WHERE in = $note OR out = $note; \
+                     DELETE related_to WHERE in = $note OR out = $note; \
+                     DELETE mentions WHERE in = $note; \
+                     DELETE note_from_conversation WHERE in = $note; \
+                     DELETE note_from_message WHERE in = $note; \
+                     DELETE $note;",
+                )
+                .bind(("note", note_id))
+                .await?
+                .check()?;
+        }
+        Ok(summary)
+    }
+
+    async fn source_owned_note_ids(
+        &self,
+        source_id: &RecordId,
+        generation: Option<u64>,
+        older_than_generation: bool,
+    ) -> Result<Vec<RecordId>> {
+        let condition = match (generation, older_than_generation) {
+            (Some(_), true) => "source_generation IS NOT NONE AND source_generation != $generation",
+            (Some(_), false) => "source_generation = $generation",
+            (None, _) => "source_generation IS NOT NONE",
+        };
+        let query = format!("SELECT VALUE id FROM note WHERE source_id = $source_id AND {condition}");
+        let mut request = self.db.query(query).bind(("source_id", source_id.clone()));
+        if let Some(generation) = generation {
+            request = request.bind(("generation", generation as i64));
+        }
+        Ok(request.await?.take(0)?)
+    }
+
+    async fn source_delete_summary(
+        &self,
+        source_id: &RecordId,
+        generation: Option<u64>,
+        older_than_generation: bool,
+    ) -> Result<SourceDeleteSummary> {
+        let notes = self.source_owned_note_ids(source_id, generation, older_than_generation).await?;
+        let mut summary = SourceDeleteSummary::default();
+        summary.notes = notes.len() as u64;
+        for note_id in notes {
+            let counts: Vec<SourceDeleteCount> = self
+                .db
+                .query(
+                    "RETURN [\
+                       { kind: 'mentions', count: (SELECT count() FROM mentions WHERE in = $note GROUP ALL)[0].count },\
+                       { kind: 'note_edges', count: ((SELECT count() FROM supports WHERE in = $note OR out = $note GROUP ALL)[0].count + (SELECT count() FROM contradicts WHERE in = $note OR out = $note GROUP ALL)[0].count + (SELECT count() FROM derived_from WHERE in = $note OR out = $note GROUP ALL)[0].count + (SELECT count() FROM related_to WHERE in = $note OR out = $note GROUP ALL)[0].count) },\
+                       { kind: 'conversation_provenance', count: (SELECT count() FROM note_from_conversation WHERE in = $note GROUP ALL)[0].count },\
+                       { kind: 'message_provenance', count: (SELECT count() FROM note_from_message WHERE in = $note GROUP ALL)[0].count }\
+                     ];",
+                )
+                .bind(("note", note_id))
+                .await?
+                .take(0)?;
+            for count in counts {
+                match count.kind.as_str() {
+                    "mentions" => summary.mentions += count.count,
+                    "note_edges" => summary.note_edges += count.count,
+                    "conversation_provenance" => summary.note_conversation_provenance += count.count,
+                    "message_provenance" => summary.note_message_provenance += count.count,
+                    _ => {}
+                }
+            }
+        }
+        Ok(summary)
     }
 
     // ==========================================
@@ -1405,6 +1723,39 @@ impl Repository {
 // RESULT TYPES
 // ==========================================
 
+/// Decision made before a file import starts.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceImportAction {
+    Created,
+    Updated,
+    Unchanged,
+}
+
+/// Source state returned by the staged file-import API.
+#[derive(Debug, Clone)]
+pub struct SourceImportPlan {
+    pub source: Source,
+    pub action: SourceImportAction,
+}
+
+/// Deterministic cascade counts used by dry-run and completed import output.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceDeleteSummary {
+    pub notes: u64,
+    pub mentions: u64,
+    pub note_edges: u64,
+    pub note_conversation_provenance: u64,
+    pub note_message_provenance: u64,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct SourceDeleteCount {
+    kind: String,
+    #[serde(default)]
+    count: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct SearchResult {
     pub id: RecordId,
@@ -1569,7 +1920,131 @@ pub struct DbStats {
 mod tests {
     use super::*;
     use crate::init_memory;
-    use graphrag_core::EntityType;
+    use graphrag_core::{EntityType, SourceType};
+
+    async fn begin_markdown(repo: &Repository, content: &str, force: bool) -> SourceImportPlan {
+        repo.begin_file_import(
+            SourceType::Markdown,
+            "alpha.md".into(),
+            "file:///notes/alpha.md".into(),
+            content.into(),
+            format!("sha256:{content}"),
+            force,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn source_lifecycle_is_idempotent_and_preserves_manual_notes() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        assert_eq!(first.action, SourceImportAction::Created);
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let derived = repo
+            .create_note(
+                Note::new("derived first")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("manual association").with_source(source_id.clone()))
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let unchanged = begin_markdown(&repo, "first", false).await;
+        assert_eq!(unchanged.action, SourceImportAction::Unchanged);
+        assert_eq!(unchanged.source.generation, 1);
+
+        let mut changed = begin_markdown(&repo, "second", false).await;
+        assert_eq!(changed.action, SourceImportAction::Updated);
+        assert_eq!(changed.source.generation, 2);
+        let current = repo
+            .create_note(
+                Note::new("derived second")
+                    .with_source(source_id.clone())
+                    .with_source_generation(changed.source.generation),
+            )
+            .await
+            .unwrap();
+        let cleanup = repo.complete_file_import(&mut changed.source).await.unwrap();
+        assert_eq!(cleanup.notes, 1);
+        assert!(repo.get_note(&record_id_to_string(derived.id.as_ref().unwrap())).await.unwrap().is_none());
+        assert!(repo.get_note(&record_id_to_string(current.id.as_ref().unwrap())).await.unwrap().is_some());
+        assert!(repo.get_note(&record_id_to_string(manual.id.as_ref().unwrap())).await.unwrap().is_some());
+
+        let mut failed = begin_markdown(&repo, "third", true).await;
+        let partial = repo
+            .create_note(
+                Note::new("partial")
+                    .with_source(source_id.clone())
+                    .with_source_generation(failed.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.fail_file_import(&mut failed.source, "embedding unavailable")
+            .await
+            .unwrap();
+        let stored = repo
+            .get_source(&record_id_to_string(&source_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, SourceIngestionStatus::Failed);
+        assert_eq!(stored.successful_generation, 2);
+        assert!(repo.get_note(&record_id_to_string(partial.id.as_ref().unwrap())).await.unwrap().is_none());
+        assert!(repo.get_note(&record_id_to_string(current.id.as_ref().unwrap())).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn source_delete_preview_matches_confirmed_derived_cascade() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut plan = begin_markdown(&repo, "content", false).await;
+        let source_id = plan.source.id.as_ref().unwrap().clone();
+        let derived = repo
+            .create_note(
+                Note::new("derived")
+                    .with_source(source_id.clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+        let unrelated = repo.create_note(Note::new("manual")).await.unwrap();
+        repo.create_edge(
+            derived.id.as_ref().unwrap(),
+            unrelated.id.as_ref().unwrap(),
+            EdgeType::RelatedTo,
+            Some(0.5),
+        )
+        .await
+        .unwrap();
+        let mut retained_entity = Entity::new("Retained entity", EntityType::Concept);
+        retained_entity.metadata = serde_json::json!({});
+        let entity = repo
+            .upsert_entity(retained_entity)
+            .await
+            .unwrap();
+        repo.link_note_to_entity(derived.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut plan.source).await.unwrap();
+
+        let preview = repo.preview_source_delete(&plan.source).await.unwrap();
+        assert_eq!(preview.notes, 1);
+        assert_eq!(preview.mentions, 1);
+        assert_eq!(preview.note_edges, 1);
+        let confirmed = repo.delete_source(&plan.source).await.unwrap();
+        assert_eq!(confirmed, preview);
+        assert!(repo.get_note(&record_id_to_string(derived.id.as_ref().unwrap())).await.unwrap().is_none());
+        assert!(repo.get_note(&record_id_to_string(unrelated.id.as_ref().unwrap())).await.unwrap().is_some());
+        assert!(repo.get_source(&record_id_to_string(&source_id)).await.unwrap().is_none());
+        let mut retained_entity = Entity::new("Retained entity", EntityType::Concept);
+        retained_entity.metadata = serde_json::json!({});
+        assert!(repo.upsert_entity(retained_entity).await.is_ok());
+    }
 
     #[tokio::test]
     async fn test_create_and_get_note() {

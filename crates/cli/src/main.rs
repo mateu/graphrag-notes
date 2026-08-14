@@ -18,11 +18,12 @@ use graphrag_agents::{
     SearchScope, SharedEmbedder, SharedEntityExtractor,
 };
 use graphrag_config::{CliOverrides, RuntimeConfig, SearchConfig};
-use graphrag_core::{record_id_to_string, ChatExport};
+use graphrag_core::{record_id_to_string, ChatExport, Source};
 use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
-    init_memory, init_persistent, migrations, Repository,
+    init_memory, init_persistent, migrations, Repository, SourceDeleteSummary,
 };
+use serde::Serialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -88,6 +89,16 @@ enum Commands {
     Import {
         /// Path to file
         path: PathBuf,
+
+        /// Rebuild the source even when its normalized content hash is unchanged
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Inspect, remove, or reimport file-backed sources
+    Sources {
+        #[command(subcommand)]
+        command: SourcesCommand,
     },
 
     /// Import chat conversations from Claude Desktop or other chat exports
@@ -323,6 +334,47 @@ enum ConfigCommand {
     Show,
     /// Validate configuration and exit without opening the database
     Validate,
+}
+
+#[derive(Subcommand)]
+enum SourcesCommand {
+    /// List source lifecycle state
+    List {
+        #[arg(long, value_enum, default_value_t = SourceOutputFormat::Human)]
+        format: SourceOutputFormat,
+    },
+    /// Show one source by record id or normalized URI
+    Show {
+        id_or_uri: String,
+        #[arg(long, value_enum, default_value_t = SourceOutputFormat::Human)]
+        format: SourceOutputFormat,
+    },
+    /// Preview or permanently delete one source and its generated records
+    Delete {
+        id_or_uri: String,
+        /// Print exact mutation counts without changing the database
+        #[arg(long)]
+        dry_run: bool,
+        /// Confirm permanent deletion (required unless --dry-run is set)
+        #[arg(long)]
+        yes: bool,
+        #[arg(long, value_enum, default_value_t = SourceOutputFormat::Human)]
+        format: SourceOutputFormat,
+    },
+    /// Read the original local file and run the normal staged import flow
+    Reimport {
+        id_or_uri: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long, value_enum, default_value_t = SourceOutputFormat::Human)]
+        format: SourceOutputFormat,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum SourceOutputFormat {
+    Human,
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -563,6 +615,9 @@ async fn main() -> Result<()> {
         cli.command,
         Commands::Add { .. }
             | Commands::Import { .. }
+            | Commands::Sources {
+                command: SourcesCommand::Reimport { .. },
+            }
             | Commands::ImportChats { .. }
             | Commands::MigrateChats { .. }
             | Commands::Search { .. }
@@ -574,6 +629,9 @@ async fn main() -> Result<()> {
         &cli.command,
         Commands::Add { .. }
             | Commands::Import { .. }
+            | Commands::Sources {
+                command: SourcesCommand::Reimport { .. },
+            }
             | Commands::ImportChats { .. }
             | Commands::Interactive
             | Commands::ExtractEntities { .. }
@@ -613,8 +671,11 @@ async fn main() -> Result<()> {
         } => {
             cmd_add(repo, tei, tgi, librarian_config, content, title, tags).await?;
         }
-        Commands::Import { path } => {
-            cmd_import(repo, tei, tgi, librarian_config, path).await?;
+        Commands::Import { path, force } => {
+            cmd_import(repo, tei, tgi, librarian_config, path, force).await?;
+        }
+        Commands::Sources { command } => {
+            cmd_sources(repo, tei, tgi, librarian_config, command).await?;
         }
         Commands::ImportChats { path, mode, .. } => {
             cmd_import_chats(repo, tei, tgi, librarian_config, path, mode).await?;
@@ -839,17 +900,180 @@ async fn cmd_import(
     tgi: SharedEntityExtractor,
     librarian_config: LibrarianRuntimeConfig,
     path: PathBuf,
+    force: bool,
 ) -> Result<()> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
     let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
-    let notes = librarian
-        .ingest_markdown(path.to_str().unwrap_or("unknown"), content)
+    let summary = librarian
+        .ingest_markdown_with_options(path.to_str().unwrap_or("unknown"), content, force)
         .await?;
 
-    println!("✓ Imported {} notes from {}", notes.len(), path.display());
+    print_import_summary(&summary, SourceOutputFormat::Human)?;
 
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct ImportSummaryOutput<'a> {
+    source_id: &'a str,
+    source_uri: &'a str,
+    generation: u64,
+    action: &'a str,
+    created: u64,
+    unchanged: u64,
+    updated: u64,
+    deleted: u64,
+    failed: u64,
+    cleanup: &'a SourceDeleteSummary,
+}
+
+fn print_import_summary(
+    result: &graphrag_agents::MarkdownImportResult,
+    format: SourceOutputFormat,
+) -> Result<()> {
+    let action = match result.action {
+        graphrag_db::SourceImportAction::Created => "created",
+        graphrag_db::SourceImportAction::Updated => "updated",
+        graphrag_db::SourceImportAction::Unchanged => "unchanged",
+    };
+    let output = ImportSummaryOutput {
+        source_id: &result.source_id,
+        source_uri: &result.source_uri,
+        generation: result.generation,
+        action,
+        created: result.created,
+        unchanged: result.unchanged,
+        updated: result.updated,
+        deleted: result.deleted,
+        failed: result.failed,
+        cleanup: &result.cleanup,
+    };
+    match format {
+        SourceOutputFormat::Human => println!(
+            "Source {} generation {}: {} (created {}, unchanged {}, updated {}, deleted {}, failed {})",
+            output.source_uri,
+            output.generation,
+            output.action,
+            output.created,
+            output.unchanged,
+            output.updated,
+            output.deleted,
+            output.failed,
+        ),
+        SourceOutputFormat::Json => println!("{}", serde_json::to_string(&output)?),
+    }
+    Ok(())
+}
+
+async fn cmd_sources(
+    repo: Repository,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
+    command: SourcesCommand,
+) -> Result<()> {
+    match command {
+        SourcesCommand::List { format } => {
+            let sources = repo.list_sources().await?;
+            match format {
+                SourceOutputFormat::Json => println!("{}", serde_json::to_string(&sources)?),
+                SourceOutputFormat::Human => {
+                    for source in sources {
+                        println!(
+                            "{}\t{}\t{}\tgeneration={} successful={} status={:?}",
+                            source.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+                            source.normalized_uri.or(source.uri).unwrap_or_default(),
+                            format!("{:?}", source.source_type).to_lowercase(),
+                            source.generation,
+                            source.successful_generation,
+                            source.status,
+                        );
+                    }
+                }
+            }
+        }
+        SourcesCommand::Show { id_or_uri, format } => {
+            let source = repo
+                .get_source(&id_or_uri)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("source not found: {id_or_uri}"))?;
+            match format {
+                SourceOutputFormat::Json => println!("{}", serde_json::to_string(&source)?),
+                SourceOutputFormat::Human => println!(
+                    "{}\nuri: {}\ngeneration: {} (last successful {})\nstatus: {:?}\nlast error: {}",
+                    source.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+                    source.normalized_uri.or(source.uri).unwrap_or_default(),
+                    source.generation,
+                    source.successful_generation,
+                    source.status,
+                    source.last_error.unwrap_or_else(|| "none".to_string()),
+                ),
+            }
+        }
+        SourcesCommand::Delete {
+            id_or_uri,
+            dry_run,
+            yes,
+            format,
+        } => {
+            let source = repo
+                .get_source(&id_or_uri)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("source not found: {id_or_uri}"))?;
+            let summary = repo.preview_source_delete(&source).await?;
+            if !dry_run && !yes {
+                anyhow::bail!("refusing to delete without --yes; use --dry-run to inspect the cascade");
+            }
+            if !dry_run {
+                repo.delete_source(&source).await?;
+            }
+            print_delete_summary(&source, &summary, dry_run, format)?;
+        }
+        SourcesCommand::Reimport {
+            id_or_uri,
+            force,
+            format,
+        } => {
+            let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
+            let summary = librarian.reimport_markdown_source(&id_or_uri, force).await?;
+            print_import_summary(&summary, format)?;
+        }
+    }
+    Ok(())
+}
+
+fn print_delete_summary(
+    source: &Source,
+    summary: &SourceDeleteSummary,
+    dry_run: bool,
+    format: SourceOutputFormat,
+) -> Result<()> {
+    #[derive(Serialize)]
+    struct Output<'a> {
+        source_id: String,
+        dry_run: bool,
+        summary: &'a SourceDeleteSummary,
+    }
+    let output = Output {
+        source_id: source.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+        dry_run,
+        summary,
+    };
+    match format {
+        SourceOutputFormat::Json => println!("{}", serde_json::to_string(&output)?),
+        SourceOutputFormat::Human => println!(
+            "{} source {}: notes={}, mentions={}, note_edges={}, conversation_provenance={}, message_provenance={}",
+            if dry_run { "Would delete" } else { "Deleted" },
+            output.source_id,
+            summary.notes,
+            summary.mentions,
+            summary.note_edges,
+            summary.note_conversation_provenance,
+            summary.note_message_provenance,
+        ),
+    }
     Ok(())
 }
 

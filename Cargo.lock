@@ -1615,6 +1615,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "surrealdb",
  "surrealdb-types",
  "thiserror 2.0.20",

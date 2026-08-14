@@ -40,6 +40,7 @@ A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, a
 - **Gardener Agent**: finds orphan notes and suggests connections
 - **Local-First**: all data stored locally, inference runs locally
 - **Chat Retrieval**: import chats, search messages, and build prompt-ready augmentation context with citations
+- **Source lifecycle**: idempotent Markdown imports with inspect, dry-run deletion, and safe reimport operations
 
 ## Runtime model
 
@@ -298,6 +299,32 @@ graphrag add "Rust is a solid fit for local tooling" --tags "rust,systems,toolin
 graphrag import notes.md
 ```
 
+### Imported source lifecycle
+
+Markdown files have one source identity: a normalized canonical `file://` URI.
+The importer hashes UTF-8 content with SHA-256 after normalizing CRLF and CR
+line endings to LF. Repeating an unchanged import is a no-op; `--force`
+deliberately creates a fresh generation. A changed file stages its new notes
+first, then removes only notes owned by the prior source generation. If an
+embedding/import step fails, partial notes for the failed generation are
+removed and the last successful generation remains searchable.
+
+```bash
+graphrag import notes.md                 # created, updated, or unchanged summary
+graphrag import notes.md --force         # intentionally rebuild the generation
+graphrag sources list --format json
+graphrag sources show source:abc123
+graphrag sources delete source:abc123 --dry-run
+graphrag sources delete source:abc123 --yes
+graphrag sources reimport source:abc123
+```
+
+`sources delete` removes generated notes, note edges, mentions, and note
+provenance in that order. It never deletes notes without a source generation,
+which protects manual and legacy records even when they reference an imported
+source. Entity records are shared graph vocabulary, so unreferenced entities
+are retained rather than risking deletion of a user-authored entity.
+
 ### 4. Search Your Notes
 
 ```bash
@@ -323,7 +350,8 @@ graphrag interactive
 | Command | Description |
 |---------|-------------|
 | `add <content>` | Add a new note |
-| `import <file>` | Import notes from a markdown file |
+| `import <file>` | Import notes from a markdown file (idempotent by normalized path and content hash) |
+| `sources list/show/delete/reimport` | Inspect and safely manage imported file sources |
 | `import-chats <file>` | Import chat export data |
 | `migrate-chats <file>` | Migrate chats into conversation/message tables |
 | `search <query>` | Search notes, messages, or all |

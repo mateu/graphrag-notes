@@ -20,6 +20,6 @@ pub use inference::{
 };
 pub use librarian::{
     ChatImportMode, ChatImportPreview, ChatImportResult, ChatIngestOptions, LibrarianAgent,
-    LibrarianRuntimeConfig,
+    LibrarianRuntimeConfig, MarkdownImportResult,
 };
 pub use search::{AugmentContext, AugmentOptions, SearchAgent, SearchHitType, SearchScope};

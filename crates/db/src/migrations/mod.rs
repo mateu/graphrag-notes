@@ -6,6 +6,7 @@
 
 mod v001_initial;
 mod v002_embedding_metadata;
+mod v003_source_lifecycle;
 
 use crate::{DbConnection, DbError, Result};
 use serde::Deserialize;
@@ -16,7 +17,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 2;
+pub const LATEST_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -31,7 +32,11 @@ pub(super) struct Migration {
     pub(super) sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[v001_initial::MIGRATION, v002_embedding_metadata::MIGRATION];
+const MIGRATIONS: &[Migration] = &[
+    v001_initial::MIGRATION,
+    v002_embedding_metadata::MIGRATION,
+    v003_source_lifecycle::MIGRATION,
+];
 
 // This table must exist before the first migration can be inspected. It is
 // deliberately bootstrapped outside the numbered application migrations; the
@@ -346,6 +351,7 @@ mod tests {
         assert_eq!(migrations.len(), LATEST_SCHEMA_VERSION as usize);
         assert_eq!(migrations[0].name, "initial_schema");
         assert_eq!(migrations[1].name, "embedding_metadata");
+        assert_eq!(migrations[2].name, "source_lifecycle");
     }
 
     #[tokio::test]
@@ -388,19 +394,26 @@ mod tests {
         let db = raw_memory_db().await;
         apply_all(&db).await.unwrap();
         let invalid = Migration {
-            version: 2,
+            version: 3,
             name: "invalid_test_migration",
             sql: "DEFINE TABLE invalid_test_probe SCHEMAFULL; THIS IS NOT VALID SURREALQL;",
         };
 
         let error = apply_one(&db, invalid).await.unwrap_err();
-        assert!(matches!(error, DbError::MigrationFailed { version: 2, .. }));
+        assert!(matches!(error, DbError::MigrationFailed { version: 3, .. }));
         assert_eq!(
             applied_migrations(&db).await.unwrap().len(),
             LATEST_SCHEMA_VERSION as usize
         );
 
-        let retry = apply_migrations(&db, &[v001_initial::MIGRATION, invalid])
+        let retry = apply_migrations(
+            &db,
+            &[
+                v001_initial::MIGRATION,
+                v002_embedding_metadata::MIGRATION,
+                invalid,
+            ],
+        )
             .await
             .unwrap_err();
         assert!(matches!(retry, DbError::MigrationHistory(_)));
