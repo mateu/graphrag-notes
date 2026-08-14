@@ -14,7 +14,10 @@ use graphrag_core::{
     ProposedEdgeStatus, Source, SourceIngestionStatus, SourceType,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
@@ -2267,6 +2270,100 @@ impl Repository {
         Ok(edges)
     }
 
+    /// Copy relationships owned by stable source chunks to their staged
+    /// successors before a copy-on-write source generation is promoted. The
+    /// old generation remains authoritative until promotion/cleanup; should a
+    /// copy fail, removing the staged generation leaves its dependents intact.
+    ///
+    /// The mapping may contain only chunks that reconciled successfully. A
+    /// removed chunk deliberately has no successor, so its dependents follow
+    /// the normal source-lifecycle cascade instead of being attached to an
+    /// unrelated chunk.
+    #[instrument(skip(self, successors))]
+    pub async fn copy_note_dependents_to_successors(
+        &self,
+        successors: &[(RecordId, RecordId)],
+    ) -> Result<()> {
+        if successors.is_empty() {
+            return Ok(());
+        }
+        let successors = successors.iter().cloned().collect::<HashMap<_, _>>();
+
+        // Mentions and chat provenance are note-owned records. Recreate them
+        // through their idempotent link helpers so a retry cannot duplicate a
+        // relationship already copied to a staged successor.
+        for (old_id, new_id) in &successors {
+            let entity_ids: Vec<RecordId> = self
+                .db
+                .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+                .bind(("note_id", old_id.clone()))
+                .await?
+                .take(0)?;
+            for entity_id in entity_ids {
+                self.link_note_to_entity(new_id, &entity_id).await?;
+            }
+
+            let conversation_ids: Vec<RecordId> = self
+                .db
+                .query("SELECT VALUE out FROM note_from_conversation WHERE in = $note_id")
+                .bind(("note_id", old_id.clone()))
+                .await?
+                .take(0)?;
+            for conversation_id in conversation_ids {
+                self.link_note_to_conversation(new_id, &conversation_id)
+                    .await?;
+            }
+
+            let message_ids: Vec<RecordId> = self
+                .db
+                .query("SELECT VALUE out FROM note_from_message WHERE in = $note_id")
+                .bind(("note_id", old_id.clone()))
+                .await?
+                .take(0)?;
+            for message_id in message_ids {
+                self.link_note_to_message(new_id, &message_id).await?;
+            }
+        }
+
+        // Snapshot each edge once before writing successors. This handles an
+        // edge whose two endpoints are both reconciled chunks and preserves
+        // manual as well as generated graph relationships.
+        let mut seen_edges = HashSet::new();
+        let mut edges = Vec::new();
+        for old_id in successors.keys() {
+            for edge in self.get_note_edges(&record_id_to_string(old_id)).await? {
+                if seen_edges.insert(edge.id.clone()) {
+                    edges.push(edge);
+                }
+            }
+        }
+        for edge in edges {
+            let from_id = successors.get(&edge.in_id).cloned().unwrap_or(edge.in_id);
+            let to_id = successors.get(&edge.out_id).cloned().unwrap_or(edge.out_id);
+            if from_id == to_id {
+                // A many-to-one reconciliation must not manufacture an
+                // invalid self-edge. Current Markdown keys are one-to-one,
+                // but retaining this guard makes the copy routine safe for
+                // future reconciliation strategies.
+                continue;
+            }
+            self.create_audited_edge(
+                &from_id,
+                &to_id,
+                persisted_note_edge_type(&edge.edge_type)?,
+                edge.confidence,
+                edge.reason.as_deref(),
+                edge.provenance
+                    .as_deref()
+                    .unwrap_or("source-reconciliation"),
+                None,
+                edge.is_manual,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     // ==========================================
     // SOURCE OPERATIONS
     // ==========================================
@@ -3152,6 +3249,18 @@ fn note_edge_table(edge_type: &EdgeType) -> Result<&'static str> {
                 "{edge_type} is not a persisted note-to-note edge type"
             )))
         }
+    }
+}
+
+fn persisted_note_edge_type(value: &str) -> Result<EdgeType> {
+    match value {
+        "supports" => Ok(EdgeType::Supports),
+        "contradicts" => Ok(EdgeType::Contradicts),
+        "derived_from" => Ok(EdgeType::DerivedFrom),
+        "related_to" => Ok(EdgeType::RelatedTo),
+        other => Err(DbError::QueryFailed(format!(
+            "unknown persisted note edge type {other:?}"
+        ))),
     }
 }
 

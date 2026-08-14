@@ -157,6 +157,46 @@ fn note_from_markdown_chunk(chunk: &Chunk, embedding: Vec<f32>) -> Note {
         )
 }
 
+/// Pair each previously successful Markdown chunk with its staged structural
+/// successor. Exact keys win; a stable structural location carries local
+/// edits. Removed chunks have no successor and intentionally are omitted.
+fn markdown_chunk_successors(existing: &[Note], staged: &[Note]) -> Vec<(RecordId, RecordId)> {
+    let by_key = staged
+        .iter()
+        .filter_map(|note| {
+            note.chunk_key
+                .as_ref()
+                .zip(note.id.as_ref())
+                .map(|(key, id)| (key, id.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+    let by_location = staged
+        .iter()
+        .filter_map(|note| {
+            note.chunk_location_key
+                .as_ref()
+                .zip(note.id.as_ref())
+                .map(|(key, id)| (key, id.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+    existing
+        .iter()
+        .filter_map(|note| {
+            let old_id = note.id.clone()?;
+            let successor = note
+                .chunk_key
+                .as_ref()
+                .and_then(|key| by_key.get(key))
+                .or_else(|| {
+                    note.chunk_location_key
+                        .as_ref()
+                        .and_then(|key| by_location.get(key))
+                })?;
+            Some((old_id, successor.clone()))
+        })
+        .collect()
+}
+
 /// The Librarian agent handles content ingestion
 pub struct LibrarianAgent {
     repo: Repository,
@@ -530,6 +570,16 @@ impl LibrarianAgent {
                 return Err(error);
             }
         };
+        let successors = markdown_chunk_successors(&existing_chunks, &notes);
+        if let Err(error) = self
+            .repo
+            .copy_note_dependents_to_successors(&successors)
+            .await
+        {
+            let message = error.to_string();
+            self.repo.fail_file_import(&mut source, &message).await?;
+            return Err(error.into());
+        }
         let cleanup = self.repo.complete_file_import(&mut source).await?;
         let created = u64::from(plan.action == SourceImportAction::Created) * notes.len() as u64;
         let updated = u64::from(plan.action == SourceImportAction::Updated) * notes.len() as u64;
@@ -2709,7 +2759,7 @@ mod tests {
     };
     use crate::{DeterministicEmbedder, FixtureEntityExtractor, InferenceCapabilities};
     use graphrag_core::{
-        normalized_content_hash, record_id_to_string, Entity, EntityType, Note,
+        normalized_content_hash, record_id_to_string, EdgeType, Entity, EntityType, Note,
     };
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
@@ -3918,6 +3968,69 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_copies_mentions_and_manual_edges_to_successors() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let original = "# Plan\n\nFirst stable paragraph has enough content.\n\nSecond stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("dependent-copy.md", original, false)
+            .await
+            .unwrap();
+        assert_eq!(first.notes.len(), 2);
+        let first_old = first.notes[0].id.as_ref().unwrap().clone();
+        let second_old = first.notes[1].id.as_ref().unwrap().clone();
+        let mut entity = Entity::new("Planning", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(&first_old, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(&first_old, &second_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        let changed = "# Plan\n\nFirst changed paragraph has enough content.\n\nSecond stable paragraph has enough content.";
+        let second = librarian
+            .ingest_markdown_with_options("dependent-copy.md", changed, false)
+            .await
+            .unwrap();
+        let first_new = second.notes[0].id.as_ref().unwrap();
+        let second_new = second.notes[1].id.as_ref().unwrap();
+        assert!(repo
+            .get_note(&record_id_to_string(&first_old))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(first_new))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let edges = repo
+            .get_note_edges(&record_id_to_string(first_new))
+            .await
+            .unwrap();
+        assert!(edges.iter().any(|edge| {
+            edge.edge_type == EdgeType::Supports.to_string()
+                && edge.in_id == *first_new
+                && edge.out_id == *second_new
+                && edge.is_manual
+        }));
     }
 
     #[tokio::test]
