@@ -694,7 +694,7 @@ impl LibrarianAgent {
                                     completed_count: Some(completed),
                                     failed_count: Some(failed),
                                     checkpoint: Some(checkpoint),
-                                    last_error: Some(None),
+                                    last_error: Some(first_error.clone()),
                                     ..Default::default()
                                 },
                             )
@@ -889,7 +889,7 @@ impl LibrarianAgent {
                     &job_id,
                     ProcessingJobUpdate {
                         completed_count: Some(0),
-                        failed_count: Some(0),
+                        failed_count: Some(failed),
                         last_error: Some((missing_items > 0).then(|| {
                             format!("{missing_items} selected note(s) were deleted before resume")
                         })),
@@ -2512,6 +2512,32 @@ mod tests {
                 .await
                 .unwrap(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn embedding_fallback_keeps_failure_diagnostic_after_later_success() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("first embedding"))
+            .await
+            .unwrap();
+        repo.create_note(Note::new("second embedding"))
+            .await
+            .unwrap();
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().fail_next_requests(2, "timeout")),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        assert!(librarian.process_pending_embeddings().await.is_err());
+        let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
+        assert_eq!(job.failed_count, 1);
+        assert!(
+            job.last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("timeout")),
+            "the success after a fallback failure must not clear diagnostics"
         );
     }
 }
