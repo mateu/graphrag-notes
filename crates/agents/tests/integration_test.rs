@@ -298,15 +298,40 @@ async fn test_agents_reject_invalid_custom_embedding_dimensions() {
 // Run with: cargo test -p graphrag-agents --test integration_test -- --ignored
 // ==========================================
 
+fn configured_providers() -> graphrag_agents::InferenceProviders {
+    use graphrag_agents::{InferenceProviderConfig, InferenceProviders};
+    use graphrag_config::{CliOverrides, RuntimeConfig};
+
+    let config = RuntimeConfig::load(None, &CliOverrides::default())
+        .expect("failed to resolve runtime configuration");
+    InferenceProviders::from_config(&InferenceProviderConfig {
+        embedding_provider: config.inference.embedding_provider,
+        embedding_url: config.inference.embedding_url,
+        embedding_model: config.inference.embedding_model,
+        extraction_provider: config.inference.extraction_provider,
+        extraction_url: config.inference.extraction_url,
+        extraction_model: config.inference.extraction_model,
+        timeout_secs: config.inference.timeout_secs,
+        tei_max_batch: config.inference.tei_max_batch,
+        tei_prompt_name_query: config.inference.tei_prompt_name_query,
+        tei_prompt_name_passage: config.inference.tei_prompt_name_passage,
+        strict_entity_json: config.inference.strict_entity_json,
+        max_entities: config.inference.max_entities,
+        max_relationships: config.inference.max_relationships,
+        ollama_timeout_secs: config.inference.ollama_timeout_secs,
+        ollama_options: config.inference.ollama_options,
+    })
+}
+
 /// Test Librarian agent (requires inference backends)
 #[tokio::test]
 #[ignore = "Requires local inference backends (TEI/TGI or Ollama)"]
 async fn test_librarian_ingest() {
-    use graphrag_agents::{InferenceProviders, LibrarianAgent};
+    use graphrag_agents::LibrarianAgent;
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
-    let providers = InferenceProviders::from_environment();
+    let providers = configured_providers();
     let tei = providers.embedder;
     let tgi = providers.extractor;
 
@@ -336,11 +361,11 @@ async fn test_librarian_ingest() {
 #[tokio::test]
 #[ignore = "Requires local inference backends (TEI/TGI or Ollama)"]
 async fn test_search_agent() {
-    use graphrag_agents::{InferenceProviders, LibrarianAgent, SearchAgent};
+    use graphrag_agents::{LibrarianAgent, SearchAgent};
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
-    let providers = InferenceProviders::from_environment();
+    let providers = configured_providers();
     let tei = providers.embedder;
     let tgi = providers.extractor;
 
@@ -388,11 +413,11 @@ async fn test_search_agent() {
 #[tokio::test]
 #[ignore = "Requires local inference backends (TEI/TGI or Ollama)"]
 async fn test_gardener_agent() {
-    use graphrag_agents::{GardenerAgent, InferenceProviders, LibrarianAgent};
+    use graphrag_agents::{GardenerAgent, LibrarianAgent};
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
-    let providers = InferenceProviders::from_environment();
+    let providers = configured_providers();
     let tei = providers.embedder;
     let tgi = providers.extractor;
 
@@ -432,11 +457,11 @@ async fn test_gardener_agent() {
 #[tokio::test]
 #[ignore = "Requires local inference backends (TEI/TGI or Ollama)"]
 async fn test_e2e_workflow() {
-    use graphrag_agents::{GardenerAgent, InferenceProviders, LibrarianAgent, SearchAgent};
+    use graphrag_agents::{GardenerAgent, LibrarianAgent, SearchAgent};
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
-    let providers = InferenceProviders::from_environment();
+    let providers = configured_providers();
     let tei = providers.embedder;
     let tgi = providers.extractor;
 

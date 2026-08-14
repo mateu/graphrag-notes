@@ -12,8 +12,9 @@ use eval::{
     EvalScope, RankedResult, EVAL_SCHEMA_VERSION,
 };
 use graphrag_agents::{
-    AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, InferenceProviders,
-    LibrarianAgent, SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor,
+    AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, InferenceProviderConfig,
+    InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, SearchAgent, SearchHitType,
+    SearchScope, SharedEmbedder, SharedEntityExtractor,
 };
 use graphrag_config::{CliOverrides, RuntimeConfig};
 use graphrag_core::{record_id_to_string, ChatExport};
@@ -335,6 +336,43 @@ fn to_import_mode(mode: ImportModeArg) -> ChatImportMode {
     }
 }
 
+fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig {
+    InferenceProviderConfig {
+        embedding_provider: config.inference.embedding_provider.clone(),
+        embedding_url: config.inference.embedding_url.clone(),
+        embedding_model: config.inference.embedding_model.clone(),
+        extraction_provider: config.inference.extraction_provider.clone(),
+        extraction_url: config.inference.extraction_url.clone(),
+        extraction_model: config.inference.extraction_model.clone(),
+        timeout_secs: config.inference.timeout_secs,
+        tei_max_batch: config.inference.tei_max_batch,
+        tei_prompt_name_query: config.inference.tei_prompt_name_query.clone(),
+        tei_prompt_name_passage: config.inference.tei_prompt_name_passage.clone(),
+        strict_entity_json: config.inference.strict_entity_json,
+        max_entities: config.inference.max_entities,
+        max_relationships: config.inference.max_relationships,
+        ollama_timeout_secs: config.inference.ollama_timeout_secs,
+        ollama_options: config.inference.ollama_options.clone(),
+    }
+}
+
+fn librarian_runtime_config(
+    config: &RuntimeConfig,
+    cli_skip_extraction: bool,
+) -> LibrarianRuntimeConfig {
+    LibrarianRuntimeConfig {
+        min_chunk_size: config.librarian.min_chunk_size,
+        max_chunk_size: config.librarian.max_chunk_size,
+        skip_entity_extraction: cli_skip_extraction || config.librarian.skip_entity_extraction,
+        extract_log_each: config.librarian.extract_log_each,
+        extract_max_chars: config.librarian.extract_max_chars,
+        extract_progress_every: config.librarian.extract_progress_every,
+        extract_progress_every_secs: config.librarian.extract_progress_every_secs,
+        import_progress_every: config.librarian.import_progress_every,
+        import_progress_every_secs: config.librarian.import_progress_every_secs,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables from .env if present.
@@ -355,8 +393,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let skip_extraction = matches!(
-        cli.command,
+    let cli_skip_extraction = matches!(
+        &cli.command,
         Commands::ImportChats {
             skip_extraction: true,
             ..
@@ -365,12 +403,12 @@ async fn main() -> Result<()> {
             ..
         }
     );
-    if skip_extraction {
-        std::env::set_var("SKIP_ENTITY_EXTRACTION", "true");
-    }
+    let librarian_config = librarian_runtime_config(&config, cli_skip_extraction);
+    let skip_extraction = librarian_config.skip_entity_extraction;
+    let inference_config = inference_provider_config(&config);
 
     if let Commands::EmbeddingDim { text } = &cli.command {
-        let tei = InferenceProviders::from_environment().embedder;
+        let tei = InferenceProviders::from_config(&inference_config).embedder;
         let tei_ok = tei.health().await.unwrap_or(false);
         if !tei_ok {
             eprintln!("Error: embeddings service is not reachable.");
@@ -445,7 +483,7 @@ async fn main() -> Result<()> {
     }
 
     let repo = Repository::new(db);
-    let providers = InferenceProviders::from_environment();
+    let providers = InferenceProviders::from_config(&inference_config);
     let tei = providers.embedder;
     let tgi = providers.extractor;
 
@@ -462,7 +500,7 @@ async fn main() -> Result<()> {
             | Commands::Interactive
     );
     let needs_tgi = matches!(
-        cli.command,
+        &cli.command,
         Commands::Add { .. }
             | Commands::Import { .. }
             | Commands::ImportChats { .. }
@@ -472,7 +510,8 @@ async fn main() -> Result<()> {
                 with_notes: true,
                 ..
             }
-    ) && !skip_extraction;
+    ) && (!skip_extraction
+        || matches!(&cli.command, Commands::ExtractEntities { .. }));
 
     if needs_tei {
         let tei_ok = tei.health().await.unwrap_or(false);
@@ -501,13 +540,13 @@ async fn main() -> Result<()> {
             title,
             tags,
         } => {
-            cmd_add(repo, tei, tgi, content, title, tags).await?;
+            cmd_add(repo, tei, tgi, librarian_config, content, title, tags).await?;
         }
         Commands::Import { path } => {
-            cmd_import(repo, tei, tgi, path).await?;
+            cmd_import(repo, tei, tgi, librarian_config, path).await?;
         }
         Commands::ImportChats { path, mode, .. } => {
-            cmd_import_chats(repo, tei, tgi, path, mode).await?;
+            cmd_import_chats(repo, tei, tgi, librarian_config, path, mode).await?;
         }
         Commands::MigrateChats {
             path,
@@ -516,7 +555,17 @@ async fn main() -> Result<()> {
             mode,
             ..
         } => {
-            cmd_migrate_chats(repo, tei, tgi, path, dry_run, with_notes, mode).await?;
+            cmd_migrate_chats(
+                repo,
+                tei,
+                tgi,
+                librarian_config,
+                path,
+                dry_run,
+                with_notes,
+                mode,
+            )
+            .await?;
         }
         Commands::Search {
             query,
@@ -622,6 +671,7 @@ async fn main() -> Result<()> {
                 repo,
                 tei,
                 tgi,
+                librarian_config,
                 config.search.default_limit,
                 config.search.vector_weight,
                 config.search.fulltext_weight,
@@ -637,7 +687,17 @@ async fn main() -> Result<()> {
             note_ids,
             force,
         } => {
-            cmd_extract_entities(repo, tei, tgi, limit, all, note_ids, force).await?;
+            cmd_extract_entities(
+                repo,
+                tei,
+                tgi,
+                librarian_config,
+                limit,
+                all,
+                note_ids,
+                force,
+            )
+            .await?;
         }
         Commands::ShowEntities { note_id } => {
             cmd_show_entities(repo, note_id).await?;
@@ -667,6 +727,7 @@ async fn cmd_add(
     repo: Repository,
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
     content: Option<String>,
     title: Option<String>,
     tags: Option<String>,
@@ -690,7 +751,7 @@ async fn cmd_add(
         .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
 
-    let librarian = LibrarianAgent::new(repo, tei, tgi);
+    let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
     let note = librarian.ingest_text(content, title, tags).await?;
 
     println!(
@@ -708,12 +769,13 @@ async fn cmd_import(
     repo: Repository,
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
     path: PathBuf,
 ) -> Result<()> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
-    let librarian = LibrarianAgent::new(repo, tei, tgi);
+    let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
     let notes = librarian
         .ingest_markdown(path.to_str().unwrap_or("unknown"), content)
         .await?;
@@ -727,6 +789,7 @@ async fn cmd_import_chats(
     repo: Repository,
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
     path: PathBuf,
     mode: ImportModeArg,
 ) -> Result<()> {
@@ -759,7 +822,7 @@ async fn cmd_import_chats(
         summary_only
     );
 
-    let librarian = LibrarianAgent::new(repo, tei, tgi);
+    let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
     let mode = to_import_mode(mode);
     let result = librarian
         .ingest_chat_export(export, Some(path.display().to_string()), mode)
@@ -840,6 +903,7 @@ async fn cmd_migrate_chats(
     repo: Repository,
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
     path: PathBuf,
     dry_run: bool,
     with_notes: bool,
@@ -887,7 +951,7 @@ async fn cmd_migrate_chats(
         return Ok(());
     }
 
-    let librarian = LibrarianAgent::new(repo, tei, tgi);
+    let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
     let result = if with_notes {
         librarian
             .ingest_chat_export_with_options(
@@ -943,6 +1007,7 @@ async fn cmd_extract_entities(
     repo: Repository,
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
     limit: usize,
     all: bool,
     note_ids: Vec<String>,
@@ -954,7 +1019,7 @@ async fn cmd_extract_entities(
     if force && !all && note_ids.is_empty() {
         anyhow::bail!("--force requires --all or at least one --note-id");
     }
-    let librarian = LibrarianAgent::new(repo, tei, tgi);
+    let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
     let processed = if !note_ids.is_empty() {
         librarian
             .extract_entities_for_note_ids(&note_ids, force)
@@ -1568,6 +1633,7 @@ async fn cmd_interactive(
     repo: Repository,
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
     default_search_limit: usize,
     vector_weight: f32,
     fulltext_weight: f32,
@@ -1575,7 +1641,8 @@ async fn cmd_interactive(
     auto_apply_threshold: f32,
     max_suggestions: usize,
 ) -> Result<()> {
-    let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone());
+    let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone())
+        .with_runtime_config(librarian_config);
     let search = SearchAgent::new(repo.clone(), tei.clone())
         .with_hybrid_weights(vector_weight, fulltext_weight);
     let gardener = GardenerAgent::new(repo.clone())
