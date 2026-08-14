@@ -6,10 +6,12 @@
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const EVAL_SCHEMA_VERSION: u32 = 2;
+const MAX_NDCG_GRADE: u32 = 63;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -69,6 +71,87 @@ pub struct EvalAugmentCase {
     pub forbidden_ids: Vec<String>,
     #[serde(default)]
     pub forbidden_contains: Vec<String>,
+}
+
+/// The explicitly versioned format is deliberately strict: CI expectations
+/// must never be silently discarded because of a misspelled field.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionedEvalAugmentCase {
+    pub schema_version: u32,
+    pub query: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub scope: Option<EvalScope>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub k: Option<usize>,
+    #[serde(default)]
+    pub since_days: Option<u32>,
+    #[serde(default)]
+    pub source_uri: Option<String>,
+    #[serde(default)]
+    pub entity: Option<String>,
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
+    #[serde(default)]
+    pub max_chunk_tokens: Option<usize>,
+    #[serde(default)]
+    pub expected_ids: Vec<String>,
+    #[serde(default, alias = "relevant_records")]
+    pub relevance: Vec<VersionedEvalRelevance>,
+    #[serde(default)]
+    pub expected_contains: Vec<String>,
+    #[serde(default)]
+    pub expected_source_uris: Vec<String>,
+    #[serde(default)]
+    pub expected_conversation_uuids: Vec<String>,
+    #[serde(default)]
+    pub forbidden_ids: Vec<String>,
+    #[serde(default)]
+    pub forbidden_contains: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VersionedEvalRelevance {
+    pub id: String,
+    #[serde(default)]
+    pub grade: Option<u32>,
+}
+
+impl From<VersionedEvalAugmentCase> for EvalAugmentCase {
+    fn from(case: VersionedEvalAugmentCase) -> Self {
+        Self {
+            schema_version: Some(case.schema_version),
+            query: case.query,
+            name: case.name,
+            scope: case.scope,
+            limit: case.limit,
+            k: case.k,
+            since_days: case.since_days,
+            source_uri: case.source_uri,
+            entity: case.entity,
+            max_tokens: case.max_tokens,
+            max_chunk_tokens: case.max_chunk_tokens,
+            expected_ids: case.expected_ids,
+            relevance: case
+                .relevance
+                .into_iter()
+                .map(|item| EvalRelevance {
+                    id: item.id,
+                    grade: item.grade,
+                })
+                .collect(),
+            expected_contains: case.expected_contains,
+            expected_source_uris: case.expected_source_uris,
+            expected_conversation_uuids: case.expected_conversation_uuids,
+            forbidden_ids: case.forbidden_ids,
+            forbidden_contains: case.forbidden_contains,
+        }
+    }
 }
 
 impl EvalAugmentCase {
@@ -189,7 +272,7 @@ pub fn evaluate_ranked_results(
             .enumerate()
             .map(|(index, id)| {
                 let grade = relevance.get(id).copied().unwrap_or(0) as f64;
-                (2_f64.powf(grade) - 1.0) / ((index + 2) as f64).log2()
+                ndcg_gain(grade as u32) / ((index + 2) as f64).log2()
             })
             .sum::<f64>();
         let mut ideal_grades: Vec<u32> = relevance.values().copied().collect();
@@ -198,7 +281,7 @@ pub fn evaluate_ranked_results(
             .into_iter()
             .take(k)
             .enumerate()
-            .map(|(index, grade)| (2_f64.powf(grade as f64) - 1.0) / ((index + 2) as f64).log2())
+            .map(|(index, grade)| ndcg_gain(grade) / ((index + 2) as f64).log2())
             .sum::<f64>();
         if ideal_dcg == 0.0 {
             0.0
@@ -231,17 +314,20 @@ pub fn evaluate_ranked_results(
     let has_provenance_expectation =
         !expected_sources.is_empty() || !expected_conversations.is_empty();
     let provenance_accuracy = has_provenance_expectation.then(|| {
-        let matching_results =
-            results
-                .iter()
-                .filter(|result| {
-                    result.source_uri.as_deref().is_some_and(|actual| {
+        let matching_results = results
+            .iter()
+            .filter(|result| {
+                let source_matches = expected_sources.is_empty()
+                    || result.source_uri.as_deref().is_some_and(|actual| {
                         expected_sources.contains(&actual.trim().to_lowercase())
-                    }) || result.conversation_uuid.as_deref().is_some_and(|actual| {
+                    });
+                let conversation_matches = expected_conversations.is_empty()
+                    || result.conversation_uuid.as_deref().is_some_and(|actual| {
                         expected_conversations.contains(&actual.trim().to_lowercase())
-                    })
-                })
-                .count();
+                    });
+                source_matches && conversation_matches
+            })
+            .count();
         matching_results as f64 / results.len().max(1) as f64
     });
 
@@ -594,13 +680,17 @@ pub fn load_eval_cases(path: &Path) -> Result<Vec<EvalAugmentCase>> {
         return Ok(Vec::new());
     }
     if trimmed.starts_with('[') {
-        let cases = serde_json::from_str(trimmed).with_context(|| {
+        let values: Vec<Value> = serde_json::from_str(trimmed).with_context(|| {
             format!(
                 "Failed to parse eval JSON array from file: {}",
                 path.display()
             )
-        });
-        return validate_case_versions(cases?);
+        })?;
+        let cases = values
+            .into_iter()
+            .map(parse_eval_case)
+            .collect::<Result<Vec<_>>>()?;
+        return validate_case_versions(cases);
     }
     let cases = content
         .lines()
@@ -610,13 +700,15 @@ pub fn load_eval_cases(path: &Path) -> Result<Vec<EvalAugmentCase>> {
             (!line.is_empty() && !line.starts_with('#')).then_some((index + 1, line))
         })
         .map(|(line_number, line)| {
-            serde_json::from_str(line).with_context(|| {
-                format!(
-                    "Failed to parse eval JSON object at {}:{}",
-                    path.display(),
-                    line_number
-                )
-            })
+            serde_json::from_str::<Value>(line)
+                .with_context(|| {
+                    format!(
+                        "Failed to parse eval JSON object at {}:{}",
+                        path.display(),
+                        line_number
+                    )
+                })
+                .and_then(parse_eval_case)
         })
         .collect::<Result<Vec<_>>>()?;
     validate_case_versions(cases)
@@ -655,8 +747,31 @@ fn validate_case_versions(cases: Vec<EvalAugmentCase>) -> Result<Vec<EvalAugment
                 );
             }
         }
+        if let Some(grade) = case
+            .relevance
+            .iter()
+            .filter_map(|item| item.grade)
+            .find(|grade| *grade > MAX_NDCG_GRADE)
+        {
+            bail!(
+                "Eval case `{}` has relevance grade {grade}, but grades must be at most {MAX_NDCG_GRADE}",
+                case.display_name()
+            );
+        }
     }
     Ok(cases)
+}
+
+fn parse_eval_case(value: Value) -> Result<EvalAugmentCase> {
+    if value.get("schema_version").is_some() {
+        Ok(serde_json::from_value::<VersionedEvalAugmentCase>(value)?.into())
+    } else {
+        Ok(serde_json::from_value(value)?)
+    }
+}
+
+fn ndcg_gain(grade: u32) -> f64 {
+    2_f64.powi(grade.min(MAX_NDCG_GRADE) as i32) - 1.0
 }
 
 fn normalized_ids(values: &[String]) -> BTreeSet<String> {
@@ -883,6 +998,54 @@ mod tests {
             evaluate_ranked_results(&case, &[result], 1, 0).provenance_accuracy,
             Some(1.0)
         );
+    }
+
+    #[test]
+    fn provenance_requires_every_configured_dimension() {
+        let case = case(serde_json::json!({
+            "query": "q",
+            "expected_source_uris": ["file://allowed"],
+            "expected_conversation_uuids": ["conversation-1"]
+        }));
+        let mut wrong_conversation = result("message:one");
+        wrong_conversation.source_uri = Some("file://allowed".into());
+        wrong_conversation.conversation_uuid = Some("conversation-2".into());
+        let mut correct = result("message:two");
+        correct.source_uri = Some("file://allowed".into());
+        correct.conversation_uuid = Some("conversation-1".into());
+
+        assert_eq!(
+            evaluate_ranked_results(&case, &[wrong_conversation, correct.clone()], 2, 0)
+                .provenance_accuracy,
+            Some(0.5)
+        );
+        assert_eq!(
+            evaluate_ranked_results(&case, &[correct], 1, 0).checks_passed,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn versioned_cases_reject_unknown_fields_and_unsafe_grades() {
+        let unknown_field = parse_eval_case(serde_json::json!({
+            "schema_version": 2,
+            "query": "q",
+            "forbidden_contians": ["typo"]
+        }))
+        .unwrap_err();
+        assert!(unknown_field.to_string().contains("unknown field"));
+
+        let unsafe_grade = parse_eval_case(serde_json::json!({
+            "schema_version": 2,
+            "query": "q",
+            "relevance": [{"id": "note:a", "grade": 64}]
+        }))
+        .unwrap();
+        assert!(validate_case_versions(vec![unsafe_grade])
+            .unwrap_err()
+            .to_string()
+            .contains("grades must be at most 63"));
+        assert!(ndcg_gain(u32::MAX).is_finite());
     }
 
     #[test]
