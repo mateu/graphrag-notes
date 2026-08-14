@@ -222,6 +222,12 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
                 headings.push(String::new());
             }
             headings.push(title.to_string());
+            // A heading is a structural boundary even if it produces the
+            // same resolved path as the preceding heading (for example,
+            // repeated `# Notes` headings). Without this marker, adjacent
+            // blocks can be assembled across a heading whose syntax is not
+            // included in chunk display content.
+            assembly_boundary_before = true;
             index += 1;
             continue;
         }
@@ -738,6 +744,24 @@ mod tests {
         assert_eq!(chunks[1].heading_path, ["Root", "Child"]);
         assert!(!chunks[1].content.contains("## Child"));
         assert!(chunks[1].search_text.starts_with("Root > Child\n\n"));
+    }
+
+    #[test]
+    fn every_heading_is_an_assembly_boundary_even_when_its_path_repeats() {
+        let chunks = chunk(
+            "# Repeated\n\nFirst section remains separate.\n\n# Repeated\n\nSecond section remains separate.",
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 240,
+                max_size: 280,
+                overlap_size: 0,
+            },
+        );
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].heading_path, ["Repeated"]);
+        assert_eq!(chunks[1].heading_path, ["Repeated"]);
+        assert_eq!(chunks[0].content, "First section remains separate.");
+        assert_eq!(chunks[1].content, "Second section remains separate.");
     }
 
     #[test]
