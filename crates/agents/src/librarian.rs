@@ -25,6 +25,7 @@ const DEFAULT_PROGRESS_EVERY_SECS: u64 = 5;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 8000;
 const DEFAULT_MIN_CHUNK_SIZE: usize = 20;
 const DEFAULT_MAX_CHUNK_SIZE: usize = usize::MAX;
+const DEFAULT_ENTITY_JOB_PAGE_SIZE: usize = 100;
 
 /// Runtime controls for librarian ingestion and extraction.
 ///
@@ -168,6 +169,18 @@ fn no_processing_work() -> ProcessingRunResult {
 
 fn entity_job_force_clear(scope: Option<&str>) -> bool {
     scope.is_some_and(|scope| scope.split(';').any(|part| part == "force=true"))
+}
+
+fn entity_job_page_size(scope: Option<&str>, fallback: usize) -> usize {
+    scope
+        .and_then(|scope| {
+            scope
+                .split(';')
+                .find_map(|part| part.split_once("page_size=").map(|(_, value)| value))
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|&size| size > 0)
+        .unwrap_or_else(|| fallback.max(1))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -912,29 +925,17 @@ impl LibrarianAgent {
         limit: usize,
         existing: Option<graphrag_db::ProcessingJob>,
     ) -> Result<ProcessingRunResult> {
-        let (notes, job, resumed, missing_items, force_clear) = match existing {
+        let (job, resumed, page_size, force_clear) = match existing {
             Some(job) => {
                 if job.item_ids.is_empty() {
                     return Err(crate::AgentError::Processing(
                         "entity extraction job has no persisted item set; create a new job instead of resuming an ambiguous legacy job".into(),
                     ));
                 }
-                let mut notes = Vec::with_capacity(job.item_ids.len());
-                let mut missing_items = 0_u64;
-                for id in &job.item_ids {
-                    if let Some(note) = self.repo.get_note(id).await? {
-                        notes.push(note);
-                    } else {
-                        missing_items += 1;
-                    }
-                }
-                (
-                    notes,
-                    job.clone(),
-                    true,
-                    missing_items,
-                    entity_job_force_clear(job.scope.as_deref()),
-                )
+                let page_size =
+                    entity_job_page_size(job.scope.as_deref(), DEFAULT_ENTITY_JOB_PAGE_SIZE);
+                let force_clear = entity_job_force_clear(job.scope.as_deref());
+                (job, true, page_size, force_clear)
             }
             None => {
                 let notes = self.repo.get_notes_without_entities(limit).await?;
@@ -955,7 +956,7 @@ impl LibrarianAgent {
                         item_ids,
                     )
                     .await?;
-                (notes, job, false, 0, false)
+                (job, false, limit.max(1), false)
             }
         };
         let job_id = job.id.clone().ok_or_else(|| {
@@ -970,7 +971,7 @@ impl LibrarianAgent {
             u64::try_from(job.completed_count.max(0)).unwrap_or(0)
         };
         let mut failed = if resumed {
-            missing_items
+            0
         } else {
             u64::try_from(job.failed_count.max(0)).unwrap_or(0)
         };
@@ -981,50 +982,28 @@ impl LibrarianAgent {
                     ProcessingJobUpdate {
                         completed_count: Some(0),
                         failed_count: Some(failed),
-                        last_error: Some((missing_items > 0).then(|| {
-                            format!("{missing_items} selected note(s) were deleted before resume")
-                        })),
+                        last_error: Some(None),
                         ..Default::default()
                     },
                 )
                 .await?;
-        }
-        if notes.is_empty() {
-            self.repo
-                .update_processing_job(
-                    &job_id,
-                    ProcessingJobUpdate {
-                        status: Some(if failed == 0 {
-                            ProcessingJobStatus::Completed
-                        } else {
-                            ProcessingJobStatus::Failed
-                        }),
-                        completed_count: Some(completed),
-                        failed_count: Some(failed),
-                        finish: true,
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            return Ok(ProcessingRunResult {
-                job_id: record_id_to_string(&job_id),
-                completed,
-                failed,
-                cancelled: false,
-            });
         }
 
         let progress_every = self.runtime.extract_progress_every;
         let progress_every_secs = self.runtime.extract_progress_every_secs;
         let log_each = self.runtime.extract_log_each;
 
-        let total = notes.len();
+        let item_ids = job.item_ids;
+        let total = item_ids.len();
         let start = Instant::now();
         let mut last_progress = Instant::now();
 
-        let mut first_error = (missing_items > 0)
-            .then(|| format!("{missing_items} selected note(s) were deleted before resume"));
-        for (index, note) in notes.into_iter().enumerate() {
+        let mut first_error = None;
+        for (window_index, window) in item_ids.chunks(page_size).enumerate() {
+            // Item IDs are durable, but note payloads are loaded only for the
+            // current bounded window. This keeps `extract-entities --all`
+            // memory bounded and observes cancellation before fetching the
+            // next page of notes.
             if self.processing_job_cancelled(&job_id).await? {
                 return Ok(ProcessingRunResult {
                     job_id: record_id_to_string(&job_id),
@@ -1033,92 +1012,115 @@ impl LibrarianAgent {
                     cancelled: true,
                 });
             }
-            let note_id = note
-                .id
-                .as_ref()
-                .map(record_id_to_string)
-                .unwrap_or_else(|| "<unknown>".to_string());
-            let note_len = note.content.len();
-            if log_each {
-                info!(
-                    "Entity extraction start: {}/{} note_id={} chars={}",
-                    index + 1,
-                    total,
-                    note_id,
-                    note_len
-                );
-            }
-
-            let note_start = Instant::now();
-            if force_clear {
-                if let Some(id) = &note.id {
-                    self.repo.delete_mentions_for_note(id).await?;
-                }
-            }
-            let item_error = match self.extract_and_link_entities_force(&note).await {
-                Ok(()) => {
-                    completed += 1;
-                    if log_each {
-                        info!(
-                            "Entity extraction done: {}/{} note_id={} elapsed={:.2}s",
-                            index + 1,
-                            total,
-                            note_id,
-                            note_start.elapsed().as_secs_f32()
-                        );
-                    }
-                    None
-                }
-                Err(e) => {
+            for (item_index, item_id) in window.iter().enumerate() {
+                let index = window_index * page_size + item_index;
+                let Some(note) = self.repo.get_note(item_id).await? else {
                     failed += 1;
+                    let error = format!("selected note was deleted before processing: {item_id}");
                     if first_error.is_none() {
-                        first_error = Some(e.to_string());
+                        first_error = Some(error.clone());
                     }
-                    if log_each {
-                        info!(
-                            "Entity extraction failed: {}/{} note_id={} elapsed={:.2}s error={}",
-                            index + 1,
-                            total,
-                            note_id,
-                            note_start.elapsed().as_secs_f32(),
-                            e
-                        );
-                    } else {
-                        debug!("Entity extraction failed (non-fatal): {}", e);
-                    }
-                    Some(e.to_string())
-                }
-            };
-
-            self.repo
-                .update_processing_job(
-                    &job_id,
-                    ProcessingJobUpdate {
-                        completed_count: Some(completed),
-                        failed_count: Some(failed),
-                        checkpoint: Some(note.id.as_ref().map(record_id_to_string)),
-                        last_error: Some(item_error.or_else(|| first_error.clone())),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-
-            if completed as usize % progress_every == 0
-                || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
-            {
-                let elapsed = start.elapsed().as_secs_f32().max(0.001);
-                let rate = completed as f32 / elapsed;
-                let remaining = total.saturating_sub(completed as usize);
-                let eta_secs = if rate > 0.0 {
-                    (remaining as f32 / rate).round() as u64
-                } else {
-                    0
+                    self.repo
+                        .update_processing_job(
+                            &job_id,
+                            ProcessingJobUpdate {
+                                completed_count: Some(completed),
+                                failed_count: Some(failed),
+                                checkpoint: Some(Some(item_id.clone())),
+                                last_error: Some(Some(error)),
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                    continue;
                 };
-                info!(
-                    "Entity extraction progress: {}/{} notes (rate: {:.2}/s, eta: {}s)",
-                    completed, total, rate, eta_secs
-                );
-                last_progress = Instant::now();
+                let note_id = note
+                    .id
+                    .as_ref()
+                    .map(record_id_to_string)
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                let note_len = note.content.len();
+                if log_each {
+                    info!(
+                        "Entity extraction start: {}/{} note_id={} chars={}",
+                        index + 1,
+                        total,
+                        note_id,
+                        note_len
+                    );
+                }
+
+                let note_start = Instant::now();
+                if force_clear {
+                    if let Some(id) = &note.id {
+                        self.repo.delete_mentions_for_note(id).await?;
+                    }
+                }
+                let item_error = match self.extract_and_link_entities_force(&note).await {
+                    Ok(()) => {
+                        completed += 1;
+                        if log_each {
+                            info!(
+                                "Entity extraction done: {}/{} note_id={} elapsed={:.2}s",
+                                index + 1,
+                                total,
+                                note_id,
+                                note_start.elapsed().as_secs_f32()
+                            );
+                        }
+                        None
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        if first_error.is_none() {
+                            first_error = Some(e.to_string());
+                        }
+                        if log_each {
+                            info!(
+                                "Entity extraction failed: {}/{} note_id={} elapsed={:.2}s error={}",
+                                index + 1,
+                                total,
+                                note_id,
+                                note_start.elapsed().as_secs_f32(),
+                                e
+                            );
+                        } else {
+                            debug!("Entity extraction failed (non-fatal): {}", e);
+                        }
+                        Some(e.to_string())
+                    }
+                };
+
+                self.repo
+                    .update_processing_job(
+                        &job_id,
+                        ProcessingJobUpdate {
+                            completed_count: Some(completed),
+                            failed_count: Some(failed),
+                            checkpoint: Some(note.id.as_ref().map(record_id_to_string)),
+                            last_error: Some(item_error.or_else(|| first_error.clone())),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+
+                if completed as usize % progress_every == 0
+                    || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
+                {
+                    let elapsed = start.elapsed().as_secs_f32().max(0.001);
+                    let rate = completed as f32 / elapsed;
+                    let remaining = total.saturating_sub(completed as usize);
+                    let eta_secs = if rate > 0.0 {
+                        (remaining as f32 / rate).round() as u64
+                    } else {
+                        0
+                    };
+                    info!(
+                        "Entity extraction progress: {}/{} notes (rate: {:.2}/s, eta: {}s)",
+                        completed, total, rate, eta_secs
+                    );
+                    last_progress = Instant::now();
+                }
             }
         }
 
@@ -2455,6 +2457,40 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct CancellingEntityExtractor {
+        calls: Arc<AtomicUsize>,
+        cancellation_requested: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::EntityExtractor for CancellingEntityExtractor {
+        async fn extract(&self, _text: &str) -> crate::Result<crate::EntityExtraction> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // The worker must not fetch or process the next persisted page
+            // once a request asks it to stop after this item.
+            self.cancellation_requested.store(true, Ordering::Release);
+            Ok(crate::EntityExtraction {
+                entities: Vec::new(),
+                relationships: Vec::new(),
+            })
+        }
+
+        async fn health(&self) -> crate::Result<bool> {
+            Ok(true)
+        }
+
+        fn capabilities(&self) -> InferenceCapabilities {
+            InferenceCapabilities {
+                provider: "cancelling-entity-fixture".into(),
+                model: "fixture".into(),
+                endpoint: "offline://cancelling-entity".into(),
+                known_dimension: None,
+                cache_identity: "cancelling-entity-v1".into(),
+            }
+        }
+    }
+
     #[test]
     fn runtime_config_defaults_preserve_library_behavior() {
         let config = LibrarianRuntimeConfig::default();
@@ -2634,6 +2670,42 @@ mod tests {
         assert_eq!(librarian.extract_entities_for_notes(1).await.unwrap(), 0);
         let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
         assert_eq!(job.status, ProcessingJobStatus::Cancelled.as_str());
+    }
+
+    #[tokio::test]
+    async fn all_entity_extraction_stops_between_persisted_id_pages() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        for content in ["first page", "second page", "third page"] {
+            repo.create_note(Note::new(content)).await.unwrap();
+        }
+        let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(CancellingEntityExtractor {
+                calls: calls.clone(),
+                cancellation_requested: cancellation_requested.clone(),
+            }),
+        )
+        .with_cancellation_flag(cancellation_requested);
+
+        // A page size of one makes the persisted page boundary observable:
+        // the first extraction requests cancellation, so no later page is
+        // loaded or sent to the extractor.
+        assert_eq!(
+            librarian
+                .extract_entities_for_all_notes(1, false)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.item_ids.len(), 3);
+        assert_eq!(job.status, ProcessingJobStatus::Cancelled.as_str());
+        assert_eq!(job.completed_count, 1);
+        assert_eq!(job.failed_count, 0);
     }
 
     #[tokio::test]
