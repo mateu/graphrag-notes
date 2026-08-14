@@ -347,10 +347,16 @@ impl RuntimeConfig {
             // rejecting an otherwise valid existing config because today's
             // global defaults do not fit its smaller maximum.
             if !librarian.contains_key("target_chunk_size") {
-                config.librarian.target_chunk_size = config.librarian.target_chunk_size.clamp(
-                    config.librarian.min_chunk_size,
-                    config.librarian.max_chunk_size,
-                );
+                // `usize::clamp` panics when its lower bound exceeds its
+                // upper bound. Leave an invalid legacy min/max pair intact
+                // for normal configuration validation to report, instead of
+                // panicking while deriving an omitted newer field.
+                if config.librarian.min_chunk_size <= config.librarian.max_chunk_size {
+                    config.librarian.target_chunk_size = config.librarian.target_chunk_size.clamp(
+                        config.librarian.min_chunk_size,
+                        config.librarian.max_chunk_size,
+                    );
+                }
             }
             if !librarian.contains_key("chunk_overlap") {
                 config.librarian.chunk_overlap = config
@@ -1048,6 +1054,22 @@ mod tests {
         assert_eq!(config.librarian.target_chunk_size, 80);
         assert_eq!(config.librarian.chunk_overlap, 79);
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn invalid_legacy_librarian_bounds_do_not_panic_while_deriving_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("invalid-legacy.toml");
+        fs::write(
+            &path,
+            "[librarian]\nmin_chunk_size = 80\nmax_chunk_size = 40\n",
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::from_file(&path).unwrap();
+        assert_eq!(config.librarian.min_chunk_size, 80);
+        assert_eq!(config.librarian.max_chunk_size, 40);
+        assert!(config.validate().is_err());
     }
 
     #[test]

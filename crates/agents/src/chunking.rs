@@ -223,13 +223,10 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
         // Setext underlines made entirely of dashes are also valid thematic
         // breaks. When directly paired with paragraph text, heading parsing
         // wins; detect the pair before the standalone thematic-break branch.
-        if let Some((level, title)) = lines
-            .get(index + 1)
-            .and_then(|underline| setext_heading(line, underline.text))
-        {
-            apply_heading(&mut headings, level, title);
+        if let Some((level, title, next_index)) = setext_heading_at(&lines, index) {
+            apply_heading(&mut headings, level, &title);
             assembly_boundary_before = true;
-            index += 2;
+            index = next_index;
             continue;
         }
         if thematic_boundary(line) {
@@ -571,36 +568,57 @@ fn apply_heading(headings: &mut Vec<String>, level: usize, title: &str) {
     headings.push(title.to_string());
 }
 
-/// Return a Setext heading level for a valid underline. The call site checks
-/// a prose title line first, letting `---` retain its CommonMark Setext
-/// precedence over a thematic break only in the immediate heading pair.
-fn setext_heading<'a>(title_line: &'a str, underline: &str) -> Option<(usize, &'a str)> {
-    let title_leading_spaces = title_line.bytes().take_while(|byte| *byte == b' ').count();
-    if title_leading_spaces > 3
-        || title_line.starts_with('\t')
-        || title_line.trim().is_empty()
-        || heading(title_line).is_some()
-        || thematic_boundary(title_line)
-        || fence_marker(title_line).is_some()
-        || is_quote(title_line)
-        || is_list_item(title_line)
-    {
-        return None;
+/// Collect a full Setext title paragraph followed by a valid underline. A
+/// dash underline also looks like a thematic break, so this runs before
+/// standalone break handling and gives the immediate paragraph/underline pair
+/// its CommonMark heading precedence.
+fn setext_heading_at(lines: &[Line<'_>], start: usize) -> Option<(usize, String, usize)> {
+    let mut title = String::new();
+    let mut index = start;
+    while let Some(line) = lines.get(index) {
+        if !title.is_empty() {
+            if let Some(level) = setext_underline(line.text) {
+                return Some((level, title, index + 1));
+            }
+        }
+        if !is_setext_title_line(line.text) {
+            return None;
+        }
+        if !title.is_empty() {
+            // Preserve the paragraph's line structure in heading provenance.
+            title.push('\n');
+        }
+        title.push_str(line.text.trim());
+        index += 1;
     }
+    None
+}
 
-    let leading_spaces = underline.bytes().take_while(|byte| *byte == b' ').count();
-    if leading_spaces > 3 || underline.starts_with('\t') {
+fn is_setext_title_line(line: &str) -> bool {
+    let leading_spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+    leading_spaces <= 3
+        && !line.starts_with('\t')
+        && !line.trim().is_empty()
+        && heading(line).is_none()
+        && !thematic_boundary(line)
+        && fence_marker(line).is_none()
+        && !is_quote(line)
+        && !is_list_item(line)
+}
+
+fn setext_underline(line: &str) -> Option<usize> {
+    let leading_spaces = line.bytes().take_while(|byte| *byte == b' ').count();
+    if leading_spaces > 3 || line.starts_with('\t') {
         return None;
     }
-    let marker = underline[leading_spaces..].trim_end();
-    let level = if !marker.is_empty() && marker.bytes().all(|byte| byte == b'=') {
-        1
+    let marker = line[leading_spaces..].trim_end();
+    if !marker.is_empty() && marker.bytes().all(|byte| byte == b'=') {
+        Some(1)
     } else if !marker.is_empty() && marker.bytes().all(|byte| byte == b'-') {
-        2
+        Some(2)
     } else {
-        return None;
-    };
-    Some((level, title_line.trim()))
+        None
+    }
 }
 
 fn thematic_boundary(line: &str) -> bool {
@@ -888,6 +906,32 @@ mod tests {
         assert!(chunks
             .iter()
             .all(|chunk| !chunk.content.contains("title\n---")));
+    }
+
+    #[test]
+    fn setext_heading_collects_the_complete_title_paragraph() {
+        let markdown = "A title that spans\nmultiple source lines\n---\n\nBody retains the complete heading provenance.";
+        let chunks = chunk(
+            markdown,
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 240,
+                max_size: 280,
+                overlap_size: 0,
+            },
+        );
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            chunks[0].heading_path,
+            ["", "A title that spans\nmultiple source lines"]
+        );
+        assert_eq!(
+            chunks[0].content,
+            "Body retains the complete heading provenance."
+        );
+        assert!(chunks[0]
+            .search_text
+            .starts_with("A title that spans\nmultiple source lines\n\n"));
     }
 
     #[test]
