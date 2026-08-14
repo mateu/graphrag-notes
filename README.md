@@ -137,6 +137,19 @@ Notes:
 - Avoid concurrent access to the same DB path; overlapping processes will fail on the RocksDB `LOCK` file.
 - Validate on a copied DB before doing a real cutover.
 
+### Application schema migrations
+
+On startup, GraphRAG Notes applies its own numbered schema migrations and records
+them in the `schema_migration` table. This history is for application schema
+changes only: it does not upgrade a SurrealDB 2.x data directory to 3.x. Use the
+preceding export/import runbook for that engine upgrade.
+
+To inspect the version that the running binary supports, use `graphrag
+schema-version`. A database with a schema version newer than the binary is
+rejected with a clear error; do not manually edit migration records. New
+application migrations must be additive, immutable, and committed as a new
+numbered migration rather than editing one that may already have run.
+
 ### 1. Start inference backends
 
 #### Option A: TEI + TGI via Docker Compose

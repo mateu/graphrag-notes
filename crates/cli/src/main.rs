@@ -9,7 +9,7 @@ use graphrag_agents::{
     SearchHitType, SearchScope, TeiClient, TgiClient,
 };
 use graphrag_core::{record_id_to_string, ChatExport};
-use graphrag_db::{init_memory, init_persistent, Repository};
+use graphrag_db::{init_memory, init_persistent, migrations, Repository};
 use serde::Deserialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -213,6 +213,9 @@ enum Commands {
     /// Show database statistics
     Stats,
 
+    /// Show the database's current and this binary's latest schema version
+    SchemaVersion,
+
     /// Interactive mode
     Interactive,
 
@@ -379,6 +382,15 @@ async fn main() -> Result<()> {
         init_persistent(&db_path).await?
     };
 
+    if matches!(cli.command, Commands::SchemaVersion) {
+        println!(
+            "Schema version: {} (latest supported: {})",
+            migrations::current_version(&db).await?,
+            migrations::latest_version()
+        );
+        return Ok(());
+    }
+
     let repo = Repository::new(db);
     let tei = TeiClient::default_local();
     let tgi = TgiClient::default_local();
@@ -520,6 +532,9 @@ async fn main() -> Result<()> {
         }
         Commands::Stats => {
             cmd_stats(repo).await?;
+        }
+        Commands::SchemaVersion => {
+            // Handled immediately after database initialization.
         }
         Commands::Interactive => {
             cmd_interactive(repo, tei, tgi).await?;

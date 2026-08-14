@@ -1,6 +1,6 @@
 //! SurrealDB schema definitions
 
-use crate::{DbConnection, Result};
+use crate::{migrations, DbConnection, Result};
 use tracing::info;
 
 /// Embedding dimension (Jina v3 default: 1024)
@@ -8,16 +8,20 @@ pub const EMBEDDING_DIMENSION: usize = 1024;
 
 /// Initialize the database schema
 pub async fn initialize_schema(db: &DbConnection) -> Result<()> {
-    info!("Initializing database schema...");
+    info!("Applying database schema migrations...");
 
-    // Define tables and fields
-    db.query(SCHEMA_DEFINITION).await?;
+    migrations::apply_all(db).await?;
 
-    info!("Schema initialized successfully");
+    info!("Database schema migrations applied successfully");
     Ok(())
 }
 
-const SCHEMA_DEFINITION: &str = r#"
+/// Baseline SQL for the immutable v001 initial-schema migration.
+///
+/// Future schema changes must be added as new numbered migrations under
+/// `migrations/`; this baseline is retained so existing v3 databases without
+/// migration metadata can be adopted safely.
+pub(crate) const BASELINE_SCHEMA: &str = r#"
 -- ============================================
 -- TABLES
 -- ============================================
