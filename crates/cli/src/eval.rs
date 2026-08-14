@@ -217,7 +217,9 @@ pub fn evaluate_ranked_results(
     });
     let forbidden_ids = normalized_ids(&case.forbidden_ids);
     let forbidden_text = normalized_strings(&case.forbidden_contains);
-    let forbidden_result_found = ranked.iter().any(|result| {
+    // Negative expectations protect the entire prompt context, not just the
+    // top-k slice used for ranking metrics.
+    let forbidden_result_found = results.iter().any(|result| {
         normalize_id(&result.id).is_some_and(|id| forbidden_ids.contains(&id))
             || forbidden_text
                 .iter()
@@ -226,31 +228,20 @@ pub fn evaluate_ranked_results(
 
     let expected_sources = normalized_strings(&case.expected_source_uris);
     let expected_conversations = normalized_strings(&case.expected_conversation_uuids);
-    let provenance_expectation_count = expected_sources.len() + expected_conversations.len();
-    let provenance_accuracy = (provenance_expectation_count > 0).then(|| {
-        let matches = expected_sources
+    let has_provenance_expectation =
+        !expected_sources.is_empty() || !expected_conversations.is_empty();
+    let provenance_accuracy = has_provenance_expectation.then(|| {
+        let matching_results = results
             .iter()
-            .filter(|source| {
-                ranked.iter().any(|result| {
-                    result
-                        .source_uri
-                        .as_deref()
-                        .is_some_and(|actual| actual.trim().eq_ignore_ascii_case(source))
+            .filter(|result| {
+                result.source_uri.as_deref().is_some_and(|actual| {
+                    expected_sources.contains(&actual.trim().to_ascii_lowercase())
+                }) || result.conversation_uuid.as_deref().is_some_and(|actual| {
+                    expected_conversations.contains(&actual.trim().to_ascii_lowercase())
                 })
             })
-            .count()
-            + expected_conversations
-                .iter()
-                .filter(|conversation| {
-                    ranked.iter().any(|result| {
-                        result
-                            .conversation_uuid
-                            .as_deref()
-                            .is_some_and(|actual| actual.trim().eq_ignore_ascii_case(conversation))
-                    })
-                })
-                .count();
-        matches as f64 / provenance_expectation_count as f64
+            .count();
+        matching_results as f64 / results.len().max(1) as f64
     });
 
     let has_positive = !relevance.is_empty() || !expected_text.is_empty();
@@ -748,6 +739,24 @@ mod tests {
         assert_eq!(metrics.reciprocal_rank, Some(0.0));
         assert_eq!(metrics.chunks, 2);
         assert_eq!(metrics.tokens, 8);
+    }
+
+    #[test]
+    fn negative_and_provenance_checks_cover_the_full_augmentation_context() {
+        let case = case(serde_json::json!({
+            "query": "q",
+            "expected_source_uris": ["file://allowed"],
+            "forbidden_ids": ["note:forbidden"]
+        }));
+        let mut allowed = result("note:allowed");
+        allowed.source_uri = Some("FILE://ALLOWED".into());
+        let mut leaked = result("note:forbidden");
+        leaked.source_uri = Some("file://unexpected".into());
+
+        let metrics = evaluate_ranked_results(&case, &[allowed, leaked], 1, 0);
+        assert!(metrics.forbidden_result_found);
+        assert_eq!(metrics.provenance_accuracy, Some(0.5));
+        assert_eq!(metrics.checks_passed, Some(false));
     }
 
     #[test]

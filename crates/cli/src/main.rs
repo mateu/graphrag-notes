@@ -212,7 +212,11 @@ enum Commands {
         baseline: Option<PathBuf>,
 
         /// Allowed metric decrease, such as `recall_at_k=0.02` (repeatable)
-        #[arg(long = "max-regression", value_name = "METRIC=MAX_DROP")]
+        #[arg(
+            long = "max-regression",
+            value_name = "METRIC=MAX_DROP",
+            requires = "baseline"
+        )]
         max_regression: Vec<String>,
     },
 
@@ -1240,6 +1244,9 @@ async fn cmd_eval_augment(
         anyhow::bail!("No eval cases found in {}", path.display());
     }
     let thresholds = parse_regression_thresholds(&max_regression)?;
+    if !thresholds.is_empty() && baseline_path.is_none() {
+        anyhow::bail!("--max-regression requires --baseline");
+    }
 
     let search = SearchAgent::new(repo, tei);
     let mut reports = Vec::with_capacity(cases.len());
