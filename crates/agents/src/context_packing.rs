@@ -34,31 +34,23 @@ pub trait TokenCounter: Send + Sync {
 
 /// A deterministic, deliberately conservative tokenizer-free estimate.
 ///
-/// ASCII word-like runs are split into three-character pieces; every non-ASCII
-/// alphanumeric scalar and punctuation mark is charged separately. The latter
-/// avoids under-counting CJK and other scripts that do not use whitespace. This
-/// is suitable for enforcing a hard budget in fallback mode.
+/// Every alphanumeric scalar and punctuation mark is charged separately. This
+/// deliberately treats arbitrary ASCII identifiers (hashes, URLs, and opaque
+/// model tokens) as a worst case and avoids under-counting scripts that do not
+/// use whitespace. This is suitable for enforcing a hard budget in fallback
+/// mode.
 #[derive(Debug, Default)]
 pub struct ConservativeTokenCounter;
 
 impl TokenCounter for ConservativeTokenCounter {
     fn count(&self, text: &str) -> usize {
         let mut count = 0usize;
-        let mut word_len = 0usize;
         for ch in text.chars() {
-            if ch.is_ascii_alphanumeric() || ch == '_' {
-                word_len += 1;
-            } else {
-                if word_len > 0 {
-                    count += word_len.div_ceil(3);
-                    word_len = 0;
-                }
-                if ch.is_alphanumeric() || !ch.is_whitespace() {
-                    count += 1;
-                }
+            if ch.is_alphanumeric() || ch == '_' || !ch.is_whitespace() {
+                count += 1;
             }
         }
-        count + word_len.div_ceil(3)
+        count
     }
 
     fn mode(&self) -> TokenCountMode {
@@ -454,7 +446,12 @@ fn clip_query_aware(
         .enumerate()
         .map(|(index, span)| {
             let terms = normalized_tokens(&text[span.clone()]);
-            let matches = query_terms.intersection(&terms).count();
+            let matches = if phrase_match_range(&text[span.clone()], query).is_some() {
+                // Prefer a complete phrase over an early shared CJK bigram.
+                query.chars().count().max(1)
+            } else {
+                query_terms.intersection(&terms).count()
+            };
             (index, matches)
         })
         .max_by(|(left_index, left_matches), (right_index, right_matches)| {
@@ -470,7 +467,14 @@ fn clip_query_aware(
     if counter.count(&best) > max_tokens {
         // A giant individual span (usually one long sentence or code block):
         // center a safe UTF-8 window on the best lexical match.
-        return clip_around_match(text, &spans[best_index], &query_terms, max_tokens, counter);
+        return clip_around_match(
+            text,
+            &spans[best_index],
+            query,
+            &query_terms,
+            max_tokens,
+            counter,
+        );
     }
     loop {
         let left = start_index
@@ -567,20 +571,32 @@ fn push_sentence_spans(line: &str, base: usize, spans: &mut Vec<Range<usize>>) {
 fn clip_around_match(
     text: &str,
     span: &Range<usize>,
+    query: &str,
     query_terms: &HashSet<String>,
     max_tokens: usize,
     counter: &dyn TokenCounter,
 ) -> ClippedSpan {
     let segment = &text[span.clone()];
+    let phrase_range = phrase_match_range(segment, query);
     // CJK and URL-like content can be a single lexical run. Word-boundary
     // expansion would make that whole run the initial candidate and drop it
     // under a small budget, so use UTF-8 character boundaries in that case.
-    if !segment.chars().any(char::is_whitespace) {
-        return clip_around_characters(text, span, query_terms, max_tokens, counter);
+    if !segment.chars().any(char::is_whitespace)
+        || phrase_range
+            .as_ref()
+            .is_some_and(|range| segment[range.clone()].chars().any(is_unspaced_script_char))
+    {
+        return clip_around_characters(text, span, query, query_terms, max_tokens, counter);
     }
-    let anchor = lexical_anchor(segment, query_terms).unwrap_or(segment.len() / 2);
+    let anchor = phrase_range.as_ref().map_or_else(
+        || lexical_anchor(segment, query_terms).unwrap_or(segment.len() / 2),
+        |range| range.start,
+    );
     let mut start = nearest_boundary_left(segment, anchor);
-    let mut end = nearest_boundary_right(segment, anchor);
+    let mut end = phrase_range.as_ref().map_or_else(
+        || nearest_boundary_right(segment, anchor),
+        |range| range.end,
+    );
     if start == end {
         end = segment.len();
     }
@@ -631,13 +647,15 @@ fn clip_around_match(
 fn clip_around_characters(
     text: &str,
     span: &Range<usize>,
+    query: &str,
     query_terms: &HashSet<String>,
     max_tokens: usize,
     counter: &dyn TokenCounter,
 ) -> ClippedSpan {
     let segment = &text[span.clone()];
-    let Some(mut selected) =
-        lexical_match_range(segment, query_terms).or_else(|| centered_character_range(segment))
+    let Some(mut selected) = phrase_match_range(segment, query)
+        .or_else(|| lexical_match_range(segment, query_terms))
+        .or_else(|| centered_character_range(segment))
     else {
         return ClippedSpan {
             snippet: String::new(),
@@ -731,21 +749,45 @@ fn remove_unmatched_fence_markers(value: &str) -> String {
 }
 
 fn lexical_anchor(text: &str, terms: &HashSet<String>) -> Option<usize> {
-    let lower = text.to_lowercase();
-    terms.iter().filter_map(|term| lower.find(term)).min()
+    lexical_match_range(text, terms).map(|range| range.start)
 }
 
 fn lexical_match_range(text: &str, terms: &HashSet<String>) -> Option<Range<usize>> {
-    let lower = text.to_lowercase();
     terms
         .iter()
-        .filter_map(|term| {
-            lower.find(term).and_then(|start| {
-                let end = start + term.len();
-                (text.is_char_boundary(start) && text.is_char_boundary(end)).then_some(start..end)
-            })
-        })
+        .filter_map(|term| phrase_match_range(text, term))
         .min_by_key(|range| range.start)
+}
+
+/// Find a Unicode case-insensitive phrase without deriving offsets from a
+/// case-folded allocation. Returned byte ranges always index `text` itself.
+fn phrase_match_range(text: &str, phrase: &str) -> Option<Range<usize>> {
+    let wanted = phrase
+        .chars()
+        .flat_map(char::to_lowercase)
+        .collect::<Vec<_>>();
+    if wanted.is_empty() {
+        return None;
+    }
+    text.char_indices().find_map(|(start, _)| {
+        casefolded_prefix_end(&text[start..], &wanted).map(|end| start..start + end)
+    })
+}
+
+fn casefolded_prefix_end(text: &str, wanted: &[char]) -> Option<usize> {
+    let mut matched = 0usize;
+    for (offset, ch) in text.char_indices() {
+        for folded in ch.to_lowercase() {
+            if wanted.get(matched) != Some(&folded) {
+                return None;
+            }
+            matched += 1;
+        }
+        if matched == wanted.len() {
+            return Some(offset + ch.len_utf8());
+        }
+    }
+    None
 }
 
 fn centered_character_range(text: &str) -> Option<Range<usize>> {
@@ -811,18 +853,29 @@ fn normalized_tokens(text: &str) -> HashSet<String> {
         .filter(|token| !token.is_empty())
         .flat_map(|token| {
             // Whitespace-delimited scripts retain word tokens. A run in a
-            // script that normally omits spaces (CJK/Japanese/Korean) is
-            // represented by Unicode scalars so nearly identical records
-            // still share most of their evidence.
+            // script that normally omits spaces (CJK/Japanese/Korean) uses
+            // order-sensitive character bigrams so similarity does not treat
+            // a reordered character inventory as the same passage.
             if token.chars().any(is_unspaced_script_char) {
-                token
-                    .chars()
-                    .map(|ch| ch.to_lowercase().to_string())
-                    .collect()
+                unspaced_script_bigrams(token)
             } else {
                 vec![token.to_lowercase()]
             }
         })
+        .collect()
+}
+
+fn unspaced_script_bigrams(token: &str) -> Vec<String> {
+    let characters = token
+        .chars()
+        .map(|ch| ch.to_lowercase().to_string())
+        .collect::<Vec<_>>();
+    if characters.len() <= 1 {
+        return characters;
+    }
+    characters
+        .windows(2)
+        .map(|pair| format!("{}\u{1f}{}", pair[0], pair[1]))
         .collect()
 }
 
@@ -915,6 +968,7 @@ mod tests {
     #[test]
     fn fallback_is_conservative_and_exact_mode_is_reported() {
         assert!(ConservativeTokenCounter.count("extraordinary") > 1);
+        assert_eq!(ConservativeTokenCounter.count("sha256:deadBEEF"), 15);
         let context = build_augment_context_from_hits(
             "q".into(),
             SearchScope::Notes,
@@ -949,7 +1003,7 @@ mod tests {
     #[test]
     fn late_query_span_is_preferred_without_invalid_utf8_or_unbalanced_fences() {
         let text = "irrelevant first sentence. ```rust\nlet early = true;\n```\nmore filler. the unicode café target phrase is here. trailing filler.";
-        let clipped = clip_query_aware(text, "café target", 10, &ConservativeTokenCounter);
+        let clipped = clip_query_aware(text, "café target", 18, &ConservativeTokenCounter);
         assert!(clipped.snippet.contains("café target"));
         assert_eq!(clipped.snippet.matches("```").count() % 2, 0);
         assert!(std::str::from_utf8(clipped.snippet.as_bytes()).is_ok());
@@ -1044,6 +1098,39 @@ mod tests {
     }
 
     #[test]
+    fn reordered_unspaced_cjk_records_are_not_treated_as_duplicates() {
+        let first = "天地玄黃宇宙洪荒";
+        let second = "洪荒宇宙玄黃天地";
+        assert!(jaccard_similarity(&normalized_tokens(first), &normalized_tokens(second)) < 0.85);
+
+        let context = build_augment_context_from_hits(
+            "天地".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit("n:cjk-a", 0.9, first), hit("n:cjk-b", 0.8, second)],
+            options(),
+            0,
+        );
+        assert_eq!(context.chunks.len(), 2);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 0);
+    }
+
+    #[test]
+    fn casefolded_matching_returns_original_kelvin_sign_byte_offsets() {
+        let text = "prefix Kelvin marker suffix";
+        let range = phrase_match_range(text, "kelvin marker").unwrap();
+        assert_eq!(&text[range], "Kelvin marker");
+    }
+
+    #[test]
+    fn full_cjk_query_beats_an_earlier_shared_character() {
+        let text = "目甲乙丙丁戊己庚辛壬癸目標片段後續說明";
+        let clipped = clip_query_aware(text, "目標片段", 6, &ConservativeTokenCounter);
+        assert!(clipped.snippet.contains("目標片段"));
+        assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 6);
+    }
+
+    #[test]
     fn clipped_span_offsets_match_the_last_fitting_window() {
         let text = "alpha beta gamma target delta epsilon zeta eta theta iota";
         let clipped = clip_query_aware(text, "target", 5, &ExactWords);
@@ -1059,7 +1146,7 @@ mod tests {
     #[test]
     fn fallback_counts_non_ascii_per_character_and_respects_budget() {
         assert_eq!(ConservativeTokenCounter.count("你好世界"), 4);
-        assert_eq!(ConservativeTokenCounter.count("café"), 2);
+        assert_eq!(ConservativeTokenCounter.count("café"), 4);
         let mut multilingual_options = options();
         multilingual_options.max_total_tokens = 40;
         multilingual_options.max_chunk_tokens = 6;
