@@ -2368,7 +2368,7 @@ impl Repository {
                 edge.provenance
                     .as_deref()
                     .unwrap_or("source-reconciliation"),
-                None,
+                edge.proposal_id.as_ref(),
                 edge.is_manual,
             )
             .await?;
@@ -2511,12 +2511,67 @@ impl Repository {
             .source_delete_summary(&source_id, Some(source.generation), true)
             .await?;
         self.promote_file_import(source).await?;
+        // Proposal-backed edges are staged copy-on-write with their new note
+        // endpoints. Once promotion makes those endpoints authoritative,
+        // retarget the accepted proposal before deleting the old generation so
+        // its audit row and undo path follow the replacement edge.
+        self.retarget_reconciled_proposals(&source_id, source.generation)
+            .await?;
         // Do this only after durable promotion. A failure here can leave old
         // records behind, but cannot leave the corpus with no visible complete
         // generation; visibility selects `successful_generation`.
         self.delete_source_notes(&source_id, Some(source.generation), true)
             .await?;
         Ok(summary)
+    }
+
+    async fn retarget_reconciled_proposals(
+        &self,
+        source_id: &RecordId,
+        generation: u64,
+    ) -> Result<()> {
+        let note_ids = self
+            .source_owned_note_ids(source_id, Some(generation), false)
+            .await?;
+        let mut seen_edges = HashSet::new();
+        for note_id in note_ids {
+            for edge in self.get_note_edges(&record_id_to_string(&note_id)).await? {
+                let Some(proposal_id) = edge.proposal_id.as_ref() else {
+                    continue;
+                };
+                if !seen_edges.insert(edge.id.clone()) {
+                    continue;
+                }
+                let edge_type = persisted_note_edge_type(&edge.edge_type)?;
+                let mut from_id = edge.in_id.clone();
+                let mut to_id = edge.out_id.clone();
+                canonicalize_note_edge(&mut from_id, &mut to_id, &edge_type);
+                let dedupe_key = edge_dedupe_key(&from_id, &to_id, &edge_type);
+                #[derive(Deserialize, SurrealValue)]
+                struct UpdatedRow {
+                    id: RecordId,
+                }
+                let updated: Option<UpdatedRow> = self
+                    .db
+                    .query(
+                        "UPDATE $proposal SET in = $from, out = $to, dedupe_key = $dedupe_key, resulting_edge_id = $edge, updated_at = time::now() WHERE status = 'accepted' RETURN AFTER",
+                    )
+                    .bind(("proposal", proposal_id.clone()))
+                    .bind(("from", from_id))
+                    .bind(("to", to_id))
+                    .bind(("dedupe_key", dedupe_key))
+                    .bind(("edge", edge.id.clone()))
+                    .await?
+                    .take(0)?;
+                if updated.is_none() {
+                    return Err(DbError::QueryFailed(format!(
+                        "reconciled proposal {} is no longer accepted",
+                        record_id_to_string(proposal_id)
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn promote_file_import(&self, source: &mut Source) -> Result<()> {
@@ -3133,6 +3188,8 @@ pub struct NoteEdgeRow {
     pub in_id: RecordId,
     pub out_id: RecordId,
     #[serde(default)]
+    pub proposal_id: Option<RecordId>,
+    #[serde(default)]
     pub confidence: Option<f32>,
     #[serde(default)]
     pub reason: Option<String>,
@@ -3333,7 +3390,7 @@ pub fn parse_record_id(value: &str, expected_table: Option<&str>) -> Result<Reco
 impl Repository {
     async fn query_edges_table(&self, table: &str, limit: usize) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
-            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, provenance, is_manual, created_at \
+            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
              FROM {table} WHERE {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} LIMIT $limit"
         );
         let edges: Vec<NoteEdgeRow> = self
@@ -3351,7 +3408,7 @@ impl Repository {
         note_id: &RecordId,
     ) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
-            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, provenance, is_manual, created_at \
+            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
              FROM {table} WHERE (in = $note_id OR out = $note_id) \
              AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION}"
         );
