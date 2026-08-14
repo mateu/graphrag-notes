@@ -655,10 +655,38 @@ impl LibrarianAgent {
             let completed_before_reconciliation = completed;
             let failed_before_reconciliation = failed;
             let mut notes = Vec::with_capacity(EMBEDDING_JOB_WINDOW);
-            while notes.len() < EMBEDDING_JOB_WINDOW {
+            let mut reconciled_items = 0;
+            while notes.len() < EMBEDDING_JOB_WINDOW && reconciled_items < EMBEDDING_JOB_WINDOW {
+                // A long prefix of already embedded or deleted IDs must not
+                // defer Ctrl-C until the entire prefix has been scanned.
+                // Persist any reconciliation completed so far before safely
+                // returning the durable cancellation result.
+                if self.processing_job_cancelled(&job_id).await? {
+                    if completed != completed_before_reconciliation
+                        || failed != failed_before_reconciliation
+                    {
+                        self.repo
+                            .update_processing_job(
+                                &job_id,
+                                ProcessingJobUpdate {
+                                    completed_count: Some(completed),
+                                    failed_count: Some(failed),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                    }
+                    return Ok(ProcessingRunResult {
+                        job_id: record_id_to_string(&job_id),
+                        completed,
+                        failed,
+                        cancelled: true,
+                    });
+                }
                 let Some(item_id) = item_ids.pop_front() else {
                     break;
                 };
+                reconciled_items += 1;
                 match self.repo.get_note(&item_id).await? {
                     Some(note) if note.has_embedding() => completed += 1,
                     Some(note) => notes.push(note),
@@ -2447,7 +2475,7 @@ pub struct ChatImportResult {
 mod tests {
     use super::{
         chunk_content, decode_file_uri, entity_job_force_clear, no_processing_work,
-        truncate_for_extraction, LibrarianAgent, LibrarianRuntimeConfig,
+        truncate_for_extraction, LibrarianAgent, LibrarianRuntimeConfig, EMBEDDING_JOB_WINDOW,
     };
     use crate::{DeterministicEmbedder, FixtureEntityExtractor, InferenceCapabilities};
     use graphrag_core::{Entity, EntityType, Note};
@@ -3434,10 +3462,22 @@ mod tests {
         )
         .await
         .unwrap();
-        let embedded = repo
-            .create_note(Note::new("already embedded").with_embedding(vec![0.0; 1024]))
-            .await
-            .unwrap();
+        // A resumed job may have a long prefix that was completed by the
+        // interrupted attempt. Keep that prefix exactly one reconciliation
+        // window so the following deleted/pending items exercise the next
+        // bounded pass rather than a single unbounded scan.
+        let mut completed_ids = Vec::with_capacity(EMBEDDING_JOB_WINDOW);
+        for index in 0..EMBEDDING_JOB_WINDOW {
+            let embedded = repo
+                .create_note(
+                    Note::new(format!("already embedded {index}")).with_embedding(vec![0.0; 1024]),
+                )
+                .await
+                .unwrap();
+            completed_ids.push(graphrag_core::record_id_to_string(
+                embedded.id.as_ref().unwrap(),
+            ));
+        }
         let deleted = repo
             .create_note(Note::new("deleted before resume"))
             .await
@@ -3452,13 +3492,15 @@ mod tests {
             .create_processing_job_with_scope(
                 graphrag_db::ProcessingJobType::Embedding,
                 None,
-                3,
+                (EMBEDDING_JOB_WINDOW + 2) as u64,
                 Some("resume-fixture".into()),
-                vec![
-                    graphrag_core::record_id_to_string(embedded.id.as_ref().unwrap()),
-                    deleted_id,
-                    graphrag_core::record_id_to_string(pending.id.as_ref().unwrap()),
-                ],
+                completed_ids
+                    .into_iter()
+                    .chain([
+                        deleted_id,
+                        graphrag_core::record_id_to_string(pending.id.as_ref().unwrap()),
+                    ])
+                    .collect(),
             )
             .await
             .unwrap();
@@ -3478,12 +3520,12 @@ mod tests {
 
         let result = librarian.resume_processing_job(&job_id).await.unwrap();
         assert!(result.cancelled);
-        assert_eq!(result.completed, 2);
+        assert_eq!(result.completed, (EMBEDDING_JOB_WINDOW + 1) as u64);
         assert_eq!(result.failed, 0);
 
         let job = repo.get_processing_job(&job_id).await.unwrap().unwrap();
         assert_eq!(job.status, ProcessingJobStatus::Cancelled.as_str());
-        assert_eq!(job.completed_count, 2);
+        assert_eq!(job.completed_count, (EMBEDDING_JOB_WINDOW + 1) as i64);
         assert_eq!(job.failed_count, 0);
         assert!(repo
             .get_note(&graphrag_core::record_id_to_string(
