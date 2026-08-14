@@ -263,6 +263,10 @@ impl LibrarianAgent {
         self
     }
 
+    fn cancellation_requested(&self) -> bool {
+        self.cancellation_requested.load(Ordering::Acquire)
+    }
+
     async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
         let embedding = self.embedder.embed(text, false).await?;
         validate_embedding_dim(embedding.len())?;
@@ -826,7 +830,7 @@ impl LibrarianAgent {
         limit: usize,
         existing: Option<graphrag_db::ProcessingJob>,
     ) -> Result<ProcessingRunResult> {
-        let (notes, job, resumed) = match existing {
+        let (notes, job, resumed, missing_items) = match existing {
             Some(job) => {
                 if job.item_ids.is_empty() {
                     return Err(crate::AgentError::Processing(
@@ -834,12 +838,15 @@ impl LibrarianAgent {
                     ));
                 }
                 let mut notes = Vec::with_capacity(job.item_ids.len());
+                let mut missing_items = 0_u64;
                 for id in &job.item_ids {
                     if let Some(note) = self.repo.get_note(id).await? {
                         notes.push(note);
+                    } else {
+                        missing_items += 1;
                     }
                 }
-                (notes, job, true)
+                (notes, job, true, missing_items)
             }
             None => {
                 let notes = self.repo.get_notes_without_entities(limit).await?;
@@ -857,7 +864,7 @@ impl LibrarianAgent {
                         item_ids,
                     )
                     .await?;
-                (notes, job, false)
+                (notes, job, false, 0)
             }
         };
         let job_id = job.id.clone().ok_or_else(|| {
@@ -872,7 +879,7 @@ impl LibrarianAgent {
             u64::try_from(job.completed_count.max(0)).unwrap_or(0)
         };
         let mut failed = if resumed {
-            0
+            missing_items
         } else {
             u64::try_from(job.failed_count.max(0)).unwrap_or(0)
         };
@@ -883,7 +890,9 @@ impl LibrarianAgent {
                     ProcessingJobUpdate {
                         completed_count: Some(0),
                         failed_count: Some(0),
-                        last_error: Some(None),
+                        last_error: Some((missing_items > 0).then(|| {
+                            format!("{missing_items} selected note(s) were deleted before resume")
+                        })),
                         ..Default::default()
                     },
                 )
@@ -894,7 +903,11 @@ impl LibrarianAgent {
                 .update_processing_job(
                     &job_id,
                     ProcessingJobUpdate {
-                        status: Some(ProcessingJobStatus::Completed),
+                        status: Some(if failed == 0 {
+                            ProcessingJobStatus::Completed
+                        } else {
+                            ProcessingJobStatus::Failed
+                        }),
                         completed_count: Some(completed),
                         failed_count: Some(failed),
                         finish: true,
@@ -918,6 +931,8 @@ impl LibrarianAgent {
         let start = Instant::now();
         let mut last_progress = Instant::now();
 
+        let mut first_error = (missing_items > 0)
+            .then(|| format!("{missing_items} selected note(s) were deleted before resume"));
         for (index, note) in notes.into_iter().enumerate() {
             if self.processing_job_cancelled(&job_id).await? {
                 return Ok(ProcessingRunResult {
@@ -960,6 +975,9 @@ impl LibrarianAgent {
                 }
                 Err(e) => {
                     failed += 1;
+                    if first_error.is_none() {
+                        first_error = Some(e.to_string());
+                    }
                     if log_each {
                         info!(
                             "Entity extraction failed: {}/{} note_id={} elapsed={:.2}s error={}",
@@ -983,7 +1001,7 @@ impl LibrarianAgent {
                         completed_count: Some(completed),
                         failed_count: Some(failed),
                         checkpoint: Some(note.id.as_ref().map(record_id_to_string)),
-                        last_error: Some(item_error),
+                        last_error: Some(item_error.or_else(|| first_error.clone())),
                         ..Default::default()
                     },
                 )
@@ -1056,6 +1074,9 @@ impl LibrarianAgent {
 
             let total = notes.len();
             for (index, note) in notes.into_iter().enumerate() {
+                if self.cancellation_requested() {
+                    return Ok(processed);
+                }
                 let note_id = note
                     .id
                     .as_ref()
@@ -1070,6 +1091,10 @@ impl LibrarianAgent {
                         note_id,
                         note_len
                     );
+                }
+
+                if self.cancellation_requested() {
+                    return Ok(processed);
                 }
 
                 if force_clear {
@@ -1143,6 +1168,9 @@ impl LibrarianAgent {
         let mut processed = 0usize;
 
         for (index, note_id_raw) in note_ids.iter().enumerate() {
+            if self.cancellation_requested() {
+                return Ok(processed);
+            }
             let key = note_id_raw.strip_prefix("note:").unwrap_or(note_id_raw);
             let maybe_note = self.repo.get_note(key).await?;
             let Some(note) = maybe_note else {
@@ -1187,6 +1215,10 @@ impl LibrarianAgent {
                 Err(e) => {
                     debug!("Entity extraction failed for {}: {}", note_id_raw, e);
                 }
+            }
+
+            if self.cancellation_requested() {
+                return Ok(processed);
             }
         }
 
@@ -2389,6 +2421,12 @@ mod tests {
             .map(graphrag_core::record_id_to_string)
             .unwrap();
         assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
+        assert!(
+            job.last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("timeout")),
+            "a later successful item must not erase the job's failure diagnostic"
+        );
         assert_eq!(job.scope.as_deref(), Some("missing_entities:limit=2"));
         assert_eq!(job.item_ids.len(), 2);
         assert!(job
@@ -2437,5 +2475,43 @@ mod tests {
         assert_eq!(librarian.extract_entities_for_notes(1).await.unwrap(), 0);
         let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
         assert_eq!(job.status, ProcessingJobStatus::Cancelled.as_str());
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_all_and_explicit_entity_modes_before_work() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("pending extraction"))
+            .await
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let all = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(cancelled.clone());
+        assert_eq!(
+            all.extract_entities_for_all_notes(10, false).await.unwrap(),
+            0
+        );
+        let explicit = LibrarianAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(cancelled);
+        assert_eq!(
+            explicit
+                .extract_entities_for_note_ids(
+                    &[graphrag_core::record_id_to_string(
+                        note.id.as_ref().unwrap()
+                    )],
+                    false,
+                )
+                .await
+                .unwrap(),
+            0
+        );
     }
 }
