@@ -1261,7 +1261,6 @@ async fn cmd_eval_augment(
             .source_uri
             .clone()
             .or_else(|| default_source_uri.clone());
-        let requested_source_uri = source_uri.clone();
         let max_tokens = case.max_tokens.unwrap_or(default_max_tokens);
         let max_chunk_tokens = case.max_chunk_tokens.unwrap_or(default_max_chunk_tokens);
 
@@ -1291,9 +1290,7 @@ async fn cmd_eval_augment(
                     chunk.title.as_deref().unwrap_or_default(),
                     chunk.snippet
                 ),
-                // A source-filtered retrieval guarantees this provenance for every returned
-                // chunk. Unfiltered source provenance needs to be carried by SearchAgent.
-                source_uri: requested_source_uri.clone(),
+                source_uri: chunk.source_uri.clone(),
                 conversation_uuid: chunk.conversation_uuid.clone(),
                 approx_tokens: chunk.approx_tokens,
             })

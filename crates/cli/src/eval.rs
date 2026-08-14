@@ -90,6 +90,9 @@ impl EvalAugmentCase {
         for item in &self.relevance {
             if let Some(id) = normalize_id(&item.id) {
                 let grade = item.grade.unwrap_or(1);
+                if grade == 0 {
+                    continue;
+                }
                 relevant
                     .entry(id)
                     .and_modify(|existing| *existing = (*existing).max(grade))
@@ -171,8 +174,8 @@ pub fn evaluate_ranked_results(
 
     let recall_at_k =
         (!relevance.is_empty()).then(|| retrieved_relevant.len() as f64 / relevant_total as f64);
-    let precision_at_k = (!relevance.is_empty() && !ranked.is_empty())
-        .then(|| retrieved_relevant.len() as f64 / ranked.len() as f64);
+    let precision_at_k =
+        (!relevance.is_empty() && k > 0).then(|| retrieved_relevant.len() as f64 / k as f64);
     let reciprocal_rank = (!relevance.is_empty()).then(|| {
         ranked_ids
             .iter()
@@ -270,8 +273,8 @@ pub fn evaluate_ranked_results(
         substring_expectation_matched,
         forbidden_result_found,
         checks_passed,
-        chunks: ranked.len(),
-        tokens: ranked.iter().map(|result| result.approx_tokens).sum(),
+        chunks: results.len(),
+        tokens: results.iter().map(|result| result.approx_tokens).sum(),
         latency_ms,
     }
 }
@@ -719,12 +722,32 @@ mod tests {
         let metrics =
             evaluate_ranked_results(&case, &[result("note:miss"), result("note:hit")], 10, 0);
         assert_eq!(metrics.recall_at_k, Some(1.0));
-        assert_eq!(metrics.precision_at_k, Some(0.5));
+        assert_eq!(metrics.precision_at_k, Some(0.1));
         assert_eq!(metrics.reciprocal_rank, Some(0.5));
         let missing = evaluate_ranked_results(&case, &[], 10, 0);
         assert_eq!(missing.recall_at_k, Some(0.0));
-        assert_eq!(missing.precision_at_k, None);
+        assert_eq!(missing.precision_at_k, Some(0.0));
         assert_eq!(missing.reciprocal_rank, Some(0.0));
+    }
+
+    #[test]
+    fn grade_zero_is_not_a_relevant_hit_and_budget_uses_all_chunks() {
+        let case = case(serde_json::json!({
+            "query": "q",
+            "relevance": [{"id": "note:zero", "grade": 0}, {"id": "note:hit", "grade": 2}]
+        }));
+        let mut first = result("note:zero");
+        first.approx_tokens = 3;
+        let mut second = result("note:hit");
+        second.approx_tokens = 5;
+
+        let metrics = evaluate_ranked_results(&case, &[first, second], 1, 0);
+        assert_eq!(metrics.relevant_total, 1);
+        assert_eq!(metrics.recall_at_k, Some(0.0));
+        assert_eq!(metrics.precision_at_k, Some(0.0));
+        assert_eq!(metrics.reciprocal_rank, Some(0.0));
+        assert_eq!(metrics.chunks, 2);
+        assert_eq!(metrics.tokens, 8);
     }
 
     #[test]
@@ -854,7 +877,7 @@ mod tests {
             &baseline,
             &parse_regression_thresholds(&["recall=0.5".into()]).unwrap(),
         );
-        assert_eq!(comparison.metrics.len(), 2);
+        assert_eq!(comparison.metrics.len(), 3);
         assert_eq!(comparison.regressions.len(), 1);
         assert!(comparison.metrics.iter().all(|delta| delta.delta <= 0.0));
     }

@@ -40,6 +40,7 @@ pub struct ScopedSearchResult {
     pub title: Option<String>,
     pub content: String,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub source_uri: Option<String>,
     pub score: f32,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
@@ -71,6 +72,7 @@ pub struct AugmentChunk {
     pub title: Option<String>,
     pub snippet: String,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub source_uri: Option<String>,
     pub score: f32,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
@@ -328,6 +330,7 @@ impl SearchAgent {
             title: result.title,
             content: result.content,
             created_at: Some(result.created_at),
+            source_uri: result.source_uri,
             score,
             conversation_uuid: None,
             message_index: None,
@@ -347,6 +350,7 @@ impl SearchAgent {
             )),
             content: result.content,
             created_at: result.created_at,
+            source_uri: result.source_uri,
             score,
             conversation_uuid: Some(result.conversation_uuid),
             message_index: Some(result.message_index),
@@ -367,6 +371,7 @@ impl SearchAgent {
             title,
             content,
             created_at: Some(result.updated_at),
+            source_uri: result.source_uri,
             score,
             conversation_uuid: Some(result.uuid),
             message_index: None,
@@ -467,6 +472,7 @@ fn build_augment_context_from_hits(
             title: hit.title,
             snippet,
             created_at: hit.created_at,
+            source_uri: hit.source_uri,
             score: hit.score,
             conversation_uuid: hit.conversation_uuid,
             message_index: hit.message_index,
@@ -543,6 +549,7 @@ mod tests {
             title: Some("title".to_string()),
             content: content.to_string(),
             created_at: None,
+            source_uri: None,
             score,
             conversation_uuid: None,
             message_index: None,
@@ -575,6 +582,26 @@ mod tests {
         assert_eq!(ctx.dropped_duplicates, 1);
         assert_eq!(ctx.chunks[0].id, "note:a");
         assert_eq!(ctx.chunks[1].id, "note:c");
+    }
+
+    #[test]
+    fn retains_source_provenance_in_augment_chunks() {
+        let mut hit = make_hit("note:a", 0.9, "Alpha beta gamma");
+        hit.source_uri = Some("file:///notes/alpha.md".to_string());
+
+        let ctx = build_augment_context_from_hits(
+            "query".to_string(),
+            SearchScope::Notes,
+            None,
+            vec![hit],
+            AugmentOptions::default(),
+            0,
+        );
+
+        assert_eq!(
+            ctx.chunks[0].source_uri.as_deref(),
+            Some("file:///notes/alpha.md")
+        );
     }
 
     #[test]
