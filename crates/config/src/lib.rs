@@ -448,7 +448,7 @@ impl RuntimeConfig {
             .inference
             .embedding_provider
             .eq_ignore_ascii_case("ollama")
-            && env("TEI_URL").is_none()
+            && env("TEI_URL").is_none_or(|url| url.trim().is_empty())
             && (env("TEI_PROVIDER")
                 .is_some_and(|provider| provider.trim().eq_ignore_ascii_case("ollama"))
                 || !self.inference.embedding_url_from_file)
@@ -459,7 +459,7 @@ impl RuntimeConfig {
             .inference
             .extraction_provider
             .eq_ignore_ascii_case("ollama")
-            && env("TGI_URL").is_none()
+            && env("TGI_URL").is_none_or(|url| url.trim().is_empty())
             && (env("TGI_PROVIDER")
                 .is_some_and(|provider| provider.trim().eq_ignore_ascii_case("ollama"))
                 || !self.inference.extraction_url_from_file)
@@ -896,6 +896,8 @@ mod tests {
             &env(&[
                 ("TEI_PROVIDER", " Ollama "),
                 ("TGI_PROVIDER", " OLLAMA "),
+                ("TEI_URL", " "),
+                ("TGI_URL", "\t"),
                 ("OLLAMA_URL", "http://ollama.example:11434"),
             ]),
             None,
