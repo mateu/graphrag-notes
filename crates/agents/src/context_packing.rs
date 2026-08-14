@@ -1126,7 +1126,7 @@ fn nearest_boundary_right(text: &str, mut index: usize) -> usize {
 fn normalized_tokens(text: &str) -> HashSet<String> {
     let normalized = text.nfc().collect::<String>();
     let mut tokens = normalized
-        .split(|ch: char| !ch.is_alphanumeric())
+        .split(|ch: char| !ch.is_alphanumeric() && !is_unspaced_script_char(ch))
         .filter(|token| !token.is_empty())
         .flat_map(|token| {
             // Whitespace-delimited scripts retain word tokens. A run in a
@@ -1136,21 +1136,22 @@ fn normalized_tokens(text: &str) -> HashSet<String> {
             if token.chars().any(is_unspaced_script_char) {
                 unspaced_script_bigrams(token)
             } else {
-                vec![token.to_lowercase()]
+                vec![token.nfc().case_fold().collect::<String>()]
             }
         })
         .collect::<HashSet<_>>();
+    // Lexical fallback terms must remain source-searchable, so symbols use
+    // their canonical scalar rather than a representation-only prefix.
+    for symbol in normalized
+        .chars()
+        .filter(|ch| !ch.is_alphanumeric() && !ch.is_whitespace() && !is_unspaced_script_char(*ch))
+    {
+        tokens.insert(symbol.to_string().case_fold().collect::<String>());
+    }
     if tokens.is_empty() {
-        // Symbols, emoji, and punctuation are still meaningful content for
-        // duplicate suppression. Preserve their canonical lowercased scalar
-        // sequence as one deterministic token instead of treating every such
-        // record as wholly disjoint.
-        let canonical = text
-            .chars()
-            .flat_map(char::to_lowercase)
-            .collect::<String>();
+        let canonical = text.nfc().case_fold().collect::<String>();
         if !canonical.is_empty() {
-            tokens.insert(format!("symbol:{canonical}"));
+            tokens.insert(canonical);
         }
     }
     tokens
@@ -1164,7 +1165,7 @@ fn similarity_tokens(text: &str) -> HashMap<String, usize> {
     let mut tokens = HashMap::new();
     let normalized = text.nfc().collect::<String>();
     for token in normalized
-        .split(|ch: char| !ch.is_alphanumeric())
+        .split(|ch: char| !ch.is_alphanumeric() && !is_unspaced_script_char(ch))
         .filter(|token| !token.is_empty())
     {
         if token.chars().any(is_unspaced_script_char) {
@@ -1201,10 +1202,8 @@ fn similarity_tokens(text: &str) -> HashMap<String, usize> {
 }
 
 fn unspaced_script_bigrams(token: &str) -> Vec<String> {
-    let characters = token
-        .chars()
-        .map(|ch| ch.to_lowercase().to_string())
-        .collect::<Vec<_>>();
+    let folded = token.nfc().case_fold().collect::<String>();
+    let characters = folded.chars().map(|ch| ch.to_string()).collect::<Vec<_>>();
     if characters.len() <= 1 {
         return characters;
     }
@@ -1222,6 +1221,10 @@ fn is_unspaced_script_char(ch: char) -> bool {
         | 0xac00..=0xd7af // Hangul syllables
         | 0xf900..=0xfaff // CJK compatibility ideographs
         | 0x20000..=0x2ebef // supplementary CJK extensions
+        | 0x0e00..=0x0e7f // Thai
+        | 0x0e80..=0x0eff // Lao
+        | 0x1000..=0x109f // Myanmar
+        | 0x1780..=0x17ff // Khmer
     )
 }
 
@@ -1506,6 +1509,30 @@ mod tests {
     }
 
     #[test]
+    fn thai_near_copies_use_granular_shingles_for_similarity() {
+        let first = "ภาษาไทยทดสอบระบบการค้นหา";
+        let second = "ภาษาไทยทดสอบระบบการค้นหข";
+        assert!(
+            multiset_jaccard_similarity(&similarity_tokens(first), &similarity_tokens(second))
+                >= 0.85
+        );
+
+        let mut duplicate_options = options();
+        duplicate_options.max_total_tokens = 300;
+        duplicate_options.max_chunk_tokens = 100;
+        let context = build_augment_context_from_hits(
+            "ระบบ".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit("n:thai-a", 0.9, first), hit("n:thai-b", 0.8, second)],
+            duplicate_options,
+            0,
+        );
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
+    }
+
+    #[test]
     fn reordered_unspaced_cjk_records_are_not_treated_as_duplicates() {
         let first = "天地玄黃宇宙洪荒";
         let second = "洪荒宇宙玄黃天地";
@@ -1656,6 +1683,30 @@ mod tests {
         );
         assert_eq!(context.chunks.len(), 2);
         assert_eq!(context.diagnostics.dropped_near_duplicates, 0);
+    }
+
+    #[test]
+    fn lexical_fallback_uses_source_searchable_symbols_and_full_casefolding() {
+        let symbol_terms = normalized_tokens("missing ❌");
+        assert!(symbol_terms.contains("❌"));
+        let symbol_range = lexical_match_range("deployment ❌ is the late signal", &symbol_terms)
+            .expect("symbol term should be searchable in the source");
+        assert_eq!(&"deployment ❌ is the late signal"[symbol_range], "❌");
+
+        let casefolded_terms = normalized_tokens("STRASSE");
+        let source = "prefix Straße suffix";
+        let range = lexical_match_range(source, &casefolded_terms)
+            .expect("lexical fallback should share phrase matching case folding");
+        assert_eq!(&source[range], "Straße");
+
+        let clipped = clip_query_aware(
+            "early ✅ update. late deployment ❌ evidence.",
+            "missing ❌",
+            30,
+            &ConservativeTokenCounter,
+        );
+        assert!(clipped.snippet.contains("❌"));
+        assert!(clipped.snippet.contains("late deployment"));
     }
 
     #[test]
