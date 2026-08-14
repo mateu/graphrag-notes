@@ -242,6 +242,24 @@ pub fn evaluate_ranked_results(
     k: usize,
     latency_ms: u64,
 ) -> CaseMetrics {
+    // This compatibility entry point has no rendered prompt framing. CLI
+    // callers that pack context must use `evaluate_ranked_results_with_tokens`
+    // and pass `AugmentContext::total_tokens` instead.
+    let tokens = results.iter().map(|result| result.approx_tokens).sum();
+    evaluate_ranked_results_with_tokens(case, results, k, latency_ms, tokens)
+}
+
+/// Evaluate ranked context with the complete rendered prompt token count.
+///
+/// `tokens` includes citation labels, titles, and context framing, rather than
+/// only the snippet estimates carried by individual ranked results.
+pub fn evaluate_ranked_results_with_tokens(
+    case: &EvalAugmentCase,
+    results: &[RankedResult],
+    k: usize,
+    latency_ms: u64,
+    tokens: usize,
+) -> CaseMetrics {
     let relevance = case.relevance();
     let ranked = &results[..results.len().min(k)];
     let ranked_ids: Vec<String> = ranked
@@ -355,7 +373,7 @@ pub fn evaluate_ranked_results(
         forbidden_result_found,
         checks_passed,
         chunks: results.len(),
-        tokens: results.iter().map(|result| result.approx_tokens).sum(),
+        tokens,
         latency_ms,
     }
 }
@@ -877,6 +895,18 @@ mod tests {
         assert_eq!(metrics.reciprocal_rank, Some(0.0));
         assert_eq!(metrics.chunks, 2);
         assert_eq!(metrics.tokens, 8);
+    }
+
+    #[test]
+    fn rendered_context_tokens_include_title_citation_and_framing_overhead() {
+        let case = case(serde_json::json!({"query": "q"}));
+        let mut first = result("note:first");
+        first.approx_tokens = 3;
+        let mut second = result("note:second");
+        second.approx_tokens = 5;
+
+        let metrics = evaluate_ranked_results_with_tokens(&case, &[first, second], 2, 0, 23);
+        assert_eq!(metrics.tokens, 23);
     }
 
     #[test]

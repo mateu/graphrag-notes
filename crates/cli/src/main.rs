@@ -8,7 +8,7 @@ mod eval;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use eval::{
-    build_baseline_comparison, evaluate_ranked_results, load_baseline, load_eval_cases,
+    build_baseline_comparison, evaluate_ranked_results_with_tokens, load_baseline, load_eval_cases,
     parse_regression_thresholds, AugmentationDiagnosticsReport, EvalCaseReport, EvalMetadata,
     EvalOutputFormat, EvalRunReport, EvalScope, RankedResult, EVAL_SCHEMA_VERSION,
 };
@@ -1665,7 +1665,7 @@ async fn cmd_augment(
         println!("  • Entity filter: {}", filter);
     }
     println!("  • Chunks selected: {}", ctx.chunks.len());
-    println!("  • Approx tokens used: {}", ctx.total_tokens);
+    println!("  • Rendered tokens used: {}", ctx.total_tokens);
     println!(
         "  • Packing diagnostics: {}",
         packing_diagnostics_text(&ctx.diagnostics)
@@ -1788,7 +1788,8 @@ async fn cmd_eval_augment(
                 approx_tokens: chunk.approx_tokens,
             })
             .collect();
-        let metrics = evaluate_ranked_results(case, &ranked, k, latency_ms);
+        let metrics =
+            evaluate_ranked_results_with_tokens(case, &ranked, k, latency_ms, ctx.total_tokens);
 
         if matches!(format, EvalOutputFormat::Human) {
             let status = match metrics.checks_passed {
