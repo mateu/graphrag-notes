@@ -2781,6 +2781,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn embedding_batch_response_cardinality_is_validated_before_fallback() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default().with_batch_length_mismatch()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+
+        let error = librarian
+            .embed_batch(&["only batch input".to_string()])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("embeddings for 1 inputs"));
+    }
+
+    #[tokio::test]
     async fn permanent_batch_failure_isolated_to_the_bad_embedding_item() {
         let repo = Repository::new(init_memory().await.unwrap());
         let valid_first = repo
