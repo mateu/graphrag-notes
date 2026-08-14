@@ -46,11 +46,9 @@ fn count_to_i64(count: u64) -> Result<i64> {
         .map_err(|_| DbError::QueryFailed("processing count exceeds database integer range".into()))
 }
 
-/// Rebuild the value indexed for full-text search whenever a note is edited.
-/// Markdown chunk metadata carries its heading context separately from the
-/// displayed source content, so retain that searchable prefix without ever
-/// retaining stale body text from a prior revision.
-fn search_content_for_updated_note(note: &Note) -> String {
+/// Derive the default full-text value from a note's displayed content and its
+/// Markdown heading metadata.
+fn derived_search_content(note: &Note) -> String {
     let headings = note
         .chunk_heading_path
         .iter()
@@ -62,6 +60,32 @@ fn search_content_for_updated_note(note: &Note) -> String {
         note.content.clone()
     } else {
         format!("{headings}\n\n{}", note.content)
+    }
+}
+
+/// Resolve search text for a note update without treating every existing
+/// value as derived. A caller may intentionally supply aliases or other
+/// custom searchable text; keep those for metadata-only updates and explicit
+/// replacements. Rebuild only when the persisted value was the old derived
+/// Markdown/body value carried through a content or heading-context edit.
+fn search_content_for_note_update(existing: &Note, replacement: &Note) -> String {
+    let existing_derived = derived_search_content(existing);
+    let existing_search = existing
+        .search_content
+        .as_deref()
+        .unwrap_or(existing_derived.as_str());
+    if let Some(replacement_search) = replacement.search_content.as_deref() {
+        if replacement_search != existing_search {
+            return replacement_search.to_string();
+        }
+    }
+
+    let source_changed = existing.content != replacement.content
+        || existing.chunk_heading_path != replacement.chunk_heading_path;
+    if source_changed && existing_search == existing_derived {
+        derived_search_content(replacement)
+    } else {
+        existing_search.to_string()
     }
 }
 
@@ -477,7 +501,11 @@ impl Repository {
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
-        let search_content = search_content_for_updated_note(&note);
+        let existing = self
+            .get_note(raw_id)
+            .await?
+            .ok_or_else(|| DbError::NotFound("note".into(), id.into()))?;
+        let search_content = search_content_for_note_update(&existing, &note);
         let updated: Option<Note> = self
             .db
             .query(
@@ -4335,6 +4363,59 @@ mod tests {
         assert!(current
             .iter()
             .any(|result| { result.id == created_id && result.fts_score.is_some() }));
+    }
+
+    #[tokio::test]
+    async fn update_note_preserves_custom_search_aliases_and_replacements() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut note = Note::new("original body text");
+        note.search_content = Some("legacyalias".into());
+        let created = repo.create_note(note).await.unwrap();
+        let note_id = created.id.as_ref().unwrap().clone();
+
+        // A metadata-only update must not discard an intentional alias just
+        // because it does not equal the default body-derived search value.
+        let mut metadata_only = created.clone();
+        metadata_only.title = Some("Reference note".into());
+        let metadata_updated = repo
+            .update_note(&record_id_to_string(&note_id), metadata_only)
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata_updated.search_content.as_deref(),
+            Some("legacyalias")
+        );
+        assert_eq!(metadata_updated.title.as_deref(), Some("Reference note"));
+        assert!(repo
+            .fulltext_search("legacyalias", 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|result| result.id == note_id));
+
+        // When callers intentionally replace search text alongside a content
+        // edit, retain that replacement instead of overriding it with the
+        // generic body-derived value.
+        let mut content_edit = metadata_updated;
+        content_edit.content = "replacement body text".into();
+        content_edit.search_content = Some("replacementalias".into());
+        let replaced = repo
+            .update_note(&record_id_to_string(&note_id), content_edit)
+            .await
+            .unwrap();
+        assert_eq!(replaced.search_content.as_deref(), Some("replacementalias"));
+        assert!(repo
+            .fulltext_search("legacyalias", 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|result| result.id != note_id));
+        assert!(repo
+            .fulltext_search("replacementalias", 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|result| result.id == note_id));
     }
 
     #[tokio::test]
