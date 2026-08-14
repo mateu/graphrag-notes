@@ -14,15 +14,46 @@ pub use repository::{
     parse_record_id, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
 };
 
+use std::ops::Deref;
 #[cfg(feature = "rocksdb")]
 use std::path::Path;
+use std::sync::Arc;
 #[cfg(feature = "rocksdb")]
 use surrealdb::engine::local::RocksDb;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
+use tokio::sync::Mutex;
 
-/// Database connection type
-pub type DbConnection = Surreal<Db>;
+/// A database client together with process-local coordination scoped to that
+/// client identity. Cloning a connection preserves the same coordination;
+/// separately opened stores receive independent locks.
+#[derive(Clone, Debug)]
+pub struct DbConnection {
+    client: Surreal<Db>,
+    proposal_lifecycle_lock: Arc<Mutex<()>>,
+}
+
+impl DbConnection {
+    /// Wrap a configured SurrealDB client in the application connection type.
+    pub fn new(client: Surreal<Db>) -> Self {
+        Self {
+            client,
+            proposal_lifecycle_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub(crate) fn proposal_lifecycle_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.proposal_lifecycle_lock)
+    }
+}
+
+impl Deref for DbConnection {
+    type Target = Surreal<Db>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.client
+    }
+}
 
 /// Initialize database with RocksDB (persistent)
 #[cfg(feature = "rocksdb")]
@@ -38,14 +69,14 @@ pub async fn init_persistent(path: impl AsRef<Path>) -> Result<DbConnection> {
 /// callers: `graphrag doctor` reports that state without creating a store.
 #[cfg(feature = "rocksdb")]
 pub async fn connect_persistent(path: impl AsRef<Path>) -> Result<DbConnection> {
-    let db = Surreal::new::<RocksDb>(path.as_ref()).await?;
+    let db = DbConnection::new(Surreal::new::<RocksDb>(path.as_ref()).await?);
     db.use_ns("graphrag").use_db("notes").await?;
     Ok(db)
 }
 
 /// Initialize database in-memory (for testing)
 pub async fn init_memory() -> Result<DbConnection> {
-    let db = Surreal::new::<Mem>(()).await?;
+    let db = DbConnection::new(Surreal::new::<Mem>(()).await?);
     setup_database(&db).await?;
     Ok(db)
 }

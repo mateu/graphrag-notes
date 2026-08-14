@@ -13,7 +13,7 @@ use graphrag_core::{
     ProposedEdgeStatus, Source, SourceIngestionStatus, SourceType,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
@@ -36,16 +36,6 @@ const VISIBLE_NOTE_CONDITION: &str = "(source_id IS NONE OR source_generation IS
 // interrupted import cannot expose relationships owned by a staged or
 // superseded generation.
 const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)) AND out IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation))";
-
-/// Lifecycle transitions which span an accepted edge and its proposal audit
-/// record must serialize across every `Repository` created in this process.
-/// Database-side conditional state claims remain the cross-process guard; this
-/// lock closes the multi-statement in-process window even when callers build
-/// distinct repositories from clones of the same connection.
-fn proposal_lifecycle_lock() -> Arc<Mutex<()>> {
-    static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
-    Arc::clone(LOCK.get_or_init(|| Arc::new(Mutex::new(()))))
-}
 
 fn source_content_value(source: &Source) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(source)
@@ -80,9 +70,10 @@ fn source_content_value(source: &Source) -> Result<serde_json::Value> {
 impl Repository {
     /// Create a new repository
     pub fn new(db: DbConnection) -> Self {
+        let proposal_acceptance_lock = db.proposal_lifecycle_lock();
         Self {
             db,
-            proposal_acceptance_lock: proposal_lifecycle_lock(),
+            proposal_acceptance_lock,
         }
     }
 
@@ -4416,6 +4407,26 @@ mod tests {
             .unwrap();
         assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
         assert_eq!(proposal.resulting_edge_id, None);
+    }
+
+    #[tokio::test]
+    async fn independent_memory_stores_do_not_share_lifecycle_serialization() {
+        let first_repo = Repository::new(init_memory().await.unwrap());
+        let second_repo = Repository::new(init_memory().await.unwrap());
+        assert!(!Arc::ptr_eq(
+            &first_repo.proposal_acceptance_lock,
+            &second_repo.proposal_acceptance_lock
+        ));
+
+        // Holding a lifecycle transition for one logical store must not block
+        // a repository backed by a separately initialized in-memory store.
+        let first_guard = first_repo.proposal_acceptance_lock.lock().await;
+        let second_guard = second_repo
+            .proposal_acceptance_lock
+            .try_lock()
+            .expect("independent store lifecycle lock is not held");
+        drop(second_guard);
+        drop(first_guard);
     }
 
     #[tokio::test]
