@@ -1,9 +1,6 @@
 //! Librarian Agent - Ingests content and creates notes
 
-use crate::{
-    classify_retry, inference::validate_embedding_dim, Result, RetryClassification, SharedEmbedder,
-    SharedEntityExtractor,
-};
+use crate::{inference::validate_embedding_dim, Result, SharedEmbedder, SharedEntityExtractor};
 use graphrag_core::{
     normalize_file_uri, normalized_content_hash, record_id_to_string, ChatConversation, ChatExport,
     ChatMessage, Entity, EntityType, MessageRole, Note, NoteType, Source, SourceType,
@@ -718,27 +715,12 @@ impl LibrarianAgent {
                         }
                     }
                 }
-                // A rejected batch should not discard independently valid
-                // items. Fall back once per item so the job records the exact
-                // permanent failure and can be resumed after provider repair.
+                // A rejected batch never proves that every item is invalid:
+                // providers can reject a whole request because of one bad
+                // input or a batch-only constraint. Fall back once per item
+                // so valid notes are retained and the durable job records
+                // only the actual per-item failures.
                 Err(batch_error) => {
-                    if classify_retry(&batch_error) == RetryClassification::Permanent {
-                        failed += notes.len() as u64;
-                        self.repo
-                            .update_processing_job(
-                                &job_id,
-                                ProcessingJobUpdate {
-                                    status: Some(ProcessingJobStatus::Failed),
-                                    completed_count: Some(completed),
-                                    failed_count: Some(failed),
-                                    last_error: Some(Some(batch_error.to_string())),
-                                    finish: true,
-                                    ..Default::default()
-                                },
-                            )
-                            .await?;
-                        return Err(batch_error);
-                    }
                     debug!("Embedding batch failed; falling back to per-item processing: {batch_error}");
                     for note in &notes {
                         // A cancellation that arrives while a slow fallback
@@ -2434,6 +2416,45 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct PermanentBatchFailureEmbedder;
+
+    #[async_trait::async_trait]
+    impl crate::Embedder for PermanentBatchFailureEmbedder {
+        async fn embed(&self, text: &str, _is_query: bool) -> crate::Result<Vec<f32>> {
+            if text == "permanently invalid embedding input" {
+                return Err(crate::AgentError::InferenceService(
+                    "invalid embedding input".into(),
+                ));
+            }
+            Ok(vec![0.0; 1024])
+        }
+
+        async fn embed_batch(
+            &self,
+            _texts: &[String],
+            _is_query: bool,
+        ) -> crate::Result<Vec<Vec<f32>>> {
+            Err(crate::AgentError::InferenceService(
+                "invalid batch request".into(),
+            ))
+        }
+
+        async fn health(&self) -> crate::Result<bool> {
+            Ok(true)
+        }
+
+        fn capabilities(&self) -> InferenceCapabilities {
+            InferenceCapabilities {
+                provider: "permanent-batch-failure-fixture".into(),
+                model: "fixture".into(),
+                endpoint: "offline://permanent-batch-failure".into(),
+                known_dimension: Some(1024),
+                cache_identity: "permanent-batch-failure-v1".into(),
+            }
+        }
+    }
+
     #[test]
     fn runtime_config_defaults_preserve_library_behavior() {
         let config = LibrarianRuntimeConfig::default();
@@ -2757,6 +2778,57 @@ mod tests {
                 .is_some_and(|error| error.contains("timeout")),
             "the success after a fallback failure must not clear diagnostics"
         );
+    }
+
+    #[tokio::test]
+    async fn permanent_batch_failure_isolated_to_the_bad_embedding_item() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let valid_first = repo
+            .create_note(Note::new("first valid embedding input"))
+            .await
+            .unwrap();
+        let invalid = repo
+            .create_note(Note::new("permanently invalid embedding input"))
+            .await
+            .unwrap();
+        let valid_last = repo
+            .create_note(Note::new("last valid embedding input"))
+            .await
+            .unwrap();
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(PermanentBatchFailureEmbedder),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+
+        assert!(librarian.process_pending_embeddings().await.is_err());
+        let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
+        assert_eq!(job.completed_count, 2);
+        assert_eq!(job.failed_count, 1);
+        assert!(job
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("invalid embedding input")));
+
+        for valid in [valid_first, valid_last] {
+            let note = repo
+                .get_note(&graphrag_core::record_id_to_string(
+                    valid.id.as_ref().unwrap(),
+                ))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!note.embedding.is_empty());
+        }
+        let invalid = repo
+            .get_note(&graphrag_core::record_id_to_string(
+                invalid.id.as_ref().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(invalid.embedding.is_empty());
     }
 
     #[tokio::test]
