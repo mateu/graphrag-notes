@@ -938,7 +938,7 @@ enum TeiProvider {
     Ollama,
 }
 
-fn validate_embedding_dim(len: usize) -> Result<()> {
+pub(crate) fn validate_embedding_dim(len: usize) -> Result<()> {
     if len != EMBEDDING_DIMENSION {
         return Err(AgentError::Processing(format!(
             "Embedding dimension {} does not match expected {}. Choose a 1024-dim model or update the schema.",

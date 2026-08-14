@@ -1,6 +1,6 @@
 //! Search Agent - Handles user queries with hybrid search
 
-use crate::{Result, SharedEmbedder};
+use crate::{inference::validate_embedding_dim, Result, SharedEmbedder};
 use chrono::{Duration, Utc};
 use graphrag_core::record_id_to_string;
 use graphrag_db::repository::{
@@ -122,6 +122,12 @@ impl SearchAgent {
         Self { repo, embedder }
     }
 
+    async fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
+        let embedding = self.embedder.embed(query, true).await?;
+        validate_embedding_dim(embedding.len())?;
+        Ok(embedding)
+    }
+
     /// Perform hybrid search (vector + full-text)
     #[instrument(skip(self))]
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
@@ -140,7 +146,7 @@ impl SearchAgent {
 
         // Generate query embedding
         debug!("Generating query embedding...");
-        let embedding = self.embedder.embed(query, true).await?;
+        let embedding = self.embed_query(query).await?;
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
 
         // Perform hybrid search
@@ -194,7 +200,7 @@ impl SearchAgent {
     pub async fn semantic_search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         debug!("Performing semantic search for: {}", query);
 
-        let embedding = self.embedder.embed(query, true).await?;
+        let embedding = self.embed_query(query).await?;
         let results = self.repo.vector_search(embedding, limit).await?;
 
         Ok(results)
@@ -220,7 +226,7 @@ impl SearchAgent {
         source_uri: Option<String>,
     ) -> Result<Vec<ScopedSearchResult>> {
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
-        let embedding = self.embedder.embed(query, true).await?;
+        let embedding = self.embed_query(query).await?;
         let mut scoped_results = Vec::new();
 
         if matches!(scope, SearchScope::Notes | SearchScope::All) {

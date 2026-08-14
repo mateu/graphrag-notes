@@ -255,6 +255,44 @@ async fn test_librarian_rejects_offline_batch_length_mismatch() {
     assert!(error.to_string().contains("embeddings for 1 inputs"));
 }
 
+#[tokio::test]
+async fn test_agents_reject_invalid_custom_embedding_dimensions() {
+    use graphrag_agents::{
+        DeterministicEmbedder, FixtureEntityExtractor, LibrarianAgent, SearchAgent,
+    };
+
+    let db = init_memory().await.expect("Failed to init db");
+    let repo = Repository::new(db);
+    let embedder = Arc::new(DeterministicEmbedder::default().with_default_embedding(vec![0.0; 3]));
+    let librarian = LibrarianAgent::new(
+        repo.clone(),
+        embedder.clone(),
+        Arc::new(FixtureEntityExtractor::default()),
+    );
+
+    let ingest_error = librarian
+        .ingest_text("invalid embedding", None, vec![])
+        .await
+        .unwrap_err();
+    assert!(ingest_error
+        .to_string()
+        .contains("Embedding dimension 3 does not match expected 1024"));
+
+    repo.create_note(Note::new("pending invalid embedding"))
+        .await
+        .unwrap();
+    let batch_error = librarian.process_pending_embeddings().await.unwrap_err();
+    assert!(batch_error
+        .to_string()
+        .contains("Embedding dimension 3 does not match expected 1024"));
+
+    let search = SearchAgent::new(repo, embedder);
+    let search_error = search.search("invalid embedding", 1).await.unwrap_err();
+    assert!(search_error
+        .to_string()
+        .contains("Embedding dimension 3 does not match expected 1024"));
+}
+
 // ==========================================
 // LIVE-BACKEND SMOKE TESTS
 // Run with: cargo test -p graphrag-agents --test integration_test -- --ignored
