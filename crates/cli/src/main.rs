@@ -17,7 +17,6 @@ use graphrag_agents::{
 };
 use graphrag_core::{record_id_to_string, ChatExport};
 use graphrag_db::{init_memory, init_persistent, migrations, Repository};
-use serde::Deserialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;
