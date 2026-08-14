@@ -1214,7 +1214,7 @@ mod tests {
         let path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/eval/cases-v2.jsonl");
         let cases = load_eval_cases(&path).unwrap();
-        assert_eq!(cases.len(), 6);
+        assert_eq!(cases.len(), 7);
         assert!(cases
             .iter()
             .any(|case| case.scope == Some(EvalScope::Notes)));
@@ -1226,6 +1226,9 @@ mod tests {
         assert!(cases
             .iter()
             .any(|case| !case.expected_conversation_uuids.is_empty()));
+        assert!(cases.iter().any(|case| {
+            case.name.as_deref() == Some("graph-accepted-path") && !case.forbidden_ids.is_empty()
+        }));
     }
 
     #[test]

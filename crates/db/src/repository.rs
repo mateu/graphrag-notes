@@ -2472,6 +2472,180 @@ impl Repository {
         Ok(count > 0)
     }
 
+    /// Find a bounded, deterministic set of canonical entities that occur in
+    /// the normalized query. Aliases are optional values stored in
+    /// `entity.metadata.aliases`; this keeps query-time matching local and
+    /// avoids requiring the extraction provider for search.
+    #[instrument(skip(self))]
+    pub async fn find_graph_entities(
+        &self,
+        normalized_query: &str,
+        limit: usize,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        if normalized_query.trim().is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("graph entity limit exceeds database integer range".into())
+        })?;
+        self.db
+            .query(
+                r#"
+                SELECT id, name, canonical_name, metadata
+                FROM entity
+                WHERE canonical_name = $query
+                   OR $query CONTAINS canonical_name
+                   OR canonical_name CONTAINS $query
+                   OR metadata.aliases CONTAINS $query
+                ORDER BY canonical_name ASC, id ASC
+                LIMIT $limit
+                "#,
+            )
+            .bind(("query", normalized_query.to_string()))
+            .bind(("limit", limit))
+            .await?
+            .take(0)
+            .map_err(Into::into)
+    }
+
+    /// Fetch visible note IDs mentioned by any supplied entities in one
+    /// query. The caller owns the cap, so an entity with a high degree cannot
+    /// cause an unbounded graph seed set.
+    #[instrument(skip(self, entity_ids))]
+    pub async fn graph_notes_for_entities(
+        &self,
+        entity_ids: &[RecordId],
+        limit: usize,
+    ) -> Result<Vec<RecordId>> {
+        if entity_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("graph note limit exceeds database integer range".into())
+        })?;
+        self.db
+            .query(format!(
+                "SELECT VALUE in FROM mentions WHERE out IN $entity_ids AND in IN (SELECT VALUE id FROM note WHERE {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC LIMIT $limit"
+            ))
+            .bind(("entity_ids", entity_ids.to_vec()))
+            .bind(("limit", limit))
+            .await?
+            .take(0)
+            .map_err(Into::into)
+    }
+
+    /// Fetch accepted persisted note-edge rows for many frontier notes. This
+    /// performs a constant number of table queries per hop rather than one
+    /// query per note. Proposal tables are deliberately never consulted.
+    #[instrument(skip(self, note_ids, edge_types))]
+    pub async fn graph_note_edges(
+        &self,
+        note_ids: &[RecordId],
+        edge_types: &[String],
+        per_table_limit: usize,
+    ) -> Result<Vec<NoteEdgeRow>> {
+        if note_ids.is_empty() || edge_types.is_empty() || per_table_limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut rows = Vec::new();
+        for table in ["supports", "contradicts", "related_to", "derived_from"] {
+            if !edge_types.iter().any(|edge_type| edge_type == table) {
+                continue;
+            }
+            let limit = i64::try_from(per_table_limit).map_err(|_| {
+                DbError::QueryFailed("graph edge limit exceeds database integer range".into())
+            })?;
+            let query = format!(
+                "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
+                 FROM {table} WHERE (in IN $note_ids OR out IN $note_ids) AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} \
+                 ORDER BY id ASC LIMIT $limit"
+            );
+            let mut edges: Vec<NoteEdgeRow> = self
+                .db
+                .query(query)
+                .bind(("note_ids", note_ids.to_vec()))
+                .bind(("limit", limit))
+                .await?
+                .take(0)?;
+            rows.append(&mut edges);
+        }
+        rows.sort_by(|left, right| {
+            left.edge_type
+                .cmp(&right.edge_type)
+                .then_with(|| record_id_to_string(&left.id).cmp(&record_id_to_string(&right.id)))
+        });
+        Ok(rows)
+    }
+
+    /// Load graph-selected notes in one visibility-aware query so deleted or
+    /// superseded endpoints are silently excluded from retrieval.
+    #[instrument(skip(self, note_ids))]
+    pub async fn graph_notes_by_ids(
+        &self,
+        note_ids: &[RecordId],
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<SearchResult>> {
+        if note_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let since = since.map(|timestamp| timestamp.to_rfc3339());
+        self.db
+            .query(format!(
+                "SELECT id, title, content, note_type, tags, created_at, source_id.uri AS source_uri \
+                 FROM note WHERE id IN $note_ids AND ($since = NONE OR created_at >= <datetime>$since) \
+                 AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION} \
+                 ORDER BY id ASC"
+            ))
+            .bind(("note_ids", note_ids.to_vec()))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
+            .await?
+            .take(0)
+            .map_err(Into::into)
+    }
+
+    /// Return the original chat provenance record IDs for graph-selected
+    /// notes in two bounded set queries. File-backed notes retain their
+    /// source URI in [`SearchResult`]; chat-derived notes need these record
+    /// IDs to keep an augmentation citation reconstructable without loading
+    /// each note individually.
+    #[instrument(skip(self, note_ids))]
+    pub async fn graph_note_provenance_ids(
+        &self,
+        note_ids: &[RecordId],
+    ) -> Result<HashMap<String, Vec<String>>> {
+        #[derive(Deserialize, SurrealValue)]
+        struct ProvenanceRow {
+            r#in: RecordId,
+            out: RecordId,
+        }
+
+        if note_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut provenance = HashMap::<String, Vec<String>>::new();
+        for table in ["note_from_conversation", "note_from_message"] {
+            let rows: Vec<ProvenanceRow> = self
+                .db
+                .query(format!("SELECT in, out FROM {table} WHERE in IN $note_ids"))
+                .bind(("note_ids", note_ids.to_vec()))
+                .await?
+                .take(0)?;
+            for row in rows {
+                provenance
+                    .entry(record_id_to_string(&row.r#in))
+                    .or_default()
+                    .push(record_id_to_string(&row.out));
+            }
+        }
+        for ids in provenance.values_mut() {
+            ids.sort();
+            ids.dedup();
+        }
+        Ok(provenance)
+    }
+
     /// List note-to-note edges across all edge tables
     #[instrument(skip(self))]
     pub async fn list_note_edges(&self, limit: usize) -> Result<Vec<NoteEdgeRow>> {
@@ -3548,6 +3722,17 @@ pub struct NoteEdgeRow {
     #[serde(default)]
     pub is_manual: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Local lexical entity match used as a graph-retrieval seed. `metadata` is
+/// retained only to make alias evidence inspectable by higher layers.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+pub struct GraphEntityMatch {
+    pub id: RecordId,
+    pub name: String,
+    pub canonical_name: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }
 
 fn normalize_note_id(note_id: &str) -> RecordId {

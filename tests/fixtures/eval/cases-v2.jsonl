@@ -5,3 +5,4 @@
 {"schema_version":2,"name":"filter-and-budget","query":"gpu power","scope":"notes","limit":2,"k":1,"since_days":30,"entity":"GPU","max_tokens":80,"max_chunk_tokens":40,"expected_ids":["note:gpu-power"]}
 {"schema_version":2,"name":"duplicate-result-guard","query":"duplicate notes","scope":"all","k":3,"expected_ids":["note:canonical"],"forbidden_ids":["note:duplicate"]}
 {"schema_version":2,"name":"graph-related-content","query":"which service depends on the media host","scope":"all","k":3,"expected_contains":["media host"],"forbidden_contains":["private fixture secret"]}
+{"schema_version":2,"name":"graph-accepted-path","query":"atlas deployment dependency","scope":"notes","k":3,"relevance":[{"id":"note:atlas-linked-runbook","grade":3}],"expected_source_uris":["fixture://notes/atlas.md"],"forbidden_ids":["note:atlas-pending-proposal-only"]}

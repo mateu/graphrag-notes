@@ -31,6 +31,7 @@ pub use processing::{
     ResilientEntityExtractor, RetryClassification,
 };
 pub use search::{
-    AugmentContext, AugmentDiagnostics, AugmentOptions, ConservativeTokenCounter, SearchAgent,
-    SearchHitType, SearchScope, TokenCountMode, TokenCounter,
+    AugmentContext, AugmentDiagnostics, AugmentOptions, ConservativeTokenCounter, GraphEvidence,
+    GraphMode, GraphPathStep, GraphRetrievalConfig, GraphRetrievalSummary, GraphSearchResults,
+    SearchAgent, SearchHitType, SearchScope, TokenCountMode, TokenCounter,
 };

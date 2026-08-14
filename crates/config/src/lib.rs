@@ -163,6 +163,20 @@ pub struct SearchConfig {
     pub note_weight: f32,
     pub message_weight: f32,
     pub conversation_summary_weight: f32,
+    /// Enable bounded accepted-edge retrieval for `--graph=auto|on`.
+    pub graph_enabled: bool,
+    pub graph_max_seed_entities: usize,
+    pub graph_max_seed_notes: usize,
+    /// v0.2 hard-limits traversal to two accepted edge hops.
+    pub graph_max_hops: usize,
+    pub graph_per_node_fanout: usize,
+    pub graph_allowed_edge_types: Vec<String>,
+    pub graph_allow_outbound: bool,
+    pub graph_allow_inbound: bool,
+    pub graph_min_confidence: f32,
+    pub graph_per_hop_decay: f32,
+    pub graph_candidate_cap: usize,
+    pub graph_seed_score: f32,
 }
 impl Default for SearchConfig {
     fn default() -> Self {
@@ -178,6 +192,23 @@ impl Default for SearchConfig {
             note_weight: 1.0,
             message_weight: 1.0,
             conversation_summary_weight: 1.0,
+            graph_enabled: true,
+            graph_max_seed_entities: 4,
+            graph_max_seed_notes: 12,
+            graph_max_hops: 1,
+            graph_per_node_fanout: 8,
+            graph_allowed_edge_types: vec![
+                "supports".into(),
+                "contradicts".into(),
+                "derived_from".into(),
+                "related_to".into(),
+            ],
+            graph_allow_outbound: true,
+            graph_allow_inbound: true,
+            graph_min_confidence: 0.0,
+            graph_per_hop_decay: 0.8,
+            graph_candidate_cap: 32,
+            graph_seed_score: 0.03,
         }
     }
 }
@@ -569,6 +600,66 @@ impl RuntimeConfig {
             "GRAPHRAG_SEARCH_CONVERSATION_SUMMARY_WEIGHT",
             &mut self.search.conversation_summary_weight,
         )?;
+        set_bool(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_ENABLED",
+            &mut self.search.graph_enabled,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_MAX_SEED_ENTITIES",
+            &mut self.search.graph_max_seed_entities,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_MAX_SEED_NOTES",
+            &mut self.search.graph_max_seed_notes,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_MAX_HOPS",
+            &mut self.search.graph_max_hops,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_PER_NODE_FANOUT",
+            &mut self.search.graph_per_node_fanout,
+        )?;
+        set_csv(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_ALLOWED_EDGE_TYPES",
+            &mut self.search.graph_allowed_edge_types,
+        )?;
+        set_bool(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_ALLOW_OUTBOUND",
+            &mut self.search.graph_allow_outbound,
+        )?;
+        set_bool(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_ALLOW_INBOUND",
+            &mut self.search.graph_allow_inbound,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_MIN_CONFIDENCE",
+            &mut self.search.graph_min_confidence,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_PER_HOP_DECAY",
+            &mut self.search.graph_per_hop_decay,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_CANDIDATE_CAP",
+            &mut self.search.graph_candidate_cap,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_SEED_SCORE",
+            &mut self.search.graph_seed_score,
+        )?;
         set_usize(
             env,
             "GRAPHRAG_AUGMENT_DEFAULT_LIMIT",
@@ -714,6 +805,12 @@ impl RuntimeConfig {
             .extraction_provider
             .trim()
             .to_ascii_lowercase();
+        self.search.graph_allowed_edge_types = self
+            .search
+            .graph_allowed_edge_types
+            .iter()
+            .map(|edge_type| edge_type.trim().to_ascii_lowercase())
+            .collect();
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -782,6 +879,12 @@ impl RuntimeConfig {
             || self.search.candidate_pool_multiplier == 0
             || self.search.candidate_pool_min == 0
             || self.search.candidate_pool_max < self.search.candidate_pool_min
+            || self.search.graph_max_seed_entities == 0
+            || self.search.graph_max_seed_notes == 0
+            || self.search.graph_max_hops > 2
+            || self.search.graph_per_node_fanout == 0
+            || self.search.graph_candidate_cap == 0
+            || self.search.graph_allowed_edge_types.is_empty()
             || self.augment.default_limit == 0
             || self.augment.max_tokens == 0
             || self.augment.max_chunk_tokens == 0
@@ -808,6 +911,30 @@ impl RuntimeConfig {
             return Err(ConfigError::Validation(
                 "search weights must be in [0, 1] and sum to 1".into(),
             ));
+        }
+        if !self.search.graph_allow_outbound && !self.search.graph_allow_inbound {
+            return Err(ConfigError::Validation(
+                "at least one graph traversal direction must be enabled".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.search.graph_min_confidence)
+            || !(0.0..=1.0).contains(&self.search.graph_per_hop_decay)
+            || !self.search.graph_seed_score.is_finite()
+            || self.search.graph_seed_score < 0.0
+        {
+            return Err(ConfigError::Validation(
+                "graph confidence/decay must be in [0, 1] and graph_seed_score must be finite and non-negative".into(),
+            ));
+        }
+        for edge_type in &self.search.graph_allowed_edge_types {
+            if !matches!(
+                edge_type.trim().to_ascii_lowercase().as_str(),
+                "supports" | "contradicts" | "derived_from" | "related_to"
+            ) {
+                return Err(ConfigError::Validation(format!(
+                    "unsupported graph edge type {edge_type:?}; expected supports, contradicts, derived_from, or related_to"
+                )));
+            }
         }
         if !matches!(
             self.search
@@ -967,6 +1094,28 @@ fn set_f32(
             .parse()
             .map_err(|_| ConfigError::Validation(format!("{key} must be a number")))?;
     }
+    Ok(())
+}
+
+fn set_csv(
+    env: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    target: &mut Vec<String>,
+) -> Result<(), ConfigError> {
+    let Some(value) = env(key) else {
+        return Ok(());
+    };
+    let values = value
+        .split(',')
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "{key} must contain at least one comma-separated edge type"
+        )));
+    }
+    *target = values;
     Ok(())
 }
 
@@ -1179,6 +1328,47 @@ mod tests {
         assert_eq!(config.augment.novelty_weight, 0.4);
         assert_eq!(config.augment.min_relevance, 0.2);
         assert_eq!(config.augment.near_duplicate_threshold, 0.7);
+    }
+
+    #[test]
+    fn environment_overrides_graph_retrieval_bounds_and_normalizes_edge_types() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[
+                ("GRAPHRAG_SEARCH_GRAPH_ENABLED", "false"),
+                ("GRAPHRAG_SEARCH_GRAPH_MAX_HOPS", "2"),
+                ("GRAPHRAG_SEARCH_GRAPH_PER_NODE_FANOUT", "3"),
+                (
+                    "GRAPHRAG_SEARCH_GRAPH_ALLOWED_EDGE_TYPES",
+                    " SUPPORTS, derived_from ",
+                ),
+                ("GRAPHRAG_SEARCH_GRAPH_ALLOW_INBOUND", "false"),
+                ("GRAPHRAG_SEARCH_GRAPH_MIN_CONFIDENCE", "0.4"),
+            ]),
+            None,
+        )
+        .unwrap();
+
+        assert!(!config.search.graph_enabled);
+        assert_eq!(config.search.graph_max_hops, 2);
+        assert_eq!(config.search.graph_per_node_fanout, 3);
+        assert_eq!(
+            config.search.graph_allowed_edge_types,
+            vec!["supports", "derived_from"]
+        );
+        assert!(!config.search.graph_allow_inbound);
+        assert_eq!(config.search.graph_min_confidence, 0.4);
+    }
+
+    #[test]
+    fn graph_retrieval_rejects_unbounded_hop_configurations() {
+        let mut config = RuntimeConfig::default();
+        config.search.graph_max_hops = 3;
+        assert!(config.validate().is_err());
+        config.search.graph_max_hops = 1;
+        config.search.graph_allowed_edge_types = vec!["not-an-edge".into()];
+        assert!(config.validate().is_err());
     }
 
     #[test]

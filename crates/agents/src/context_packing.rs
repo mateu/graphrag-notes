@@ -4,7 +4,9 @@
 //! with a locally available provider tokenizer can inject it through
 //! [`TokenCounter`]; the default is a conservative, deterministic estimate.
 
-use crate::search::{ScopedSearchResult, SearchHitType, SearchScope};
+use crate::search::{
+    GraphEvidence, GraphRetrievalSummary, ScopedSearchResult, SearchHitType, SearchScope,
+};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -120,6 +122,8 @@ pub struct AugmentChunk {
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
+    /// Reconstructable accepted-edge path when this chunk was graph reached.
+    pub graph: Option<GraphEvidence>,
     /// Snippet-only token count; `AugmentContext::total_tokens` includes all
     /// rendered headers, citation labels, and context framing.
     pub approx_tokens: usize,
@@ -140,6 +144,9 @@ pub struct AugmentDiagnostics {
     pub dropped_for_relevance: usize,
     pub dropped_for_budget: usize,
     pub dropped_for_entity_filter: usize,
+    pub graph_candidates_considered: usize,
+    pub graph_candidates_selected: usize,
+    pub graph_candidates_dropped: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +178,26 @@ pub(crate) fn build_augment_context_from_hits(
     hits: Vec<ScopedSearchResult>,
     options: AugmentOptions,
     dropped_for_entity_filter: usize,
+) -> AugmentContext {
+    build_augment_context_from_hits_with_graph(
+        query,
+        scope,
+        entity_filter,
+        hits,
+        options,
+        dropped_for_entity_filter,
+        GraphRetrievalSummary::default(),
+    )
+}
+
+pub(crate) fn build_augment_context_from_hits_with_graph(
+    query: String,
+    scope: SearchScope,
+    entity_filter: Option<String>,
+    hits: Vec<ScopedSearchResult>,
+    options: AugmentOptions,
+    dropped_for_entity_filter: usize,
+    graph_summary: GraphRetrievalSummary,
 ) -> AugmentContext {
     let counter = options.token_counter.as_ref();
     if options.max_chunks == 0 || options.max_total_tokens == 0 || options.max_chunk_tokens == 0 {
@@ -273,6 +300,11 @@ pub(crate) fn build_augment_context_from_hits(
         dropped_for_relevance,
         dropped_for_budget,
         dropped_for_entity_filter,
+        graph_candidates_considered: graph_summary.candidates_considered,
+        graph_candidates_selected: chunks.iter().filter(|chunk| chunk.graph.is_some()).count(),
+        graph_candidates_dropped: graph_summary
+            .candidates_considered
+            .saturating_sub(chunks.iter().filter(|chunk| chunk.graph.is_some()).count()),
     };
     AugmentContext {
         query,
@@ -302,6 +334,9 @@ pub(crate) fn empty_context(
         dropped_for_relevance: 0,
         dropped_for_budget: 0,
         dropped_for_entity_filter,
+        graph_candidates_considered: 0,
+        graph_candidates_selected: 0,
+        graph_candidates_dropped: 0,
     };
     AugmentContext {
         query,
@@ -414,6 +449,7 @@ fn fit_candidate(
         conversation_uuid: candidate.hit.conversation_uuid.clone(),
         message_index: candidate.hit.message_index,
         role: candidate.hit.role.clone(),
+        graph: candidate.hit.graph.clone(),
         approx_tokens: 0,
         rendered_tokens: 0,
         truncated: true,
@@ -469,6 +505,7 @@ fn fit_candidate(
             conversation_uuid: candidate.hit.conversation_uuid.clone(),
             message_index: candidate.hit.message_index,
             role: candidate.hit.role.clone(),
+            graph: candidate.hit.graph.clone(),
             approx_tokens: snippet_tokens,
             rendered_tokens: 0,
             truncated: clipped.truncated,
@@ -1382,6 +1419,7 @@ mod tests {
             conversation_uuid: None,
             message_index: None,
             role: None,
+            graph: None,
         }
     }
 

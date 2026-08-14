@@ -319,6 +319,24 @@ conversation summaries. Ordering ties are stable: fused score, strongest
 component rank, hit type, then canonical record ID. `weighted` is retained as
 a configuration option only to compare with the pre-RRF behavior.
 
+`search` and `augment` additionally accept `--graph=off|auto|on` (default:
+`auto`). `off` preserves the hybrid-only path. `auto` and `on` use local,
+deterministic canonical entity/alias matches to seed a bounded traversal over
+accepted `supports`, `contradicts`, `derived_from`, and `related_to` edges;
+they never call TGI and never read pending or rejected proposals. The resulting
+notes are merged into the existing ranker and augmentation packer, rather than
+using a second scoring or packing system. `auto` leaves the hybrid result
+unchanged when it finds no useful graph candidates; `on` exposes the same safe
+bounds explicitly for inspection.
+
+Graph traversal defaults to one hop and is validation-capped at two. The
+`[search].graph_*` settings bound entity/note seeds, per-node fanout, edge
+types/directions, minimum confidence, per-hop decay, and the total candidate
+set. Search output reports candidate counts; graph-derived citations carry the
+canonical seed note, typed/directed edge IDs, confidence, hop/decay, source URI,
+and original chat provenance IDs when available. This makes every graph result
+reconstructable while preventing cycles, self-edges, and high-degree expansion.
+
 Environment compatibility is preserved: `TEI_PROVIDER`, `TEI_URL`,
 `TEI_MODEL`, `TGI_PROVIDER`, `TGI_URL`, `TGI_MODEL`, `OLLAMA_URL`, and
 `TEI_MAX_BATCH` map to `[inference]`; `GRAPHRAG_DB_PATH` maps to
@@ -409,6 +427,10 @@ are retained rather than risking deletion of a user-authored entity.
 ```bash
 graphrag search "how do neural networks work"
 graphrag search "machine learning" --context
+# Compare the hybrid baseline with bounded accepted-edge retrieval.
+graphrag search "Atlas" --graph=off
+graphrag search "Atlas" --graph=on
+graphrag augment "Atlas" --graph=auto
 ```
 
 ### 5. Run the Gardener

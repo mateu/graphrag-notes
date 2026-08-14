@@ -14,9 +14,10 @@ use eval::{
 };
 use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
-    InferenceProviderConfig, InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig,
-    ProcessingConfig, ProcessingRunResult, ResilientEmbedder, ResilientEntityExtractor,
-    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    GraphMode, GraphRetrievalConfig, InferenceProviderConfig, InferenceProviders, LibrarianAgent,
+    LibrarianRuntimeConfig, ProcessingConfig, ProcessingRunResult, ResilientEmbedder,
+    ResilientEntityExtractor, SearchAgent, SearchHitType, SearchScope, SharedEmbedder,
+    SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
@@ -179,6 +180,10 @@ enum Commands {
         /// Include graph context
         #[arg(short, long)]
         context: bool,
+
+        /// Accepted-edge graph retrieval policy
+        #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
+        graph: GraphModeArg,
     },
 
     /// Build prompt-ready augmentation context with citations
@@ -213,6 +218,10 @@ enum Commands {
         /// Approximate max tokens per chunk
         #[arg(long)]
         max_chunk_tokens: Option<usize>,
+
+        /// Accepted-edge graph retrieval policy
+        #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
+        graph: GraphModeArg,
     },
 
     /// Evaluate augmentation retrieval quality from a JSON/JSONL test set
@@ -544,6 +553,23 @@ enum SearchScopeArg {
     All,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum GraphModeArg {
+    Off,
+    Auto,
+    On,
+}
+
+impl From<GraphModeArg> for GraphMode {
+    fn from(value: GraphModeArg) -> Self {
+        match value {
+            GraphModeArg::Off => Self::Off,
+            GraphModeArg::Auto => Self::Auto,
+            GraphModeArg::On => Self::On,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum DoctorFormat {
     Human,
@@ -658,20 +684,35 @@ fn configured_search_agent(
         "weighted" => FusionStrategy::Weighted,
         _ => FusionStrategy::ReciprocalRank,
     };
-    SearchAgent::new(repo, embedder).with_fusion_config(
-        FusionConfig {
-            strategy,
-            rrf_k: search.rrf_k,
-            vector_weight: search.vector_weight,
-            fulltext_weight: search.fulltext_weight,
-            candidate_pool_multiplier: search.candidate_pool_multiplier,
-            candidate_pool_min: search.candidate_pool_min,
-            candidate_pool_max: search.candidate_pool_max,
-        },
-        search.note_weight,
-        search.message_weight,
-        search.conversation_summary_weight,
-    )
+    SearchAgent::new(repo, embedder)
+        .with_fusion_config(
+            FusionConfig {
+                strategy,
+                rrf_k: search.rrf_k,
+                vector_weight: search.vector_weight,
+                fulltext_weight: search.fulltext_weight,
+                candidate_pool_multiplier: search.candidate_pool_multiplier,
+                candidate_pool_min: search.candidate_pool_min,
+                candidate_pool_max: search.candidate_pool_max,
+            },
+            search.note_weight,
+            search.message_weight,
+            search.conversation_summary_weight,
+        )
+        .with_graph_config(GraphRetrievalConfig {
+            enabled: search.graph_enabled,
+            max_seed_entities: search.graph_max_seed_entities,
+            max_seed_notes: search.graph_max_seed_notes,
+            max_hops: search.graph_max_hops,
+            per_node_fanout: search.graph_per_node_fanout,
+            allowed_edge_types: search.graph_allowed_edge_types.clone(),
+            allow_outbound: search.graph_allow_outbound,
+            allow_inbound: search.graph_allow_inbound,
+            min_confidence: search.graph_min_confidence,
+            per_hop_decay: search.graph_per_hop_decay,
+            candidate_cap: search.graph_candidate_cap,
+            seed_score: search.graph_seed_score,
+        })
 }
 
 fn augment_options(
@@ -697,13 +738,16 @@ fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> String {
         TokenCountMode::Estimated => "estimated",
     };
     format!(
-        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_entity_filter={}",
+        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_entity_filter={}; graph_considered={}; graph_selected={}; graph_dropped={}",
         diagnostics.header_tokens,
         diagnostics.dropped_duplicates,
         diagnostics.dropped_near_duplicates,
         diagnostics.dropped_for_relevance,
         diagnostics.dropped_for_budget,
         diagnostics.dropped_for_entity_filter,
+        diagnostics.graph_candidates_considered,
+        diagnostics.graph_candidates_selected,
+        diagnostics.graph_candidates_dropped,
     )
 }
 
@@ -988,6 +1032,7 @@ async fn main() -> Result<()> {
             since_days,
             source_uri,
             context,
+            graph,
         } => {
             cmd_search(
                 repo,
@@ -998,6 +1043,7 @@ async fn main() -> Result<()> {
                 since_days,
                 source_uri,
                 context,
+                graph,
                 config.search.clone(),
             )
             .await?;
@@ -1043,6 +1089,7 @@ async fn main() -> Result<()> {
             entity,
             max_tokens,
             max_chunk_tokens,
+            graph,
         } => {
             cmd_augment(
                 repo,
@@ -1055,6 +1102,7 @@ async fn main() -> Result<()> {
                 entity,
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
+                graph,
                 config.search.clone(),
                 config.augment.clone(),
             )
@@ -1956,6 +2004,7 @@ async fn cmd_search(
     since_days: Option<u32>,
     source_uri: Option<String>,
     context: bool,
+    graph: GraphModeArg,
     search_config: SearchConfig,
 ) -> Result<()> {
     let search = configured_search_agent(repo, tei, &search_config);
@@ -1965,7 +2014,7 @@ async fn cmd_search(
         SearchScopeArg::All => SearchScope::All,
     };
 
-    if context && scope == SearchScope::Notes {
+    if context && scope == SearchScope::Notes && graph == GraphModeArg::Off {
         let results = search
             .search_with_context_filtered(&query, limit, since_days, source_uri)
             .await?;
@@ -2007,17 +2056,24 @@ async fn cmd_search(
         }
 
         let results = search
-            .search_with_scope(&query, limit, scope, since_days, source_uri)
+            .search_with_scope_graph(&query, limit, scope, since_days, source_uri, graph.into())
             .await?;
 
-        if results.is_empty() {
+        if results.hits.is_empty() {
             println!("No results found.");
             return Ok(());
         }
 
-        println!("Found {} results:\n", results.len());
+        println!("Found {} results:\n", results.hits.len());
+        println!(
+            "Graph: entities={} considered={} selected={} dropped={}\n",
+            results.summary.entities_matched,
+            results.summary.candidates_considered,
+            results.summary.candidates_selected,
+            results.summary.candidates_dropped,
+        );
 
-        for (i, r) in results.iter().enumerate() {
+        for (i, r) in results.hits.iter().enumerate() {
             let kind = match r.hit_type {
                 SearchHitType::Note => "note",
                 SearchHitType::Message => "message",
@@ -2031,6 +2087,24 @@ async fn cmd_search(
             );
             println!("   ID: {}", r.id);
             println!("   Score: {:.3}", r.score);
+            if let Some(graph) = r.graph.as_ref() {
+                println!(
+                    "   Graph path: seed={} hops={} entities=[{}] path={} provenance=[{}]",
+                    graph.seed_note_id,
+                    graph.hops,
+                    graph.query_entities.join(", "),
+                    graph
+                        .path
+                        .iter()
+                        .map(|step| format!(
+                            "{}:{}({:.2})",
+                            step.direction, step.edge_type, step.confidence
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(" -> "),
+                    graph.provenance_ids.join(", "),
+                );
+            }
             if let Some(ref conversation_uuid) = r.conversation_uuid {
                 println!("   Conversation UUID: {}", conversation_uuid);
             }
@@ -2069,6 +2143,7 @@ async fn cmd_augment(
     entity: Option<String>,
     max_tokens: usize,
     max_chunk_tokens: usize,
+    graph: GraphModeArg,
     search_config: SearchConfig,
     augment_config: AugmentConfig,
 ) -> Result<()> {
@@ -2084,13 +2159,14 @@ async fn cmd_augment(
 
     let search = configured_search_agent(repo, tei, &search_config);
     let ctx = search
-        .build_augmented_context(
+        .build_augmented_context_with_graph(
             &query,
             scope,
             since_days,
             source_uri,
             entity.clone(),
             augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
+            graph.into(),
         )
         .await?;
 
@@ -2134,6 +2210,23 @@ async fn cmd_augment(
         }
         if let Some(created_at) = chunk.created_at {
             provenance.push_str(&format!(", created_at={}", created_at.to_rfc3339()));
+        }
+        if let Some(graph) = chunk.graph.as_ref() {
+            provenance.push_str(&format!(
+                ", graph_seed={}, graph_hops={}, graph_path={}, graph_provenance={}",
+                graph.seed_note_id,
+                graph.hops,
+                graph
+                    .path
+                    .iter()
+                    .map(|step| format!(
+                        "{}:{}:{}→{}",
+                        step.direction, step.edge_type, step.from_id, step.to_id
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+                graph.provenance_ids.join(" | "),
+            ));
         }
         println!(
             "  [C{}] {} | score={:.3} | tokens={} | {}",
@@ -2964,10 +3057,13 @@ mod tests {
             dropped_for_relevance: 3,
             dropped_for_budget: 4,
             dropped_for_entity_filter: 5,
+            graph_candidates_considered: 6,
+            graph_candidates_selected: 2,
+            graph_candidates_dropped: 4,
         };
         assert_eq!(
             packing_diagnostics_text(&diagnostics),
-            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5"
+            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5; graph_considered=6; graph_selected=2; graph_dropped=4"
         );
     }
 
@@ -2981,6 +3077,28 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["graphrag", "garden", "apply"]).is_err());
+    }
+
+    #[test]
+    fn search_and_augment_accept_explicit_graph_modes() {
+        let search = Cli::try_parse_from(["graphrag", "search", "atlas", "--graph=off"]).unwrap();
+        assert!(matches!(
+            search.command,
+            Commands::Search {
+                graph: GraphModeArg::Off,
+                ..
+            }
+        ));
+
+        let augment =
+            Cli::try_parse_from(["graphrag", "augment", "atlas", "--graph", "on"]).unwrap();
+        assert!(matches!(
+            augment.command,
+            Commands::Augment {
+                graph: GraphModeArg::On,
+                ..
+            }
+        ));
     }
 
     #[test]

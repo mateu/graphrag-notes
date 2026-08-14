@@ -58,6 +58,22 @@ candidate_pool_max = 200
 note_weight = 1.0
 message_weight = 1.0
 conversation_summary_weight = 1.0
+# Bounded accepted-edge retrieval used by `search --graph=auto|on` and
+# `augment --graph=auto|on`. Traversal is local-only: it never calls the
+# extraction provider and never reads pending/rejected Gardener proposals.
+graph_enabled = true
+graph_max_seed_entities = 4
+graph_max_seed_notes = 12
+# Hard-limited by validation to two hops.
+graph_max_hops = 1
+graph_per_node_fanout = 8
+graph_allowed_edge_types = ["supports", "contradicts", "derived_from", "related_to"]
+graph_allow_outbound = true
+graph_allow_inbound = true
+graph_min_confidence = 0.0
+graph_per_hop_decay = 0.8
+graph_candidate_cap = 32
+graph_seed_score = 0.03
 
 [augment]
 # Defaults for `augment` and `eval-augment` when their flags are omitted.
