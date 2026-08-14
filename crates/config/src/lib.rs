@@ -449,7 +449,8 @@ impl RuntimeConfig {
             .embedding_provider
             .eq_ignore_ascii_case("ollama")
             && env("TEI_URL").is_none()
-            && (env("TEI_PROVIDER").is_some_and(|provider| provider.eq_ignore_ascii_case("ollama"))
+            && (env("TEI_PROVIDER")
+                .is_some_and(|provider| provider.trim().eq_ignore_ascii_case("ollama"))
                 || !self.inference.embedding_url_from_file)
         {
             self.inference.embedding_url = self.inference.ollama_url.clone();
@@ -459,7 +460,8 @@ impl RuntimeConfig {
             .extraction_provider
             .eq_ignore_ascii_case("ollama")
             && env("TGI_URL").is_none()
-            && (env("TGI_PROVIDER").is_some_and(|provider| provider.eq_ignore_ascii_case("ollama"))
+            && (env("TGI_PROVIDER")
+                .is_some_and(|provider| provider.trim().eq_ignore_ascii_case("ollama"))
                 || !self.inference.extraction_url_from_file)
         {
             self.inference.extraction_url = self.inference.ollama_url.clone();
@@ -872,6 +874,42 @@ mod tests {
 
         assert_eq!(config.inference.embedding_provider, "ollama");
         assert_eq!(config.inference.extraction_provider, "ollama");
+    }
+
+    #[test]
+    fn whitespace_padded_ollama_overrides_use_the_legacy_fallback_url() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("graphrag.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [inference]
+                embedding_url = "http://tei.example:8081"
+                extraction_url = "http://tgi.example:8082"
+            "#,
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            Some(&config_path),
+            &CliOverrides::default(),
+            &env(&[
+                ("TEI_PROVIDER", " Ollama "),
+                ("TGI_PROVIDER", " OLLAMA "),
+                ("OLLAMA_URL", "http://ollama.example:11434"),
+            ]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.inference.embedding_url,
+            "http://ollama.example:11434"
+        );
+        assert_eq!(
+            config.inference.extraction_url,
+            "http://ollama.example:11434"
+        );
     }
 
     #[test]
