@@ -42,6 +42,23 @@ A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, a
 - **Chat Retrieval**: import chats, search messages, and build prompt-ready augmentation context with citations
 - **Source lifecycle**: idempotent Markdown imports with inspect, dry-run deletion, and safe reimport operations
 
+### Augmentation packing
+
+`augment` and `eval-augment` use a deterministic, local packing stage after
+retrieval. It counts the whole rendered prompt block (including `<context>`,
+citation labels, and headers), clips long hits around lexical query matches,
+and suppresses near duplicates with token-set Jaccard similarity. The selection
+score is `(1 - novelty_weight) * relevance + novelty_weight * novelty`; a
+candidate below `min_relevance` is never chosen just because it is novel.
+
+By default, token usage is a conservative **estimated** count that never
+downloads a tokenizer or contacts a provider. Library callers with a locally
+installed model tokenizer can inject a `TokenCounter` and receive **exact**
+mode in `AugmentContext.diagnostics`. The human command prints the same stable
+diagnostics (mode, header tokens, and drop reasons); `AugmentDiagnostics`
+derives `Serialize` for JSON/API callers. A zero or too-small budget yields an
+empty context rather than a prompt block that exceeds its cap.
+
 ## Runtime model
 
 The current implementation is **Rust-first**.

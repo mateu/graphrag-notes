@@ -165,6 +165,12 @@ pub struct AugmentConfig {
     pub default_limit: usize,
     pub max_tokens: usize,
     pub max_chunk_tokens: usize,
+    /// Greedy MMR-style selection weight; 0 preserves pure retrieval ranking.
+    pub novelty_weight: f32,
+    /// Retrieval scores below this value are never selected merely for novelty.
+    pub min_relevance: f32,
+    /// Local token-set Jaccard threshold for near-duplicate suppression.
+    pub near_duplicate_threshold: f32,
 }
 impl Default for AugmentConfig {
     fn default() -> Self {
@@ -172,6 +178,9 @@ impl Default for AugmentConfig {
             default_limit: 8,
             max_tokens: 1200,
             max_chunk_tokens: 180,
+            novelty_weight: 0.25,
+            min_relevance: 0.0,
+            near_duplicate_threshold: 0.85,
         }
     }
 }
@@ -471,6 +480,21 @@ impl RuntimeConfig {
         )?;
         set_f32(
             env,
+            "GRAPHRAG_AUGMENT_NOVELTY_WEIGHT",
+            &mut self.augment.novelty_weight,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_AUGMENT_MIN_RELEVANCE",
+            &mut self.augment.min_relevance,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_AUGMENT_NEAR_DUPLICATE_THRESHOLD",
+            &mut self.augment.near_duplicate_threshold,
+        )?;
+        set_f32(
+            env,
             "GRAPHRAG_GARDENER_SIMILARITY_THRESHOLD",
             &mut self.gardener.similarity_threshold,
         )?;
@@ -660,6 +684,14 @@ impl RuntimeConfig {
                     "{name} must be finite and non-negative"
                 )));
             }
+        }
+        if !(0.0..=1.0).contains(&self.augment.novelty_weight)
+            || !(0.0..=1.0).contains(&self.augment.min_relevance)
+            || !(0.0..=1.0).contains(&self.augment.near_duplicate_threshold)
+        {
+            return Err(ConfigError::Validation(
+                "augment.novelty_weight, augment.min_relevance, and augment.near_duplicate_threshold must be between 0 and 1".into(),
+            ));
         }
         if !(0.0..=1.0).contains(&self.gardener.similarity_threshold)
             || !(0.0..=1.0).contains(&self.gardener.auto_apply_threshold)
@@ -857,6 +889,14 @@ mod tests {
 
         config.search.vector_weight = 0.7;
         config.search.fulltext_weight = 0.3;
+        config.augment.near_duplicate_threshold = 1.1;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("near_duplicate_threshold"));
+        config.augment.near_duplicate_threshold = 0.85;
+
         config.librarian.min_chunk_size = 600;
         config.librarian.max_chunk_size = 1000;
         assert!(config
@@ -879,7 +919,26 @@ mod tests {
 
         assert_eq!(config.search.vector_weight, 0.7);
         assert_eq!(config.augment.max_tokens, 1200);
+        assert_eq!(config.augment.novelty_weight, 0.25);
         assert_eq!(config.logging.level, "warn");
+    }
+
+    #[test]
+    fn environment_overrides_all_augment_tuning_fields() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[
+                ("GRAPHRAG_AUGMENT_NOVELTY_WEIGHT", "0.4"),
+                ("GRAPHRAG_AUGMENT_MIN_RELEVANCE", "0.2"),
+                ("GRAPHRAG_AUGMENT_NEAR_DUPLICATE_THRESHOLD", "0.7"),
+            ]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.augment.novelty_weight, 0.4);
+        assert_eq!(config.augment.min_relevance, 0.2);
+        assert_eq!(config.augment.near_duplicate_threshold, 0.7);
     }
 
     #[test]

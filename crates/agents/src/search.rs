@@ -12,8 +12,6 @@ use graphrag_db::{
     Repository,
 };
 
-use std::collections::HashSet;
-
 use tracing::{debug, info, instrument};
 
 /// Search result with optional graph context
@@ -54,70 +52,10 @@ pub struct ScopedSearchResult {
     pub role: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct AugmentOptions {
-    pub max_chunks: usize,
-    pub max_total_tokens: usize,
-    pub max_chunk_tokens: usize,
-}
-
-impl Default for AugmentOptions {
-    fn default() -> Self {
-        Self {
-            max_chunks: 8,
-            max_total_tokens: 1200,
-            max_chunk_tokens: 180,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AugmentChunk {
-    pub citation: usize,
-    pub hit_type: SearchHitType,
-    pub id: String,
-    pub title: Option<String>,
-    pub snippet: String,
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub source_uri: Option<String>,
-    pub score: f32,
-    pub conversation_uuid: Option<String>,
-    pub message_index: Option<i64>,
-    pub role: Option<String>,
-    pub approx_tokens: usize,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct AugmentContext {
-    pub query: String,
-    pub scope: SearchScope,
-    pub entity_filter: Option<String>,
-    pub chunks: Vec<AugmentChunk>,
-    pub total_tokens: usize,
-    pub dropped_duplicates: usize,
-    pub dropped_for_budget: usize,
-    pub dropped_for_entity_filter: usize,
-}
-
-impl AugmentContext {
-    pub fn render_prompt_block(&self) -> String {
-        let mut out = String::new();
-        out.push_str("<context>\n");
-        for chunk in &self.chunks {
-            let title = chunk.title.as_deref().unwrap_or("(untitled)");
-            out.push_str(&format!(
-                "[C{}] [{}] {}\n{}\n\n",
-                chunk.citation,
-                hit_type_label(chunk.hit_type),
-                title,
-                chunk.snippet
-            ));
-        }
-        out.push_str("</context>");
-        out
-    }
-}
+pub use crate::context_packing::{
+    AugmentChunk, AugmentContext, AugmentDiagnostics, AugmentOptions, ConservativeTokenCounter,
+    TokenCountMode, TokenCounter,
+};
 
 /// The Search agent handles user queries
 pub struct SearchAgent {
@@ -365,16 +303,13 @@ impl SearchAgent {
     ) -> Result<AugmentContext> {
         if options.max_chunks == 0 || options.max_total_tokens == 0 || options.max_chunk_tokens == 0
         {
-            return Ok(AugmentContext {
-                query: query.to_string(),
+            return Ok(crate::context_packing::empty_context(
+                query.to_string(),
                 scope,
                 entity_filter,
-                chunks: Vec::new(),
-                total_tokens: 0,
-                dropped_duplicates: 0,
-                dropped_for_budget: 0,
-                dropped_for_entity_filter: 0,
-            });
+                options.token_counter.mode(),
+                0,
+            ));
         }
 
         let fetch_limit = (options.max_chunks * 4).clamp(options.max_chunks, 200);
@@ -397,7 +332,7 @@ impl SearchAgent {
             hits = filtered;
         }
 
-        Ok(build_augment_context_from_hits(
+        Ok(crate::context_packing::build_augment_context_from_hits(
             query.to_string(),
             scope,
             entity_filter,
@@ -512,136 +447,10 @@ fn rank_scoped_results(results: &mut [ScopedSearchResult]) {
         result.fusion.final_rank = index + 1;
     }
 }
-
-fn build_augment_context_from_hits(
-    query: String,
-    scope: SearchScope,
-    entity_filter: Option<String>,
-    mut hits: Vec<ScopedSearchResult>,
-    options: AugmentOptions,
-    dropped_for_entity_filter: usize,
-) -> AugmentContext {
-    rank_scoped_results(&mut hits);
-
-    let mut chunks = Vec::new();
-    let mut seen_ids = HashSet::new();
-    let mut seen_content = HashSet::new();
-    let mut total_tokens = 0usize;
-    let mut dropped_duplicates = 0usize;
-    let mut dropped_for_budget = 0usize;
-
-    for hit in hits {
-        if chunks.len() >= options.max_chunks {
-            break;
-        }
-
-        if !seen_ids.insert(hit.id.clone()) {
-            dropped_duplicates += 1;
-            continue;
-        }
-
-        let raw_content = hit.content.trim();
-        if raw_content.is_empty() {
-            dropped_duplicates += 1;
-            continue;
-        }
-
-        let dedupe_key = normalize_text_for_dedupe(raw_content);
-        if !dedupe_key.is_empty() && !seen_content.insert(dedupe_key) {
-            dropped_duplicates += 1;
-            continue;
-        }
-
-        let (snippet, approx_tokens, truncated) =
-            truncate_to_token_limit(raw_content, options.max_chunk_tokens);
-        if approx_tokens == 0 {
-            dropped_duplicates += 1;
-            continue;
-        }
-
-        if total_tokens + approx_tokens > options.max_total_tokens {
-            dropped_for_budget += 1;
-            continue;
-        }
-
-        total_tokens += approx_tokens;
-        let citation = chunks.len() + 1;
-        chunks.push(AugmentChunk {
-            citation,
-            hit_type: hit.hit_type,
-            id: hit.id,
-            title: hit.title,
-            snippet,
-            created_at: hit.created_at,
-            source_uri: hit.source_uri,
-            score: hit.score,
-            conversation_uuid: hit.conversation_uuid,
-            message_index: hit.message_index,
-            role: hit.role,
-            approx_tokens,
-            truncated,
-        });
-    }
-
-    AugmentContext {
-        query,
-        scope,
-        entity_filter,
-        chunks,
-        total_tokens,
-        dropped_duplicates,
-        dropped_for_budget,
-        dropped_for_entity_filter,
-    }
-}
-
-fn normalize_text_for_dedupe(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut prev_space = false;
-
-    for ch in text.chars() {
-        let c = ch.to_ascii_lowercase();
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-            prev_space = false;
-        } else if !prev_space {
-            out.push(' ');
-            prev_space = true;
-        }
-    }
-
-    out.trim().to_string()
-}
-
-fn truncate_to_token_limit(text: &str, max_tokens: usize) -> (String, usize, bool) {
-    if max_tokens == 0 {
-        return (String::new(), 0, false);
-    }
-
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.is_empty() {
-        return (String::new(), 0, false);
-    }
-
-    if words.len() <= max_tokens {
-        return (words.join(" "), words.len(), false);
-    }
-
-    let clipped = words[..max_tokens].join(" ");
-    (format!("{clipped} ..."), max_tokens, true)
-}
-
-fn hit_type_label(hit_type: SearchHitType) -> &'static str {
-    match hit_type {
-        SearchHitType::Note => "note",
-        SearchHitType::Message => "message",
-        SearchHitType::ConversationSummary => "conversation-summary",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_packing::build_augment_context_from_hits;
     use crate::DeterministicEmbedder;
     use graphrag_db::{compatibility::embedding_metadata, init_memory, Repository};
     use std::sync::Arc;
@@ -720,12 +529,14 @@ mod tests {
                 max_chunks: 5,
                 max_total_tokens: 200,
                 max_chunk_tokens: 30,
+                ..Default::default()
             },
             0,
         );
 
         assert_eq!(ctx.chunks.len(), 2);
-        assert_eq!(ctx.dropped_duplicates, 1);
+        assert_eq!(ctx.dropped_duplicates, 0);
+        assert_eq!(ctx.diagnostics.dropped_near_duplicates, 1);
         assert_eq!(ctx.chunks[0].id, "note:a");
         assert_eq!(ctx.chunks[1].id, "note:c");
     }
@@ -781,14 +592,15 @@ mod tests {
             hits,
             AugmentOptions {
                 max_chunks: 5,
-                max_total_tokens: 8,
+                max_total_tokens: 75,
                 max_chunk_tokens: 30,
+                ..Default::default()
             },
             0,
         );
 
         assert_eq!(ctx.chunks.len(), 1);
-        assert_eq!(ctx.total_tokens, 6);
+        assert!(ctx.total_tokens <= 75);
         assert_eq!(ctx.dropped_for_budget, 1);
     }
 
@@ -803,16 +615,16 @@ mod tests {
             hits,
             AugmentOptions {
                 max_chunks: 2,
-                max_total_tokens: 100,
-                max_chunk_tokens: 4,
+                max_total_tokens: 200,
+                max_chunk_tokens: 15,
+                ..Default::default()
             },
             0,
         );
 
         assert_eq!(ctx.chunks.len(), 1);
-        assert_eq!(ctx.chunks[0].approx_tokens, 4);
+        assert!(ctx.chunks[0].approx_tokens <= 15);
         assert!(ctx.chunks[0].truncated);
-        assert_eq!(ctx.chunks[0].snippet, "one two three four ...");
     }
 
     #[test]

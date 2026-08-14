@@ -5,6 +5,7 @@
 //! - Search: Handles user queries with hybrid search
 //! - Gardener: Maintains graph connections
 
+pub mod context_packing;
 pub mod error;
 pub mod gardener;
 pub mod inference;
@@ -22,4 +23,7 @@ pub use librarian::{
     ChatImportMode, ChatImportPreview, ChatImportResult, ChatIngestOptions, LibrarianAgent,
     LibrarianRuntimeConfig, MarkdownImportResult,
 };
-pub use search::{AugmentContext, AugmentOptions, SearchAgent, SearchHitType, SearchScope};
+pub use search::{
+    AugmentContext, AugmentDiagnostics, AugmentOptions, ConservativeTokenCounter, SearchAgent,
+    SearchHitType, SearchScope, TokenCountMode, TokenCounter,
+};

@@ -58,6 +58,11 @@ conversation_summary_weight = 1.0
 default_limit = 8
 max_tokens = 1200
 max_chunk_tokens = 180
+# Diversity-aware packing uses `(1 - novelty_weight) * relevance + novelty_weight * novelty`.
+# Candidates below `min_relevance` are never selected for diversity alone.
+novelty_weight = 0.25
+min_relevance = 0.0
+near_duplicate_threshold = 0.85
 
 [gardener]
 # Minimum similarity score to suggest a connection

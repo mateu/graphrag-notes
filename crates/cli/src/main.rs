@@ -8,16 +8,16 @@ mod eval;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use eval::{
-    build_baseline_comparison, evaluate_ranked_results, load_baseline, load_eval_cases,
-    parse_regression_thresholds, EvalCaseReport, EvalMetadata, EvalOutputFormat, EvalRunReport,
-    EvalScope, RankedResult, EVAL_SCHEMA_VERSION,
+    build_baseline_comparison, evaluate_ranked_results_with_tokens, load_baseline, load_eval_cases,
+    parse_regression_thresholds, AugmentationDiagnosticsReport, EvalCaseReport, EvalMetadata,
+    EvalOutputFormat, EvalRunReport, EvalScope, RankedResult, EVAL_SCHEMA_VERSION,
 };
 use graphrag_agents::{
-    AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, InferenceProviderConfig,
-    InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, SearchAgent, SearchHitType,
-    SearchScope, SharedEmbedder, SharedEntityExtractor,
+    AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
+    InferenceProviderConfig, InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig,
+    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
-use graphrag_config::{CliOverrides, RuntimeConfig, SearchConfig};
+use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, Source};
 use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
@@ -454,6 +454,39 @@ fn configured_search_agent(
     )
 }
 
+fn augment_options(
+    max_chunks: usize,
+    max_total_tokens: usize,
+    max_chunk_tokens: usize,
+    config: &AugmentConfig,
+) -> AugmentOptions {
+    AugmentOptions {
+        max_chunks,
+        max_total_tokens,
+        max_chunk_tokens,
+        novelty_weight: config.novelty_weight,
+        min_relevance: config.min_relevance,
+        near_duplicate_threshold: config.near_duplicate_threshold,
+        ..Default::default()
+    }
+}
+
+fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> String {
+    let token_count_mode = match diagnostics.token_count_mode {
+        TokenCountMode::Exact => "exact",
+        TokenCountMode::Estimated => "estimated",
+    };
+    format!(
+        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_entity_filter={}",
+        diagnostics.header_tokens,
+        diagnostics.dropped_duplicates,
+        diagnostics.dropped_near_duplicates,
+        diagnostics.dropped_for_relevance,
+        diagnostics.dropped_for_budget,
+        diagnostics.dropped_for_entity_filter,
+    )
+}
+
 fn librarian_runtime_config(
     config: &RuntimeConfig,
     cli_skip_extraction: bool,
@@ -744,6 +777,7 @@ async fn main() -> Result<()> {
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
                 config.search.clone(),
+                config.augment.clone(),
                 fail_on_miss,
                 format,
                 baseline,
@@ -773,6 +807,7 @@ async fn main() -> Result<()> {
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
                 config.search.clone(),
+                config.augment.clone(),
             )
             .await?;
         }
@@ -1108,30 +1143,6 @@ fn print_delete_summary(
         ),
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{delete_is_dry_run, import_path_utf8};
-    use std::path::PathBuf;
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_non_utf8_import_paths_without_identity_collapse() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let first = PathBuf::from(std::ffi::OsString::from_vec(vec![b'a', 0x80]));
-        let second = PathBuf::from(std::ffi::OsString::from_vec(vec![b'b', 0x81]));
-        assert!(import_path_utf8(&first).is_err());
-        assert!(import_path_utf8(&second).is_err());
-    }
-
-    #[test]
-    fn source_delete_defaults_to_a_non_mutating_preview() {
-        assert!(delete_is_dry_run(false, false));
-        assert!(delete_is_dry_run(true, false));
-        assert!(!delete_is_dry_run(false, true));
-    }
 }
 
 async fn cmd_import_chats(
@@ -1623,6 +1634,7 @@ async fn cmd_augment(
     max_tokens: usize,
     max_chunk_tokens: usize,
     search_config: SearchConfig,
+    augment_config: AugmentConfig,
 ) -> Result<()> {
     if entity.is_some() && scope != SearchScopeArg::Notes {
         anyhow::bail!("--entity currently requires --scope notes");
@@ -1642,18 +1654,9 @@ async fn cmd_augment(
             since_days,
             source_uri,
             entity.clone(),
-            AugmentOptions {
-                max_chunks: limit,
-                max_total_tokens: max_tokens,
-                max_chunk_tokens,
-            },
+            augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
         )
         .await?;
-
-    if ctx.chunks.is_empty() {
-        println!("No augmentation context found.");
-        return Ok(());
-    }
 
     println!("Augmentation context:");
     println!("  • Query: {}", ctx.query);
@@ -1662,11 +1665,16 @@ async fn cmd_augment(
         println!("  • Entity filter: {}", filter);
     }
     println!("  • Chunks selected: {}", ctx.chunks.len());
-    println!("  • Approx tokens used: {}", ctx.total_tokens);
+    println!("  • Rendered tokens used: {}", ctx.total_tokens);
     println!(
-        "  • Dropped (duplicates/budget/entity-filter): {}/{}/{}",
-        ctx.dropped_duplicates, ctx.dropped_for_budget, ctx.dropped_for_entity_filter
+        "  • Packing diagnostics: {}",
+        packing_diagnostics_text(&ctx.diagnostics)
     );
+
+    if ctx.chunks.is_empty() {
+        println!("No augmentation context found.");
+        return Ok(());
+    }
 
     println!("\nPrompt-ready context block:\n");
     println!("{}", ctx.render_prompt_block());
@@ -1712,6 +1720,7 @@ async fn cmd_eval_augment(
     default_max_tokens: usize,
     default_max_chunk_tokens: usize,
     search_config: SearchConfig,
+    augment_config: AugmentConfig,
     fail_on_miss: bool,
     format: EvalOutputFormat,
     baseline_path: Option<PathBuf>,
@@ -1760,11 +1769,7 @@ async fn cmd_eval_augment(
                 since_days,
                 source_uri,
                 case.entity.clone(),
-                AugmentOptions {
-                    max_chunks: limit,
-                    max_total_tokens: max_tokens,
-                    max_chunk_tokens,
-                },
+                augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
             )
             .await?;
         let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
@@ -1783,7 +1788,8 @@ async fn cmd_eval_augment(
                 approx_tokens: chunk.approx_tokens,
             })
             .collect();
-        let metrics = evaluate_ranked_results(case, &ranked, k, latency_ms);
+        let metrics =
+            evaluate_ranked_results_with_tokens(case, &ranked, k, latency_ms, ctx.total_tokens);
 
         if matches!(format, EvalOutputFormat::Human) {
             let status = match metrics.checks_passed {
@@ -1792,7 +1798,7 @@ async fn cmd_eval_augment(
                 None => "UNSCORED",
             };
             println!(
-                "{}. {} [{}] k={} chunks={} tokens={} latency={}ms",
+                "{}. {} [{}] k={} chunks={} tokens={} latency={}ms | packing: {}",
                 idx + 1,
                 case.display_name(),
                 status,
@@ -1800,12 +1806,26 @@ async fn cmd_eval_augment(
                 metrics.chunks,
                 metrics.tokens,
                 metrics.latency_ms,
+                packing_diagnostics_text(&ctx.diagnostics),
             );
         }
         reports.push(EvalCaseReport {
             name: case.display_name().to_string(),
             query: case.query.clone(),
             metrics,
+            augmentation: Some(AugmentationDiagnosticsReport {
+                token_count_mode: match ctx.diagnostics.token_count_mode {
+                    TokenCountMode::Exact => "exact",
+                    TokenCountMode::Estimated => "estimated",
+                }
+                .to_string(),
+                header_tokens: ctx.diagnostics.header_tokens,
+                dropped_duplicates: ctx.diagnostics.dropped_duplicates,
+                dropped_near_duplicates: ctx.diagnostics.dropped_near_duplicates,
+                dropped_for_relevance: ctx.diagnostics.dropped_for_relevance,
+                dropped_for_budget: ctx.diagnostics.dropped_for_budget,
+                dropped_for_entity_filter: ctx.diagnostics.dropped_for_entity_filter,
+            }),
         });
     }
 
@@ -2125,4 +2145,62 @@ async fn cmd_interactive(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_non_utf8_import_paths_without_identity_collapse() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let first = PathBuf::from(std::ffi::OsString::from_vec(vec![b'a', 0x80]));
+        let second = PathBuf::from(std::ffi::OsString::from_vec(vec![b'b', 0x81]));
+        assert!(import_path_utf8(&first).is_err());
+        assert!(import_path_utf8(&second).is_err());
+    }
+
+    #[test]
+    fn source_delete_defaults_to_a_non_mutating_preview() {
+        assert!(delete_is_dry_run(false, false));
+        assert!(delete_is_dry_run(true, false));
+        assert!(!delete_is_dry_run(false, true));
+    }
+
+    #[test]
+    fn augment_commands_forward_runtime_tuning_to_packing_options() {
+        let config = AugmentConfig {
+            novelty_weight: 0.4,
+            min_relevance: 0.2,
+            near_duplicate_threshold: 0.7,
+            ..Default::default()
+        };
+        let options = augment_options(3, 90, 30, &config);
+        assert_eq!(options.max_chunks, 3);
+        assert_eq!(options.max_total_tokens, 90);
+        assert_eq!(options.max_chunk_tokens, 30);
+        assert_eq!(options.novelty_weight, 0.4);
+        assert_eq!(options.min_relevance, 0.2);
+        assert_eq!(options.near_duplicate_threshold, 0.7);
+    }
+
+    #[test]
+    fn human_packing_diagnostics_include_all_budget_and_selection_decisions() {
+        let diagnostics = AugmentDiagnostics {
+            token_count_mode: TokenCountMode::Estimated,
+            header_tokens: 12,
+            dropped_duplicates: 1,
+            dropped_near_duplicates: 2,
+            dropped_for_relevance: 3,
+            dropped_for_budget: 4,
+            dropped_for_entity_filter: 5,
+        };
+        assert_eq!(
+            packing_diagnostics_text(&diagnostics),
+            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5"
+        );
+    }
 }
