@@ -304,7 +304,7 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
         .map_err(|error| migration_failed(migration, error))?;
 
     if migration.version == v004_edge_proposals::MIGRATION.version {
-        backfill_related_to_dedupe_keys(db)
+        backfill_note_edge_dedupe_keys(db)
             .await
             .map_err(|error| migration_failed(migration, error))?;
     }
@@ -333,11 +333,10 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
     Ok(())
 }
 
-/// Normalize the legacy unconstrained `related_to` table before its unique
-/// canonical key is introduced. The migration runner owns this data rewrite
-/// because it needs deterministic, row-by-row deduplication across a
-/// symmetric pair while retaining one existing edge's audit metadata.
-async fn backfill_related_to_dedupe_keys(db: &DbConnection) -> Result<()> {
+/// Normalize legacy note-edge rows before their unique dedupe keys are
+/// introduced. The runner keeps the lowest record id deterministically,
+/// canonicalizing only the symmetric `related_to` endpoints.
+async fn backfill_note_edge_dedupe_keys(db: &DbConnection) -> Result<()> {
     #[derive(Deserialize, SurrealValue)]
     struct RelatedEdgeRow {
         id: RecordId,
@@ -345,43 +344,50 @@ async fn backfill_related_to_dedupe_keys(db: &DbConnection) -> Result<()> {
         out: RecordId,
     }
 
-    let edges: Vec<RelatedEdgeRow> = db
-        .query("SELECT id, in, out FROM related_to ORDER BY id ASC")
-        .await?
-        .take(0)?;
-    let mut retained_keys = BTreeSet::new();
-    for edge in edges {
-        let (from, to) = if record_id_to_string(&edge.r#in) <= record_id_to_string(&edge.out) {
-            (edge.r#in, edge.out)
-        } else {
-            (edge.out, edge.r#in)
-        };
-        let dedupe_key = format!(
-            "related_to:{}:{}",
-            record_id_to_string(&from),
-            record_id_to_string(&to)
-        );
-        if !retained_keys.insert(dedupe_key.clone()) {
-            db.query("DELETE $id")
+    for (table, symmetric) in [
+        ("related_to", true),
+        ("supports", false),
+        ("contradicts", false),
+        ("derived_from", false),
+    ] {
+        let edges: Vec<RelatedEdgeRow> = db
+            .query(format!("SELECT id, in, out FROM {table} ORDER BY id ASC"))
+            .await?
+            .take(0)?;
+        let mut retained_keys = BTreeSet::new();
+        for edge in edges {
+            let (from, to) =
+                if symmetric && record_id_to_string(&edge.r#in) > record_id_to_string(&edge.out) {
+                    (edge.out, edge.r#in)
+                } else {
+                    (edge.r#in, edge.out)
+                };
+            let dedupe_key = format!(
+                "{table}:{}:{}",
+                record_id_to_string(&from),
+                record_id_to_string(&to)
+            );
+            if !retained_keys.insert(dedupe_key.clone()) {
+                db.query("DELETE $id")
+                    .bind(("id", edge.id))
+                    .await?
+                    .check()?;
+                continue;
+            }
+            db.query("UPDATE $id SET in = $from, out = $to, dedupe_key = $dedupe_key")
                 .bind(("id", edge.id))
+                .bind(("from", from))
+                .bind(("to", to))
+                .bind(("dedupe_key", dedupe_key))
                 .await?
                 .check()?;
-            continue;
         }
-        db.query("UPDATE $id SET in = $from, out = $to, dedupe_key = $dedupe_key")
-            .bind(("id", edge.id))
-            .bind(("from", from))
-            .bind(("to", to))
-            .bind(("dedupe_key", dedupe_key))
-            .await?
-            .check()?;
+        db.query(format!(
+            "DEFINE INDEX IF NOT EXISTS idx_{table}_dedupe ON {table} FIELDS dedupe_key UNIQUE"
+        ))
+        .await?
+        .check()?;
     }
-
-    db.query(
-        "DEFINE INDEX IF NOT EXISTS idx_related_to_dedupe ON related_to FIELDS dedupe_key UNIQUE",
-    )
-    .await?
-    .check()?;
     Ok(())
 }
 
@@ -542,7 +548,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v004_canonicalizes_legacy_related_to_pairs_before_adding_the_unique_key() {
+    async fn v004_backfills_and_deduplicates_legacy_note_edge_keys_before_indexes() {
         #[derive(Deserialize, SurrealValue)]
         struct IdRow {
             id: RecordId,
@@ -594,6 +600,17 @@ mod tests {
             .unwrap()
             .check()
             .unwrap();
+        for table in ["supports", "contradicts", "derived_from"] {
+            for _ in 0..2 {
+                db.query(format!("CREATE {table} SET in = $in, out = $out"))
+                    .bind(("in", first.clone()))
+                    .bind(("out", second.id.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
+        }
 
         apply_migrations(&db, MIGRATIONS).await.unwrap();
         let rows: Vec<RelatedRow> = db
@@ -608,6 +625,27 @@ mod tests {
         let to = record_id_to_string(&row.out);
         assert!(from < to);
         assert_eq!(row.dedupe_key, format!("related_to:{from}:{to}"));
+        for table in ["supports", "contradicts", "derived_from"] {
+            #[derive(Deserialize, SurrealValue)]
+            struct DirectedRow {
+                dedupe_key: String,
+            }
+            let rows: Vec<DirectedRow> = db
+                .query(format!("SELECT dedupe_key FROM {table}"))
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            assert_eq!(rows.len(), 1, "{table} should retain one directed row");
+            assert_eq!(
+                rows[0].dedupe_key,
+                format!(
+                    "{table}:{}:{}",
+                    record_id_to_string(&first),
+                    record_id_to_string(&second.id)
+                )
+            );
+        }
 
         let repo = Repository::new(db);
         let proposal = repo
@@ -621,14 +659,23 @@ mod tests {
             )
             .await
             .unwrap();
-        repo.accept_edge_proposal(&proposal.id.unwrap(), None, None, false)
+        assert!(repo
+            .accept_edge_proposal(&proposal.id.clone().unwrap(), None, None, false)
             .await
-            .unwrap();
-        assert_eq!(repo.list_note_edges(10).await.unwrap().len(), 1);
+            .is_err());
         assert_eq!(
-            repo.list_note_edges(10).await.unwrap()[0].edge_type,
-            EdgeType::RelatedTo.to_string()
+            repo.get_edge_proposal(&proposal.id.unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            graphrag_core::ProposedEdgeStatus::Superseded
         );
+        let edges = repo.list_note_edges(10).await.unwrap();
+        assert_eq!(edges.len(), 4);
+        assert!(edges
+            .iter()
+            .any(|edge| edge.edge_type == EdgeType::RelatedTo.to_string()));
     }
 
     #[tokio::test]

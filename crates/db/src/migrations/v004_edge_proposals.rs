@@ -34,21 +34,19 @@ DEFINE FIELD IF NOT EXISTS reason ON supports TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS provenance ON supports TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS proposal_id ON supports TYPE option<record<proposed_edge>>;
 DEFINE FIELD IF NOT EXISTS dedupe_key ON supports TYPE option<string>;
-DEFINE INDEX IF NOT EXISTS idx_supports_dedupe ON supports FIELDS dedupe_key UNIQUE;
 
 DEFINE FIELD IF NOT EXISTS reason ON contradicts TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS provenance ON contradicts TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS proposal_id ON contradicts TYPE option<record<proposed_edge>>;
 DEFINE FIELD IF NOT EXISTS dedupe_key ON contradicts TYPE option<string>;
-DEFINE INDEX IF NOT EXISTS idx_contradicts_dedupe ON contradicts FIELDS dedupe_key UNIQUE;
 
 DEFINE FIELD IF NOT EXISTS reason ON derived_from TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS provenance ON derived_from TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS proposal_id ON derived_from TYPE option<record<proposed_edge>>;
 DEFINE FIELD IF NOT EXISTS confidence ON derived_from TYPE option<float>;
-DEFINE FIELD IF NOT EXISTS is_manual ON derived_from TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS is_manual ON derived_from TYPE option<bool>;
+UPDATE derived_from SET is_manual = false WHERE is_manual IS NONE;
 DEFINE FIELD IF NOT EXISTS dedupe_key ON derived_from TYPE option<string>;
-DEFINE INDEX IF NOT EXISTS idx_derived_from_dedupe ON derived_from FIELDS dedupe_key UNIQUE;
 
 DEFINE FIELD IF NOT EXISTS provenance ON related_to TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS proposal_id ON related_to TYPE option<record<proposed_edge>>;

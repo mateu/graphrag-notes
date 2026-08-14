@@ -181,6 +181,10 @@ impl Repository {
     /// Delete a note
     #[instrument(skip(self))]
     pub async fn delete_note(&self, id: &str) -> Result<()> {
+        // Serialize endpoint removal with proposal acceptance. Without this,
+        // deletion could run after acceptance checks existence but before the
+        // accepted edge write, leaving a dangling endpoint reference.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
         let note_id = RecordId::new("note", raw_id);
         self.supersede_proposals_for_removed_notes(std::slice::from_ref(&note_id))
@@ -1050,7 +1054,7 @@ impl Repository {
                 record_id_to_string(id)
             )));
         }
-        let edge_id = match self
+        let (edge_id, edge_proposal_id) = match self
             .create_audited_edge(
                 &proposal.from_id,
                 &proposal.to_id,
@@ -1063,12 +1067,19 @@ impl Repository {
             )
             .await
         {
-            Ok(edge_id) => edge_id,
+            Ok(edge) => edge,
             // Keep the durable `accepting` claim intact. A transient failure
             // is recoverable by a later retry/batch run; releasing it here
             // could clear another caller's in-flight completion.
             Err(error) => return Err(error),
         };
+        if edge_proposal_id.as_ref() != Some(id) {
+            self.mark_claimed_proposal_materialized(id).await?;
+            return Err(DbError::QueryFailed(format!(
+                "proposal {} is superseded because an independent equivalent edge already exists",
+                record_id_to_string(id)
+            )));
+        }
         if !self.finalize_acceptance_claim(id, edge_id).await? {
             let current = self.get_edge_proposal(id).await?.ok_or_else(|| {
                 DbError::QueryFailed("acceptance finalization disappeared".into())
@@ -1240,6 +1251,17 @@ impl Repository {
             )
             .bind(("id", id.clone()))
             .bind(("reason", reason.to_string()))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn mark_claimed_proposal_materialized(&self, id: &RecordId) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = 'equivalent edge already materialized independently', resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting' AND resulting_edge_id IS NONE",
+            )
+            .bind(("id", id.clone()))
             .await?
             .check()?;
         Ok(())
@@ -1476,7 +1498,7 @@ impl Repository {
         provenance: &str,
         proposal_id: Option<&RecordId>,
         is_manual: bool,
-    ) -> Result<RecordId> {
+    ) -> Result<(RecordId, Option<RecordId>)> {
         validate_note_edge(from_id, to_id, &edge_type)?;
         let mut from_id = from_id.clone();
         let mut to_id = to_id.clone();
@@ -1486,17 +1508,19 @@ impl Repository {
         #[derive(Deserialize, SurrealValue)]
         struct IdRow {
             id: RecordId,
+            #[serde(default)]
+            proposal_id: Option<RecordId>,
         }
         let existing: Option<IdRow> = self
             .db
             .query(format!(
-                "SELECT id FROM {table} WHERE dedupe_key = $dedupe_key LIMIT 1"
+                "SELECT id, proposal_id FROM {table} WHERE dedupe_key = $dedupe_key LIMIT 1"
             ))
             .bind(("dedupe_key", dedupe_key.clone()))
             .await?
             .take(0)?;
         if let Some(existing) = existing {
-            return Ok(existing.id);
+            return Ok((existing.id, existing.proposal_id));
         }
         let insert = self.db.query(format!("INSERT INTO {table} (in, out, confidence, reason, provenance, proposal_id, is_manual, dedupe_key, created_at) VALUES ($from, $to, $confidence, $reason, $provenance, $proposal_id, $is_manual, $dedupe_key, time::now()) RETURN id"))
             .bind(("from", from_id)).bind(("to", to_id)).bind(("confidence", confidence.map(|value| value.clamp(0.0, 1.0))))
@@ -1512,13 +1536,13 @@ impl Repository {
                 let existing: Option<IdRow> = self
                     .db
                     .query(format!(
-                        "SELECT id FROM {table} WHERE dedupe_key = $dedupe_key LIMIT 1"
+                        "SELECT id, proposal_id FROM {table} WHERE dedupe_key = $dedupe_key LIMIT 1"
                     ))
                     .bind(("dedupe_key", dedupe_key))
                     .await?
                     .take(0)?;
                 if let Some(existing) = existing {
-                    return Ok(existing.id);
+                    return Ok((existing.id, existing.proposal_id));
                 }
                 return Err(error);
             }
@@ -1526,7 +1550,7 @@ impl Repository {
         created
             .into_iter()
             .next()
-            .map(|row| row.id)
+            .map(|row| (row.id, proposal_id.cloned()))
             .ok_or_else(|| DbError::QueryFailed(format!("create {table}")))
     }
 
@@ -2079,6 +2103,9 @@ impl Repository {
         generation: Option<u64>,
         older_than_generation: bool,
     ) -> Result<SourceDeleteSummary> {
+        // Source cleanup shares the same endpoint/acceptance critical section
+        // as single-note deletion.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let summary = self
             .source_delete_summary(source_id, generation, older_than_generation)
             .await?;
@@ -3883,6 +3910,88 @@ mod tests {
         let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
         assert_eq!(proposal.status, ProposedEdgeStatus::Accepted);
         assert!(proposal.resulting_edge_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn acceptance_never_adopts_an_independent_manual_edge() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (first, second) = two_notes(&repo).await;
+        repo.create_edge(&first, &second, EdgeType::RelatedTo, Some(0.7))
+            .await
+            .unwrap();
+        let manual_edge = repo.list_note_edges(10).await.unwrap().pop().unwrap();
+        assert_eq!(manual_edge.provenance.as_deref(), Some("manual_api"));
+
+        let proposal = repo
+            .upsert_gardener_proposal(
+                &first,
+                &second,
+                0.9,
+                "would duplicate manual edge".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let proposal_id = proposal.id.unwrap();
+        assert!(repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .is_err());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(proposal.resulting_edge_id, None);
+        assert_eq!(
+            proposal.supersession_reason.as_deref(),
+            Some("equivalent edge already materialized independently")
+        );
+        assert!(repo.note_edge_exists(&manual_edge.id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn endpoint_deletion_and_acceptance_leave_no_dangling_edge() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (removed, retained) = two_notes(&repo).await;
+        let proposal = repo
+            .upsert_gardener_proposal(
+                &removed,
+                &retained,
+                0.9,
+                "race with deletion".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let proposal_id = proposal.id.unwrap();
+
+        // Queue both operations behind the shared lifecycle lock, then let
+        // them race for it. Either ordering is valid, but the final graph may
+        // not retain an edge to the removed endpoint.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let accepting_repo = repo.clone();
+        let deleting_repo = repo.clone();
+        let accepting_id = proposal_id.clone();
+        let removed_id = record_id_to_string(&removed);
+        let acceptance = async move {
+            accepting_repo
+                .accept_edge_proposal(&accepting_id, Some("reviewer".into()), None, true)
+                .await
+        };
+        let deletion = async move { deleting_repo.delete_note(&removed_id).await };
+        drop(guard);
+        let (_acceptance, deletion) = tokio::join!(acceptance, deletion);
+        deletion.unwrap();
+
+        assert!(repo
+            .get_note(&record_id_to_string(&removed))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(proposal.resulting_edge_id, None);
     }
 
     #[tokio::test]
