@@ -1225,10 +1225,10 @@ impl Repository {
         // the snapshot/cleanup window and then silently removed by cleanup.
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
         validate_note_edge(from_id, to_id, &edge_type)?;
-        if !self.note_exists(from_id).await? || !self.note_exists(to_id).await? {
+        if !self.note_is_writable(from_id).await? || !self.note_is_writable(to_id).await? {
             return Err(DbError::NotFound(
                 "note endpoint".into(),
-                "a graph edge endpoint no longer exists".into(),
+                "a graph edge endpoint is hidden, failed, or no longer exists".into(),
             ));
         }
         self.create_audited_edge(
@@ -1923,11 +1923,18 @@ impl Repository {
         Ok(existing.is_some())
     }
 
-    /// Staged source notes are valid graph endpoints; only physically removed
-    /// notes must be rejected. Visibility is deliberately not required here
-    /// because import assembly may attach a staged graph before promotion.
-    async fn note_exists(&self, id: &RecordId) -> Result<bool> {
-        let existing: Option<Note> = self.db.select(id.clone()).await?;
+    /// A graph/mention write may address a visible note or the source's
+    /// current pending generation. Older hidden and failed generations are
+    /// deliberately not writable, even when physical cleanup is deferred.
+    async fn note_is_writable(&self, id: &RecordId) -> Result<bool> {
+        let existing: Option<Note> = self
+            .db
+            .query(
+                "SELECT * FROM note WHERE id = $id AND (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation OR (source_generation = source_id.generation AND source_id.status = 'pending')) LIMIT 1",
+            )
+            .bind(("id", id.clone()))
+            .await?
+            .take(0)?;
         Ok(existing.is_some())
     }
 
@@ -2145,6 +2152,21 @@ impl Repository {
         note_id: &surrealdb::types::RecordId,
         entity_id: &surrealdb::types::RecordId,
     ) -> Result<()> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.link_note_to_entity_locked(note_id, entity_id).await
+    }
+
+    async fn link_note_to_entity_locked(
+        &self,
+        note_id: &surrealdb::types::RecordId,
+        entity_id: &surrealdb::types::RecordId,
+    ) -> Result<()> {
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a mention endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
@@ -2178,6 +2200,20 @@ impl Repository {
         &self,
         note_id: &surrealdb::types::RecordId,
     ) -> Result<()> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.delete_mentions_for_note_locked(note_id).await
+    }
+
+    async fn delete_mentions_for_note_locked(
+        &self,
+        note_id: &surrealdb::types::RecordId,
+    ) -> Result<()> {
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a mention endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         self.db
             .query("DELETE mentions WHERE in = $note_id")
             .bind(("note_id", note_id.clone()))
@@ -2340,7 +2376,7 @@ impl Repository {
                     .await?
                     .take(0)?;
                 for entity_id in entity_ids {
-                    self.link_note_to_entity(new_id, &entity_id).await?;
+                    self.link_note_to_entity_locked(new_id, &entity_id).await?;
                 }
             }
 
@@ -2622,6 +2658,28 @@ impl Repository {
                     .await?
                     .take(0)?;
                 if updated.is_none() {
+                    let proposal = self.get_edge_proposal(proposal_id).await?.ok_or_else(|| {
+                        DbError::NotFound(
+                            "reconciled proposal".into(),
+                            record_id_to_string(proposal_id),
+                        )
+                    })?;
+                    if matches!(
+                        proposal.status,
+                        ProposedEdgeStatus::Rejected | ProposedEdgeStatus::Superseded
+                    ) {
+                        // A crash can leave a staged copy of an accepted edge
+                        // after the original edge was undone. Its proposal is
+                        // terminal, so preserve that user decision by dropping
+                        // the stale copied edge rather than making recovery
+                        // fail forever trying to retarget it.
+                        self.db
+                            .query("DELETE $edge")
+                            .bind(("edge", edge.id.clone()))
+                            .await?
+                            .check()?;
+                        continue;
+                    }
                     return Err(DbError::QueryFailed(format!(
                         "reconciled proposal {} is no longer accepted",
                         record_id_to_string(proposal_id)
@@ -2674,6 +2732,7 @@ impl Repository {
         &self,
         source: &Source,
     ) -> Result<SourceDeleteSummary> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let source_id = source
             .id
             .as_ref()
@@ -2684,7 +2743,7 @@ impl Repository {
         // replacement instead of being retired with the old generation.
         self.retarget_reconciled_proposals(source_id, source.successful_generation)
             .await?;
-        self.delete_source_notes(source_id, Some(source.successful_generation), true)
+        self.delete_source_notes_locked(source_id, Some(source.successful_generation), true)
             .await
     }
 
@@ -4415,6 +4474,283 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_prevents_post_snapshot_mentions_from_being_lost() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        let mut entity = Entity::new("Concurrent Entity", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        // Queue reconciliation before the mention write. The write must see
+        // that the old endpoint is gone after cleanup rather than succeeding
+        // in the snapshot/cleanup window and being silently discarded.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let reconciliation_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(&mut second.source, &[(old_id, replacement_id, true)])
+                .await
+        });
+        tokio::task::yield_now().await;
+        let mention_repo = repo.clone();
+        let old_note_id = old.id.as_ref().unwrap().clone();
+        let entity_id = entity.id.as_ref().unwrap().clone();
+        let mention = tokio::spawn(async move {
+            mention_repo
+                .link_note_to_entity(&old_note_id, &entity_id)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        reconciliation.await.unwrap().unwrap();
+        assert!(mention.await.unwrap().is_err());
+        assert!(repo
+            .get_entities_for_note(&record_id_to_string(replacement.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_prevents_post_snapshot_mention_removals_from_being_lost() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Copied Entity", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(old.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let reconciliation_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(&mut second.source, &[(old_id, replacement_id, true)])
+                .await
+        });
+        tokio::task::yield_now().await;
+        let removal_repo = repo.clone();
+        let old_note_id = old.id.as_ref().unwrap().clone();
+        let removal =
+            tokio::spawn(async move { removal_repo.delete_mentions_for_note(&old_note_id).await });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        reconciliation.await.unwrap().unwrap();
+        assert!(removal.await.unwrap().is_err());
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(replacement.id.as_ref().unwrap()))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_writes_reject_hidden_generations_but_allow_current_pending() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("old generation")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("manual endpoint"))
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let current_pending = repo
+            .create_note(
+                Note::new("current pending generation")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.create_edge(
+            current_pending.id.as_ref().unwrap(),
+            manual.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.9),
+        )
+        .await
+        .unwrap();
+
+        // Simulate a crash after durable promotion and before physical old
+        // generation cleanup. The old note remains stored but is hidden.
+        repo.promote_file_import(&mut second.source).await.unwrap();
+        assert!(repo
+            .create_edge(
+                old.id.as_ref().unwrap(),
+                manual.id.as_ref().unwrap(),
+                EdgeType::RelatedTo,
+                Some(0.9),
+            )
+            .await
+            .is_err());
+        repo.create_edge(
+            current_pending.id.as_ref().unwrap(),
+            manual.id.as_ref().unwrap(),
+            EdgeType::RelatedTo,
+            Some(0.9),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_drops_copied_edge_when_its_proposal_was_undone() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old_left = repo
+            .create_note(
+                Note::new("first generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let old_right = repo
+            .create_note(
+                Note::new("first generation right")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                old_left.id.as_ref().unwrap(),
+                old_right.id.as_ref().unwrap(),
+                0.9,
+                "undo before retarget".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let old_edge_id = repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let new_left = repo
+            .create_note(
+                Note::new("second generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        let new_right = repo
+            .create_note(
+                Note::new("second generation right")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.copy_note_dependents_to_successors(&[
+            (
+                old_left.id.as_ref().unwrap().clone(),
+                new_left.id.as_ref().unwrap().clone(),
+                true,
+            ),
+            (
+                old_right.id.as_ref().unwrap().clone(),
+                new_right.id.as_ref().unwrap().clone(),
+                true,
+            ),
+        ])
+        .await
+        .unwrap();
+        let copied_edges: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE id FROM related_to WHERE in = $note OR out = $note")
+            .bind(("note", new_left.id.as_ref().unwrap().clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let copied_edge_id = copied_edges.into_iter().next().unwrap();
+
+        // Reconstruct a crash window from older callers that copied staged
+        // dependents before completion: the original edge was undone before
+        // the copied edge could retarget the proposal audit.
+        assert!(repo
+            .undo_edge(&old_edge_id, Some("undone before retarget".into()))
+            .await
+            .unwrap());
+        repo.complete_file_import(&mut second.source).await.unwrap();
+
+        assert!(!repo.note_edge_exists(&copied_edge_id).await.unwrap());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(proposal.resulting_edge_id, None);
     }
 
     #[tokio::test]
