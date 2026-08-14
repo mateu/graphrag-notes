@@ -2,7 +2,7 @@ use super::Migration;
 
 /// Structure-aware Markdown chunk provenance and reconciliation keys.
 pub(super) const MIGRATION: Migration = Migration {
-    version: 6,
+    version: 8,
     name: "markdown_chunks",
     sql: r#"
 DEFINE FIELD IF NOT EXISTS chunk_key ON note TYPE option<string>;
