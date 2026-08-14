@@ -1801,6 +1801,11 @@ fn decode_file_uri(uri: &str, windows: bool) -> Result<String> {
         {
             return Ok(path[1..].to_string());
         }
+        // `file://server/share/path` is the URI form for a Windows UNC path.
+        // Reconstruct its two leading separators before handing it to PathBuf.
+        if !path.starts_with('/') {
+            return Ok(format!("//{path}"));
+        }
     }
     Ok(path.to_string())
 }
@@ -1913,6 +1918,10 @@ mod tests {
         assert_eq!(
             decode_file_uri("file:///Users/hunter/notes.md", false).unwrap(),
             "/Users/hunter/notes.md"
+        );
+        assert_eq!(
+            decode_file_uri("file://server/share/notes.md", true).unwrap(),
+            "//server/share/notes.md"
         );
     }
 }

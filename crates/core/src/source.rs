@@ -205,12 +205,34 @@ impl Source {
 pub fn normalize_file_uri(path: impl AsRef<Path>) -> String {
     let path = path.as_ref();
     let normalized = std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute_path(path));
-    let display = normalized.to_string_lossy().replace('\\', "/");
-    if display.starts_with('/') {
+    let display = normalize_windows_verbatim_path(&normalized.to_string_lossy());
+    file_uri_from_normalized_display(&display)
+}
+
+fn file_uri_from_normalized_display(display: &str) -> String {
+    if display.starts_with("//") {
+        // UNC paths encode their host in the URI authority. Keeping this form
+        // also lets Windows reconstruct a UNC path during `sources reimport`.
+        format!("file:{display}")
+    } else if display.starts_with('/') {
         format!("file://{display}")
     } else {
         format!("file:///{display}")
     }
+}
+
+/// Convert Windows extended-length paths returned by `canonicalize` into the
+/// ordinary drive/UNC forms used for stable file URIs. Kept platform-neutral
+/// so the behavior can be regression-tested on every host.
+pub fn normalize_windows_verbatim_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if let Some(unc) = path.strip_prefix("//?/UNC/") {
+        return format!("//{unc}");
+    }
+    if let Some(disk) = path.strip_prefix("//?/") {
+        return disk.to_string();
+    }
+    path
 }
 
 fn lexical_absolute_path(path: &Path) -> PathBuf {
@@ -274,6 +296,30 @@ mod tests {
         assert_eq!(
             normalized_content_hash("one\r\ntwo\rthree\n"),
             normalized_content_hash("one\ntwo\nthree\n")
+        );
+    }
+
+    #[test]
+    fn windows_verbatim_paths_normalize_before_uri_encoding() {
+        assert_eq!(
+            normalize_windows_verbatim_path(r"\\?\C:\notes\alpha.md"),
+            "C:/notes/alpha.md"
+        );
+        assert_eq!(
+            normalize_windows_verbatim_path(r"\\?\UNC\server\share\alpha.md"),
+            "//server/share/alpha.md"
+        );
+        assert_eq!(
+            file_uri_from_normalized_display(&normalize_windows_verbatim_path(
+                r"\\?\C:\notes\alpha.md"
+            )),
+            "file:///C:/notes/alpha.md"
+        );
+        assert_eq!(
+            file_uri_from_normalized_display(&normalize_windows_verbatim_path(
+                r"\\?\UNC\server\share\alpha.md"
+            )),
+            "file://server/share/alpha.md"
         );
     }
 }

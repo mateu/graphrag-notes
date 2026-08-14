@@ -23,6 +23,11 @@ pub struct Repository {
     db: DbConnection,
 }
 
+// A source generation becomes visible only after promotion. Legacy/manual
+// notes have no generation and remain visible, while staged and superseded
+// file-import notes are excluded from every user-facing scan.
+const VISIBLE_NOTE_CONDITION: &str = "(source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)";
+
 fn source_content_value(source: &Source) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(source)
         .map_err(|error| DbError::QueryFailed(format!("source serialization failed: {error}")))?;
@@ -171,7 +176,11 @@ impl Repository {
     /// List recent notes (basic fields only, for CLI)
     #[instrument(skip(self))]
     pub async fn list_notes(&self, limit: usize) -> Result<Vec<SearchResult>> {
-        let mut notes: Vec<SearchResult> = self.db.select("note").await?;
+        let mut notes: Vec<SearchResult> = self
+            .db
+            .query(format!("SELECT * FROM note WHERE {VISIBLE_NOTE_CONDITION}"))
+            .await?
+            .take(0)?;
 
         // Sort by creation time descending and apply limit in Rust to avoid
         // SurrealDB multi-result `take` issues and deserialization problems
@@ -189,7 +198,9 @@ impl Repository {
     pub async fn get_notes_without_embeddings(&self) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
-            .query("SELECT * FROM note WHERE embedding IS NONE OR array::len(embedding) = 0")
+            .query(format!(
+                "SELECT * FROM note WHERE ({VISIBLE_NOTE_CONDITION}) AND (embedding IS NONE OR array::len(embedding) = 0)"
+            ))
             .await?
             .take(0)?;
 
@@ -201,7 +212,9 @@ impl Repository {
     pub async fn get_notes_without_entities(&self, limit: usize) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
-            .query("SELECT * FROM note WHERE id NOT IN (SELECT in FROM mentions) LIMIT $limit")
+            .query(format!(
+                "SELECT * FROM note WHERE ({VISIBLE_NOTE_CONDITION}) AND id NOT IN (SELECT in FROM mentions) LIMIT $limit"
+            ))
             .bind(("limit", limit))
             .await?
             .take(0)?;
@@ -214,7 +227,9 @@ impl Repository {
     pub async fn get_notes_page(&self, limit: usize, offset: usize) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
-            .query("SELECT * FROM note ORDER BY created_at ASC LIMIT $limit START $offset")
+            .query(format!(
+                "SELECT * FROM note WHERE {VISIBLE_NOTE_CONDITION} ORDER BY created_at ASC LIMIT $limit START $offset"
+            ))
             .bind(("limit", limit))
             .bind(("offset", offset))
             .await?
@@ -835,18 +850,19 @@ impl Repository {
     pub async fn find_orphan_notes(&self) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
-            .query(
+            .query(format!(
                 r#"
                 SELECT * FROM note 
                 WHERE 
+                    {VISIBLE_NOTE_CONDITION} AND
                     array::len(->supports->note) = 0 AND
                     array::len(<-supports<-note) = 0 AND
                     array::len(->contradicts->note) = 0 AND
                     array::len(<-contradicts<-note) = 0 AND
                     array::len(->related_to->note) = 0 AND
                     array::len(<-related_to<-note) = 0
-            "#,
-            )
+            "#
+            ))
             .await?
             .take(0)?;
 
@@ -864,7 +880,7 @@ impl Repository {
     ) -> Result<Vec<SimilarNote>> {
         let results: Vec<SimilarNote> = self
             .db
-            .query(
+            .query(format!(
                 r#"
                 SELECT
                     id,
@@ -873,13 +889,14 @@ impl Repository {
                     vector::similarity::cosine(embedding, $embedding) AS similarity
                 FROM note
                 WHERE
+                    {VISIBLE_NOTE_CONDITION} AND
                     <string>id != $note_id AND
                     embedding IS NOT NONE AND
                     vector::similarity::cosine(embedding, $embedding) > $threshold
                 ORDER BY similarity DESC
                 LIMIT $limit
-            "#,
-            )
+            "#
+            ))
             .bind(("note_id", format!("note:{}", note_id)))
             .bind(("embedding", embedding))
             .bind(("threshold", threshold))
@@ -1155,6 +1172,11 @@ impl Repository {
                 && existing.status == SourceIngestionStatus::Ready
                 && existing.content_hash.as_deref() == Some(content_hash.as_str())
             {
+                // A process can stop after promotion and before old-generation
+                // cleanup. An otherwise unchanged retry is the natural
+                // recovery path; finish that deferred cleanup before reporting
+                // a no-op so stale records cannot accumulate indefinitely.
+                self.cleanup_non_successful_generations(&existing).await?;
                 return Ok(SourceImportPlan {
                     source: existing,
                     action: SourceImportAction::Unchanged,
@@ -1232,6 +1254,18 @@ impl Repository {
         source.updated_at = chrono::Utc::now();
         source.last_ingested_at = Some(source.updated_at);
         self.replace_source(source).await
+    }
+
+    async fn cleanup_non_successful_generations(
+        &self,
+        source: &Source,
+    ) -> Result<SourceDeleteSummary> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+        self.delete_source_notes(source_id, Some(source.successful_generation), true)
+            .await
     }
 
     /// Remove partially-created notes for a failed generation and retain the
@@ -2189,23 +2223,27 @@ mod tests {
         let repo = Repository::new(init_memory().await.unwrap());
         let mut first = begin_markdown(&repo, "first", false).await;
         let source_id = first.source.id.as_ref().unwrap().clone();
-        repo.create_note(
-            Note::new("first generation")
-                .with_source(source_id.clone())
-                .with_source_generation(first.source.generation),
-        )
-        .await
-        .unwrap();
+        let first_note = repo
+            .create_note(
+                Note::new("first generation")
+                    .with_embedding(vec![1.0; 1024])
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
         repo.complete_file_import(&mut first.source).await.unwrap();
 
         let mut second = begin_markdown(&repo, "second", false).await;
-        repo.create_note(
-            Note::new("second generation")
-                .with_source(source_id)
-                .with_source_generation(second.source.generation),
-        )
-        .await
-        .unwrap();
+        let second_note = repo
+            .create_note(
+                Note::new("second generation")
+                    .with_embedding(vec![1.0; 1024])
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
         // Simulate a process stopping after durable promotion but before the
         // best-effort destructive cleanup. The new complete generation is
         // immediately searchable; the old one is merely hidden/recoverable.
@@ -2226,16 +2264,30 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
-
-        let cleanup = repo
-            .delete_source_notes(
-                second.source.id.as_ref().unwrap(),
-                Some(second.source.generation),
-                true,
-            )
+        // Other unfiltered scans must honor the same visibility rule while
+        // cleanup is deferred after an interruption.
+        assert_eq!(repo.list_notes(10).await.unwrap().len(), 1);
+        assert_eq!(repo.find_orphan_notes().await.unwrap().len(), 1);
+        assert_eq!(repo.get_notes_page(10, 0).await.unwrap().len(), 1);
+        let second_key = record_id_to_string(second_note.id.as_ref().unwrap())
+            .strip_prefix("note:")
+            .unwrap()
+            .to_string();
+        assert!(repo
+            .find_similar_notes(&second_key, vec![1.0; 1024], 0.0, 10)
             .await
-            .unwrap();
-        assert_eq!(cleanup.notes, 1);
+            .unwrap()
+            .is_empty());
+
+        // The unchanged-hash path doubles as durable recovery: it retries
+        // cleanup instead of leaving hidden old generations forever.
+        let retry = begin_markdown(&repo, "second", false).await;
+        assert_eq!(retry.action, SourceImportAction::Unchanged);
+        assert!(repo
+            .get_note(&record_id_to_string(first_note.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
