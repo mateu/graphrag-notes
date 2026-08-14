@@ -175,7 +175,12 @@ impl Repository {
     /// Delete a note
     #[instrument(skip(self))]
     pub async fn delete_note(&self, id: &str) -> Result<()> {
-        let _: Option<Note> = self.db.delete(("note", id)).await?;
+        let raw_id = id.strip_prefix("note:").unwrap_or(id);
+        let note_id = RecordId::new("note", raw_id);
+        self.supersede_proposals_for_removed_notes(std::slice::from_ref(&note_id))
+            .await?;
+        self.delete_notes_and_dependents(std::slice::from_ref(&note_id))
+            .await?;
         Ok(())
     }
 
@@ -957,7 +962,13 @@ impl Repository {
             .await?
             .ok_or_else(|| DbError::NotFound("proposed_edge".into(), record_id_to_string(id)))?;
         if proposal.status == ProposedEdgeStatus::Accepted {
-            return Ok(proposal);
+            if proposal.resulting_edge_id.is_some() {
+                return Ok(proposal);
+            }
+            return Err(DbError::QueryFailed(format!(
+                "proposal {} acceptance is in progress",
+                record_id_to_string(id)
+            )));
         }
         if proposal.status != ProposedEdgeStatus::Pending {
             return Err(DbError::QueryFailed(format!(
@@ -966,16 +977,30 @@ impl Repository {
                 proposal.status
             )));
         }
+        // Claim the pending row before creating the accepted edge. A competing
+        // accept/reject can no longer create an edge and then overwrite the
+        // proposal's terminal decision.
+        if !self
+            .claim_pending_proposal(
+                id,
+                ProposedEdgeStatus::Accepted,
+                reviewer.clone(),
+                action_reason.clone(),
+            )
+            .await?
+        {
+            return self.acceptance_claim_lost(id).await;
+        }
         if !self.note_exists(&proposal.from_id).await? || !self.note_exists(&proposal.to_id).await?
         {
-            self.mark_proposal_stale(id, "proposal endpoint no longer exists")
+            self.mark_claimed_proposal_stale(id, "proposal endpoint no longer exists")
                 .await?;
             return Err(DbError::QueryFailed(format!(
                 "proposal {} is stale: an endpoint no longer exists",
                 record_id_to_string(id)
             )));
         }
-        let edge_id = self
+        let edge_id = match self
             .create_audited_edge(
                 &proposal.from_id,
                 &proposal.to_id,
@@ -986,9 +1011,20 @@ impl Repository {
                 Some(id),
                 is_manual,
             )
-            .await?;
-        self.db.query("UPDATE $id SET status = 'accepted', reviewed_at = time::now(), reviewer = $reviewer, action_reason = $action_reason, resulting_edge_id = $edge_id, updated_at = time::now()")
-            .bind(("id", id.clone())).bind(("reviewer", reviewer)).bind(("action_reason", action_reason)).bind(("edge_id", edge_id)).await?.check()?;
+            .await
+        {
+            Ok(edge_id) => edge_id,
+            Err(error) => {
+                self.release_acceptance_claim(id).await?;
+                return Err(error);
+            }
+        };
+        if !self.finalize_acceptance_claim(id, edge_id).await? {
+            return Err(DbError::QueryFailed(format!(
+                "proposal {} changed while acceptance was being finalized",
+                record_id_to_string(id)
+            )));
+        }
         self.get_edge_proposal(id)
             .await?
             .ok_or_else(|| DbError::QueryFailed("accepted proposal disappeared".into()))
@@ -1016,11 +1052,109 @@ impl Repository {
                 proposal.status
             )));
         }
-        self.db.query("UPDATE $id SET status = 'rejected', reviewed_at = time::now(), reviewer = $reviewer, action_reason = $action_reason, updated_at = time::now()")
-            .bind(("id", id.clone())).bind(("reviewer", reviewer)).bind(("action_reason", action_reason)).await?.check()?;
+        if !self
+            .claim_pending_proposal(id, ProposedEdgeStatus::Rejected, reviewer, action_reason)
+            .await?
+        {
+            let current = self.get_edge_proposal(id).await?.ok_or_else(|| {
+                DbError::NotFound("proposed_edge".into(), record_id_to_string(id))
+            })?;
+            if current.status == ProposedEdgeStatus::Rejected {
+                return Ok(current);
+            }
+            return Err(DbError::QueryFailed(format!(
+                "proposal {} is {}, not pending",
+                record_id_to_string(id),
+                current.status
+            )));
+        }
         self.get_edge_proposal(id)
             .await?
             .ok_or_else(|| DbError::QueryFailed("rejected proposal disappeared".into()))
+    }
+
+    /// Atomically transition a pending proposal to its selected terminal
+    /// decision. The conditional update is the ownership claim for both
+    /// accept and reject paths.
+    async fn claim_pending_proposal(
+        &self,
+        id: &RecordId,
+        status: ProposedEdgeStatus,
+        reviewer: Option<String>,
+        action_reason: Option<String>,
+    ) -> Result<bool> {
+        #[derive(Deserialize, SurrealValue)]
+        struct ClaimRow {
+            id: RecordId,
+        }
+        let claimed: Option<ClaimRow> = self
+            .db
+            .query(
+                "UPDATE $id SET status = $status, reviewed_at = time::now(), reviewer = $reviewer, action_reason = $action_reason, updated_at = time::now() WHERE status = 'pending' RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("status", status.to_string()))
+            .bind(("reviewer", reviewer))
+            .bind(("action_reason", action_reason))
+            .await?
+            .take(0)?;
+        Ok(claimed.is_some())
+    }
+
+    async fn acceptance_claim_lost(&self, id: &RecordId) -> Result<ProposedEdge> {
+        let current = self
+            .get_edge_proposal(id)
+            .await?
+            .ok_or_else(|| DbError::NotFound("proposed_edge".into(), record_id_to_string(id)))?;
+        if current.status == ProposedEdgeStatus::Accepted && current.resulting_edge_id.is_some() {
+            return Ok(current);
+        }
+        Err(DbError::QueryFailed(format!(
+            "proposal {} is {}, not pending",
+            record_id_to_string(id),
+            current.status
+        )))
+    }
+
+    /// Restore a failed acceptance claim only while it remains unfinalized.
+    async fn release_acceptance_claim(&self, id: &RecordId) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE $id SET status = 'pending', reviewed_at = NONE, reviewer = NONE, action_reason = NONE, updated_at = time::now() WHERE status = 'accepted' AND resulting_edge_id IS NONE",
+            )
+            .bind(("id", id.clone()))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn mark_claimed_proposal_stale(&self, id: &RecordId, reason: &str) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE $id SET status = 'superseded', reviewed_at = time::now(), action_reason = $reason, resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepted' AND resulting_edge_id IS NONE",
+            )
+            .bind(("id", id.clone()))
+            .bind(("reason", reason.to_string()))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn finalize_acceptance_claim(&self, id: &RecordId, edge_id: RecordId) -> Result<bool> {
+        #[derive(Deserialize, SurrealValue)]
+        struct FinalizedRow {
+            id: RecordId,
+        }
+        let finalized: Option<FinalizedRow> = self
+            .db
+            .query(
+                "UPDATE $id SET resulting_edge_id = $edge_id, updated_at = time::now() WHERE status = 'accepted' AND resulting_edge_id IS NONE RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("edge_id", edge_id))
+            .await?
+            .take(0)?;
+        Ok(finalized.is_some())
     }
 
     /// Accept all pending similarity proposals at or above a configured threshold.
@@ -1200,12 +1334,6 @@ impl Repository {
     async fn note_exists(&self, id: &RecordId) -> Result<bool> {
         let existing: Option<Note> = self.db.select(id.clone()).await?;
         Ok(existing.is_some())
-    }
-
-    async fn mark_proposal_stale(&self, id: &RecordId, reason: &str) -> Result<()> {
-        self.db.query("UPDATE $id SET status = 'superseded', reviewed_at = time::now(), action_reason = $reason, updated_at = time::now()")
-            .bind(("id", id.clone())).bind(("reason", reason.to_string())).await?.check()?;
-        Ok(())
     }
 
     async fn create_audited_edge(
@@ -1807,6 +1935,15 @@ impl Repository {
             .source_owned_note_ids(source_id, generation, older_than_generation)
             .await?;
         self.supersede_proposals_for_removed_notes(&notes).await?;
+        self.delete_notes_and_dependents(&notes).await?;
+        Ok(summary)
+    }
+
+    /// Delete note rows and every relationship/provenance record owned by or
+    /// incident on them. Proposal retirement is deliberately separate so
+    /// callers can choose the lifecycle transition before this physical
+    /// cascade runs.
+    async fn delete_notes_and_dependents(&self, notes: &[RecordId]) -> Result<()> {
         for note_id in notes {
             self.db
                 .query(
@@ -1819,11 +1956,11 @@ impl Repository {
                      DELETE note_from_message WHERE in = $note; \
                      DELETE $note;",
                 )
-                .bind(("note", note_id))
+                .bind(("note", note_id.clone()))
                 .await?
                 .check()?;
         }
-        Ok(summary)
+        Ok(())
     }
 
     /// Retire every mutable proposal whose source-owned endpoint is being
@@ -3496,6 +3633,122 @@ mod tests {
                 .status,
             ProposedEdgeStatus::Superseded
         );
+    }
+
+    #[tokio::test]
+    async fn delete_note_retires_proposals_and_their_accepted_edges() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (removed, pending_target) = two_notes(&repo).await;
+        let accepted_target = repo
+            .create_note(Note::new("accepted target"))
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let pending = repo
+            .upsert_gardener_proposal(
+                &removed,
+                &pending_target,
+                0.8,
+                "pending relationship".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let pending_id = pending.id.unwrap();
+        let accepted = repo
+            .upsert_gardener_proposal(
+                &removed,
+                &accepted_target,
+                0.9,
+                "accepted relationship".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let accepted_id = accepted.id.unwrap();
+        let accepted_edge_id = repo
+            .accept_edge_proposal(
+                &accepted_id,
+                Some("reviewer".into()),
+                Some("approved".into()),
+                true,
+            )
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
+
+        repo.delete_note(&record_id_to_string(&removed))
+            .await
+            .unwrap();
+
+        assert!(repo
+            .get_note(&record_id_to_string(&removed))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            repo.get_edge_proposal(&pending_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProposedEdgeStatus::Superseded
+        );
+        let accepted = repo.get_edge_proposal(&accepted_id).await.unwrap().unwrap();
+        assert_eq!(accepted.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(accepted.resulting_edge_id, None);
+        assert!(!repo.note_edge_exists(&accepted_edge_id).await.unwrap());
+        assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn competing_accept_and_reject_claim_exactly_one_terminal_decision() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (first, second) = two_notes(&repo).await;
+        let proposal = repo
+            .upsert_gardener_proposal(
+                &first,
+                &second,
+                0.9,
+                "similarly scoped notes".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let proposal_id = proposal.id.unwrap();
+
+        let (accept, reject) = tokio::join!(
+            repo.accept_edge_proposal(
+                &proposal_id,
+                Some("acceptor".into()),
+                Some("accept decision".into()),
+                true,
+            ),
+            repo.reject_edge_proposal(
+                &proposal_id,
+                Some("rejector".into()),
+                Some("reject decision".into()),
+            ),
+        );
+        assert_ne!(accept.is_ok(), reject.is_ok());
+
+        let final_proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        match final_proposal.status {
+            ProposedEdgeStatus::Accepted => {
+                assert!(final_proposal.resulting_edge_id.is_some());
+                assert_eq!(repo.list_note_edges(10).await.unwrap().len(), 1);
+            }
+            ProposedEdgeStatus::Rejected => {
+                assert!(final_proposal.resulting_edge_id.is_none());
+                assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+            }
+            status => panic!("unexpected terminal status: {status}"),
+        }
     }
 
     #[tokio::test]
