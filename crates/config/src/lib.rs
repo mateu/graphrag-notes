@@ -289,6 +289,7 @@ impl RuntimeConfig {
             inference.is_some_and(|table| table.contains_key("embedding_url"));
         config.inference.extraction_url_from_file =
             inference.is_some_and(|table| table.contains_key("extraction_url"));
+        config.normalize_provider_names();
         config.database.path = expand_home_directory(&config.database.path);
         Ok(config)
     }
@@ -438,6 +439,8 @@ impl RuntimeConfig {
             &mut self.librarian.max_chunk_size,
         )?;
 
+        self.normalize_provider_names();
+
         // The legacy environment setup allowed callers to set only the
         // provider. Apply that fallback only when the provider itself came
         // from the environment so an explicit TOML endpoint remains intact.
@@ -462,6 +465,19 @@ impl RuntimeConfig {
             self.inference.extraction_url = self.inference.ollama_url.clone();
         }
         Ok(())
+    }
+
+    fn normalize_provider_names(&mut self) {
+        self.inference.embedding_provider = self
+            .inference
+            .embedding_provider
+            .trim()
+            .to_ascii_lowercase();
+        self.inference.extraction_provider = self
+            .inference
+            .extraction_provider
+            .trim()
+            .to_ascii_lowercase();
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -842,6 +858,20 @@ mod tests {
             config.inference.extraction_url,
             "http://ollama.example:11434"
         );
+    }
+
+    #[test]
+    fn provider_names_are_normalized_before_factory_injection() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("TEI_PROVIDER", " Ollama "), ("TGI_PROVIDER", " OLLAMA ")]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.inference.embedding_provider, "ollama");
+        assert_eq!(config.inference.extraction_provider, "ollama");
     }
 
     #[test]
