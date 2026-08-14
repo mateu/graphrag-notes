@@ -243,10 +243,9 @@ impl RuntimeConfig {
         env: &impl Fn(&str) -> Option<String>,
         default_path: Option<PathBuf>,
     ) -> Result<Self, ConfigError> {
-        let mut config = match explicit_path
-            .map(Path::to_path_buf)
-            .or_else(|| env("GRAPHRAG_CONFIG").map(PathBuf::from))
-        {
+        let mut config = match explicit_path.map(Path::to_path_buf).or_else(|| {
+            env("GRAPHRAG_CONFIG").map(|value| expand_home_directory(Path::new(&value)))
+        }) {
             Some(path) => Self::from_file(&path)?,
             None => default_path
                 .filter(|path| path.exists())
@@ -302,7 +301,7 @@ impl RuntimeConfig {
             env,
             "STRICT_ENTITY_JSON",
             &mut self.inference.strict_entity_json,
-        );
+        )?;
         set_usize(
             env,
             "EXTRACT_MAX_ENTITIES",
@@ -328,12 +327,12 @@ impl RuntimeConfig {
             env,
             "SKIP_ENTITY_EXTRACTION",
             &mut self.librarian.skip_entity_extraction,
-        );
+        )?;
         set_bool(
             env,
             "EXTRACT_LOG_EACH",
             &mut self.librarian.extract_log_each,
-        );
+        )?;
         set_usize(
             env,
             "EXTRACT_MAX_CHARS",
@@ -421,21 +420,15 @@ impl RuntimeConfig {
             &mut self.librarian.max_chunk_size,
         )?;
 
-        // The long-standing Ollama setup allows callers to set only the
-        // provider. Preserve that convenience while still letting an explicit
-        // TEI_URL/TGI_URL win over OLLAMA_URL.
-        if self
-            .inference
-            .embedding_provider
-            .eq_ignore_ascii_case("ollama")
+        // The legacy environment setup allowed callers to set only the
+        // provider. Apply that fallback only when the provider itself came
+        // from the environment so an explicit TOML endpoint remains intact.
+        if env("TEI_PROVIDER").is_some_and(|provider| provider.eq_ignore_ascii_case("ollama"))
             && env("TEI_URL").is_none()
         {
             self.inference.embedding_url = self.inference.ollama_url.clone();
         }
-        if self
-            .inference
-            .extraction_provider
-            .eq_ignore_ascii_case("ollama")
+        if env("TGI_PROVIDER").is_some_and(|provider| provider.eq_ignore_ascii_case("ollama"))
             && env("TGI_URL").is_none()
         {
             self.inference.extraction_url = self.inference.ollama_url.clone();
@@ -550,11 +543,24 @@ fn set_optional_string(
     }
 }
 
-fn set_bool(env: &impl Fn(&str) -> Option<String>, key: &str, target: &mut bool) {
+fn set_bool(
+    env: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    target: &mut bool,
+) -> Result<(), ConfigError> {
     if let Some(value) = env(key) {
         let value = value.trim().to_ascii_lowercase();
-        *target = matches!(value.as_str(), "1" | "true" | "yes" | "on");
+        *target = match value.as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => {
+                return Err(ConfigError::Validation(format!(
+                    "{key} must be a boolean (true/false, yes/no, on/off, or 1/0)"
+                )))
+            }
+        };
     }
+    Ok(())
 }
 
 fn set_json_object(
@@ -844,6 +850,10 @@ mod tests {
             &config_path,
             r#"
                 [inference]
+                embedding_provider = "ollama"
+                embedding_url = "http://remote-embed.example:11434"
+                extraction_provider = "ollama"
+                extraction_url = "http://remote-extract.example:11434"
                 ollama_options = { temperature = 0, num_ctx = 1024 }
                 [librarian]
                 skip_entity_extraction = true
@@ -866,6 +876,14 @@ mod tests {
         );
         assert!(config.librarian.skip_entity_extraction);
         assert_eq!(config.librarian.extract_max_chars, 0);
+        assert_eq!(
+            config.inference.embedding_url,
+            "http://remote-embed.example:11434"
+        );
+        assert_eq!(
+            config.inference.extraction_url,
+            "http://remote-extract.example:11434"
+        );
     }
 
     #[test]
@@ -889,6 +907,17 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("limits must be positive"));
+
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("STRICT_ENTITY_JSON", "tru")]),
+            None,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("STRICT_ENTITY_JSON must be a boolean"));
     }
 
     #[test]
@@ -905,5 +934,24 @@ mod tests {
         .unwrap();
         let expected = dirs::home_dir().unwrap().join(".graphrag/test");
         assert_eq!(config.database.path, expected);
+    }
+
+    #[test]
+    fn graphrag_config_environment_path_expands_home_directory() {
+        let home = dirs::home_dir().unwrap();
+        let file_name = format!(".graphrag-config-test-{}.toml", std::process::id());
+        let config_path = home.join(&file_name);
+        fs::write(&config_path, "[logging]\nlevel = \"info\"\n").unwrap();
+
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("GRAPHRAG_CONFIG", &format!("~/{file_name}"))]),
+            None,
+        )
+        .unwrap();
+        fs::remove_file(&config_path).unwrap();
+
+        assert_eq!(config.logging.level, "info");
     }
 }
