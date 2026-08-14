@@ -15,6 +15,7 @@ use graphrag_agents::{
     AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, InferenceProviders,
     LibrarianAgent, SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor,
 };
+use graphrag_config::{CliOverrides, RuntimeConfig};
 use graphrag_core::{record_id_to_string, ChatExport};
 use graphrag_db::{init_memory, init_persistent, migrations, Repository};
 use std::io::{self, BufRead, Write};
@@ -23,19 +24,17 @@ use std::time::Instant;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-fn default_db_path() -> PathBuf {
-    let mut path = dirs::home_dir().expect("Could not find home directory");
-    path.push(".graphrag");
-    path.push("data-v3");
-    path
-}
-
 /// GraphRAG Notes - An evolving knowledge graph for your notes
 #[derive(Parser)]
 #[command(name = "graphrag")]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Database path (defaults to ~/.graphrag/data-v3)
+    /// Configuration file. Defaults to GRAPHRAG_CONFIG, then
+    /// ~/.config/graphrag/config.toml when that file exists.
+    #[arg(long, global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Database path (overrides the resolved configuration)
     #[arg(short, long)]
     db_path: Option<PathBuf>,
 
@@ -53,6 +52,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Inspect or validate the resolved runtime configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
     /// Add a new note
     Add {
         /// Note content (reads from stdin if not provided)
@@ -115,8 +120,8 @@ enum Commands {
         query: String,
 
         /// Maximum results
-        #[arg(short, long, default_value = "10")]
-        limit: usize,
+        #[arg(short, long)]
+        limit: Option<usize>,
 
         /// Search scope: notes, messages, or all
         #[arg(long, value_enum, default_value_t = SearchScopeArg::Notes)]
@@ -141,8 +146,8 @@ enum Commands {
         query: String,
 
         /// Maximum context chunks to include
-        #[arg(short, long, default_value = "8")]
-        limit: usize,
+        #[arg(short, long)]
+        limit: Option<usize>,
 
         /// Search scope: notes, messages, or all
         #[arg(long, value_enum, default_value_t = SearchScopeArg::All)]
@@ -161,12 +166,12 @@ enum Commands {
         entity: Option<String>,
 
         /// Approximate max tokens across all chunks
-        #[arg(long, default_value = "1200")]
-        max_tokens: usize,
+        #[arg(long)]
+        max_tokens: Option<usize>,
 
         /// Approximate max tokens per chunk
-        #[arg(long, default_value = "180")]
-        max_chunk_tokens: usize,
+        #[arg(long)]
+        max_chunk_tokens: Option<usize>,
     },
 
     /// Evaluate augmentation retrieval quality from a JSON/JSONL test set
@@ -175,8 +180,8 @@ enum Commands {
         path: PathBuf,
 
         /// Default max chunks when case limit is not set
-        #[arg(short, long, default_value = "8")]
-        limit: usize,
+        #[arg(short, long)]
+        limit: Option<usize>,
 
         /// Default scope when case scope is not set
         #[arg(long, value_enum, default_value_t = SearchScopeArg::All)]
@@ -191,12 +196,12 @@ enum Commands {
         source_uri: Option<String>,
 
         /// Default global token budget when case max_tokens is not set
-        #[arg(long, default_value = "1200")]
-        max_tokens: usize,
+        #[arg(long)]
+        max_tokens: Option<usize>,
 
         /// Default per-chunk token budget when case max_chunk_tokens is not set
-        #[arg(long, default_value = "180")]
-        max_chunk_tokens: usize,
+        #[arg(long)]
+        max_chunk_tokens: Option<usize>,
 
         /// Exit with status 1 when any expected case misses
         #[arg(long)]
@@ -300,6 +305,14 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Print the fully resolved configuration (with secrets redacted)
+    Show,
+    /// Validate configuration and exit without opening the database
+    Validate,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ImportModeArg {
     Qa,
@@ -328,6 +341,19 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+    let overrides = CliOverrides {
+        database_path: cli.db_path.clone(),
+    };
+    let config = RuntimeConfig::load(cli.config.as_deref(), &overrides)
+        .context("failed to resolve runtime configuration")?;
+
+    if let Commands::Config { command } = &cli.command {
+        match command {
+            ConfigCommand::Show => print!("{}", config.redacted_toml()?),
+            ConfigCommand::Validate => println!("Configuration is valid."),
+        }
+        return Ok(());
+    }
 
     let skip_extraction = matches!(
         cli.command,
@@ -365,7 +391,8 @@ async fn main() -> Result<()> {
     let log_filter = if cli.verbose {
         EnvFilter::new("debug")
     } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(config.logging.level.clone()))
     };
     let subscriber = FmtSubscriber::builder()
         .with_env_filter(log_filter)
@@ -376,7 +403,9 @@ async fn main() -> Result<()> {
 
     // Initialize database
     if let Commands::ResetDb { db_path } = &cli.command {
-        let path = db_path.clone().unwrap_or_else(default_db_path);
+        let path = db_path
+            .clone()
+            .unwrap_or_else(|| config.database.path.clone());
 
         if path.exists() {
             std::fs::remove_dir_all(&path)
@@ -395,7 +424,7 @@ async fn main() -> Result<()> {
         info!("Using in-memory database");
         init_memory().await?
     } else {
-        let db_path = cli.db_path.unwrap_or_else(default_db_path);
+        let db_path = config.database.path.clone();
 
         // Ensure directory exists
         if let Some(parent) = db_path.parent() {
@@ -498,7 +527,16 @@ async fn main() -> Result<()> {
             context,
         } => {
             cmd_search(
-                repo, tei, query, limit, scope, since_days, source_uri, context,
+                repo,
+                tei,
+                query,
+                limit.unwrap_or(config.search.default_limit),
+                scope,
+                since_days,
+                source_uri,
+                context,
+                config.search.vector_weight,
+                config.search.fulltext_weight,
             )
             .await?;
         }
@@ -519,12 +557,14 @@ async fn main() -> Result<()> {
                 repo,
                 tei,
                 path,
-                limit,
+                limit.unwrap_or(config.augment.default_limit),
                 scope,
                 since_days,
                 source_uri,
-                max_tokens,
-                max_chunk_tokens,
+                max_tokens.unwrap_or(config.augment.max_tokens),
+                max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
+                config.search.vector_weight,
+                config.search.fulltext_weight,
                 fail_on_miss,
                 format,
                 baseline,
@@ -546,13 +586,15 @@ async fn main() -> Result<()> {
                 repo,
                 tei,
                 query,
-                limit,
+                limit.unwrap_or(config.augment.default_limit),
                 scope,
                 since_days,
                 source_uri,
                 entity,
-                max_tokens,
-                max_chunk_tokens,
+                max_tokens.unwrap_or(config.augment.max_tokens),
+                max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
+                config.search.vector_weight,
+                config.search.fulltext_weight,
             )
             .await?;
         }
@@ -560,7 +602,14 @@ async fn main() -> Result<()> {
             cmd_list(repo, limit).await?;
         }
         Commands::Garden { dry_run } => {
-            cmd_garden(repo, dry_run).await?;
+            cmd_garden(
+                repo,
+                dry_run,
+                config.gardener.similarity_threshold,
+                config.gardener.auto_apply_threshold,
+                config.gardener.max_suggestions,
+            )
+            .await?;
         }
         Commands::Stats => {
             cmd_stats(repo).await?;
@@ -569,7 +618,18 @@ async fn main() -> Result<()> {
             // Handled immediately after database initialization.
         }
         Commands::Interactive => {
-            cmd_interactive(repo, tei, tgi).await?;
+            cmd_interactive(
+                repo,
+                tei,
+                tgi,
+                config.search.default_limit,
+                config.search.vector_weight,
+                config.search.fulltext_weight,
+                config.gardener.similarity_threshold,
+                config.gardener.auto_apply_threshold,
+                config.gardener.max_suggestions,
+            )
+            .await?;
         }
         Commands::ExtractEntities {
             limit,
@@ -594,6 +654,7 @@ async fn main() -> Result<()> {
         Commands::EmbeddingDim { .. } => {
             // Handled before database init.
         }
+        Commands::Config { .. } => unreachable!("configuration commands return before startup"),
         Commands::ResetDb { .. } => {
             // Handled before database init.
         }
@@ -1034,8 +1095,10 @@ async fn cmd_search(
     since_days: Option<u32>,
     source_uri: Option<String>,
     context: bool,
+    vector_weight: f32,
+    fulltext_weight: f32,
 ) -> Result<()> {
-    let search = SearchAgent::new(repo, tei);
+    let search = SearchAgent::new(repo, tei).with_hybrid_weights(vector_weight, fulltext_weight);
     let scope = match scope {
         SearchScopeArg::Notes => SearchScope::Notes,
         SearchScopeArg::Messages => SearchScope::Messages,
@@ -1146,6 +1209,8 @@ async fn cmd_augment(
     entity: Option<String>,
     max_tokens: usize,
     max_chunk_tokens: usize,
+    vector_weight: f32,
+    fulltext_weight: f32,
 ) -> Result<()> {
     if entity.is_some() && scope != SearchScopeArg::Notes {
         anyhow::bail!("--entity currently requires --scope notes");
@@ -1157,7 +1222,7 @@ async fn cmd_augment(
         SearchScopeArg::All => SearchScope::All,
     };
 
-    let search = SearchAgent::new(repo, tei);
+    let search = SearchAgent::new(repo, tei).with_hybrid_weights(vector_weight, fulltext_weight);
     let ctx = search
         .build_augmented_context(
             &query,
@@ -1234,6 +1299,8 @@ async fn cmd_eval_augment(
     default_source_uri: Option<String>,
     default_max_tokens: usize,
     default_max_chunk_tokens: usize,
+    vector_weight: f32,
+    fulltext_weight: f32,
     fail_on_miss: bool,
     format: EvalOutputFormat,
     baseline_path: Option<PathBuf>,
@@ -1251,7 +1318,7 @@ async fn cmd_eval_augment(
     let capabilities = tei.capabilities();
     let provider = capabilities.provider;
     let model = capabilities.model;
-    let search = SearchAgent::new(repo, tei);
+    let search = SearchAgent::new(repo, tei).with_hybrid_weights(vector_weight, fulltext_weight);
     let mut reports = Vec::with_capacity(cases.len());
 
     if matches!(format, EvalOutputFormat::Human) {
@@ -1414,8 +1481,17 @@ async fn cmd_list(repo: Repository, limit: usize) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_garden(repo: Repository, dry_run: bool) -> Result<()> {
-    let gardener = GardenerAgent::new(repo);
+async fn cmd_garden(
+    repo: Repository,
+    dry_run: bool,
+    similarity_threshold: f32,
+    auto_apply_threshold: f32,
+    max_suggestions: usize,
+) -> Result<()> {
+    let gardener = GardenerAgent::new(repo)
+        .with_threshold(similarity_threshold)
+        .with_auto_apply_threshold(auto_apply_threshold)
+        .with_max_suggestions(max_suggestions);
 
     if dry_run {
         println!("Finding orphan notes...\n");
@@ -1492,10 +1568,20 @@ async fn cmd_interactive(
     repo: Repository,
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
+    default_search_limit: usize,
+    vector_weight: f32,
+    fulltext_weight: f32,
+    similarity_threshold: f32,
+    auto_apply_threshold: f32,
+    max_suggestions: usize,
 ) -> Result<()> {
     let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone());
-    let search = SearchAgent::new(repo.clone(), tei.clone());
-    let gardener = GardenerAgent::new(repo.clone());
+    let search = SearchAgent::new(repo.clone(), tei.clone())
+        .with_hybrid_weights(vector_weight, fulltext_weight);
+    let gardener = GardenerAgent::new(repo.clone())
+        .with_threshold(similarity_threshold)
+        .with_auto_apply_threshold(auto_apply_threshold)
+        .with_max_suggestions(max_suggestions);
 
     println!("GraphRAG Notes - Interactive Mode");
     println!("Commands: add, search, list, garden, stats, help, quit");
@@ -1542,7 +1628,7 @@ async fn cmd_interactive(
                     println!("Usage: search <query>");
                     continue;
                 }
-                match search.search(arg, 5).await {
+                match search.search(arg, default_search_limit).await {
                     Ok(results) => {
                         if results.is_empty() {
                             println!("No results.");

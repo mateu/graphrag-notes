@@ -199,6 +199,44 @@ cargo build --release
 cargo run --release -p graphrag-cli -- --help
 ```
 
+### Runtime configuration
+
+GraphRAG Notes resolves runtime settings in this fixed order: compiled defaults,
+an optional TOML file, compatible environment variables, and explicit CLI
+flags. A configuration file is optional; a fresh install retains the historic
+database location of `~/.graphrag/data-v3` and the existing local TEI/TGI
+defaults.
+
+| Layer | How it is selected |
+| --- | --- |
+| Defaults | Built into `graphrag` |
+| TOML | `--config PATH`, otherwise `GRAPHRAG_CONFIG`, otherwise `~/.config/graphrag/config.toml` if it exists |
+| Environment | `GRAPHRAG_*`, plus the established `TEI_*`, `TGI_*`, and `OLLAMA_URL` variables |
+| CLI | Explicit flags such as `--db-path`, `search --limit`, or `augment --max-tokens` |
+
+The checked-in [`config.toml`](config.toml) is a complete template, but it is
+not auto-loaded from the current directory. Copy it to the XDG location or pass
+it explicitly:
+
+```bash
+mkdir -p ~/.config/graphrag
+cp config.toml ~/.config/graphrag/config.toml
+graphrag config validate
+graphrag config show
+graphrag --config ./config.toml search "configuration precedence"
+```
+
+`config validate` opens neither the database nor inference services, so invalid
+values fail before application startup. `config show` emits the resolved TOML.
+The current local-provider configuration has no secret-valued fields; avoid
+putting credentials in a checked-in TOML file.
+
+Environment compatibility is preserved: `TEI_PROVIDER`, `TEI_URL`,
+`TEI_MODEL`, `TGI_PROVIDER`, `TGI_URL`, `TGI_MODEL`, `OLLAMA_URL`, and
+`TEI_MAX_BATCH` map to `[inference]`; `GRAPHRAG_DB_PATH` maps to
+`[database].path`. The complete supported override list and defaults are in
+[`.env.example`](.env.example).
+
 ### 3. Add Some Notes
 
 ```bash

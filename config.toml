@@ -1,20 +1,25 @@
 # GraphRAG Notes Configuration
 
 [database]
-# Path to the database (relative to home directory)
-path = ".graphrag/data-v3"
+# Path to the local SurrealDB database. `~` is expanded.
+path = "~/.graphrag/data-v3"
 
 [inference]
-# Embeddings backend (TEI by default, or Ollama when TEI_PROVIDER=ollama)
+# `tei` (default) or `ollama`.
+embedding_provider = "tei"
+# Embeddings endpoint (or the Ollama endpoint when embedding_provider = "ollama").
 embedding_url = "http://localhost:8081"
-# Entity extraction backend (TGI by default, or Ollama when TGI_PROVIDER=ollama)
-extraction_url = "http://localhost:8082"
-# Timeout for inference requests in seconds
-timeout_secs = 30
-# Optional local-Ollama defaults for the Rust inference clients
-ollama_url = "http://localhost:11434"
 embedding_model = "bge-m3:latest"
+# `tgi` (default) or `ollama`.
+extraction_provider = "tgi"
+# Entity extraction endpoint (or the Ollama endpoint when extraction_provider = "ollama").
+extraction_url = "http://localhost:8082"
 extraction_model = "phi4-mini:latest"
+# Shared Ollama fallback URL when either provider is Ollama.
+ollama_url = "http://localhost:11434"
+# Request timeout and maximum TEI batch size.
+timeout_secs = 30
+tei_max_batch = 32
 
 [search]
 # Default number of results to return
@@ -22,6 +27,12 @@ default_limit = 10
 # Weights for hybrid search (vector vs full-text)
 vector_weight = 0.7
 fulltext_weight = 0.3
+
+[augment]
+# Defaults for `augment` and `eval-augment` when their flags are omitted.
+default_limit = 8
+max_tokens = 1200
+max_chunk_tokens = 180
 
 [gardener]
 # Minimum similarity score to suggest a connection
@@ -39,4 +50,4 @@ max_chunk_size = 1000
 
 [logging]
 # Log level: trace, debug, info, warn, error
-level = "info"
+level = "warn"

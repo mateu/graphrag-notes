@@ -63,7 +63,13 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            path: PathBuf::from(".graphrag/data-v3"),
+            // Keep the historical CLI location when no configuration is
+            // supplied. `dirs` can fail only on unusual platforms; retaining
+            // a relative fallback is better than making configuration
+            // resolution unavailable there.
+            path: dirs::home_dir()
+                .map(|path| path.join(".graphrag/data-v3"))
+                .unwrap_or_else(|| PathBuf::from(".graphrag/data-v3")),
         }
     }
 }
@@ -172,7 +178,9 @@ pub struct LoggingConfig {
 impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
-            level: "info".into(),
+            // The CLI historically defaulted to WARN unless --verbose or
+            // RUST_LOG was set.
+            level: "warn".into(),
         }
     }
 }
@@ -191,12 +199,26 @@ impl RuntimeConfig {
         overrides: &CliOverrides,
         env: &impl Fn(&str) -> Option<String>,
     ) -> Result<Self, ConfigError> {
+        Self::load_with_env_and_default_path(explicit_path, overrides, env, default_config_path())
+    }
+
+    /// Like [`RuntimeConfig::load_with_env`], with an injected default path.
+    ///
+    /// This is public so callers embedding the CLI can use an application-
+    /// specific XDG location, and so precedence can be tested without reading
+    /// the invoking user's real configuration directory.
+    pub fn load_with_env_and_default_path(
+        explicit_path: Option<&Path>,
+        overrides: &CliOverrides,
+        env: &impl Fn(&str) -> Option<String>,
+        default_path: Option<PathBuf>,
+    ) -> Result<Self, ConfigError> {
         let mut config = match explicit_path
             .map(Path::to_path_buf)
             .or_else(|| env("GRAPHRAG_CONFIG").map(PathBuf::from))
         {
             Some(path) => Self::from_file(&path)?,
-            None => default_config_path()
+            None => default_path
                 .filter(|path| path.exists())
                 .map(|path| Self::from_file(&path))
                 .transpose()?
@@ -215,14 +237,19 @@ impl RuntimeConfig {
             path: path.into(),
             source,
         })?;
-        toml::from_str(&content).map_err(|source| ConfigError::ParseFile {
-            path: path.into(),
-            source,
-        })
+        let mut config: Self =
+            toml::from_str(&content).map_err(|source| ConfigError::ParseFile {
+                path: path.into(),
+                source,
+            })?;
+        config.database.path = expand_home_directory(&config.database.path);
+        Ok(config)
     }
 
     pub fn apply_env(&mut self, env: &impl Fn(&str) -> Option<String>) -> Result<(), ConfigError> {
         set_path(env, "GRAPHRAG_DB_PATH", &mut self.database.path);
+        set_string(env, "GRAPHRAG_LOG_LEVEL", &mut self.logging.level);
+
         set_string(env, "TEI_PROVIDER", &mut self.inference.embedding_provider);
         set_string(env, "TEI_URL", &mut self.inference.embedding_url);
         set_string(env, "TEI_MODEL", &mut self.inference.embedding_model);
@@ -231,6 +258,87 @@ impl RuntimeConfig {
         set_string(env, "TGI_MODEL", &mut self.inference.extraction_model);
         set_string(env, "OLLAMA_URL", &mut self.inference.ollama_url);
         set_usize(env, "TEI_MAX_BATCH", &mut self.inference.tei_max_batch)?;
+
+        set_u64(
+            env,
+            "GRAPHRAG_INFERENCE_TIMEOUT_SECS",
+            &mut self.inference.timeout_secs,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_DEFAULT_LIMIT",
+            &mut self.search.default_limit,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_SEARCH_VECTOR_WEIGHT",
+            &mut self.search.vector_weight,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_SEARCH_FULLTEXT_WEIGHT",
+            &mut self.search.fulltext_weight,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_AUGMENT_DEFAULT_LIMIT",
+            &mut self.augment.default_limit,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_AUGMENT_MAX_TOKENS",
+            &mut self.augment.max_tokens,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_AUGMENT_MAX_CHUNK_TOKENS",
+            &mut self.augment.max_chunk_tokens,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_GARDENER_SIMILARITY_THRESHOLD",
+            &mut self.gardener.similarity_threshold,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_GARDENER_AUTO_APPLY_THRESHOLD",
+            &mut self.gardener.auto_apply_threshold,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_GARDENER_MAX_SUGGESTIONS",
+            &mut self.gardener.max_suggestions,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_LIBRARIAN_MIN_CHUNK_SIZE",
+            &mut self.librarian.min_chunk_size,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE",
+            &mut self.librarian.max_chunk_size,
+        )?;
+
+        // The long-standing Ollama setup allows callers to set only the
+        // provider. Preserve that convenience while still letting an explicit
+        // TEI_URL/TGI_URL win over OLLAMA_URL.
+        if self
+            .inference
+            .embedding_provider
+            .eq_ignore_ascii_case("ollama")
+            && env("TEI_URL").is_none()
+        {
+            self.inference.embedding_url = self.inference.ollama_url.clone();
+        }
+        if self
+            .inference
+            .extraction_provider
+            .eq_ignore_ascii_case("ollama")
+            && env("TGI_URL").is_none()
+        {
+            self.inference.extraction_url = self.inference.ollama_url.clone();
+        }
         Ok(())
     }
 
@@ -267,6 +375,7 @@ impl RuntimeConfig {
             || self.augment.max_chunk_tokens == 0
             || self.librarian.min_chunk_size == 0
             || self.librarian.max_chunk_size < self.librarian.min_chunk_size
+            || self.gardener.max_suggestions == 0
         {
             return Err(ConfigError::Validation("limits must be positive and librarian.max_chunk_size must be at least min_chunk_size".into()));
         }
@@ -283,6 +392,14 @@ impl RuntimeConfig {
             || self.gardener.auto_apply_threshold < self.gardener.similarity_threshold
         {
             return Err(ConfigError::Validation("Gardener thresholds must be in [0, 1] and auto_apply_threshold must be at least similarity_threshold".into()));
+        }
+        if !matches!(
+            self.logging.level.trim().to_ascii_lowercase().as_str(),
+            "trace" | "debug" | "info" | "warn" | "error" | "off"
+        ) {
+            return Err(ConfigError::Validation(
+                "logging.level must be trace, debug, info, warn, error, or off".into(),
+            ));
         }
         Ok(())
     }
@@ -303,8 +420,49 @@ fn set_string(env: &impl Fn(&str) -> Option<String>, key: &str, target: &mut Str
 }
 fn set_path(env: &impl Fn(&str) -> Option<String>, key: &str, target: &mut PathBuf) {
     if let Some(value) = env(key).filter(|value| !value.trim().is_empty()) {
-        *target = value.into();
+        *target = expand_home_directory(Path::new(&value));
     }
+}
+
+fn set_u64(
+    env: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    target: &mut u64,
+) -> Result<(), ConfigError> {
+    if let Some(value) = env(key) {
+        *target = value
+            .parse()
+            .map_err(|_| ConfigError::Validation(format!("{key} must be a positive integer")))?;
+    }
+    Ok(())
+}
+
+fn set_f32(
+    env: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    target: &mut f32,
+) -> Result<(), ConfigError> {
+    if let Some(value) = env(key) {
+        *target = value
+            .parse()
+            .map_err(|_| ConfigError::Validation(format!("{key} must be a number")))?;
+    }
+    Ok(())
+}
+
+fn expand_home_directory(path: &Path) -> PathBuf {
+    let Some(path) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if path == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(path));
+    }
+    if let Some(suffix) = path.strip_prefix("~/") {
+        return dirs::home_dir()
+            .map(|home| home.join(suffix))
+            .unwrap_or_else(|| PathBuf::from(path));
+    }
+    PathBuf::from(path)
 }
 fn set_usize(
     env: &impl Fn(&str) -> Option<String>,
@@ -323,6 +481,7 @@ fn set_usize(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::fs;
 
     fn env(values: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let values = values
@@ -334,7 +493,7 @@ mod tests {
 
     #[test]
     fn environment_overrides_defaults_and_cli_wins() {
-        let config = RuntimeConfig::load_with_env(
+        let config = RuntimeConfig::load_with_env_and_default_path(
             None,
             &CliOverrides {
                 database_path: Some("cli.db".into()),
@@ -344,6 +503,7 @@ mod tests {
                 ("TEI_MAX_BATCH", "8"),
                 ("GRAPHRAG_DB_PATH", "env.db"),
             ]),
+            None,
         )
         .unwrap();
         assert_eq!(config.database.path, PathBuf::from("cli.db"));
@@ -356,5 +516,127 @@ mod tests {
         let mut config = RuntimeConfig::default();
         config.search.vector_weight = 0.8;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn defaults_are_used_when_no_optional_config_file_exists() {
+        let missing = tempfile::tempdir().unwrap().path().join("missing.toml");
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[]),
+            Some(missing),
+        )
+        .unwrap();
+
+        assert_eq!(config.search.vector_weight, 0.7);
+        assert_eq!(config.augment.max_tokens, 1200);
+        assert_eq!(config.logging.level, "warn");
+    }
+
+    #[test]
+    fn explicit_file_then_environment_then_cli_define_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("graphrag.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [database]
+                path = "file.db"
+                [inference]
+                embedding_provider = "file-provider"
+                tei_max_batch = 7
+                [search]
+                default_limit = 3
+            "#,
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            Some(&config_path),
+            &CliOverrides {
+                database_path: Some("cli.db".into()),
+            },
+            &env(&[
+                ("GRAPHRAG_DB_PATH", "environment.db"),
+                ("TEI_PROVIDER", "ollama"),
+                ("TEI_MAX_BATCH", "9"),
+                ("GRAPHRAG_SEARCH_DEFAULT_LIMIT", "11"),
+            ]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.database.path, PathBuf::from("cli.db"));
+        assert_eq!(config.inference.embedding_provider, "ollama");
+        assert_eq!(config.inference.tei_max_batch, 9);
+        assert_eq!(config.search.default_limit, 11);
+    }
+
+    #[test]
+    fn missing_explicit_file_is_an_error() {
+        let missing = tempfile::tempdir().unwrap().path().join("missing.toml");
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            Some(&missing),
+            &CliOverrides::default(),
+            &env(&[]),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::ReadFile { .. }));
+    }
+
+    #[test]
+    fn invalid_environment_value_identifies_its_field() {
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("GRAPHRAG_AUGMENT_MAX_TOKENS", "zero")]),
+            None,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("GRAPHRAG_AUGMENT_MAX_TOKENS must be a positive integer"));
+    }
+
+    #[test]
+    fn ollama_provider_keeps_existing_one_variable_setup() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[
+                ("TEI_PROVIDER", "ollama"),
+                ("TGI_PROVIDER", "ollama"),
+                ("OLLAMA_URL", "http://ollama.example:11434"),
+            ]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.inference.embedding_url,
+            "http://ollama.example:11434"
+        );
+        assert_eq!(
+            config.inference.extraction_url,
+            "http://ollama.example:11434"
+        );
+    }
+
+    #[test]
+    fn home_paths_are_expanded_from_files_and_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("graphrag.toml");
+        fs::write(&config_path, "[database]\npath = \"~/.graphrag/test\"\n").unwrap();
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            Some(&config_path),
+            &CliOverrides::default(),
+            &env(&[]),
+            None,
+        )
+        .unwrap();
+        let expected = dirs::home_dir().unwrap().join(".graphrag/test");
+        assert_eq!(config.database.path, expected);
     }
 }

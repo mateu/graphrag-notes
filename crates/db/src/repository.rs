@@ -1,7 +1,9 @@
 //! Repository pattern for database operations
 
 use crate::{DbConnection, DbError, Result};
-use graphrag_core::{record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, Source};
+use graphrag_core::{
+    record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, Source,
+};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
@@ -181,6 +183,25 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
+        self.hybrid_search_notes_with_weights(
+            query_text, embedding, limit, since, source_uri, 0.65, 0.35,
+        )
+        .await
+    }
+
+    /// Hybrid note search using explicitly configured vector and full-text
+    /// weights. The caller is responsible for validating that they sum to one.
+    #[instrument(skip(self, embedding))]
+    pub async fn hybrid_search_notes_with_weights(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        vector_weight: f32,
+        fulltext_weight: f32,
+    ) -> Result<Vec<SearchResult>> {
         // Pull a wider candidate pool from each retrieval mode, then rerank.
         let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
 
@@ -229,8 +250,13 @@ impl Repository {
 
         let mut results: Vec<SearchResult> = map.into_values().collect();
         results.sort_by(|a, b| {
-            hybrid_rank_score(b.vec_distance, b.fts_score)
-                .total_cmp(&hybrid_rank_score(a.vec_distance, a.fts_score))
+            hybrid_rank_score(b.vec_distance, b.fts_score, vector_weight, fulltext_weight)
+                .total_cmp(&hybrid_rank_score(
+                    a.vec_distance,
+                    a.fts_score,
+                    vector_weight,
+                    fulltext_weight,
+                ))
         });
         if results.len() > limit {
             results.truncate(limit);
@@ -342,6 +368,24 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<MessageSearchResult>> {
+        self.hybrid_search_messages_with_weights(
+            query_text, embedding, limit, since, source_uri, 0.65, 0.35,
+        )
+        .await
+    }
+
+    /// Hybrid message search using explicitly configured ranking weights.
+    #[instrument(skip(self, embedding))]
+    pub async fn hybrid_search_messages_with_weights(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        vector_weight: f32,
+        fulltext_weight: f32,
+    ) -> Result<Vec<MessageSearchResult>> {
         let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
 
         let vec_results = self
@@ -378,8 +422,13 @@ impl Repository {
 
         let mut results: Vec<MessageSearchResult> = map.into_values().collect();
         results.sort_by(|a, b| {
-            hybrid_rank_score(b.vec_distance, b.fts_score)
-                .total_cmp(&hybrid_rank_score(a.vec_distance, a.fts_score))
+            hybrid_rank_score(b.vec_distance, b.fts_score, vector_weight, fulltext_weight)
+                .total_cmp(&hybrid_rank_score(
+                    a.vec_distance,
+                    a.fts_score,
+                    vector_weight,
+                    fulltext_weight,
+                ))
         });
         if results.len() > limit {
             results.truncate(limit);
@@ -478,6 +527,25 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<ConversationSearchResult>> {
+        self.hybrid_search_conversation_summaries_with_weights(
+            query_text, embedding, limit, since, source_uri, 0.65, 0.35,
+        )
+        .await
+    }
+
+    /// Hybrid conversation-summary search using explicitly configured ranking
+    /// weights.
+    #[instrument(skip(self, embedding))]
+    pub async fn hybrid_search_conversation_summaries_with_weights(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        vector_weight: f32,
+        fulltext_weight: f32,
+    ) -> Result<Vec<ConversationSearchResult>> {
         let candidate_limit = (limit.saturating_mul(4)).clamp(50, 200);
 
         let vec_results = self
@@ -514,8 +582,13 @@ impl Repository {
 
         let mut results: Vec<ConversationSearchResult> = map.into_values().collect();
         results.sort_by(|a, b| {
-            hybrid_rank_score(b.vec_distance, b.fts_score)
-                .total_cmp(&hybrid_rank_score(a.vec_distance, a.fts_score))
+            hybrid_rank_score(b.vec_distance, b.fts_score, vector_weight, fulltext_weight)
+                .total_cmp(&hybrid_rank_score(
+                    a.vec_distance,
+                    a.fts_score,
+                    vector_weight,
+                    fulltext_weight,
+                ))
         });
         if results.len() > limit {
             results.truncate(limit);
@@ -635,7 +708,10 @@ impl Repository {
 
     /// Get notes related to a given note (any direction)
     #[instrument(skip(self))]
-    pub async fn get_related_notes(&self, note_id: &surrealdb::types::RecordId) -> Result<RelatedNotes> {
+    pub async fn get_related_notes(
+        &self,
+        note_id: &surrealdb::types::RecordId,
+    ) -> Result<RelatedNotes> {
         let result: Vec<RelatedNotes> = self
             .db
             .query(
@@ -805,7 +881,10 @@ impl Repository {
 
     /// Remove all mention links for a note
     #[instrument(skip(self))]
-    pub async fn delete_mentions_for_note(&self, note_id: &surrealdb::types::RecordId) -> Result<()> {
+    pub async fn delete_mentions_for_note(
+        &self,
+        note_id: &surrealdb::types::RecordId,
+    ) -> Result<()> {
         self.db
             .query("DELETE mentions WHERE in = $note_id")
             .bind(("note_id", note_id.clone()))
@@ -1352,14 +1431,19 @@ pub struct ConversationSearchResult {
     pub fts_score: Option<f32>,
 }
 
-fn hybrid_rank_score(vec_distance: Option<f32>, fts_score: Option<f32>) -> f32 {
+fn hybrid_rank_score(
+    vec_distance: Option<f32>,
+    fts_score: Option<f32>,
+    vector_weight: f32,
+    fulltext_weight: f32,
+) -> f32 {
     let vec_component = vec_distance
         .map(|distance| 1.0 / (1.0 + distance.max(0.0)))
         .unwrap_or(0.0);
     let fts_component = fts_score
         .map(|score| (score / 10.0).min(1.0))
         .unwrap_or(0.0);
-    (vec_component * 0.65) + (fts_component * 0.35)
+    (vec_component * vector_weight) + (fts_component * fulltext_weight)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, SurrealValue)]
