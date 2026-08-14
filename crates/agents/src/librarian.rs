@@ -1,6 +1,6 @@
 //! Librarian Agent - Ingests content and creates notes
 
-use crate::{Result, TeiClient, TgiClient};
+use crate::{Result, SharedEmbedder, SharedEntityExtractor};
 use graphrag_core::{
     record_id_to_string, ChatConversation, ChatExport, ChatMessage, Entity, EntityType,
     MessageRole, Note, NoteType, Source, SourceType,
@@ -13,6 +13,15 @@ use tracing::{debug, info, instrument};
 const DEFAULT_PROGRESS_EVERY: usize = 10;
 const DEFAULT_PROGRESS_EVERY_SECS: u64 = 5;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 8000;
+
+fn ensure_batch_length(expected: usize, actual: usize) -> Result<()> {
+    if expected == actual {
+        return Ok(());
+    }
+    Err(crate::AgentError::Processing(format!(
+        "Embedding provider returned {actual} embeddings for {expected} inputs"
+    )))
+}
 
 fn skip_entity_extraction() -> bool {
     std::env::var("SKIP_ENTITY_EXTRACTION")
@@ -62,8 +71,8 @@ fn truncate_for_extraction(text: &str) -> String {
 /// The Librarian agent handles content ingestion
 pub struct LibrarianAgent {
     repo: Repository,
-    tei: TeiClient,
-    tgi: TgiClient,
+    embedder: SharedEmbedder,
+    extractor: SharedEntityExtractor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,8 +151,16 @@ struct NoteCreationStats {
 
 impl LibrarianAgent {
     /// Create a new Librarian agent
-    pub fn new(repo: Repository, tei: TeiClient, tgi: TgiClient) -> Self {
-        Self { repo, tei, tgi }
+    pub fn new(
+        repo: Repository,
+        embedder: SharedEmbedder,
+        extractor: SharedEntityExtractor,
+    ) -> Self {
+        Self {
+            repo,
+            embedder,
+            extractor,
+        }
     }
 
     /// Ingest raw text content and create a note
@@ -169,7 +186,7 @@ impl LibrarianAgent {
 
         // Generate embedding
         debug!("Generating embedding...");
-        let embedding = self.tei.embed(&content, false).await?;
+        let embedding = self.embedder.embed(&content, false).await?;
 
         // Determine title
         let note_title = if let Some(t) = title {
@@ -249,7 +266,8 @@ impl LibrarianAgent {
 
         // Batch embed for efficiency
         let texts: Vec<String> = notes.iter().map(|n| n.content.clone()).collect();
-        let embeddings = self.tei.embed_batch(&texts, false).await?;
+        let embeddings = self.embedder.embed_batch(&texts, false).await?;
+        ensure_batch_length(texts.len(), embeddings.len())?;
 
         // Update each note
         for (note, embedding) in notes.iter().zip(embeddings.into_iter()) {
@@ -277,7 +295,7 @@ impl LibrarianAgent {
         }
 
         let text = truncate_for_extraction(&note.content);
-        let extraction = self.tgi.extract(&text).await?;
+        let extraction = self.extractor.extract(&text).await?;
         let entities = extraction.entities;
         let extracted_count = entities.len();
         let mut linked_count = 0usize;
@@ -597,7 +615,7 @@ impl LibrarianAgent {
 
         if chunks.is_empty() {
             // Treat whole content as one note
-            let embedding = self.tei.embed(content, false).await?;
+            let embedding = self.embedder.embed(content, false).await?;
             let mut note = Note::new(content)
                 .with_type(NoteType::Raw)
                 .with_embedding(embedding);
@@ -612,7 +630,8 @@ impl LibrarianAgent {
 
         // Generate embeddings in batch
         let texts: Vec<String> = chunks.iter().map(|s| s.to_string()).collect();
-        let embeddings = self.tei.embed_batch(&texts, false).await?;
+        let embeddings = self.embedder.embed_batch(&texts, false).await?;
+        ensure_batch_length(texts.len(), embeddings.len())?;
 
         let mut notes = Vec::new();
 
@@ -901,7 +920,7 @@ impl LibrarianAgent {
                 conversation.display_title(),
                 conversation.summary
             );
-            Some(self.tei.embed(&summary_text, false).await?)
+            Some(self.embedder.embed(&summary_text, false).await?)
         };
 
         let conversation_record_id = self
@@ -910,16 +929,21 @@ impl LibrarianAgent {
             .await?;
         outcome.conversation_records_upserted = 1;
 
-        let message_embeddings = if conversation.messages.is_empty() {
-            Vec::new()
+        let (message_embeddings, expected_embeddings) = if conversation.messages.is_empty() {
+            (Vec::new(), 0)
         } else {
             let message_texts: Vec<String> = conversation
                 .messages
                 .iter()
                 .map(Self::message_text_for_embedding)
                 .collect();
-            self.tei.embed_batch(&message_texts, false).await?
+            let expected = message_texts.len();
+            (
+                self.embedder.embed_batch(&message_texts, false).await?,
+                expected,
+            )
         };
+        ensure_batch_length(expected_embeddings, message_embeddings.len())?;
 
         let mut message_record_ids = Vec::with_capacity(conversation.messages.len());
         for (idx, message) in conversation.messages.iter().enumerate() {
@@ -1127,7 +1151,8 @@ impl LibrarianAgent {
         }
 
         // Batch embed all Q&A pairs
-        let embeddings = self.tei.embed_batch(&texts_to_embed, false).await?;
+        let embeddings = self.embedder.embed_batch(&texts_to_embed, false).await?;
+        ensure_batch_length(texts_to_embed.len(), embeddings.len())?;
 
         // Create notes
         let mut stats = NoteCreationStats::default();
@@ -1190,7 +1215,7 @@ impl LibrarianAgent {
             conversation.display_title(),
             conversation.summary
         );
-        let embedding = self.tei.embed(&summary_content, false).await?;
+        let embedding = self.embedder.embed(&summary_content, false).await?;
         let mut note = Note::new(summary_content)
             .with_type(NoteType::Synthesis)
             .with_title(summary_title)
@@ -1292,7 +1317,8 @@ impl LibrarianAgent {
             }
         }
 
-        let embeddings = self.tei.embed_batch(&texts_to_embed, false).await?;
+        let embeddings = self.embedder.embed_batch(&texts_to_embed, false).await?;
+        ensure_batch_length(texts_to_embed.len(), embeddings.len())?;
         let mut stats = NoteCreationStats::default();
 
         for ((content, title, tags, message_idx), embedding) in

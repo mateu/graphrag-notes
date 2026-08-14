@@ -8,6 +8,7 @@ graphrag-core = { path = "../core" }
 graphrag-db = { path = "../db" }
 
 tokio.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true

@@ -1,6 +1,6 @@
 //! Search Agent - Handles user queries with hybrid search
 
-use crate::{Result, TeiClient};
+use crate::{Result, SharedEmbedder};
 use chrono::{Duration, Utc};
 use graphrag_core::record_id_to_string;
 use graphrag_db::repository::{
@@ -9,7 +9,6 @@ use graphrag_db::repository::{
 use graphrag_db::Repository;
 
 use std::collections::HashSet;
-
 
 use tracing::{debug, info, instrument};
 
@@ -114,13 +113,13 @@ impl AugmentContext {
 /// The Search agent handles user queries
 pub struct SearchAgent {
     repo: Repository,
-    tei: TeiClient,
+    embedder: SharedEmbedder,
 }
 
 impl SearchAgent {
     /// Create a new Search agent
-    pub fn new(repo: Repository, tei: TeiClient) -> Self {
-        Self { repo, tei }
+    pub fn new(repo: Repository, embedder: SharedEmbedder) -> Self {
+        Self { repo, embedder }
     }
 
     /// Perform hybrid search (vector + full-text)
@@ -141,7 +140,7 @@ impl SearchAgent {
 
         // Generate query embedding
         debug!("Generating query embedding...");
-        let embedding = self.tei.embed(query, true).await?;
+        let embedding = self.embedder.embed(query, true).await?;
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
 
         // Perform hybrid search
@@ -195,7 +194,7 @@ impl SearchAgent {
     pub async fn semantic_search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
         debug!("Performing semantic search for: {}", query);
 
-        let embedding = self.tei.embed(query, true).await?;
+        let embedding = self.embedder.embed(query, true).await?;
         let results = self.repo.vector_search(embedding, limit).await?;
 
         Ok(results)
@@ -221,7 +220,7 @@ impl SearchAgent {
         source_uri: Option<String>,
     ) -> Result<Vec<ScopedSearchResult>> {
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
-        let embedding = self.tei.embed(query, true).await?;
+        let embedding = self.embedder.embed(query, true).await?;
         let mut scoped_results = Vec::new();
 
         if matches!(scope, SearchScope::Notes | SearchScope::All) {

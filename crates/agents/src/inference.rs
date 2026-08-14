@@ -1,10 +1,13 @@
 //! Local inference clients for embeddings (TEI) and entity extraction (TGI).
 
 use crate::{AgentError, Result};
+use async_trait::async_trait;
 use graphrag_db::schema::EMBEDDING_DIMENSION;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, info};
 
@@ -19,6 +22,81 @@ const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_STRICT_ENTITY_JSON: bool = true;
 const DEFAULT_MAX_ENTITIES: usize = 30;
 const DEFAULT_MAX_RELATIONSHIPS: usize = 15;
+
+/// A shareable embeddings provider used by agents.
+///
+/// The trait uses `async_trait` so it remains object-safe: callers can pass an
+/// `Arc<dyn Embedder>` without propagating a generic provider type through the
+/// CLI or agent graph.
+#[async_trait]
+pub trait Embedder: Send + Sync {
+    async fn embed(&self, text: &str, is_query: bool) -> Result<Vec<f32>>;
+    async fn embed_batch(&self, texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>>;
+    async fn health(&self) -> Result<bool>;
+    fn capabilities(&self) -> InferenceCapabilities;
+}
+
+/// A shareable entity-extraction provider used by agents.
+#[async_trait]
+pub trait EntityExtractor: Send + Sync {
+    async fn extract(&self, text: &str) -> Result<EntityExtraction>;
+    async fn health(&self) -> Result<bool>;
+    fn capabilities(&self) -> InferenceCapabilities;
+}
+
+pub type SharedEmbedder = Arc<dyn Embedder>;
+pub type SharedEntityExtractor = Arc<dyn EntityExtractor>;
+
+/// Provider metadata exposed without coupling callers to a HTTP client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InferenceCapabilities {
+    pub provider: String,
+    pub model: String,
+    pub endpoint: String,
+    pub known_dimension: Option<usize>,
+}
+
+/// Production inference adapters selected from the environment in one place.
+#[derive(Clone)]
+pub struct InferenceProviders {
+    pub embedder: SharedEmbedder,
+    pub extractor: SharedEntityExtractor,
+}
+
+impl InferenceProviders {
+    /// Build the local TEI/TGI or Ollama adapters using the established
+    /// `TEI_*` and `TGI_*` environment variables.
+    pub fn from_environment() -> Self {
+        let embedder: SharedEmbedder = if env_or_default("TEI_PROVIDER", DEFAULT_TEI_PROVIDER)
+            .eq_ignore_ascii_case("ollama")
+        {
+            Arc::new(TeiClient::ollama(
+                env_or_default("TEI_URL", "http://localhost:11434"),
+                env_or_default("TEI_MODEL", DEFAULT_OLLAMA_EMBED_MODEL),
+            ))
+        } else {
+            Arc::new(TeiClient::new(env_or_default("TEI_URL", DEFAULT_TEI_URL)))
+        };
+        let extractor: SharedEntityExtractor = if env_or_default(
+            "TGI_PROVIDER",
+            DEFAULT_TGI_PROVIDER,
+        )
+        .eq_ignore_ascii_case("ollama")
+        {
+            Arc::new(TgiClient::ollama(
+                env_or_default("TGI_URL", "http://localhost:11434"),
+                env_or_default("TGI_MODEL", DEFAULT_OLLAMA_MODEL),
+            ))
+        } else {
+            Arc::new(TgiClient::new(env_or_default("TGI_URL", DEFAULT_TGI_URL)))
+        };
+
+        Self {
+            embedder,
+            extractor,
+        }
+    }
+}
 
 fn strict_entity_json() -> bool {
     std::env::var("STRICT_ENTITY_JSON")
@@ -67,20 +145,12 @@ impl TeiClient {
         }
     }
 
-    pub fn default_local() -> Self {
-        let provider = env_or_default("TEI_PROVIDER", DEFAULT_TEI_PROVIDER);
-        if provider.eq_ignore_ascii_case("ollama") {
-            let url = env_or_default("TEI_URL", "http://localhost:11434");
-            let model = env_or_default("TEI_MODEL", DEFAULT_OLLAMA_EMBED_MODEL);
-            Self {
-                client: Client::new(),
-                base_url: url,
-                provider: TeiProvider::Ollama,
-                model,
-            }
-        } else {
-            let url = env_or_default("TEI_URL", DEFAULT_TEI_URL);
-            Self::new(url)
+    pub fn ollama(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: base_url.into(),
+            provider: TeiProvider::Ollama,
+            model: model.into(),
         }
     }
 
@@ -167,8 +237,15 @@ impl TeiClient {
                 .await?;
 
             let embeddings = parse_embeddings_response(response)?;
-            if let Some(first) = embeddings.first() {
-                validate_embedding_dim(first.len())?;
+            if embeddings.len() != chunk.len() {
+                return Err(AgentError::Processing(format!(
+                    "Embedding provider returned {} embeddings for a batch of {} inputs",
+                    embeddings.len(),
+                    chunk.len()
+                )));
+            }
+            for embedding in &embeddings {
+                validate_embedding_dim(embedding.len())?;
             }
             results.extend(embeddings);
         }
@@ -213,6 +290,34 @@ impl TeiClient {
     }
 }
 
+#[async_trait]
+impl Embedder for TeiClient {
+    async fn embed(&self, text: &str, is_query: bool) -> Result<Vec<f32>> {
+        TeiClient::embed(self, text, is_query).await
+    }
+
+    async fn embed_batch(&self, texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
+        TeiClient::embed_batch(self, texts, is_query).await
+    }
+
+    async fn health(&self) -> Result<bool> {
+        TeiClient::health(self).await
+    }
+
+    fn capabilities(&self) -> InferenceCapabilities {
+        InferenceCapabilities {
+            provider: match self.provider {
+                TeiProvider::Tei => DEFAULT_TEI_PROVIDER,
+                TeiProvider::Ollama => "ollama",
+            }
+            .to_string(),
+            model: self.model.clone(),
+            endpoint: self.base_url.clone(),
+            known_dimension: Some(EMBEDDING_DIMENSION),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TgiClient {
     client: Client,
@@ -233,21 +338,13 @@ impl TgiClient {
         }
     }
 
-    pub fn default_local() -> Self {
-        let provider = env_or_default("TGI_PROVIDER", DEFAULT_TGI_PROVIDER);
-        if provider.eq_ignore_ascii_case("ollama") {
-            let url = env_or_default("TGI_URL", "http://localhost:11434");
-            let model = env_or_default("TGI_MODEL", DEFAULT_OLLAMA_MODEL);
-            Self {
-                client: Client::new(),
-                base_url: url,
-                json_schema: None,
-                provider: TgiProvider::Ollama,
-                model,
-            }
-        } else {
-            let url = env_or_default("TGI_URL", DEFAULT_TGI_URL);
-            Self::new(url)
+    pub fn ollama(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: base_url.into(),
+            json_schema: None,
+            provider: TgiProvider::Ollama,
+            model: model.into(),
         }
     }
 
@@ -451,26 +548,306 @@ impl TgiClient {
     }
 }
 
+#[async_trait]
+impl EntityExtractor for TgiClient {
+    async fn extract(&self, text: &str) -> Result<EntityExtraction> {
+        TgiClient::extract(self, text).await
+    }
+
+    async fn health(&self) -> Result<bool> {
+        TgiClient::health(self).await
+    }
+
+    fn capabilities(&self) -> InferenceCapabilities {
+        InferenceCapabilities {
+            provider: match self.provider {
+                TgiProvider::Tgi => DEFAULT_TGI_PROVIDER,
+                TgiProvider::Ollama => "ollama",
+            }
+            .to_string(),
+            model: self.model.clone(),
+            endpoint: self.base_url.clone(),
+            known_dimension: None,
+        }
+    }
+}
+
+/// Deterministic offline embeddings for agent tests.
+///
+/// Inputs not explicitly configured receive a stable 1024-dimensional vector.
+/// Configured inputs are useful for exercising ranking and dimension-error
+/// paths without an HTTP inference service.
+#[derive(Clone)]
+pub struct DeterministicEmbedder {
+    embeddings: Arc<Mutex<HashMap<(String, bool), Vec<f32>>>>,
+    default_embedding: Vec<f32>,
+    generate_per_input: bool,
+    health: bool,
+    failures_remaining: Arc<Mutex<usize>>,
+    failure_message: String,
+    batch_length_mismatch: bool,
+}
+
+impl Default for DeterministicEmbedder {
+    fn default() -> Self {
+        Self {
+            embeddings: Arc::new(Mutex::new(HashMap::new())),
+            default_embedding: stable_embedding("default"),
+            generate_per_input: true,
+            health: true,
+            failures_remaining: Arc::new(Mutex::new(0)),
+            failure_message: "injected embedding failure".to_string(),
+            batch_length_mismatch: false,
+        }
+    }
+}
+
+impl DeterministicEmbedder {
+    pub fn with_embedding(
+        self,
+        text: impl Into<String>,
+        is_query: bool,
+        embedding: Vec<f32>,
+    ) -> Self {
+        self.embeddings
+            .lock()
+            .expect("deterministic embedder lock poisoned")
+            .insert((text.into(), is_query), embedding);
+        self
+    }
+
+    pub fn with_default_embedding(mut self, embedding: Vec<f32>) -> Self {
+        self.default_embedding = embedding;
+        self.generate_per_input = false;
+        self
+    }
+
+    pub fn unhealthy(mut self) -> Self {
+        self.health = false;
+        self
+    }
+
+    pub fn fail_next_requests(self, count: usize, message: impl Into<String>) -> Self {
+        *self
+            .failures_remaining
+            .lock()
+            .expect("deterministic embedder lock poisoned") = count;
+        let mut this = self;
+        this.failure_message = message.into();
+        this
+    }
+
+    pub fn with_batch_length_mismatch(mut self) -> Self {
+        self.batch_length_mismatch = true;
+        self
+    }
+
+    fn maybe_fail(&self) -> Result<()> {
+        let mut remaining = self
+            .failures_remaining
+            .lock()
+            .expect("deterministic embedder lock poisoned");
+        if *remaining > 0 {
+            *remaining -= 1;
+            return Err(AgentError::InferenceService(self.failure_message.clone()));
+        }
+        Ok(())
+    }
+
+    fn embedding_for(&self, text: &str, is_query: bool) -> Vec<f32> {
+        self.embeddings
+            .lock()
+            .expect("deterministic embedder lock poisoned")
+            .get(&(text.to_string(), is_query))
+            .cloned()
+            .unwrap_or_else(|| {
+                if self.generate_per_input {
+                    stable_embedding(&format!("{is_query}:{text}"))
+                } else {
+                    self.default_embedding.clone()
+                }
+            })
+    }
+}
+
+#[async_trait]
+impl Embedder for DeterministicEmbedder {
+    async fn embed(&self, text: &str, is_query: bool) -> Result<Vec<f32>> {
+        self.maybe_fail()?;
+        Ok(self.embedding_for(text, is_query))
+    }
+
+    async fn embed_batch(&self, texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
+        self.maybe_fail()?;
+        let mut embeddings = texts
+            .iter()
+            .map(|text| self.embedding_for(text, is_query))
+            .collect::<Vec<_>>();
+        if self.batch_length_mismatch && !embeddings.is_empty() {
+            embeddings.pop();
+        }
+        Ok(embeddings)
+    }
+
+    async fn health(&self) -> Result<bool> {
+        Ok(self.health)
+    }
+
+    fn capabilities(&self) -> InferenceCapabilities {
+        InferenceCapabilities {
+            provider: "deterministic-test".to_string(),
+            model: "fixture".to_string(),
+            endpoint: "offline://deterministic-embedder".to_string(),
+            known_dimension: Some(self.default_embedding.len()),
+        }
+    }
+}
+
+/// Fixture-driven offline entity extraction for agent tests.
+#[derive(Clone)]
+pub struct FixtureEntityExtractor {
+    fixtures: Arc<Mutex<HashMap<String, std::result::Result<EntityExtraction, String>>>>,
+    default: EntityExtraction,
+    health: bool,
+    failures_remaining: Arc<Mutex<usize>>,
+    failure_message: String,
+}
+
+impl Default for FixtureEntityExtractor {
+    fn default() -> Self {
+        Self {
+            fixtures: Arc::new(Mutex::new(HashMap::new())),
+            default: EntityExtraction {
+                entities: Vec::new(),
+                relationships: Vec::new(),
+            },
+            health: true,
+            failures_remaining: Arc::new(Mutex::new(0)),
+            failure_message: "injected extraction failure".to_string(),
+        }
+    }
+}
+
+impl FixtureEntityExtractor {
+    pub fn with_fixture(self, text: impl Into<String>, extraction: EntityExtraction) -> Self {
+        self.fixtures
+            .lock()
+            .expect("fixture extractor lock poisoned")
+            .insert(text.into(), Ok(extraction));
+        self
+    }
+
+    /// Configure the given input to model a provider response that failed JSON
+    /// validation. The returned error follows the production processing path.
+    pub fn with_malformed_fixture(
+        self,
+        text: impl Into<String>,
+        response: impl Into<String>,
+    ) -> Self {
+        self.fixtures
+            .lock()
+            .expect("fixture extractor lock poisoned")
+            .insert(text.into(), Err(response.into()));
+        self
+    }
+
+    pub fn with_default(mut self, extraction: EntityExtraction) -> Self {
+        self.default = extraction;
+        self
+    }
+
+    pub fn unhealthy(mut self) -> Self {
+        self.health = false;
+        self
+    }
+
+    pub fn fail_next_requests(self, count: usize, message: impl Into<String>) -> Self {
+        *self
+            .failures_remaining
+            .lock()
+            .expect("fixture extractor lock poisoned") = count;
+        let mut this = self;
+        this.failure_message = message.into();
+        this
+    }
+}
+
+#[async_trait]
+impl EntityExtractor for FixtureEntityExtractor {
+    async fn extract(&self, text: &str) -> Result<EntityExtraction> {
+        let mut remaining = self
+            .failures_remaining
+            .lock()
+            .expect("fixture extractor lock poisoned");
+        if *remaining > 0 {
+            *remaining -= 1;
+            return Err(AgentError::InferenceService(self.failure_message.clone()));
+        }
+        drop(remaining);
+
+        match self
+            .fixtures
+            .lock()
+            .expect("fixture extractor lock poisoned")
+            .get(text)
+            .cloned()
+        {
+            Some(Ok(extraction)) => Ok(extraction),
+            Some(Err(response)) => Err(AgentError::Processing(format!(
+                "fixture extractor returned malformed JSON: {response}"
+            ))),
+            None => Ok(self.default.clone()),
+        }
+    }
+
+    async fn health(&self) -> Result<bool> {
+        Ok(self.health)
+    }
+
+    fn capabilities(&self) -> InferenceCapabilities {
+        InferenceCapabilities {
+            provider: "fixture-test".to_string(),
+            model: "fixture".to_string(),
+            endpoint: "offline://fixture-extractor".to_string(),
+            known_dimension: None,
+        }
+    }
+}
+
+fn stable_embedding(input: &str) -> Vec<f32> {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (0..EMBEDDING_DIMENSION)
+        .map(|idx| {
+            let value = hash.wrapping_add((idx as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            (value as u32) as f32 / u32::MAX as f32
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 enum TgiProvider {
     Tgi,
     Ollama,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct EntityExtraction {
     pub entities: Vec<ExtractedEntity>,
     pub relationships: Vec<ExtractedRelationship>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ExtractedEntity {
     pub name: String,
     #[serde(alias = "type", alias = "entity_type")]
     pub entity_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ExtractedRelationship {
     pub source: String,
     pub target: String,
@@ -723,6 +1100,112 @@ fn ollama_predict_budgets(options: &Option<Value>) -> Vec<u32> {
     budgets.sort_unstable();
     budgets.dedup();
     budgets
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extraction() -> EntityExtraction {
+        EntityExtraction {
+            entities: vec![ExtractedEntity {
+                name: "Rust".to_string(),
+                entity_type: Some("concept".to_string()),
+            }],
+            relationships: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn deterministic_embeddings_are_stable_and_preserve_batch_order() {
+        let embedder = DeterministicEmbedder::default()
+            .with_embedding("first", false, vec![1.0; EMBEDDING_DIMENSION])
+            .with_embedding("second", false, vec![2.0; EMBEDDING_DIMENSION]);
+
+        assert_eq!(
+            embedder.embed("first", false).await.unwrap(),
+            embedder.embed("first", false).await.unwrap()
+        );
+        let batch = embedder
+            .embed_batch(&["second".to_string(), "first".to_string()], false)
+            .await
+            .unwrap();
+        assert_eq!(
+            batch,
+            vec![
+                vec![2.0; EMBEDDING_DIMENSION],
+                vec![1.0; EMBEDDING_DIMENSION]
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn deterministic_embedder_supports_injected_failures_health_and_mismatch() {
+        let embedder = DeterministicEmbedder::default()
+            .fail_next_requests(1, "temporary outage")
+            .with_batch_length_mismatch()
+            .unhealthy();
+
+        assert!(matches!(
+            embedder.embed("text", false).await,
+            Err(AgentError::InferenceService(message)) if message == "temporary outage"
+        ));
+        assert!(!embedder.health().await.unwrap());
+        assert_eq!(
+            embedder
+                .embed_batch(&["one".to_string(), "two".to_string()], false)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let dimension_mismatch =
+            DeterministicEmbedder::default().with_default_embedding(vec![0.0; 3]);
+        assert_eq!(
+            dimension_mismatch.embed("text", false).await.unwrap().len(),
+            3
+        );
+        assert_eq!(dimension_mismatch.capabilities().known_dimension, Some(3));
+    }
+
+    #[tokio::test]
+    async fn fixture_extractor_supports_results_malformed_data_and_failures() {
+        let extractor = FixtureEntityExtractor::default()
+            .with_fixture("known", extraction())
+            .with_malformed_fixture("bad", "{not json")
+            .fail_next_requests(1, "temporary outage");
+
+        assert!(matches!(
+            extractor.extract("known").await,
+            Err(AgentError::InferenceService(message)) if message == "temporary outage"
+        ));
+        assert_eq!(
+            extractor.extract("known").await.unwrap().entities[0].name,
+            "Rust"
+        );
+        assert!(matches!(
+            extractor.extract("bad").await,
+            Err(AgentError::Processing(message)) if message.contains("malformed JSON")
+        ));
+        assert!(extractor
+            .extract("unknown")
+            .await
+            .unwrap()
+            .entities
+            .is_empty());
+    }
+
+    #[test]
+    fn provider_factory_uses_local_defaults() {
+        let providers = InferenceProviders::from_environment();
+        assert_eq!(providers.embedder.capabilities().provider, "tei");
+        assert_eq!(providers.extractor.capabilities().provider, "tgi");
+        assert_eq!(
+            providers.embedder.capabilities().known_dimension,
+            Some(EMBEDDING_DIMENSION)
+        );
+    }
 }
 
 fn should_retry_ollama_parse_failure(done_reason: Option<&str>) -> bool {

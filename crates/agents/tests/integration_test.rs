@@ -7,6 +7,7 @@ mod common;
 
 use graphrag_core::{EdgeType, Note, NoteType};
 use graphrag_db::{init_memory, Repository};
+use std::sync::Arc;
 
 /// Test database initialization and basic CRUD
 #[tokio::test]
@@ -184,20 +185,92 @@ async fn test_list_with_limit() {
 }
 
 // ==========================================
-// TESTS REQUIRING INFERENCE BACKENDS
-// Run with: cargo test -- --ignored
+// OFFLINE AGENT TESTS
+// ==========================================
+
+#[tokio::test]
+async fn test_librarian_and_search_agents_with_offline_inference() {
+    use graphrag_agents::{
+        DeterministicEmbedder, EntityExtraction, ExtractedEntity, FixtureEntityExtractor,
+        LibrarianAgent, SearchAgent,
+    };
+
+    let db = init_memory().await.expect("Failed to init db");
+    let repo = Repository::new(db);
+    let shared_embedding = vec![0.5; 1024];
+    let embedder = Arc::new(
+        DeterministicEmbedder::default()
+            .with_embedding("Rust prevents data races", false, shared_embedding.clone())
+            .with_embedding("How does Rust prevent data races?", true, shared_embedding),
+    );
+    let extractor = Arc::new(FixtureEntityExtractor::default().with_fixture(
+        "Rust prevents data races",
+        EntityExtraction {
+            entities: vec![ExtractedEntity {
+                name: "Rust".to_string(),
+                entity_type: Some("concept".to_string()),
+            }],
+            relationships: Vec::new(),
+        },
+    ));
+
+    let librarian = LibrarianAgent::new(repo.clone(), embedder.clone(), extractor);
+    let search = SearchAgent::new(repo.clone(), embedder);
+    let note = librarian
+        .ingest_text(
+            "Rust prevents data races",
+            Some("Rust safety".into()),
+            vec![],
+        )
+        .await
+        .expect("offline ingestion should succeed");
+    assert!(note.id.is_some());
+
+    let results = search
+        .search("How does Rust prevent data races?", 5)
+        .await
+        .expect("offline search should succeed");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].title.as_deref(), Some("Rust safety"));
+}
+
+#[tokio::test]
+async fn test_librarian_rejects_offline_batch_length_mismatch() {
+    use graphrag_agents::{DeterministicEmbedder, FixtureEntityExtractor, LibrarianAgent};
+
+    let db = init_memory().await.expect("Failed to init db");
+    let repo = Repository::new(db);
+    let note = repo
+        .create_note(Note::new("pending embedding"))
+        .await
+        .unwrap();
+    assert!(note.embedding.is_empty());
+    let librarian = LibrarianAgent::new(
+        repo,
+        Arc::new(DeterministicEmbedder::default().with_batch_length_mismatch()),
+        Arc::new(FixtureEntityExtractor::default()),
+    );
+
+    let error = librarian.process_pending_embeddings().await.unwrap_err();
+    assert!(error.to_string().contains("embeddings for 1 inputs"));
+}
+
+// ==========================================
+// LIVE-BACKEND SMOKE TESTS
+// Run with: cargo test -p graphrag-agents --test integration_test -- --ignored
 // ==========================================
 
 /// Test Librarian agent (requires inference backends)
 #[tokio::test]
 #[ignore = "Requires local inference backends (TEI/TGI or Ollama)"]
 async fn test_librarian_ingest() {
-    use graphrag_agents::{LibrarianAgent, TeiClient, TgiClient};
+    use graphrag_agents::{InferenceProviders, LibrarianAgent};
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
-    let tei = TeiClient::default_local();
-    let tgi = TgiClient::default_local();
+    let providers = InferenceProviders::from_environment();
+    let tei = providers.embedder;
+    let tgi = providers.extractor;
 
     // Check inference backends are available
     if tei.health().await.is_err() || tgi.health().await.is_err() {
@@ -225,12 +298,13 @@ async fn test_librarian_ingest() {
 #[tokio::test]
 #[ignore = "Requires local inference backends (TEI/TGI or Ollama)"]
 async fn test_search_agent() {
-    use graphrag_agents::{LibrarianAgent, SearchAgent, TeiClient, TgiClient};
+    use graphrag_agents::{InferenceProviders, LibrarianAgent, SearchAgent};
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
-    let tei = TeiClient::default_local();
-    let tgi = TgiClient::default_local();
+    let providers = InferenceProviders::from_environment();
+    let tei = providers.embedder;
+    let tgi = providers.extractor;
 
     if tei.health().await.is_err() || tgi.health().await.is_err() {
         eprintln!("Skipping test: inference backends not available");
@@ -276,12 +350,13 @@ async fn test_search_agent() {
 #[tokio::test]
 #[ignore = "Requires local inference backends (TEI/TGI or Ollama)"]
 async fn test_gardener_agent() {
-    use graphrag_agents::{GardenerAgent, LibrarianAgent, TeiClient, TgiClient};
+    use graphrag_agents::{GardenerAgent, InferenceProviders, LibrarianAgent};
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
-    let tei = TeiClient::default_local();
-    let tgi = TgiClient::default_local();
+    let providers = InferenceProviders::from_environment();
+    let tei = providers.embedder;
+    let tgi = providers.extractor;
 
     if tei.health().await.is_err() || tgi.health().await.is_err() {
         eprintln!("Skipping test: inference backends not available");
@@ -319,12 +394,13 @@ async fn test_gardener_agent() {
 #[tokio::test]
 #[ignore = "Requires local inference backends (TEI/TGI or Ollama)"]
 async fn test_e2e_workflow() {
-    use graphrag_agents::{GardenerAgent, LibrarianAgent, SearchAgent, TeiClient, TgiClient};
+    use graphrag_agents::{GardenerAgent, InferenceProviders, LibrarianAgent, SearchAgent};
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
-    let tei = TeiClient::default_local();
-    let tgi = TgiClient::default_local();
+    let providers = InferenceProviders::from_environment();
+    let tei = providers.embedder;
+    let tgi = providers.extractor;
 
     if tei.health().await.is_err() || tgi.health().await.is_err() {
         eprintln!("Skipping test: inference backends not available");

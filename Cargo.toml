@@ -16,6 +16,7 @@ license = "MIT"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1.43", features = ["full"] }
+async-trait = "0.1"
 
 # SurrealDB - minimal features in workspace, crates add what they need
 surrealdb = { version = "3", default-features = false }

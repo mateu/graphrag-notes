@@ -5,8 +5,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use graphrag_agents::{
-    AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, LibrarianAgent, SearchAgent,
-    SearchHitType, SearchScope, TeiClient, TgiClient,
+    AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, InferenceProviders,
+    LibrarianAgent, SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor,
 };
 use graphrag_core::{record_id_to_string, ChatExport};
 use graphrag_db::{init_memory, init_persistent, migrations, Repository};
@@ -321,11 +321,11 @@ async fn main() -> Result<()> {
     }
 
     if let Commands::EmbeddingDim { text } = &cli.command {
-        let tei = TeiClient::default_local();
+        let tei = InferenceProviders::from_environment().embedder;
         let tei_ok = tei.health().await.unwrap_or(false);
         if !tei_ok {
             eprintln!("Error: embeddings service is not reachable.");
-            eprintln!("  TEI (embeddings): {}", tei.base_url());
+            eprintln!("  TEI (embeddings): {}", tei.capabilities().endpoint);
             anyhow::bail!("Embeddings service unavailable");
         }
 
@@ -392,8 +392,9 @@ async fn main() -> Result<()> {
     }
 
     let repo = Repository::new(db);
-    let tei = TeiClient::default_local();
-    let tgi = TgiClient::default_local();
+    let providers = InferenceProviders::from_environment();
+    let tei = providers.embedder;
+    let tgi = providers.extractor;
 
     // Check inference services only when needed
     let needs_tei = matches!(
@@ -423,7 +424,7 @@ async fn main() -> Result<()> {
         let tei_ok = tei.health().await.unwrap_or(false);
         if !tei_ok {
             eprintln!("Error: embeddings service is not reachable.");
-            eprintln!("  TEI (embeddings): {}", tei.base_url());
+            eprintln!("  TEI (embeddings): {}", tei.capabilities().endpoint);
             eprintln!("Start it with: docker compose up -d");
             anyhow::bail!("Embeddings service unavailable");
         }
@@ -433,7 +434,7 @@ async fn main() -> Result<()> {
         let tgi_ok = tgi.health().await.unwrap_or(false);
         if !tgi_ok {
             eprintln!("Error: extraction service is not reachable.");
-            eprintln!("  TGI (extraction): {}", tgi.base_url());
+            eprintln!("  TGI (extraction): {}", tgi.capabilities().endpoint);
             eprintln!("Start it with: docker compose up -d");
             anyhow::bail!("Extraction service unavailable");
         }
@@ -545,7 +546,7 @@ async fn main() -> Result<()> {
             note_ids,
             force,
         } => {
-            cmd_extract_entities(repo, tgi, limit, all, note_ids, force).await?;
+            cmd_extract_entities(repo, tei, tgi, limit, all, note_ids, force).await?;
         }
         Commands::ShowEntities { note_id } => {
             cmd_show_entities(repo, note_id).await?;
@@ -611,8 +612,8 @@ impl EvalAugmentCase {
 
 async fn cmd_add(
     repo: Repository,
-    tei: TeiClient,
-    tgi: TgiClient,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
     content: Option<String>,
     title: Option<String>,
     tags: Option<String>,
@@ -650,7 +651,12 @@ async fn cmd_add(
     Ok(())
 }
 
-async fn cmd_import(repo: Repository, tei: TeiClient, tgi: TgiClient, path: PathBuf) -> Result<()> {
+async fn cmd_import(
+    repo: Repository,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
+    path: PathBuf,
+) -> Result<()> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
@@ -666,8 +672,8 @@ async fn cmd_import(repo: Repository, tei: TeiClient, tgi: TgiClient, path: Path
 
 async fn cmd_import_chats(
     repo: Repository,
-    tei: TeiClient,
-    tgi: TgiClient,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
     path: PathBuf,
     mode: ImportModeArg,
 ) -> Result<()> {
@@ -779,8 +785,8 @@ async fn cmd_import_chats(
 
 async fn cmd_migrate_chats(
     repo: Repository,
-    tei: TeiClient,
-    tgi: TgiClient,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
     path: PathBuf,
     dry_run: bool,
     with_notes: bool,
@@ -882,7 +888,8 @@ async fn cmd_migrate_chats(
 
 async fn cmd_extract_entities(
     repo: Repository,
-    tgi: TgiClient,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
     limit: usize,
     all: bool,
     note_ids: Vec<String>,
@@ -894,7 +901,7 @@ async fn cmd_extract_entities(
     if force && !all && note_ids.is_empty() {
         anyhow::bail!("--force requires --all or at least one --note-id");
     }
-    let librarian = LibrarianAgent::new(repo, TeiClient::default_local(), tgi);
+    let librarian = LibrarianAgent::new(repo, tei, tgi);
     let processed = if !note_ids.is_empty() {
         librarian
             .extract_entities_for_note_ids(&note_ids, force)
@@ -1028,7 +1035,7 @@ async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Result<()> {
 
 async fn cmd_search(
     repo: Repository,
-    tei: TeiClient,
+    tei: SharedEmbedder,
     query: String,
     limit: usize,
     scope: SearchScopeArg,
@@ -1138,7 +1145,7 @@ async fn cmd_search(
 #[allow(clippy::too_many_arguments)]
 async fn cmd_augment(
     repo: Repository,
-    tei: TeiClient,
+    tei: SharedEmbedder,
     query: String,
     limit: usize,
     scope: SearchScopeArg,
@@ -1227,7 +1234,7 @@ async fn cmd_augment(
 #[allow(clippy::too_many_arguments)]
 async fn cmd_eval_augment(
     repo: Repository,
-    tei: TeiClient,
+    tei: SharedEmbedder,
     path: PathBuf,
     default_limit: usize,
     default_scope: SearchScopeArg,
@@ -1546,7 +1553,11 @@ async fn cmd_stats(repo: Repository) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_interactive(repo: Repository, tei: TeiClient, tgi: TgiClient) -> Result<()> {
+async fn cmd_interactive(
+    repo: Repository,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
+) -> Result<()> {
     let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone());
     let search = SearchAgent::new(repo.clone(), tei.clone());
     let gardener = GardenerAgent::new(repo.clone());
