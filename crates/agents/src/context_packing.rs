@@ -1180,6 +1180,17 @@ fn similarity_tokens(text: &str) -> HashMap<String, usize> {
                 .or_default() += 1;
         }
     }
+    // Symbols carry semantic state alongside ordinary words (for example,
+    // "deployment ✅" and "deployment ❌"). Include them in every
+    // representation, not only in the symbol-only fallback, so duplicate
+    // suppression cannot erase that distinction.
+    for symbol in normalized
+        .chars()
+        .filter(|ch| !ch.is_alphanumeric() && !ch.is_whitespace())
+    {
+        let canonical = symbol.to_string().case_fold().collect::<String>();
+        *tokens.entry(format!("symbol:{canonical}")).or_default() += 1;
+    }
     if tokens.is_empty() {
         let canonical = text.nfc().case_fold().collect::<String>();
         if !canonical.is_empty() {
@@ -1621,6 +1632,30 @@ mod tests {
         );
         assert_eq!(context.chunks.len(), 1);
         assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
+    }
+
+    #[test]
+    fn symbols_remain_distinct_when_records_also_have_words() {
+        let succeeded = "deployment ✅";
+        let failed = "deployment ❌";
+        assert!(
+            multiset_jaccard_similarity(&similarity_tokens(succeeded), &similarity_tokens(failed))
+                < 0.85
+        );
+
+        let context = build_augment_context_from_hits(
+            "deployment".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("n:deployment-ok", 0.9, succeeded),
+                hit("n:deployment-failed", 0.8, failed),
+            ],
+            options(),
+            0,
+        );
+        assert_eq!(context.chunks.len(), 2);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 0);
     }
 
     #[test]
