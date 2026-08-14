@@ -215,20 +215,21 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
             continue;
         }
         if let Some((level, title)) = heading(line) {
-            if headings.len() >= level {
-                headings.truncate(level - 1);
-            }
-            while headings.len() < level.saturating_sub(1) {
-                headings.push(String::new());
-            }
-            headings.push(title.to_string());
-            // A heading is a structural boundary even if it produces the
-            // same resolved path as the preceding heading (for example,
-            // repeated `# Notes` headings). Without this marker, adjacent
-            // blocks can be assembled across a heading whose syntax is not
-            // included in chunk display content.
+            apply_heading(&mut headings, level, title);
             assembly_boundary_before = true;
             index += 1;
+            continue;
+        }
+        // Setext underlines made entirely of dashes are also valid thematic
+        // breaks. When directly paired with paragraph text, heading parsing
+        // wins; detect the pair before the standalone thematic-break branch.
+        if let Some((level, title)) = lines
+            .get(index + 1)
+            .and_then(|underline| setext_heading(line, underline.text))
+        {
+            apply_heading(&mut headings, level, title);
+            assembly_boundary_before = true;
+            index += 2;
             continue;
         }
         if thematic_boundary(line) {
@@ -537,24 +538,69 @@ fn heading(line: &str) -> Option<(usize, &str)> {
     {
         return None;
     }
-    let title = trimmed[count..].trim();
+    // Retain the whitespace immediately after the opener until after closing
+    // hash detection. In `# ###`, that separator proves the hashes are an
+    // empty closing sequence rather than literal title content.
+    let after_opener = trimmed[count..].trim_end();
     // A closing ATX sequence is syntactic only when separated from the title
     // by whitespace. `# C#` therefore has the literal title `C#`, whereas
     // `# C #` has the title `C`.
-    let without_closing = title
+    let without_closing = after_opener
         .char_indices()
         .rev()
         .take_while(|(_, ch)| *ch == '#')
         .last()
         .and_then(|(start, _)| {
-            title[..start]
+            after_opener[..start]
                 .chars()
                 .next_back()
                 .is_some_and(char::is_whitespace)
-                .then_some(title[..start].trim_end())
+                .then_some(after_opener[..start].trim())
         })
-        .unwrap_or(title);
+        .unwrap_or_else(|| after_opener.trim());
     Some((count, without_closing))
+}
+
+fn apply_heading(headings: &mut Vec<String>, level: usize, title: &str) {
+    if headings.len() >= level {
+        headings.truncate(level - 1);
+    }
+    while headings.len() < level.saturating_sub(1) {
+        headings.push(String::new());
+    }
+    headings.push(title.to_string());
+}
+
+/// Return a Setext heading level for a valid underline. The call site checks
+/// a prose title line first, letting `---` retain its CommonMark Setext
+/// precedence over a thematic break only in the immediate heading pair.
+fn setext_heading<'a>(title_line: &'a str, underline: &str) -> Option<(usize, &'a str)> {
+    let title_leading_spaces = title_line.bytes().take_while(|byte| *byte == b' ').count();
+    if title_leading_spaces > 3
+        || title_line.starts_with('\t')
+        || title_line.trim().is_empty()
+        || heading(title_line).is_some()
+        || thematic_boundary(title_line)
+        || fence_marker(title_line).is_some()
+        || is_quote(title_line)
+        || is_list_item(title_line)
+    {
+        return None;
+    }
+
+    let leading_spaces = underline.bytes().take_while(|byte| *byte == b' ').count();
+    if leading_spaces > 3 || underline.starts_with('\t') {
+        return None;
+    }
+    let marker = underline[leading_spaces..].trim_end();
+    let level = if !marker.is_empty() && marker.bytes().all(|byte| byte == b'=') {
+        1
+    } else if !marker.is_empty() && marker.bytes().all(|byte| byte == b'-') {
+        2
+    } else {
+        return None;
+    };
+    Some((level, title_line.trim()))
 }
 
 fn thematic_boundary(line: &str) -> bool {
@@ -794,8 +840,11 @@ mod tests {
         for level in 1..=6 {
             let hashes = "#".repeat(level);
             assert_eq!(heading(&hashes), Some((level, "")));
+            assert_eq!(heading(&format!("{hashes} ###")), Some((level, "")));
         }
         assert_eq!(heading("# "), Some((1, "")));
+        assert_eq!(heading("# ###"), Some((1, "")));
+        assert_eq!(heading("## ####"), Some((2, "")));
         assert_eq!(heading("# C#"), Some((1, "C#")));
         assert_eq!(heading("# C ###"), Some((1, "C")));
 
@@ -811,6 +860,34 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].heading_path, [""]);
         assert!(!chunks[0].content.contains("# "));
+    }
+
+    #[test]
+    fn setext_heading_pairs_precede_thematic_breaks_and_retain_provenance() {
+        let markdown = "Document title\n===\n\nIntroduction remains under the document title.\n\nSection title\n---\n\nSection body remains under the section title.";
+        let chunks = chunk(
+            markdown,
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 240,
+                max_size: 280,
+                overlap_size: 0,
+            },
+        );
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].heading_path, ["Document title"]);
+        assert_eq!(chunks[1].heading_path, ["Document title", "Section title"]);
+        assert_eq!(
+            chunks[0].content,
+            "Introduction remains under the document title."
+        );
+        assert_eq!(
+            chunks[1].content,
+            "Section body remains under the section title."
+        );
+        assert!(chunks
+            .iter()
+            .all(|chunk| !chunk.content.contains("title\n---")));
     }
 
     #[test]
