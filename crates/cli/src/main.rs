@@ -2825,6 +2825,24 @@ mod tests {
     }
 
     #[test]
+    fn librarian_runtime_config_forwards_legacy_derived_chunking_bounds() {
+        let mut config = RuntimeConfig::default();
+        config.librarian = graphrag_config::LibrarianConfig {
+            min_chunk_size: 40,
+            target_chunk_size: 80,
+            max_chunk_size: 80,
+            chunk_overlap: 79,
+            ..graphrag_config::LibrarianConfig::default()
+        };
+
+        let runtime = librarian_runtime_config(&config, false);
+        assert_eq!(runtime.min_chunk_size, 40);
+        assert_eq!(runtime.target_chunk_size, 80);
+        assert_eq!(runtime.max_chunk_size, 80);
+        assert_eq!(runtime.chunk_overlap, 79);
+    }
+
+    #[test]
     fn edge_dry_run_reports_actual_existence() {
         assert_eq!(
             edge_dry_run_message("related_to:example", true),

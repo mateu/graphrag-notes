@@ -2703,6 +2703,7 @@ mod tests {
     };
     use graphrag_core::{
         normalized_content_hash, record_id_to_string, EdgeType, Entity, EntityType, Note,
+        ProposedEdgeStatus,
     };
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
@@ -3965,6 +3966,76 @@ mod tests {
                     && edge.in_id == *first_after_removal.id.as_ref().unwrap()
                     && edge.out_id == *second_after_removal.id.as_ref().unwrap()
             }));
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_retargets_proposal_backed_edges_for_cleanup_and_undo() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let content = "# Plan\n\nFirst stable paragraph has enough content.\n\nSecond stable paragraph has enough content.";
+        let first = librarian
+            .ingest_markdown_with_options("proposal-edge.md", content, false)
+            .await
+            .unwrap();
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                first.notes[0].id.as_ref().unwrap(),
+                first.notes[1].id.as_ref().unwrap(),
+                0.9,
+                "stable source relationship".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let accepted = repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .unwrap();
+        let old_edge_id = accepted.resulting_edge_id.unwrap();
+
+        let refreshed = librarian
+            .ingest_markdown_with_options("proposal-edge.md", content, true)
+            .await
+            .unwrap();
+        let first_new = refreshed.notes[0].id.as_ref().unwrap();
+        let second_new = refreshed.notes[1].id.as_ref().unwrap();
+        let new_edge = repo
+            .get_note_edges(&record_id_to_string(first_new))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|edge| {
+                edge.edge_type == EdgeType::RelatedTo.to_string()
+                    && ((edge.in_id == *first_new && edge.out_id == *second_new)
+                        || (edge.in_id == *second_new && edge.out_id == *first_new))
+                    && edge.proposal_id.as_ref() == Some(&proposal_id)
+            })
+            .expect("reconciled edge retains its proposal association");
+        assert_ne!(new_edge.id, old_edge_id);
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Accepted);
+        assert_eq!(proposal.resulting_edge_id, Some(new_edge.id.clone()));
+
+        assert!(repo
+            .undo_edge(&new_edge.id, Some("undo refreshed relationship".into()))
+            .await
+            .unwrap());
+        let undone = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(undone.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(undone.resulting_edge_id, None);
     }
 
     #[tokio::test]

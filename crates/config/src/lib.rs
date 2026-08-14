@@ -340,6 +340,25 @@ impl RuntimeConfig {
             inference.is_some_and(|table| table.contains_key("embedding_url"));
         config.inference.extraction_url_from_file =
             inference.is_some_and(|table| table.contains_key("extraction_url"));
+        if let Some(librarian) = raw.get("librarian").and_then(toml::Value::as_table) {
+            // `target_chunk_size` and `chunk_overlap` were added after the
+            // original min/max-only configuration. Derive omitted values from
+            // the explicit legacy bounds before validation, rather than
+            // rejecting an otherwise valid existing config because today's
+            // global defaults do not fit its smaller maximum.
+            if !librarian.contains_key("target_chunk_size") {
+                config.librarian.target_chunk_size = config.librarian.target_chunk_size.clamp(
+                    config.librarian.min_chunk_size,
+                    config.librarian.max_chunk_size,
+                );
+            }
+            if !librarian.contains_key("chunk_overlap") {
+                config.librarian.chunk_overlap = config
+                    .librarian
+                    .chunk_overlap
+                    .min(config.librarian.max_chunk_size.saturating_sub(1));
+            }
+        }
         config.normalize_provider_names();
         config.database.path = expand_home_directory(&config.database.path);
         Ok(config)
@@ -991,6 +1010,24 @@ mod tests {
         assert_eq!(config.augment.max_tokens, 1200);
         assert_eq!(config.augment.novelty_weight, 0.25);
         assert_eq!(config.logging.level, "warn");
+    }
+
+    #[test]
+    fn legacy_librarian_bounds_derive_feasible_chunking_controls() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.toml");
+        fs::write(
+            &path,
+            "[librarian]\nmin_chunk_size = 40\nmax_chunk_size = 80\n",
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::from_file(&path).unwrap();
+        assert_eq!(config.librarian.min_chunk_size, 40);
+        assert_eq!(config.librarian.max_chunk_size, 80);
+        assert_eq!(config.librarian.target_chunk_size, 80);
+        assert_eq!(config.librarian.chunk_overlap, 79);
+        config.validate().unwrap();
     }
 
     #[test]
