@@ -321,6 +321,7 @@ impl Repository {
                 WHERE embedding <|{limit},COSINE|> $embedding
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
+                ORDER BY vec_distance ASC, id ASC
                 LIMIT $limit
             "#
         );
@@ -369,7 +370,7 @@ impl Repository {
                 WHERE (content @0@ $query OR title @1@ $query)
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
-                ORDER BY fts_score DESC
+                ORDER BY fts_score DESC, id ASC
                 LIMIT $limit
             "#,
             )
@@ -484,6 +485,7 @@ impl Repository {
                 WHERE embedding <|{limit},COSINE|> $embedding
                   AND ($since = NONE OR (created_at != NONE AND created_at >= <datetime>$since))
                   AND ($source_uri = NONE OR conversation_id.source_uri = $source_uri)
+                ORDER BY vec_distance ASC, id ASC
                 LIMIT $limit
             "#
         );
@@ -527,7 +529,7 @@ impl Repository {
                 WHERE content @0@ $query
                   AND ($since = NONE OR (created_at != NONE AND created_at >= <datetime>$since))
                   AND ($source_uri = NONE OR conversation_id.source_uri = $source_uri)
-                ORDER BY fts_score DESC
+                ORDER BY fts_score DESC, id ASC
                 LIMIT $limit
             "#,
             )
@@ -641,6 +643,7 @@ impl Repository {
                 WHERE summary_embedding <|{limit},COSINE|> $embedding
                   AND ($since = NONE OR updated_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_uri = $source_uri)
+                ORDER BY vec_distance ASC, id ASC
                 LIMIT $limit
             "#
         );
@@ -681,7 +684,7 @@ impl Repository {
                 WHERE (summary @0@ $query OR title @1@ $query)
                   AND ($since = NONE OR updated_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_uri = $source_uri)
-                ORDER BY fts_score DESC
+                ORDER BY fts_score DESC, id ASC
                 LIMIT $limit
             "#,
             )
@@ -1653,5 +1656,30 @@ mod tests {
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].title.as_deref(), Some("Rust note"));
+    }
+
+    #[tokio::test]
+    async fn candidate_cutoffs_break_equal_component_scores_by_record_id() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let embedding = vec![1.0_f32; 1024];
+        for id in ["zulu", "alpha"] {
+            let note = Note::new("identical deterministic candidate")
+                .with_title("identical deterministic candidate")
+                .with_embedding(embedding.clone());
+            let _: Option<Note> = db.create(("note", id)).content(note).await.unwrap();
+        }
+
+        let vector = repo
+            .vector_search_notes(embedding, 1, None, None)
+            .await
+            .unwrap();
+        let fulltext = repo
+            .fulltext_search_notes("identical deterministic candidate", 1, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(record_id_to_string(&vector[0].id), "note:alpha");
+        assert_eq!(record_id_to_string(&fulltext[0].id), "note:alpha");
     }
 }
