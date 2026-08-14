@@ -198,9 +198,10 @@ fn markdown_chunk_anchors_from_chunks(chunks: &[Chunk]) -> Vec<MarkdownChunkAnch
 /// removed before an unchanged chunk. A changed chunk is a structural
 /// successor only when it is the sole unmatched chunk between two exact
 /// anchors in the same heading context; ambiguous boundary/replacement cases
-/// intentionally receive no successor. Repeated identical anchors are also
-/// intentionally rejected: after a duplicate is deleted, there is no stable
-/// evidence that the remaining copy is the same logical source occurrence.
+/// intentionally receive no successor. Repeated anchors are paired by their
+/// sequence occurrence only when every shared anchor with equal multiplicity
+/// retains the same order. This preserves byte-identical duplicate runs while
+/// rejecting added, removed, or reordered duplicate occurrences.
 fn align_markdown_chunk_sequences(
     existing: &[MarkdownChunkAnchor],
     staged: &[MarkdownChunkAnchor],
@@ -209,32 +210,70 @@ fn align_markdown_chunk_sequences(
     for anchor in existing {
         *existing_counts.entry(anchor).or_default() += 1;
     }
-    let mut staged_positions = HashMap::<MarkdownChunkAnchor, usize>::new();
     let mut staged_counts = HashMap::<&MarkdownChunkAnchor, usize>::new();
+    let mut staged_positions = HashMap::<MarkdownChunkAnchor, usize>::new();
     for (index, anchor) in staged.iter().enumerate() {
         *staged_counts.entry(anchor).or_default() += 1;
         staged_positions.insert(anchor.clone(), index);
     }
 
-    let mut exact = Vec::new();
-    let mut last_staged_index = None;
-    for (existing_index, anchor) in existing.iter().enumerate() {
-        if existing_counts.get(anchor) != Some(&1) || staged_counts.get(anchor) != Some(&1) {
-            continue;
+    // Ignore changed/multiplicity-mismatched anchors, then compare the
+    // remaining shared structural sequence. Equality proves each duplicate
+    // occurrence has the same multiplicity and relative order, so pairing by
+    // occurrence is safe even when unrelated chunks were inserted elsewhere.
+    let has_equal_multiplicity =
+        |anchor: &&MarkdownChunkAnchor| existing_counts.get(*anchor) == staged_counts.get(*anchor);
+    let existing_structural = existing
+        .iter()
+        .enumerate()
+        .filter(|(_, anchor)| has_equal_multiplicity(anchor))
+        .collect::<Vec<_>>();
+    let staged_structural = staged
+        .iter()
+        .enumerate()
+        .filter(|(_, anchor)| has_equal_multiplicity(anchor))
+        .collect::<Vec<_>>();
+    let exact = if existing_structural
+        .iter()
+        .map(|(_, anchor)| *anchor)
+        .eq(staged_structural.iter().map(|(_, anchor)| *anchor))
+    {
+        existing_structural
+            .into_iter()
+            .zip(staged_structural)
+            .map(
+                |((existing_index, _), (staged_index, _))| MarkdownChunkMatch {
+                    existing_index,
+                    staged_index,
+                    exact_content: true,
+                },
+            )
+            .collect()
+    } else {
+        // A changed ordering is ambiguous for duplicate occurrences. Retain
+        // only the original unique-anchor alignment, which can still safely
+        // bound a one-chunk structural replacement below.
+        let mut exact = Vec::new();
+        let mut last_staged_index = None;
+        for (existing_index, anchor) in existing.iter().enumerate() {
+            if existing_counts.get(anchor) != Some(&1) || staged_counts.get(anchor) != Some(&1) {
+                continue;
+            }
+            let Some(&staged_index) = staged_positions.get(anchor) else {
+                continue;
+            };
+            if last_staged_index.is_some_and(|last| staged_index <= last) {
+                continue;
+            }
+            last_staged_index = Some(staged_index);
+            exact.push(MarkdownChunkMatch {
+                existing_index,
+                staged_index,
+                exact_content: true,
+            });
         }
-        let Some(&staged_index) = staged_positions.get(anchor) else {
-            continue;
-        };
-        if last_staged_index.is_some_and(|last| staged_index <= last) {
-            continue;
-        }
-        last_staged_index = Some(staged_index);
-        exact.push(MarkdownChunkMatch {
-            existing_index,
-            staged_index,
-            exact_content: true,
-        });
-    }
+        exact
+    };
 
     let mut matches = exact.clone();
     for anchors in exact.windows(2) {
@@ -2742,8 +2781,8 @@ pub struct ChatImportResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_content, decode_file_uri, no_processing_work, truncate_for_extraction,
-        LibrarianAgent, LibrarianRuntimeConfig,
+        align_markdown_chunk_sequences, chunk_content, decode_file_uri, no_processing_work,
+        truncate_for_extraction, LibrarianAgent, LibrarianRuntimeConfig, MarkdownChunkAnchor,
     };
     use crate::{
         DeterministicEmbedder, EntityExtraction, ExtractedEntity, FixtureEntityExtractor,
@@ -4124,6 +4163,105 @@ mod tests {
                 !(edge.edge_type == EdgeType::Supports.to_string()
                     && edge.in_id == *duplicate_new.id.as_ref().unwrap()
                     && edge.out_id == *tail_new.id.as_ref().unwrap())
+            }));
+    }
+
+    #[test]
+    fn markdown_reconciliation_rejects_reordered_duplicate_anchors() {
+        let duplicate = MarkdownChunkAnchor {
+            heading_path: vec!["Plan".into()],
+            content: "Repeated source paragraph.".into(),
+        };
+        let tail = MarkdownChunkAnchor {
+            heading_path: vec!["Plan".into()],
+            content: "Distinct trailing paragraph.".into(),
+        };
+
+        let matches = align_markdown_chunk_sequences(
+            &[duplicate.clone(), duplicate.clone(), tail.clone()],
+            &[duplicate.clone(), tail.clone(), duplicate],
+        );
+
+        // The unique tail remains safe, but neither duplicate occurrence has
+        // a trustworthy successor after its relative ordering changes.
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].existing_index, 2);
+        assert_eq!(matches[0].staged_index, 1);
+        assert!(matches[0].exact_content);
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_preserves_duplicate_anchors_on_identical_refresh() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            ..Default::default()
+        });
+        let duplicate = "Duplicated paragraph has enough source content.";
+        let tail = "Tail paragraph has distinct source content.";
+        let original = format!("# Plan\n\n{duplicate}\n\n{duplicate}\n\n{tail}");
+        let first = librarian
+            .ingest_markdown_with_options("duplicate-anchor-stable.md", &original, false)
+            .await
+            .unwrap();
+        let first_duplicate = first.notes[0].id.as_ref().unwrap().clone();
+        let second_duplicate = first.notes[1].id.as_ref().unwrap().clone();
+        let tail_old = first.notes[2].id.as_ref().unwrap().clone();
+        for (name, note_id) in [
+            ("First duplicate entity", &first_duplicate),
+            ("Second duplicate entity", &second_duplicate),
+        ] {
+            let mut entity = Entity::new(name, EntityType::Concept);
+            entity.metadata = serde_json::json!({});
+            let entity = repo.upsert_entity(entity).await.unwrap();
+            repo.link_note_to_entity(note_id, entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        repo.create_edge(&first_duplicate, &tail_old, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+
+        // A forced refresh stages a copy-on-write generation even though the
+        // source bytes are unchanged. Each duplicate occurrence must retain
+        // the dependents belonging to its same-order structural successor.
+        let refreshed = librarian
+            .ingest_markdown_with_options("duplicate-anchor-stable.md", &original, true)
+            .await
+            .unwrap();
+        let first_new = refreshed.notes[0].id.as_ref().unwrap();
+        let second_new = refreshed.notes[1].id.as_ref().unwrap();
+        let tail_new = refreshed.notes[2].id.as_ref().unwrap();
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(first_new))
+                .await
+                .unwrap()[0]
+                .name,
+            "First duplicate entity"
+        );
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(second_new))
+                .await
+                .unwrap()[0]
+                .name,
+            "Second duplicate entity"
+        );
+        assert!(repo
+            .get_note_edges(&record_id_to_string(first_new))
+            .await
+            .unwrap()
+            .iter()
+            .any(|edge| {
+                edge.edge_type == EdgeType::Supports.to_string()
+                    && edge.in_id == *first_new
+                    && edge.out_id == *tail_new
             }));
     }
 
