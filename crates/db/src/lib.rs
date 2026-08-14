@@ -13,6 +13,7 @@ pub use error::{DbError, Result};
 pub use repository::{
     parse_record_id, InferenceCacheEntry, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
+    PORTABLE_TABLES,
 };
 
 use std::ops::Deref;

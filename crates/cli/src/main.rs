@@ -2,6 +2,7 @@
 //!
 //! A command-line interface for the GraphRAG Notes system.
 
+mod backup;
 mod doctor;
 mod eval;
 
@@ -50,7 +51,7 @@ struct Cli {
     config: Option<PathBuf>,
 
     /// Database path (overrides the resolved configuration)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     db_path: Option<PathBuf>,
 
     /// Use in-memory database (for testing)
@@ -79,6 +80,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Create, verify, or restore a portable logical backup
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+
     /// Diagnose configuration, database compatibility, and local providers without changing data
     Doctor {
         /// Output format for the diagnostic report
@@ -374,6 +381,40 @@ enum ConfigCommand {
     Show,
     /// Validate configuration and exit without opening the database
     Validate,
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    /// Stream a versioned portable backup into a new directory
+    Create {
+        path: PathBuf,
+        /// Include vectors only when persisted model identity is available
+        #[arg(long)]
+        include_embeddings: bool,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        format: BackupOutputFormat,
+    },
+    /// Validate manifest, checksum, record counts, dimensions, and references
+    Verify {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        format: BackupOutputFormat,
+    },
+    /// Restore a verified archive into a fresh, nonexistent database path
+    Restore {
+        path: PathBuf,
+        /// Validate all safety preconditions without writing the target
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        format: BackupOutputFormat,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum BackupOutputFormat {
+    Human,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -817,6 +858,38 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Verification and restore intentionally run before normal database
+    // startup. Verification must not open a database at all, and restore must
+    // validate an archive before creating its staged fresh target.
+    if let Commands::Backup {
+        command: BackupCommand::Verify { path, format },
+    } = &cli.command
+    {
+        print_backup_summary(&backup::verify_backup(path)?, *format)?;
+        return Ok(());
+    }
+    if let Commands::Backup {
+        command:
+            BackupCommand::Restore {
+                path,
+                dry_run,
+                format,
+            },
+    } = &cli.command
+    {
+        if cli.memory {
+            anyhow::bail!("backup restore requires a fresh persistent --db-path, not --memory");
+        }
+        let target = cli.db_path.as_deref().context(
+            "backup restore requires an explicit fresh --db-path; it never restores over the configured database",
+        )?;
+        print_backup_summary(
+            &backup::restore_backup(path, target, *dry_run).await?,
+            *format,
+        )?;
+        return Ok(());
+    }
+
     let cli_skip_extraction = matches!(
         &cli.command,
         Commands::ImportChats {
@@ -992,6 +1065,22 @@ async fn main() -> Result<()> {
 
     // Execute command
     match cli.command {
+        Commands::Backup {
+            command:
+                BackupCommand::Create {
+                    path,
+                    include_embeddings,
+                    format,
+                },
+        } => {
+            print_backup_summary(
+                &backup::create_backup(&repo, &path, include_embeddings).await?,
+                format,
+            )?;
+        }
+        Commands::Backup { .. } => {
+            unreachable!("verify and restore return before database startup")
+        }
         Commands::Add {
             content,
             title,
@@ -1204,6 +1293,27 @@ async fn main() -> Result<()> {
         Commands::Doctor { .. } => unreachable!("doctor returns before database initialization"),
     }
 
+    Ok(())
+}
+
+fn print_backup_summary(summary: &backup::BackupSummary, format: BackupOutputFormat) -> Result<()> {
+    match format {
+        BackupOutputFormat::Human => {
+            let operation = if summary.dry_run {
+                "Dry-run restore"
+            } else {
+                "Backup"
+            };
+            println!("{operation} verified: {}", summary.path.display());
+            println!("Schema version: {}", summary.schema_version);
+            println!("Records: {}", summary.records);
+            println!("Embeddings included: {}", summary.includes_embeddings);
+            for (table, count) in &summary.record_counts {
+                println!("  {table}: {count}");
+            }
+        }
+        BackupOutputFormat::Json => println!("{}", serde_json::to_string(summary)?),
+    }
     Ok(())
 }
 

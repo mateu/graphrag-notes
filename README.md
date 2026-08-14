@@ -186,6 +186,45 @@ Notes:
 - Avoid concurrent access to the same DB path; overlapping processes will fail on the RocksDB `LOCK` file.
 - Validate on a copied DB before doing a real cutover.
 
+### Portable logical backups
+
+`graphrag backup` is the application-level recovery format. It writes a
+versioned `manifest.json` and streaming `records.jsonl` payload, then validates
+the completed archive before publishing it. It preserves logical record IDs and
+the graph/provenance references that use them; it does not copy a live RocksDB
+directory.
+
+```bash
+# The destination must not already exist.
+graphrag --db-path ~/.graphrag/data backup create /safe/backups/notes-2026-08-14
+graphrag backup verify /safe/backups/notes-2026-08-14 --format json
+
+# Verify first, then restore only into a fresh, nonexistent target.
+graphrag backup restore /safe/backups/notes-2026-08-14 \
+  --db-path /tmp/graphrag-restore --dry-run
+graphrag backup restore /safe/backups/notes-2026-08-14 \
+  --db-path /tmp/graphrag-restore
+```
+
+Restore stages a sibling database, applies the current application migrations,
+loads and validates the logical records, and only then renames the staged DB
+into the requested target. It never overwrites an existing directory. A locked
+or otherwise inaccessible directory is reported by the underlying RocksDB
+open, leaving the requested target untouched.
+
+Embeddings and inference caches are excluded by default. `--include-embeddings`
+is accepted only when the archive can record the active provider, model, and
+dimension. Configuration files, runtime caches, common secret fields, and local
+absolute file URIs are not exported. Restoring a default archive preserves
+searchable source text and graph structure, but vectors must be rebuilt with a
+subsequent reindex operation before vector search is used.
+
+This is distinct from the SurrealDB 2.x → 3.x engine migration above: use the
+engine-specific Surreal export/import procedure to cross that engine boundary.
+It is also distinct from reindexing/model migration, which rebuilds derived
+vectors for an existing logical corpus rather than recovering its source and
+graph data.
+
 ### Application schema migrations
 
 On startup, GraphRAG Notes applies its own numbered schema migrations and records
@@ -483,6 +522,7 @@ graphrag interactive
 | `embedding-dim` | Show embedding dimension for the active provider |
 | `extract-entities` | Extract entities for notes missing entity links |
 | `jobs list/show/resume/cancel` | Inspect and control durable local inference work |
+| `backup create/verify/restore` | Create, validate, and safely restore a portable logical backup |
 
 ### Retrieval evaluation
 
