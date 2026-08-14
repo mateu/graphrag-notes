@@ -212,7 +212,7 @@ pub(crate) fn build_augment_context_from_hits(
     while !candidates.is_empty() && selected.len() < options.max_chunks {
         let selected_tokens = selected
             .iter()
-            .map(|selected: &SelectedChunk| selected.full_tokens.clone())
+            .map(|selected: &SelectedChunk| &selected.full_tokens)
             .collect::<Vec<_>>();
         let next_index = candidates
             .iter()
@@ -231,9 +231,8 @@ pub(crate) fn build_augment_context_from_hits(
             .expect("candidates is non-empty");
         let candidate = candidates.swap_remove(next_index);
 
-        let tokens = similarity_tokens(candidate.content());
         if selected.iter().any(|selected| {
-            multiset_jaccard_similarity(&tokens, &selected.full_tokens)
+            multiset_jaccard_similarity(&candidate.full_tokens, &selected.full_tokens)
                 >= options.near_duplicate_threshold
         }) {
             dropped_near_duplicates += 1;
@@ -252,7 +251,7 @@ pub(crate) fn build_augment_context_from_hits(
         };
         selected.push(SelectedChunk {
             chunk,
-            full_tokens: tokens,
+            full_tokens: candidate.full_tokens,
         });
     }
 
@@ -322,6 +321,9 @@ struct Candidate {
     hit: ScopedSearchResult,
     content_start: usize,
     rank: usize,
+    /// Full-record similarity features are computed once during pool
+    /// construction and reused by every MMR and duplicate comparison.
+    full_tokens: HashMap<String, usize>,
     /// Relative retrieval relevance normalized across the eligible candidate
     /// pool before MMR combines it with novelty.
     relevance: f32,
@@ -338,10 +340,12 @@ struct SelectedChunk {
 impl Candidate {
     fn from_hit(hit: ScopedSearchResult) -> Self {
         let content_start = hit.content.len() - hit.content.trim_start().len();
+        let full_tokens = similarity_tokens(hit.content.trim());
         Self {
             hit,
             content_start,
             rank: 0,
+            full_tokens,
             relevance: 0.0,
         }
     }
@@ -353,13 +357,12 @@ impl Candidate {
 
 fn selection_score(
     candidate: &Candidate,
-    selected: &[HashMap<String, usize>],
+    selected: &[&HashMap<String, usize>],
     novelty_weight: f32,
 ) -> f32 {
-    let candidate_tokens = similarity_tokens(candidate.content());
     let novelty = selected
         .iter()
-        .map(|chosen| 1.0 - multiset_jaccard_similarity(&candidate_tokens, chosen))
+        .map(|chosen| 1.0 - multiset_jaccard_similarity(&candidate.full_tokens, chosen))
         .fold(1.0_f32, f32::min);
     let novelty_weight = novelty_weight.clamp(0.0, 1.0);
     candidate.relevance * (1.0 - novelty_weight) + novelty * novelty_weight
@@ -398,12 +401,36 @@ fn fit_candidate(
     options: &AugmentOptions,
 ) -> Option<AugmentChunk> {
     let counter = options.token_counter.as_ref();
-    let initial = clip_query_aware(
-        candidate.content(),
-        query,
-        options.max_chunk_tokens,
-        counter,
-    );
+    let mut fixed_prompt = chunks.to_vec();
+    fixed_prompt.push(AugmentChunk {
+        citation,
+        hit_type: candidate.hit.hit_type,
+        id: candidate.hit.id.clone(),
+        title: candidate.hit.title.clone(),
+        snippet: String::new(),
+        created_at: candidate.hit.created_at,
+        source_uri: candidate.hit.source_uri.clone(),
+        score: candidate.hit.score,
+        conversation_uuid: candidate.hit.conversation_uuid.clone(),
+        message_index: candidate.hit.message_index,
+        role: candidate.hit.role.clone(),
+        approx_tokens: 0,
+        rendered_tokens: 0,
+        truncated: true,
+        selected_span_start: None,
+        selected_span_end: None,
+    });
+    let fixed_tokens = counter.count(&render_prompt_block(&fixed_prompt));
+    if fixed_tokens >= options.max_total_tokens {
+        return None;
+    }
+    let usable_cap = options
+        .max_chunk_tokens
+        .min(options.max_total_tokens.saturating_sub(fixed_tokens));
+    if usable_cap == 0 {
+        return None;
+    }
+    let initial = clip_query_aware(candidate.content(), query, usable_cap, counter);
     if initial.snippet.is_empty() {
         return None;
     }
@@ -412,9 +439,9 @@ fn fit_candidate(
         phrase_match_range(segment, query)
             .or_else(|| lexical_match_range(segment, &normalized_tokens(query)))
     });
-    let mut cap = options.max_chunk_tokens;
+    let mut cap = usable_cap;
     while cap > 0 {
-        let clipped = if cap == options.max_chunk_tokens {
+        let clipped = if cap == usable_cap {
             initial.clone()
         } else {
             shrink_clipped_span(
@@ -455,7 +482,15 @@ fn fit_candidate(
                 rendered_tokens.saturating_sub(counter.count(&render_prompt_block(chunks)));
             return Some(chunk);
         }
-        cap -= 1;
+        let observed_overhead = rendered_tokens.saturating_sub(snippet_tokens);
+        let next_cap = options
+            .max_total_tokens
+            .saturating_sub(observed_overhead)
+            .min(cap);
+        if next_cap >= cap {
+            return None;
+        }
+        cap = next_cap;
     }
     None
 }
@@ -1237,6 +1272,7 @@ fn render_prompt_block(chunks: &[AugmentChunk]) -> String {
 mod tests {
     use super::*;
     use crate::search::ScopedSearchResult;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug)]
     struct ExactWords;
@@ -1244,6 +1280,20 @@ mod tests {
         fn count(&self, text: &str) -> usize {
             text.split_whitespace().count()
         }
+        fn mode(&self) -> TokenCountMode {
+            TokenCountMode::Exact
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingBytes(Arc<AtomicUsize>);
+
+    impl TokenCounter for CountingBytes {
+        fn count(&self, text: &str) -> usize {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            text.len()
+        }
+
         fn mode(&self) -> TokenCountMode {
             TokenCountMode::Exact
         }
@@ -1310,6 +1360,41 @@ mod tests {
             ExactWords.count(&context.render_prompt_block())
         );
         assert!(context.diagnostics.header_tokens > 0 || context.chunks.is_empty());
+    }
+
+    #[test]
+    fn fixed_rendered_overhead_short_circuits_huge_chunk_budget_without_retries() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut constrained = options();
+        constrained.max_total_tokens = 10;
+        constrained.max_chunk_tokens = 1_000_000;
+        constrained.token_counter = Arc::new(CountingBytes(calls.clone()));
+
+        let context = build_augment_context_from_hits(
+            "needle".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit(
+                "n:oversized",
+                0.9,
+                "needle with a very large configured chunk budget",
+            )],
+            constrained,
+            0,
+        );
+
+        assert!(context.chunks.is_empty());
+        // A fixed header already exceeds the budget. The old decrementing
+        // retry loop would have attempted up to one million candidate caps.
+        assert!(calls.load(Ordering::Relaxed) < 10);
+    }
+
+    #[test]
+    fn candidate_caches_full_similarity_features_at_pool_construction() {
+        let text = "repeated context tokens need one complete representation";
+        let candidate = Candidate::from_hit(hit("n:cache", 0.9, text));
+
+        assert_eq!(candidate.full_tokens, similarity_tokens(text));
     }
 
     #[test]
