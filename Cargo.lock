@@ -1615,6 +1615,7 @@ dependencies = [
  "graphrag-core",
  "serde",
  "serde_json",
+ "sha2",
  "surrealdb",
  "surrealdb-types",
  "tempfile",
