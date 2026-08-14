@@ -15,7 +15,9 @@ pub use edge::{Edge, EdgeType};
 pub use entity::{Entity, EntityType};
 pub use error::{CoreError, Result};
 pub use note::{AtomicNote, Note, NoteType};
-pub use source::{Source, SourceType};
+pub use source::{
+    normalize_file_uri, normalized_content_hash, Source, SourceIngestionStatus, SourceType,
+};
 
 /// Format a SurrealDB [`RecordId`] as a canonical `table:key` string.
 ///

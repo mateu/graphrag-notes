@@ -10,6 +10,7 @@ use crate::{
 };
 use graphrag_core::{
     record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, Source,
+    SourceIngestionStatus, SourceType,
 };
 use serde::{Deserialize, Serialize};
 use surrealdb::types::RecordId;
@@ -22,21 +23,43 @@ pub struct Repository {
     db: DbConnection,
 }
 
-fn note_content_value(note: &Note) -> Result<serde_json::Value> {
-    let mut value = serde_json::to_value(note)
-        .map_err(|e| DbError::QueryFailed(format!("note serialization failed: {e}")))?;
-    if let Some(obj) = value.as_object_mut() {
-        // Always remove id – the record id is determined by the create/update target
-        obj.remove("id");
-        if note.source_id.is_none() {
-            obj.remove("source_id");
+// A source generation becomes visible only after promotion. Legacy/manual
+// notes have no generation and remain visible, while staged and superseded
+// file-import notes are excluded from every user-facing scan.
+const VISIBLE_NOTE_CONDITION: &str = "(source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)";
+
+// Edge rows contain record references in `in` and `out`. Resolve both note
+// endpoints through the note table before showing graph topology so an
+// interrupted import cannot expose relationships owned by a staged or
+// superseded generation.
+const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)) AND out IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation))";
+
+fn source_content_value(source: &Source) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(source)
+        .map_err(|error| DbError::QueryFailed(format!("source serialization failed: {error}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| DbError::QueryFailed("source did not serialize as an object".into()))?;
+    object.remove("id");
+    object.remove("created_at");
+    object.remove("updated_at");
+    object.remove("last_ingested_at");
+    for key in [
+        "uri",
+        "content",
+        "normalized_uri",
+        "content_hash",
+        "last_error",
+    ] {
+        if object.get(key).is_some_and(serde_json::Value::is_null) {
+            object.remove(key);
         }
-        if note.title.is_none() {
-            obj.remove("title");
-        }
-        if note.embedding.is_empty() {
-            obj.remove("embedding");
-        }
+    }
+    if object
+        .get("metadata")
+        .is_some_and(serde_json::Value::is_null)
+    {
+        object.remove("metadata");
     }
     Ok(value)
 }
@@ -73,32 +96,78 @@ impl Repository {
     /// Create a new note
     #[instrument(skip(self, note))]
     pub async fn create_note(&self, note: Note) -> Result<Note> {
-        // Use SurrealDB's high-level create API so we get back the stored
-        // record including its generated `id`.
+        // Source ownership is written in the same CREATE statement as the
+        // note. Splitting this into a later UPDATE leaves an interruption
+        // window where a staged import leaks an unowned, visible note.
         let created: Option<Note> = self
             .db
-            .create("note")
-            .content(note_content_value(&note)?)
-            .await?;
-
+            .query(
+                "CREATE note SET \
+                    note_type = $note_type, title = $title, content = $content, \
+                    embedding = $embedding, source_id = $source_id, \
+                    source_generation = $source_generation, tags = $tags, \
+                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
+                 RETURN AFTER",
+            )
+            .bind((
+                "note_type",
+                serde_json::to_value(&note.note_type)
+                    .map_err(|error| DbError::QueryFailed(error.to_string()))?,
+            ))
+            .bind(("title", note.title.clone()))
+            .bind(("content", note.content.clone()))
+            .bind((
+                "embedding",
+                (!note.embedding.is_empty()).then_some(note.embedding.clone()),
+            ))
+            .bind(("source_id", note.source_id.clone()))
+            .bind((
+                "source_generation",
+                note.source_generation.map(|generation| generation as i64),
+            ))
+            .bind(("tags", note.tags.clone()))
+            .bind(("created_at", note.created_at.to_rfc3339()))
+            .bind(("updated_at", note.updated_at.to_rfc3339()))
+            .await?
+            .take(0)?;
         created.ok_or_else(|| DbError::QueryFailed("create_note".into()))
     }
 
     /// Get a note by ID
     #[instrument(skip(self))]
     pub async fn get_note(&self, id: &str) -> Result<Option<Note>> {
-        let note: Option<Note> = self.db.select(("note", id)).await?;
+        let raw_id = id.strip_prefix("note:").unwrap_or(id);
+        let note: Option<Note> = self.db.select(("note", raw_id)).await?;
         Ok(note)
     }
 
     /// Update a note
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
+        let raw_id = id.strip_prefix("note:").unwrap_or(id);
         let updated: Option<Note> = self
             .db
-            .update(("note", id))
-            .content(note_content_value(&note)?)
-            .await?;
+            .query(
+                "UPDATE $id SET \
+                    note_type = $note_type, title = $title, content = $content, \
+                    embedding = $embedding, tags = $tags, \
+                    source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
+                    source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
+                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
+                 RETURN AFTER",
+            )
+            .bind(("id", RecordId::new("note", raw_id)))
+            .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
+            .bind(("title", note.title.clone()))
+            .bind(("content", note.content.clone()))
+            .bind(("embedding", (!note.embedding.is_empty()).then_some(note.embedding.clone())))
+            .bind(("tags", note.tags.clone()))
+            .bind(("source_id", note.source_id.clone()))
+            .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
+            .bind(("created_at", note.created_at.to_rfc3339()))
+            .bind(("updated_at", note.updated_at.to_rfc3339()))
+            .await?
+            .take(0)?;
 
         updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
@@ -113,7 +182,11 @@ impl Repository {
     /// List recent notes (basic fields only, for CLI)
     #[instrument(skip(self))]
     pub async fn list_notes(&self, limit: usize) -> Result<Vec<SearchResult>> {
-        let mut notes: Vec<SearchResult> = self.db.select("note").await?;
+        let mut notes: Vec<SearchResult> = self
+            .db
+            .query(format!("SELECT * FROM note WHERE {VISIBLE_NOTE_CONDITION}"))
+            .await?
+            .take(0)?;
 
         // Sort by creation time descending and apply limit in Rust to avoid
         // SurrealDB multi-result `take` issues and deserialization problems
@@ -131,7 +204,9 @@ impl Repository {
     pub async fn get_notes_without_embeddings(&self) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
-            .query("SELECT * FROM note WHERE embedding IS NONE OR array::len(embedding) = 0")
+            .query(format!(
+                "SELECT * FROM note WHERE ({VISIBLE_NOTE_CONDITION}) AND (embedding IS NONE OR array::len(embedding) = 0)"
+            ))
             .await?
             .take(0)?;
 
@@ -143,7 +218,9 @@ impl Repository {
     pub async fn get_notes_without_entities(&self, limit: usize) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
-            .query("SELECT * FROM note WHERE id NOT IN (SELECT in FROM mentions) LIMIT $limit")
+            .query(format!(
+                "SELECT * FROM note WHERE ({VISIBLE_NOTE_CONDITION}) AND id NOT IN (SELECT in FROM mentions) LIMIT $limit"
+            ))
             .bind(("limit", limit))
             .await?
             .take(0)?;
@@ -156,7 +233,9 @@ impl Repository {
     pub async fn get_notes_page(&self, limit: usize, offset: usize) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
-            .query("SELECT * FROM note ORDER BY created_at ASC LIMIT $limit START $offset")
+            .query(format!(
+                "SELECT * FROM note WHERE {VISIBLE_NOTE_CONDITION} ORDER BY created_at ASC LIMIT $limit START $offset"
+            ))
             .bind(("limit", limit))
             .bind(("offset", offset))
             .await?
@@ -321,6 +400,11 @@ impl Repository {
                 WHERE embedding <|{limit},COSINE|> $embedding
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
+                  AND (
+                    source_id IS NONE
+                    OR source_generation IS NONE
+                    OR source_generation = source_id.successful_generation
+                  )
                 ORDER BY vec_distance ASC, id ASC
                 LIMIT $limit
             "#
@@ -370,6 +454,11 @@ impl Repository {
                 WHERE (content @0@ $query OR title @1@ $query)
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
+                  AND (
+                    source_id IS NONE
+                    OR source_generation IS NONE
+                    OR source_generation = source_id.successful_generation
+                  )
                 ORDER BY fts_score DESC, id ASC
                 LIMIT $limit
             "#,
@@ -739,19 +828,19 @@ impl Repository {
     ) -> Result<RelatedNotes> {
         let result: Vec<RelatedNotes> = self
             .db
-            .query(
+            .query(format!(
                 r#"
                 SELECT 
-                    (SELECT * FROM ->supports->note) AS supporting,
-                    (SELECT * FROM <-supports<-note) AS supported_by,
-                    (SELECT * FROM ->contradicts->note) AS contradicting,
-                    (SELECT * FROM <-contradicts<-note) AS contradicted_by,
-                    (SELECT * FROM ->related_to->note) AS related,
-                    (SELECT * FROM <-related_to<-note) AS related_from
+                    (SELECT * FROM ->supports->note WHERE {VISIBLE_NOTE_CONDITION}) AS supporting,
+                    (SELECT * FROM <-supports<-note WHERE {VISIBLE_NOTE_CONDITION}) AS supported_by,
+                    (SELECT * FROM ->contradicts->note WHERE {VISIBLE_NOTE_CONDITION}) AS contradicting,
+                    (SELECT * FROM <-contradicts<-note WHERE {VISIBLE_NOTE_CONDITION}) AS contradicted_by,
+                    (SELECT * FROM ->related_to->note WHERE {VISIBLE_NOTE_CONDITION}) AS related,
+                    (SELECT * FROM <-related_to<-note WHERE {VISIBLE_NOTE_CONDITION}) AS related_from
                 FROM note
-                WHERE id = $id
+                WHERE id = $id AND {VISIBLE_NOTE_CONDITION}
             "#,
-            )
+            ))
             .bind(("id", note_id.clone()))
             .await?
             .take(0)?;
@@ -767,18 +856,19 @@ impl Repository {
     pub async fn find_orphan_notes(&self) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
-            .query(
+            .query(format!(
                 r#"
                 SELECT * FROM note 
                 WHERE 
-                    array::len(->supports->note) = 0 AND
-                    array::len(<-supports<-note) = 0 AND
-                    array::len(->contradicts->note) = 0 AND
-                    array::len(<-contradicts<-note) = 0 AND
-                    array::len(->related_to->note) = 0 AND
-                    array::len(<-related_to<-note) = 0
-            "#,
-            )
+                    {VISIBLE_NOTE_CONDITION} AND
+                    array::len((SELECT * FROM ->supports->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM <-supports<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM ->contradicts->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM <-contradicts<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM ->related_to->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM <-related_to<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0
+            "#
+            ))
             .await?
             .take(0)?;
 
@@ -796,7 +886,7 @@ impl Repository {
     ) -> Result<Vec<SimilarNote>> {
         let results: Vec<SimilarNote> = self
             .db
-            .query(
+            .query(format!(
                 r#"
                 SELECT
                     id,
@@ -805,13 +895,14 @@ impl Repository {
                     vector::similarity::cosine(embedding, $embedding) AS similarity
                 FROM note
                 WHERE
+                    {VISIBLE_NOTE_CONDITION} AND
                     <string>id != $note_id AND
                     embedding IS NOT NONE AND
                     vector::similarity::cosine(embedding, $embedding) > $threshold
                 ORDER BY similarity DESC
                 LIMIT $limit
-            "#,
-            )
+            "#
+            ))
             .bind(("note_id", format!("note:{}", note_id)))
             .bind(("embedding", embedding))
             .bind(("threshold", threshold))
@@ -1026,17 +1117,352 @@ impl Repository {
     // SOURCE OPERATIONS
     // ==========================================
 
-    /// Create a source
+    /// Create a source and return its database-assigned id.
     #[instrument(skip(self, source))]
     pub async fn create_source(&self, source: Source) -> Result<Source> {
-        // Insert source via a raw query and ignore the returned record; we only
-        // need the data persisted, not the generated SurrealDB `id` value.
-        self.db
-            .query("CREATE source CONTENT $source")
-            .bind(("source", source.clone()))
-            .await?;
+        let created: Option<Source> = self
+            .db
+            .query("CREATE source CONTENT $source RETURN AFTER")
+            .bind(("source", source_content_value(&source)?))
+            .await?
+            .take(0)?;
+        created.ok_or_else(|| DbError::CreateFailed("source".into()))
+    }
 
+    /// List sources in stable identity order for human and JSON CLI output.
+    #[instrument(skip(self))]
+    pub async fn list_sources(&self) -> Result<Vec<Source>> {
+        Ok(self
+            .db
+            .query("SELECT * FROM source ORDER BY normalized_uri, created_at, id")
+            .await?
+            .take(0)?)
+    }
+
+    /// Resolve a source by record id or by its normalized/legacy URI.
+    #[instrument(skip(self))]
+    pub async fn get_source(&self, id_or_uri: &str) -> Result<Option<Source>> {
+        if let Some(raw_id) = id_or_uri.strip_prefix("source:") {
+            let source: Option<Source> = self.db.select(("source", raw_id)).await?;
+            return Ok(source);
+        }
+
+        let source: Option<Source> = self
+            .db
+            .query("SELECT * FROM source WHERE normalized_uri = $key OR uri = $key LIMIT 1")
+            .bind(("key", id_or_uri.to_string()))
+            .await?
+            .take(0)?;
         Ok(source)
+    }
+
+    /// Begin a staged import. The old successful generation remains untouched
+    /// until `complete_file_import` succeeds, making failed refreshes safe.
+    #[instrument(skip(self, content))]
+    pub async fn begin_file_import(
+        &self,
+        source_type: SourceType,
+        title: String,
+        normalized_uri: String,
+        content: String,
+        content_hash: String,
+        force: bool,
+    ) -> Result<SourceImportPlan> {
+        if let Some(mut existing) = self.get_source(&normalized_uri).await? {
+            if existing.source_type == SourceType::Manual {
+                return Err(DbError::QueryFailed(format!(
+                    "refusing to replace manual source at {normalized_uri}"
+                )));
+            }
+            if !force
+                && existing.status == SourceIngestionStatus::Ready
+                && existing.content_hash.as_deref() == Some(content_hash.as_str())
+            {
+                // A process can stop after promotion and before old-generation
+                // cleanup. An otherwise unchanged retry is the natural
+                // recovery path; finish that deferred cleanup before reporting
+                // a no-op so stale records cannot accumulate indefinitely.
+                let cleanup = self.cleanup_non_successful_generations(&existing).await?;
+                return Ok(SourceImportPlan {
+                    source: existing,
+                    action: SourceImportAction::Unchanged,
+                    cleanup,
+                });
+            }
+
+            existing.generation = existing.generation.saturating_add(1).max(1);
+            existing.source_type = source_type;
+            existing.title = Some(title);
+            existing.uri = Some(normalized_uri.clone());
+            existing.normalized_uri = Some(normalized_uri);
+            existing.content = Some(content);
+            existing.content_hash = Some(content_hash);
+            existing.status = SourceIngestionStatus::Pending;
+            existing.last_error = None;
+            existing.updated_at = chrono::Utc::now();
+            self.replace_source(&existing).await?;
+            return Ok(SourceImportPlan {
+                source: existing,
+                action: SourceImportAction::Updated,
+                cleanup: SourceDeleteSummary::default(),
+            });
+        }
+
+        let now = chrono::Utc::now();
+        let source = Source {
+            id: None,
+            source_type,
+            title: Some(title),
+            uri: Some(normalized_uri.clone()),
+            normalized_uri: Some(normalized_uri),
+            content: Some(content),
+            content_hash: Some(content_hash),
+            generation: 1,
+            successful_generation: 0,
+            status: SourceIngestionStatus::Pending,
+            last_error: None,
+            metadata: serde_json::json!({}),
+            created_at: now,
+            updated_at: now,
+            last_ingested_at: None,
+        };
+        Ok(SourceImportPlan {
+            source: self.create_source(source).await?,
+            action: SourceImportAction::Created,
+            cleanup: SourceDeleteSummary::default(),
+        })
+    }
+
+    /// Promote an import before removing superseded records. If cleanup is
+    /// interrupted, the new generation is already searchable and the old
+    /// generation remains recoverable (but hidden) for a later cleanup.
+    /// Manual and legacy notes have no generation and survive.
+    #[instrument(skip(self, source))]
+    pub async fn complete_file_import(&self, source: &mut Source) -> Result<SourceDeleteSummary> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?
+            .clone();
+        let summary = self
+            .source_delete_summary(&source_id, Some(source.generation), true)
+            .await?;
+        self.promote_file_import(source).await?;
+        // Do this only after durable promotion. A failure here can leave old
+        // records behind, but cannot leave the corpus with no visible complete
+        // generation; visibility selects `successful_generation`.
+        self.delete_source_notes(&source_id, Some(source.generation), true)
+            .await?;
+        Ok(summary)
+    }
+
+    async fn promote_file_import(&self, source: &mut Source) -> Result<()> {
+        source.successful_generation = source.generation;
+        source.status = SourceIngestionStatus::Ready;
+        source.last_error = None;
+        source.updated_at = chrono::Utc::now();
+        source.last_ingested_at = Some(source.updated_at);
+        self.replace_source(source).await
+    }
+
+    async fn cleanup_non_successful_generations(
+        &self,
+        source: &Source,
+    ) -> Result<SourceDeleteSummary> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+        self.delete_source_notes(source_id, Some(source.successful_generation), true)
+            .await
+    }
+
+    /// Remove partially-created notes for a failed generation and retain the
+    /// last successful generation. The source remains resumable via reimport.
+    #[instrument(skip(self, source, error))]
+    pub async fn fail_file_import(&self, source: &mut Source, error: impl ToString) -> Result<()> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+        self.delete_source_notes(source_id, Some(source.generation), false)
+            .await?;
+        source.status = SourceIngestionStatus::Failed;
+        source.last_error = Some(error.to_string());
+        source.updated_at = chrono::Utc::now();
+        self.replace_source(source).await
+    }
+
+    /// Count every record that source deletion would mutate. This is used for
+    /// dry-run output and intentionally excludes manual/legacy notes.
+    #[instrument(skip(self, source))]
+    pub async fn preview_source_delete(&self, source: &Source) -> Result<SourceDeleteSummary> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::NotFound("source".into(), "missing id".into()))?;
+        self.source_delete_summary(source_id, None, false).await
+    }
+
+    /// Delete a source and the records it owns. Edges/provenance/mentions are
+    /// removed before notes, so no dangling graph records remain. Shared entity
+    /// records are deliberately retained: without per-source entity ownership,
+    /// deleting an unmentioned entity could erase a user-authored entity.
+    #[instrument(skip(self, source))]
+    pub async fn delete_source(&self, source: &Source) -> Result<SourceDeleteSummary> {
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::NotFound("source".into(), "missing id".into()))?;
+        let summary = self.delete_source_notes(source_id, None, false).await?;
+        let _: Option<Source> = self.db.delete(source_id.clone()).await?;
+        Ok(summary)
+    }
+
+    async fn replace_source(&self, source: &Source) -> Result<()> {
+        let id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+        let content = source_content_value(source)?;
+        self.db
+            .query("UPDATE $id MERGE $source")
+            .bind(("id", id.clone()))
+            .bind(("source", content))
+            .await?
+            .check()?;
+        self.db
+            .query(
+                "UPDATE $id SET updated_at = <datetime>$updated_at, \
+                 last_error = $last_error, \
+                 last_ingested_at = IF $last_ingested_at = NONE THEN NONE ELSE <datetime>$last_ingested_at END",
+            )
+            .bind(("id", id.clone()))
+            .bind(("updated_at", source.updated_at.to_rfc3339()))
+            .bind(("last_error", source.last_error.clone()))
+            .bind((
+                "last_ingested_at",
+                source.last_ingested_at.map(|time| time.to_rfc3339()),
+            ))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn delete_source_notes(
+        &self,
+        source_id: &RecordId,
+        generation: Option<u64>,
+        older_than_generation: bool,
+    ) -> Result<SourceDeleteSummary> {
+        let summary = self
+            .source_delete_summary(source_id, generation, older_than_generation)
+            .await?;
+        let notes = self
+            .source_owned_note_ids(source_id, generation, older_than_generation)
+            .await?;
+        for note_id in notes {
+            self.db
+                .query(
+                    "DELETE supports WHERE in = $note OR out = $note; \
+                     DELETE contradicts WHERE in = $note OR out = $note; \
+                     DELETE derived_from WHERE in = $note OR out = $note; \
+                     DELETE related_to WHERE in = $note OR out = $note; \
+                     DELETE mentions WHERE in = $note; \
+                     DELETE note_from_conversation WHERE in = $note; \
+                     DELETE note_from_message WHERE in = $note; \
+                     DELETE $note;",
+                )
+                .bind(("note", note_id))
+                .await?
+                .check()?;
+        }
+        Ok(summary)
+    }
+
+    async fn source_owned_note_ids(
+        &self,
+        source_id: &RecordId,
+        generation: Option<u64>,
+        older_than_generation: bool,
+    ) -> Result<Vec<RecordId>> {
+        let condition = match (generation, older_than_generation) {
+            (Some(_), true) => "source_generation IS NOT NONE AND source_generation != $generation",
+            (Some(_), false) => "source_generation = $generation",
+            (None, _) => "source_generation IS NOT NONE",
+        };
+        let query =
+            format!("SELECT VALUE id FROM note WHERE source_id = $source_id AND {condition}");
+        let mut request = self.db.query(query).bind(("source_id", source_id.clone()));
+        if let Some(generation) = generation {
+            request = request.bind(("generation", generation as i64));
+        }
+        Ok(request.await?.take(0)?)
+    }
+
+    async fn source_delete_summary(
+        &self,
+        source_id: &RecordId,
+        generation: Option<u64>,
+        older_than_generation: bool,
+    ) -> Result<SourceDeleteSummary> {
+        let notes = self
+            .source_owned_note_ids(source_id, generation, older_than_generation)
+            .await?;
+        let mut summary = SourceDeleteSummary::default();
+        summary.notes = notes.len() as u64;
+        summary.note_edges = self.count_note_edges_for_notes(&notes).await?;
+        for note_id in notes {
+            let counts: Vec<SourceDeleteCount> = self
+                .db
+                .query(
+                    "RETURN [\
+                       { kind: 'mentions', count: (SELECT count() FROM mentions WHERE in = $note GROUP ALL)[0].count },\
+                       { kind: 'conversation_provenance', count: (SELECT count() FROM note_from_conversation WHERE in = $note GROUP ALL)[0].count },\
+                       { kind: 'message_provenance', count: (SELECT count() FROM note_from_message WHERE in = $note GROUP ALL)[0].count }\
+                     ];",
+                )
+                .bind(("note", note_id))
+                .await?
+                .take(0)?;
+            for count in counts {
+                match count.kind.as_str() {
+                    "mentions" => summary.mentions += count.count,
+                    "conversation_provenance" => {
+                        summary.note_conversation_provenance += count.count
+                    }
+                    "message_provenance" => summary.note_message_provenance += count.count,
+                    _ => {}
+                }
+            }
+        }
+        Ok(summary)
+    }
+
+    /// Count each edge row once across all owned notes. An internal edge is
+    /// reachable from two endpoints but is deleted exactly once, so summing
+    /// per-note counts would make dry-run output inaccurate.
+    async fn count_note_edges_for_notes(&self, notes: &[RecordId]) -> Result<u64> {
+        let mut total = 0_u64;
+        for table in ["supports", "contradicts", "derived_from", "related_to"] {
+            #[derive(Deserialize, SurrealValue)]
+            struct CountRow {
+                #[serde(default)]
+                count: Option<u64>,
+            }
+
+            let query = format!(
+                "SELECT count() FROM {table} WHERE in IN $notes OR out IN $notes GROUP ALL"
+            );
+            let row: Option<CountRow> = self
+                .db
+                .query(query)
+                .bind(("notes", notes.to_vec()))
+                .await?
+                .take(0)?;
+            total += row.and_then(|row| row.count).unwrap_or(0);
+        }
+        Ok(total)
     }
 
     // ==========================================
@@ -1363,18 +1789,15 @@ pub struct NoteEdgeRow {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-fn normalize_note_id(note_id: &str) -> String {
-    if note_id.starts_with("note:") {
-        note_id.to_string()
-    } else {
-        format!("note:{}", note_id)
-    }
+fn normalize_note_id(note_id: &str) -> RecordId {
+    RecordId::new("note", note_id.strip_prefix("note:").unwrap_or(note_id))
 }
 
 impl Repository {
     async fn query_edges_table(&self, table: &str, limit: usize) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
-            "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at FROM {table} LIMIT $limit"
+            "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at \
+             FROM {table} WHERE {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} LIMIT $limit"
         );
         let edges: Vec<NoteEdgeRow> = self
             .db
@@ -1385,16 +1808,20 @@ impl Repository {
         Ok(edges)
     }
 
-    async fn query_edges_for_note(&self, table: &str, note_id: &str) -> Result<Vec<NoteEdgeRow>> {
-        let note_id = note_id.to_string();
+    async fn query_edges_for_note(
+        &self,
+        table: &str,
+        note_id: &RecordId,
+    ) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
             "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at \
-             FROM {table} WHERE in = $note_id OR out = $note_id"
+             FROM {table} WHERE (in = $note_id OR out = $note_id) \
+             AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION}"
         );
         let edges: Vec<NoteEdgeRow> = self
             .db
             .query(&query)
-            .bind(("note_id", note_id))
+            .bind(("note_id", note_id.clone()))
             .await?
             .take(0)?;
         Ok(edges)
@@ -1404,6 +1831,42 @@ impl Repository {
 // ==========================================
 // RESULT TYPES
 // ==========================================
+
+/// Decision made before a file import starts.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceImportAction {
+    Created,
+    Updated,
+    Unchanged,
+}
+
+/// Source state returned by the staged file-import API.
+#[derive(Debug, Clone)]
+pub struct SourceImportPlan {
+    pub source: Source,
+    pub action: SourceImportAction,
+    /// Deletions recovered before returning an unchanged import decision.
+    /// Other actions defer cleanup until their import successfully promotes.
+    pub cleanup: SourceDeleteSummary,
+}
+
+/// Deterministic cascade counts used by dry-run and completed import output.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceDeleteSummary {
+    pub notes: u64,
+    pub mentions: u64,
+    pub note_edges: u64,
+    pub note_conversation_provenance: u64,
+    pub note_message_provenance: u64,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct SourceDeleteCount {
+    kind: String,
+    #[serde(default)]
+    count: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct SearchResult {
@@ -1569,7 +2032,473 @@ pub struct DbStats {
 mod tests {
     use super::*;
     use crate::init_memory;
-    use graphrag_core::EntityType;
+    use graphrag_core::{EntityType, SourceType};
+
+    async fn begin_markdown(repo: &Repository, content: &str, force: bool) -> SourceImportPlan {
+        repo.begin_file_import(
+            SourceType::Markdown,
+            "alpha.md".into(),
+            "file:///notes/alpha.md".into(),
+            content.into(),
+            format!("sha256:{content}"),
+            force,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn source_lifecycle_is_idempotent_and_preserves_manual_notes() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        assert_eq!(first.action, SourceImportAction::Created);
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let derived = repo
+            .create_note(
+                Note::new("derived first")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("manual association").with_source(source_id.clone()))
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let unchanged = begin_markdown(&repo, "first", false).await;
+        assert_eq!(unchanged.action, SourceImportAction::Unchanged);
+        assert_eq!(unchanged.source.generation, 1);
+
+        let mut changed = begin_markdown(&repo, "second", false).await;
+        assert_eq!(changed.action, SourceImportAction::Updated);
+        assert_eq!(changed.source.generation, 2);
+        let current = repo
+            .create_note(
+                Note::new("derived second")
+                    .with_source(source_id.clone())
+                    .with_source_generation(changed.source.generation),
+            )
+            .await
+            .unwrap();
+        let cleanup = repo
+            .complete_file_import(&mut changed.source)
+            .await
+            .unwrap();
+        assert_eq!(cleanup.notes, 1);
+        assert!(repo
+            .get_note(&record_id_to_string(derived.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_note(&record_id_to_string(current.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .get_note(&record_id_to_string(manual.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+
+        let mut failed = begin_markdown(&repo, "third", true).await;
+        let partial = repo
+            .create_note(
+                Note::new("partial")
+                    .with_source(source_id.clone())
+                    .with_source_generation(failed.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.fail_file_import(&mut failed.source, "embedding unavailable")
+            .await
+            .unwrap();
+        let stored = repo
+            .get_source(&record_id_to_string(&source_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, SourceIngestionStatus::Failed);
+        assert_eq!(stored.successful_generation, 2);
+        assert!(repo
+            .get_note(&record_id_to_string(partial.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_note(&record_id_to_string(current.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn retrieval_hides_unpromoted_source_generations_after_interruption() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        repo.create_note(
+            Note::new("visible generation one")
+                .with_embedding(vec![0.0; 1024])
+                .with_source(source_id.clone())
+                .with_source_generation(first.source.generation),
+        )
+        .await
+        .unwrap();
+
+        // The first process can be interrupted before promotion. Its staged
+        // note must not be returned by either retrieval path after restart.
+        assert!(repo
+            .fulltext_search("visible generation", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(repo
+            .vector_search(vec![0.0; 1024], 10)
+            .await
+            .unwrap()
+            .is_empty());
+
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        assert_eq!(
+            repo.fulltext_search("visible generation", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            repo.vector_search(vec![0.0; 1024], 10).await.unwrap().len(),
+            1
+        );
+
+        let second = begin_markdown(&repo, "second", false).await;
+        assert_eq!(second.source.generation, 2);
+        repo.create_note(
+            Note::new("pending generation two")
+                .with_embedding(vec![0.0; 1024])
+                .with_source(source_id)
+                .with_source_generation(second.source.generation),
+        )
+        .await
+        .unwrap();
+        assert!(repo
+            .fulltext_search("pending generation", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            repo.fulltext_search("visible generation", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn related_notes_hide_staged_source_generations() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let anchor = repo.create_note(Note::new("manual anchor")).await.unwrap();
+        let plan = begin_markdown(&repo, "staged", false).await;
+        let staged = repo
+            .create_note(
+                Note::new("staged source note")
+                    .with_source(plan.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+
+        let anchor_id = anchor.id.as_ref().unwrap();
+        let staged_id = staged.id.as_ref().unwrap();
+        // Cover both graph directions for every relationship projection.
+        for edge_type in [
+            EdgeType::Supports,
+            EdgeType::Contradicts,
+            EdgeType::RelatedTo,
+        ] {
+            repo.create_edge(anchor_id, staged_id, edge_type.clone(), None)
+                .await
+                .unwrap();
+            repo.create_edge(staged_id, anchor_id, edge_type, None)
+                .await
+                .unwrap();
+        }
+
+        let related = repo.get_related_notes(anchor_id).await.unwrap();
+        assert!(related.supporting.is_empty());
+        assert!(related.supported_by.is_empty());
+        assert!(related.contradicting.is_empty());
+        assert!(related.contradicted_by.is_empty());
+        assert!(related.related.is_empty());
+        assert!(related.related_from.is_empty());
+    }
+
+    #[tokio::test]
+    async fn orphan_notes_ignore_hidden_source_generation_neighbors() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let anchor = repo.create_note(Note::new("manual anchor")).await.unwrap();
+        let plan = begin_markdown(&repo, "staged", false).await;
+        let staged = repo
+            .create_note(
+                Note::new("staged source note")
+                    .with_source(plan.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+
+        let anchor_id = anchor.id.as_ref().unwrap();
+        let staged_id = staged.id.as_ref().unwrap();
+        // A staged source generation is invisible in every graph direction,
+        // so it cannot prevent a visible manual note from being an orphan.
+        for edge_type in [
+            EdgeType::Supports,
+            EdgeType::Contradicts,
+            EdgeType::RelatedTo,
+        ] {
+            repo.create_edge(anchor_id, staged_id, edge_type.clone(), None)
+                .await
+                .unwrap();
+            repo.create_edge(staged_id, anchor_id, edge_type, None)
+                .await
+                .unwrap();
+        }
+
+        let orphans = repo.find_orphan_notes().await.unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].id.as_ref(), anchor.id.as_ref());
+    }
+
+    #[tokio::test]
+    async fn note_edge_lists_hide_edges_with_hidden_source_generation_endpoints() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let manual_left = repo.create_note(Note::new("manual left")).await.unwrap();
+        let manual_right = repo.create_note(Note::new("manual right")).await.unwrap();
+        let plan = begin_markdown(&repo, "staged", false).await;
+        let staged = repo
+            .create_note(
+                Note::new("staged source note")
+                    .with_source(plan.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+
+        repo.create_edge(
+            manual_left.id.as_ref().unwrap(),
+            manual_right.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            None,
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            manual_left.id.as_ref().unwrap(),
+            staged.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(repo.list_note_edges(10).await.unwrap().len(), 1);
+        assert_eq!(
+            repo.get_note_edges(&record_id_to_string(manual_left.id.as_ref().unwrap()))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(repo
+            .get_note_edges(&record_id_to_string(staged.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_owned_notes_are_created_and_updated_with_ownership_intact() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let plan = begin_markdown(&repo, "content", false).await;
+        let source_id = plan.source.id.as_ref().unwrap().clone();
+        let created = repo
+            .create_note(
+                Note::new("owned content")
+                    .with_source(source_id.clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+
+        // Creation writes both ownership fields in the single CREATE command;
+        // there is no unowned persisted state to leak if import work stops.
+        assert_eq!(created.source_id.as_ref(), Some(&source_id));
+        assert_eq!(created.source_generation, Some(plan.source.generation));
+
+        let mut edited = created.clone();
+        edited.content = "edited content".into();
+        // Callers that do not repeat source ownership must not accidentally
+        // detach a source-owned note during a content update.
+        edited.source_id = None;
+        edited.source_generation = None;
+        let updated = repo
+            .update_note(&record_id_to_string(created.id.as_ref().unwrap()), edited)
+            .await
+            .unwrap();
+        assert_eq!(updated.source_id.as_ref(), Some(&source_id));
+        assert_eq!(updated.source_generation, Some(plan.source.generation));
+    }
+
+    #[tokio::test]
+    async fn promotion_selects_the_new_generation_before_old_cleanup() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let first_note = repo
+            .create_note(
+                Note::new("first generation")
+                    .with_embedding(vec![1.0; 1024])
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let second_note = repo
+            .create_note(
+                Note::new("second generation")
+                    .with_embedding(vec![1.0; 1024])
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        // Simulate a process stopping after durable promotion but before the
+        // best-effort destructive cleanup. The new complete generation is
+        // immediately searchable; the old one is merely hidden/recoverable.
+        repo.promote_file_import(&mut second.source).await.unwrap();
+        assert_eq!(
+            second.source.successful_generation,
+            second.source.generation
+        );
+        assert_eq!(
+            repo.fulltext_search("second generation", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(repo
+            .fulltext_search("first generation", 10)
+            .await
+            .unwrap()
+            .is_empty());
+        // Other unfiltered scans must honor the same visibility rule while
+        // cleanup is deferred after an interruption.
+        assert_eq!(repo.list_notes(10).await.unwrap().len(), 1);
+        assert_eq!(repo.find_orphan_notes().await.unwrap().len(), 1);
+        assert_eq!(repo.get_notes_page(10, 0).await.unwrap().len(), 1);
+        let second_key = record_id_to_string(second_note.id.as_ref().unwrap())
+            .strip_prefix("note:")
+            .unwrap()
+            .to_string();
+        assert!(repo
+            .find_similar_notes(&second_key, vec![1.0; 1024], 0.0, 10)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // The unchanged-hash path doubles as durable recovery: it retries
+        // cleanup instead of leaving hidden old generations forever.
+        let retry = begin_markdown(&repo, "second", false).await;
+        assert_eq!(retry.action, SourceImportAction::Unchanged);
+        assert_eq!(retry.cleanup.notes, 1);
+        assert!(repo
+            .get_note(&record_id_to_string(first_note.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn source_delete_preview_matches_confirmed_derived_cascade() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut plan = begin_markdown(&repo, "content", false).await;
+        let source_id = plan.source.id.as_ref().unwrap().clone();
+        let derived = repo
+            .create_note(
+                Note::new("derived")
+                    .with_source(source_id.clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+        let derived_second = repo
+            .create_note(
+                Note::new("derived second")
+                    .with_source(source_id.clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+        let unrelated = repo.create_note(Note::new("manual")).await.unwrap();
+        // This internal edge is reachable through two source-owned notes but
+        // must count once in the exact dry-run/delete summary.
+        repo.create_edge(
+            derived.id.as_ref().unwrap(),
+            derived_second.id.as_ref().unwrap(),
+            EdgeType::RelatedTo,
+            Some(0.5),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            derived.id.as_ref().unwrap(),
+            unrelated.id.as_ref().unwrap(),
+            EdgeType::RelatedTo,
+            Some(0.5),
+        )
+        .await
+        .unwrap();
+        let mut retained_entity = Entity::new("Retained entity", EntityType::Concept);
+        retained_entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(retained_entity).await.unwrap();
+        repo.link_note_to_entity(derived.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut plan.source).await.unwrap();
+
+        let preview = repo.preview_source_delete(&plan.source).await.unwrap();
+        assert_eq!(preview.notes, 2);
+        assert_eq!(preview.mentions, 1);
+        assert_eq!(preview.note_edges, 2);
+        let confirmed = repo.delete_source(&plan.source).await.unwrap();
+        assert_eq!(confirmed, preview);
+        assert!(repo
+            .get_note(&record_id_to_string(derived.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(repo
+            .get_note(&record_id_to_string(unrelated.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(repo
+            .get_source(&record_id_to_string(&source_id))
+            .await
+            .unwrap()
+            .is_none());
+        let mut retained_entity = Entity::new("Retained entity", EntityType::Concept);
+        retained_entity.metadata = serde_json::json!({});
+        assert!(repo.upsert_entity(retained_entity).await.is_ok());
+    }
 
     #[tokio::test]
     async fn test_create_and_get_note() {
