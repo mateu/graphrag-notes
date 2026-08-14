@@ -2175,14 +2175,43 @@ impl Repository {
             ));
         }
 
+        // Preserve links that predate this batch: a rollback may only remove
+        // records this call actually added, never a concurrent/manual link
+        // that happened to target the same entity. The lifecycle lock keeps
+        // this snapshot stable with respect to supported graph mutations.
+        let existing_links: HashSet<RecordId> = self
+            .db
+            .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+            .bind(("note_id", note_id.clone()))
+            .await?
+            .take(0)?;
+        let mut created_links = Vec::new();
         let mut linked = 0;
-        for entity in entities {
-            let entity = self.upsert_entity(entity).await?;
-            let entity_id = entity.id.as_ref().ok_or_else(|| {
-                DbError::CreateFailed("upserted entity did not receive an id".into())
-            })?;
-            self.link_note_to_entity_locked(note_id, entity_id).await?;
-            linked += 1;
+        let result: Result<()> = async {
+            for entity in entities {
+                let entity = self.upsert_entity(entity).await?;
+                let entity_id = entity.id.as_ref().ok_or_else(|| {
+                    DbError::CreateFailed("upserted entity did not receive an id".into())
+                })?;
+                if !existing_links.contains(entity_id) {
+                    self.link_note_to_entity_locked(note_id, entity_id).await?;
+                    created_links.push(entity_id.clone());
+                }
+                linked += 1;
+            }
+            Ok(())
+        }
+        .await;
+
+        if let Err(error) = result {
+            for entity_id in created_links {
+                self.db
+                    .query("DELETE mentions WHERE in = $note_id AND out = $entity_id")
+                    .bind(("note_id", note_id.clone()))
+                    .bind(("entity_id", entity_id))
+                    .await?;
+            }
+            return Err(error);
         }
         Ok(linked)
     }
@@ -4704,6 +4733,38 @@ mod tests {
         assert!(entities
             .iter()
             .any(|entity| entity.name == "Second Extracted Entity"));
+    }
+
+    #[tokio::test]
+    async fn failed_entity_link_batch_rolls_back_only_its_partial_mentions() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("entity batch rollback target"))
+            .await
+            .unwrap();
+        let mut existing = Entity::new("Preexisting link survives", EntityType::Concept);
+        existing.metadata = serde_json::json!({});
+        let existing = repo.upsert_entity(existing).await.unwrap();
+        repo.link_note_to_entity(note.id.as_ref().unwrap(), existing.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let mut valid = Entity::new("Link must be rolled back", EntityType::Concept);
+        valid.metadata = serde_json::json!({});
+        let mut invalid = Entity::new("Entity write fails after first link", EntityType::Concept);
+        // The entity schema requires an object or NONE. This reliably fails
+        // the second upsert after the first link has been staged.
+        invalid.metadata = serde_json::json!("not an object");
+
+        assert!(repo
+            .upsert_entities_and_link_note(note.id.as_ref().unwrap(), vec![valid, invalid])
+            .await
+            .is_err());
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(note.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "Preexisting link survives");
     }
 
     #[tokio::test]
