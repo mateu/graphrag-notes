@@ -65,6 +65,7 @@ pub struct ProcessingStats {
     retries: AtomicU64,
     cache_hits: AtomicU64,
     failures: AtomicU64,
+    jitter_seeds: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -174,7 +175,7 @@ where
         .await
         .map_err(|_| AgentError::Processing("inference concurrency limiter closed".into()))?;
     let mut attempt = 1_usize;
-    let jitter_seed = stats.requests.load(Ordering::Relaxed);
+    let jitter_seed = stats.jitter_seeds.fetch_add(1, Ordering::Relaxed);
     loop {
         stats.requests.fetch_add(1, Ordering::Relaxed);
         let result = tokio::time::timeout(config.request_timeout, operation())
@@ -507,16 +508,54 @@ impl EntityExtractor for ResilientEntityExtractor {
             }
         }
         // Ollama strict JSON extraction can issue several progressively larger
-        // generation requests. Its client applies the configured timeout to
-        // each request; wrapping the whole sequence here would turn their
-        // cumulative duration into a false timeout.
+        // generation requests. Retain cache, semaphore, counters, and retry
+        // accounting, but do not place one timeout around that whole sequence:
+        // the client owns the configured timeout for each HTTP request.
         if self
             .inner
             .capabilities()
             .provider
             .eq_ignore_ascii_case("ollama")
         {
-            return self.inner.extract(text).await;
+            let _permit = self.limiter.acquire().await.map_err(|_| {
+                AgentError::Processing("inference concurrency limiter closed".into())
+            })?;
+            let mut attempt = 1_usize;
+            loop {
+                self.stats.requests.fetch_add(1, Ordering::Relaxed);
+                match self.inner.extract(text).await {
+                    Ok(extraction) => {
+                        if self.config.use_cache {
+                            if let Some(cache) = &self.cache {
+                                cache
+                                    .put_inference_cache(key.entry(
+                                        serde_json::to_value(&extraction).map_err(|error| {
+                                            AgentError::Processing(format!(
+                                                "serialize extraction cache value: {error}"
+                                            ))
+                                        })?,
+                                    ))
+                                    .await?;
+                            }
+                        }
+                        return Ok(extraction);
+                    }
+                    Err(error)
+                        if classify_retry(&error) == RetryClassification::Transient
+                            && attempt < self.config.retry_attempts =>
+                    {
+                        self.stats.retries.fetch_add(1, Ordering::Relaxed);
+                        let seed = self.stats.jitter_seeds.fetch_add(1, Ordering::Relaxed);
+                        tokio::time::sleep(retry_delay_with_seed(&self.config, attempt, seed))
+                            .await;
+                        attempt += 1;
+                    }
+                    Err(error) => {
+                        self.stats.failures.fetch_add(1, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                }
+            }
         }
         let text = text.to_string();
         let inner = self.inner.clone();
