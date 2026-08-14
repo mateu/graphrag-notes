@@ -20,6 +20,12 @@ ollama_url = "http://localhost:11434"
 # Request timeout and maximum TEI batch size.
 timeout_secs = 30
 tei_max_batch = 32
+# Provider-wide local processing controls. Attempts include the first request.
+processing_concurrency = 4
+retry_attempts = 3
+retry_initial_backoff_ms = 250
+retry_max_backoff_ms = 5000
+cache_enabled = true
 # Optional TEI prompt names. Leave commented to let the service defaults apply.
 # tei_prompt_name_query = "query"
 # tei_prompt_name_passage = "passage"

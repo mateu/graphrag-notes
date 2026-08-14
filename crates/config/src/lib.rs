@@ -85,6 +85,13 @@ pub struct InferenceConfig {
     pub extraction_model: String,
     pub ollama_url: String,
     pub timeout_secs: u64,
+    /// Maximum in-flight requests per local inference operation/provider.
+    pub processing_concurrency: usize,
+    /// Includes the initial request. One disables retries.
+    pub retry_attempts: usize,
+    pub retry_initial_backoff_ms: u64,
+    pub retry_max_backoff_ms: u64,
+    pub cache_enabled: bool,
     pub tei_max_batch: usize,
     pub tei_prompt_name_query: Option<String>,
     pub tei_prompt_name_passage: Option<String>,
@@ -110,6 +117,11 @@ impl Default for InferenceConfig {
             extraction_model: "phi4-mini:latest".into(),
             ollama_url: "http://localhost:11434".into(),
             timeout_secs: 30,
+            processing_concurrency: 4,
+            retry_attempts: 3,
+            retry_initial_backoff_ms: 250,
+            retry_max_backoff_ms: 5_000,
+            cache_enabled: true,
             tei_max_batch: 32,
             tei_prompt_name_query: None,
             tei_prompt_name_passage: None,
@@ -417,6 +429,31 @@ impl RuntimeConfig {
         )?;
         set_usize(
             env,
+            "GRAPHRAG_INFERENCE_CONCURRENCY",
+            &mut self.inference.processing_concurrency,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_INFERENCE_RETRY_ATTEMPTS",
+            &mut self.inference.retry_attempts,
+        )?;
+        set_u64(
+            env,
+            "GRAPHRAG_INFERENCE_RETRY_INITIAL_BACKOFF_MS",
+            &mut self.inference.retry_initial_backoff_ms,
+        )?;
+        set_u64(
+            env,
+            "GRAPHRAG_INFERENCE_RETRY_MAX_BACKOFF_MS",
+            &mut self.inference.retry_max_backoff_ms,
+        )?;
+        set_bool(
+            env,
+            "GRAPHRAG_INFERENCE_CACHE_ENABLED",
+            &mut self.inference.cache_enabled,
+        )?;
+        set_usize(
+            env,
             "GRAPHRAG_SEARCH_DEFAULT_LIMIT",
             &mut self.search.default_limit,
         )?;
@@ -635,6 +672,10 @@ impl RuntimeConfig {
             ));
         }
         if self.inference.timeout_secs == 0
+            || self.inference.processing_concurrency == 0
+            || self.inference.retry_attempts == 0
+            || self.inference.retry_initial_backoff_ms == 0
+            || self.inference.retry_max_backoff_ms < self.inference.retry_initial_backoff_ms
             || self.inference.tei_max_batch == 0
             || self.inference.max_entities == 0
             || self.inference.max_relationships == 0

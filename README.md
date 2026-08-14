@@ -307,6 +307,33 @@ object. `EXTRACT_MAX_CHARS=0` intentionally preserves its legacy meaning of no
 truncation. Invalid values are rejected by `config validate` rather than being
 silently ignored.
 
+### Resilient local inference processing
+
+Long-running embedding and entity-extraction work is bounded by the resolved
+`[inference]` processing controls. Every request has a timeout; only timeouts,
+connection failures, HTTP 429, and retryable 5xx responses are retried with
+bounded exponential backoff and deterministic jitter. Invalid requests,
+dimension mismatches, and invalid structured output fail immediately.
+
+Successful local results are cached in the database by operation, provider,
+model, prompt/schema version, and normalized content hash. Use global flags to
+adjust one invocation without changing configuration:
+
+```bash
+graphrag --concurrency 2 --retry-attempts 4 extract-entities --limit 100
+graphrag --no-cache extract-entities --limit 100
+graphrag jobs list --format json
+graphrag jobs show processing_job:example --format json
+graphrag jobs resume processing_job:example
+graphrag jobs cancel processing_job:example
+```
+
+Jobs persist aggregate counts, checkpoint, timestamps, and last error. A
+cancel request takes effect between atomic item updates. The current item is
+either committed before its checkpoint advances or left pending for the next
+resume; source lifecycle generations remain searchable until their staged
+import is promoted.
+
 ### 3. Add Some Notes
 
 ```bash
@@ -398,6 +425,7 @@ graphrag interactive
 | `interactive` | Interactive REPL mode |
 | `embedding-dim` | Show embedding dimension for the active provider |
 | `extract-entities` | Extract entities for notes missing entity links |
+| `jobs list/show/resume/cancel` | Inspect and control durable local inference work |
 
 ### Retrieval evaluation
 

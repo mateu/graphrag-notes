@@ -929,20 +929,20 @@ enum TgiProvider {
     Ollama,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityExtraction {
     pub entities: Vec<ExtractedEntity>,
     pub relationships: Vec<ExtractedRelationship>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedEntity {
     pub name: String,
     #[serde(alias = "type", alias = "entity_type")]
     pub entity_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedRelationship {
     pub source: String,
     pub target: String,

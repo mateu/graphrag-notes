@@ -15,7 +15,8 @@ use eval::{
 use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
     InferenceProviderConfig, InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig,
-    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    ProcessingConfig, ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType,
+    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
@@ -26,7 +27,8 @@ use graphrag_db::{
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -51,6 +53,18 @@ struct Cli {
     /// Verbose output (DEBUG logs)
     #[arg(short, long)]
     verbose: bool,
+
+    /// Maximum in-flight requests per inference provider/operation.
+    #[arg(long, global = true, value_name = "N")]
+    concurrency: Option<usize>,
+
+    /// Maximum inference attempts including the initial request.
+    #[arg(long, global = true, value_name = "N")]
+    retry_attempts: Option<usize>,
+
+    /// Bypass the durable local inference cache for this invocation.
+    #[arg(long, global = true)]
+    no_cache: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -260,6 +274,12 @@ enum Commands {
         command: GardenCommand,
     },
 
+    /// Inspect and control durable local inference jobs
+    Jobs {
+        #[command(subcommand)]
+        command: JobsCommand,
+    },
+
     /// Show database statistics
     Stats,
 
@@ -404,6 +424,31 @@ enum GardenCommand {
 }
 
 #[derive(Subcommand)]
+enum JobsCommand {
+    List {
+        #[arg(short, long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = JobOutputFormat::Human)]
+        format: JobOutputFormat,
+    },
+    Show {
+        id: String,
+        #[arg(long, value_enum, default_value_t = JobOutputFormat::Human)]
+        format: JobOutputFormat,
+    },
+    /// Resume a failed or cancelled job from its durable checkpoint.
+    Resume { id: String },
+    /// Request cancellation between atomic item mutations.
+    Cancel { id: String },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum JobOutputFormat {
+    Human,
+    Json,
+}
+
+#[derive(Subcommand)]
 enum ProposalCommand {
     List {
         #[arg(long, value_enum)]
@@ -527,6 +572,23 @@ fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig 
         ollama_timeout_secs: config.inference.ollama_timeout_secs,
         ollama_options: config.inference.ollama_options.clone(),
     }
+}
+
+fn processing_config(
+    config: &RuntimeConfig,
+    concurrency: Option<usize>,
+    retry_attempts: Option<usize>,
+    no_cache: bool,
+) -> ProcessingConfig {
+    ProcessingConfig {
+        concurrency: concurrency.unwrap_or(config.inference.processing_concurrency),
+        request_timeout: Duration::from_secs(config.inference.timeout_secs),
+        retry_attempts: retry_attempts.unwrap_or(config.inference.retry_attempts),
+        initial_backoff: Duration::from_millis(config.inference.retry_initial_backoff_ms),
+        max_backoff: Duration::from_millis(config.inference.retry_max_backoff_ms),
+        use_cache: config.inference.cache_enabled && !no_cache,
+    }
+    .normalized()
 }
 
 fn configured_search_agent(
@@ -744,8 +806,20 @@ async fn main() -> Result<()> {
 
     let repo = Repository::new(db);
     let providers = InferenceProviders::from_config(&inference_config);
-    let tei = providers.embedder;
-    let tgi = providers.extractor;
+    let processing = processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache);
+    // The wrappers share their semaphores and counters across every clone in
+    // this invocation, so imports, extraction, and search cannot overload a
+    // local provider merely by arriving through different commands.
+    let tei: SharedEmbedder = Arc::new(ResilientEmbedder::new(
+        providers.embedder,
+        Some(repo.clone()),
+        processing.clone(),
+    ));
+    let tgi: SharedEntityExtractor = Arc::new(ResilientEntityExtractor::new(
+        providers.extractor,
+        Some(repo.clone()),
+        processing,
+    ));
 
     // Check inference services only when needed
     let needs_tei = matches!(
@@ -929,6 +1003,9 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Commands::Jobs { command } => {
+            cmd_jobs(repo, tei, tgi, librarian_config, command).await?;
+        }
         Commands::Stats => {
             cmd_stats(repo).await?;
         }
@@ -993,6 +1070,108 @@ async fn main() -> Result<()> {
         Commands::Doctor { .. } => unreachable!("doctor returns before database initialization"),
     }
 
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct JobOutput {
+    id: String,
+    job_type: String,
+    source_generation: Option<String>,
+    status: String,
+    total_count: i64,
+    completed_count: i64,
+    failed_count: i64,
+    checkpoint: Option<String>,
+    last_error: Option<String>,
+    created_at: String,
+    updated_at: String,
+    finished_at: Option<String>,
+}
+
+impl From<&graphrag_db::ProcessingJob> for JobOutput {
+    fn from(job: &graphrag_db::ProcessingJob) -> Self {
+        Self {
+            id: job.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+            job_type: job.job_type.clone(),
+            source_generation: job.source_generation.clone(),
+            status: job.status.clone(),
+            total_count: job.total_count,
+            completed_count: job.completed_count,
+            failed_count: job.failed_count,
+            checkpoint: job.checkpoint.clone(),
+            last_error: job.last_error.clone(),
+            created_at: job.created_at.to_rfc3339(),
+            updated_at: job.updated_at.to_rfc3339(),
+            finished_at: job.finished_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+fn print_job(job: &graphrag_db::ProcessingJob, format: JobOutputFormat) -> Result<()> {
+    match format {
+        JobOutputFormat::Json => println!("{}", serde_json::to_string(&JobOutput::from(job))?),
+        JobOutputFormat::Human => println!(
+            "{} {} status={} completed={}/{} failed={} checkpoint={}{}",
+            job.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+            job.job_type,
+            job.status,
+            job.completed_count,
+            job.total_count,
+            job.failed_count,
+            job.checkpoint.as_deref().unwrap_or("-"),
+            job.last_error
+                .as_deref()
+                .map(|error| format!(" error={error}"))
+                .unwrap_or_default(),
+        ),
+    }
+    Ok(())
+}
+
+async fn cmd_jobs(
+    repo: Repository,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
+    command: JobsCommand,
+) -> Result<()> {
+    match command {
+        JobsCommand::List { limit, format } => {
+            let jobs = repo.list_processing_jobs(limit).await?;
+            if format == JobOutputFormat::Json {
+                let rows = jobs.iter().map(JobOutput::from).collect::<Vec<_>>();
+                println!("{}", serde_json::to_string(&rows)?);
+            } else if jobs.is_empty() {
+                println!("No processing jobs.");
+            } else {
+                for job in &jobs {
+                    print_job(job, format)?;
+                }
+            }
+        }
+        JobsCommand::Show { id, format } => {
+            let job = repo
+                .get_processing_job(&id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Processing job not found: {id}"))?;
+            print_job(&job, format)?;
+        }
+        JobsCommand::Cancel { id } => {
+            let record = parse_record_id(&id, Some("processing_job"))?;
+            let job = repo.cancel_processing_job(&record).await?;
+            print_job(&job, JobOutputFormat::Human)?;
+        }
+        JobsCommand::Resume { id } => {
+            let librarian =
+                LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
+            let result = librarian.resume_processing_job(&id).await?;
+            println!(
+                "job={} completed={} failed={} cancelled={}",
+                result.job_id, result.completed, result.failed, result.cancelled
+            );
+        }
+    }
     Ok(())
 }
 

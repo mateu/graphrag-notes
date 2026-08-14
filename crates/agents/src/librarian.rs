@@ -1,12 +1,18 @@
 //! Librarian Agent - Ingests content and creates notes
 
-use crate::{inference::validate_embedding_dim, Result, SharedEmbedder, SharedEntityExtractor};
+use crate::{
+    classify_retry, inference::validate_embedding_dim, Result, RetryClassification, SharedEmbedder,
+    SharedEntityExtractor,
+};
 use graphrag_core::{
     normalize_file_uri, normalized_content_hash, record_id_to_string, ChatConversation, ChatExport,
     ChatMessage, Entity, EntityType, MessageRole, Note, NoteType, Source, SourceType,
 };
 use graphrag_db::compatibility::{EmbeddingIdentity, ExtractionIdentity};
-use graphrag_db::{Repository, SourceDeleteSummary, SourceImportAction};
+use graphrag_db::{
+    ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository, SourceDeleteSummary,
+    SourceImportAction,
+};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -137,6 +143,15 @@ pub struct MarkdownImportResult {
     pub failed: u64,
     pub cleanup: SourceDeleteSummary,
     pub notes: Vec<Note>,
+}
+
+/// Stable outcome of a durable, resumable inference pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessingRunResult {
+    pub job_id: String,
+    pub completed: u64,
+    pub failed: u64,
+    pub cancelled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -467,29 +482,207 @@ impl LibrarianAgent {
             .await
     }
 
-    /// Process notes that don't have embeddings yet
+    /// Process notes without embeddings through bounded windows. Every note is
+    /// updated before its checkpoint advances; rerunning after an interruption
+    /// therefore reconciles from the `embedding IS NONE` predicate instead of
+    /// creating duplicate records.
     #[instrument(skip(self))]
     pub async fn process_pending_embeddings(&self) -> Result<usize> {
-        let notes = self.repo.get_notes_without_embeddings().await?;
+        let result = self.process_pending_embeddings_job(None).await?;
+        Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
+    }
 
-        if notes.is_empty() {
-            return Ok(0);
+    /// Resume a persisted embedding or entity-extraction pass. Work selection
+    /// remains idempotent: pending embeddings and unlinked notes are queried
+    /// fresh rather than replaying a stale in-memory queue.
+    pub async fn resume_processing_job(&self, job_id: &str) -> Result<ProcessingRunResult> {
+        let job = self.repo.get_processing_job(job_id).await?.ok_or_else(|| {
+            crate::AgentError::Processing(format!("processing job not found: {job_id}"))
+        })?;
+        let id = job.id.clone().ok_or_else(|| {
+            crate::AgentError::Processing(format!("processing job has no record id: {job_id}"))
+        })?;
+        let resumed = self.repo.resume_processing_job(&id).await?;
+        match resumed.job_type_enum() {
+            Some(ProcessingJobType::Embedding) => {
+                self.process_pending_embeddings_job(Some(resumed)).await
+            }
+            Some(ProcessingJobType::EntityExtraction) => {
+                self.extract_entities_for_notes_job(100, Some(resumed))
+                    .await
+            }
+            None => Err(crate::AgentError::Processing(format!(
+                "unsupported processing job type: {}",
+                resumed.job_type
+            ))),
         }
+    }
 
-        info!("Processing {} notes without embeddings", notes.len());
+    async fn process_pending_embeddings_job(
+        &self,
+        existing: Option<graphrag_db::ProcessingJob>,
+    ) -> Result<ProcessingRunResult> {
+        const WINDOW: usize = 32;
+        let job = match existing {
+            Some(job) => job,
+            None => {
+                let total = self.repo.count_notes_without_embeddings().await?;
+                self.repo
+                    .create_processing_job(ProcessingJobType::Embedding, None, total)
+                    .await?
+            }
+        };
+        let job_id = job.id.clone().ok_or_else(|| {
+            crate::AgentError::Processing("created processing job has no record id".into())
+        })?;
+        let mut completed = u64::try_from(job.completed_count.max(0)).unwrap_or(0);
+        let mut failed = u64::try_from(job.failed_count.max(0)).unwrap_or(0);
 
-        // Batch embed for efficiency
-        let texts: Vec<String> = notes.iter().map(|n| n.content.clone()).collect();
-        let embeddings = self.embed_batch(&texts).await?;
+        loop {
+            if self.processing_job_cancelled(&job_id).await? {
+                return Ok(ProcessingRunResult {
+                    job_id: record_id_to_string(&job_id),
+                    completed,
+                    failed,
+                    cancelled: true,
+                });
+            }
+            let notes = self.repo.get_notes_without_embeddings_limit(WINDOW).await?;
+            if notes.is_empty() {
+                self.repo
+                    .update_processing_job(
+                        &job_id,
+                        ProcessingJobUpdate {
+                            status: Some(ProcessingJobStatus::Completed),
+                            completed_count: Some(completed),
+                            failed_count: Some(failed),
+                            last_error: Some(None),
+                            finish: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                return Ok(ProcessingRunResult {
+                    job_id: record_id_to_string(&job_id),
+                    completed,
+                    failed,
+                    cancelled: false,
+                });
+            }
 
-        // Update each note
-        for (note, embedding) in notes.iter().zip(embeddings.into_iter()) {
-            if let Some(ref id) = note.id {
-                self.repo.update_note_embedding(id, embedding).await?;
+            let texts = notes
+                .iter()
+                .map(|note| note.content.clone())
+                .collect::<Vec<_>>();
+            let embeddings: Vec<Result<Vec<f32>>> = match self.embed_batch(&texts).await {
+                Ok(embeddings) => embeddings.into_iter().map(Ok).collect(),
+                // A rejected batch should not discard independently valid
+                // items. Fall back once per item so the job records the exact
+                // permanent failure and can be resumed after provider repair.
+                Err(batch_error) => {
+                    if classify_retry(&batch_error) == RetryClassification::Permanent {
+                        failed += notes.len() as u64;
+                        self.repo
+                            .update_processing_job(
+                                &job_id,
+                                ProcessingJobUpdate {
+                                    status: Some(ProcessingJobStatus::Failed),
+                                    completed_count: Some(completed),
+                                    failed_count: Some(failed),
+                                    last_error: Some(Some(batch_error.to_string())),
+                                    finish: true,
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                        return Err(batch_error);
+                    }
+                    debug!("Embedding batch failed; falling back to per-item processing: {batch_error}");
+                    let mut outcomes = Vec::with_capacity(notes.len());
+                    for note in &notes {
+                        outcomes.push(self.embed_text(&note.content).await);
+                    }
+                    outcomes
+                }
+            };
+
+            let mut first_error = None;
+            for (note, outcome) in notes.iter().zip(embeddings) {
+                let checkpoint = note.id.as_ref().map(record_id_to_string);
+                match outcome {
+                    Ok(embedding) => {
+                        if let Some(id) = &note.id {
+                            self.repo.update_note_embedding(id, embedding).await?;
+                            completed += 1;
+                        }
+                        self.repo
+                            .update_processing_job(
+                                &job_id,
+                                ProcessingJobUpdate {
+                                    completed_count: Some(completed),
+                                    failed_count: Some(failed),
+                                    checkpoint: Some(checkpoint),
+                                    last_error: Some(None),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                    }
+                    Err(error) => {
+                        failed += 1;
+                        if first_error.is_none() {
+                            first_error = Some(error.to_string());
+                        }
+                        self.repo
+                            .update_processing_job(
+                                &job_id,
+                                ProcessingJobUpdate {
+                                    completed_count: Some(completed),
+                                    failed_count: Some(failed),
+                                    checkpoint: Some(checkpoint),
+                                    last_error: Some(Some(error.to_string())),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                    }
+                }
+                if self.processing_job_cancelled(&job_id).await? {
+                    return Ok(ProcessingRunResult {
+                        job_id: record_id_to_string(&job_id),
+                        completed,
+                        failed,
+                        cancelled: true,
+                    });
+                }
+            }
+            if failed > 0 {
+                self.repo
+                    .update_processing_job(
+                        &job_id,
+                        ProcessingJobUpdate {
+                            status: Some(ProcessingJobStatus::Failed),
+                            completed_count: Some(completed),
+                            failed_count: Some(failed),
+                            finish: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
+                    || "one or more embedding items failed".to_string(),
+                )));
             }
         }
+    }
 
-        Ok(notes.len())
+    async fn processing_job_cancelled(&self, id: &RecordId) -> Result<bool> {
+        let current = self
+            .repo
+            .get_processing_job(&record_id_to_string(id))
+            .await?
+            .ok_or_else(|| crate::AgentError::Processing("processing job disappeared".into()))?;
+        Ok(current.status == ProcessingJobStatus::Cancelled.as_str())
     }
 
     /// Extract entities from a note and link them
@@ -552,21 +745,71 @@ impl LibrarianAgent {
     /// Extract entities for notes missing entity links
     #[instrument(skip(self))]
     pub async fn extract_entities_for_notes(&self, limit: usize) -> Result<usize> {
+        let result = self.extract_entities_for_notes_job(limit, None).await?;
+        Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
+    }
+
+    async fn extract_entities_for_notes_job(
+        &self,
+        limit: usize,
+        existing: Option<graphrag_db::ProcessingJob>,
+    ) -> Result<ProcessingRunResult> {
         let notes = self.repo.get_notes_without_entities(limit).await?;
+        let job = match existing {
+            Some(job) => job,
+            None => {
+                self.repo
+                    .create_processing_job(
+                        ProcessingJobType::EntityExtraction,
+                        None,
+                        notes.len() as u64,
+                    )
+                    .await?
+            }
+        };
+        let job_id = job.id.clone().ok_or_else(|| {
+            crate::AgentError::Processing("created processing job has no record id".into())
+        })?;
+        let mut completed = u64::try_from(job.completed_count.max(0)).unwrap_or(0);
+        let mut failed = u64::try_from(job.failed_count.max(0)).unwrap_or(0);
         if notes.is_empty() {
-            return Ok(0);
+            self.repo
+                .update_processing_job(
+                    &job_id,
+                    ProcessingJobUpdate {
+                        status: Some(ProcessingJobStatus::Completed),
+                        completed_count: Some(completed),
+                        failed_count: Some(failed),
+                        finish: true,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            return Ok(ProcessingRunResult {
+                job_id: record_id_to_string(&job_id),
+                completed,
+                failed,
+                cancelled: false,
+            });
         }
 
         let progress_every = self.runtime.extract_progress_every;
         let progress_every_secs = self.runtime.extract_progress_every_secs;
         let log_each = self.runtime.extract_log_each;
 
-        let mut processed = 0usize;
         let total = notes.len();
         let start = Instant::now();
         let mut last_progress = Instant::now();
 
         for (index, note) in notes.into_iter().enumerate() {
+            if self.processing_job_cancelled(&job_id).await? {
+                return Ok(ProcessingRunResult {
+                    job_id: record_id_to_string(&job_id),
+                    completed,
+                    failed,
+                    cancelled: true,
+                });
+            }
             let note_id = note
                 .id
                 .as_ref()
@@ -584,9 +827,9 @@ impl LibrarianAgent {
             }
 
             let note_start = Instant::now();
-            match self.extract_and_link_entities_force(&note).await {
+            let item_error = match self.extract_and_link_entities_force(&note).await {
                 Ok(()) => {
-                    processed += 1;
+                    completed += 1;
                     if log_each {
                         info!(
                             "Entity extraction done: {}/{} note_id={} elapsed={:.2}s",
@@ -596,8 +839,10 @@ impl LibrarianAgent {
                             note_start.elapsed().as_secs_f32()
                         );
                     }
+                    None
                 }
                 Err(e) => {
+                    failed += 1;
                     if log_each {
                         info!(
                             "Entity extraction failed: {}/{} note_id={} elapsed={:.2}s error={}",
@@ -610,15 +855,29 @@ impl LibrarianAgent {
                     } else {
                         debug!("Entity extraction failed (non-fatal): {}", e);
                     }
+                    Some(e.to_string())
                 }
-            }
+            };
 
-            if processed % progress_every == 0
+            self.repo
+                .update_processing_job(
+                    &job_id,
+                    ProcessingJobUpdate {
+                        completed_count: Some(completed),
+                        failed_count: Some(failed),
+                        checkpoint: Some(note.id.as_ref().map(record_id_to_string)),
+                        last_error: Some(item_error),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+
+            if completed as usize % progress_every == 0
                 || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
             {
                 let elapsed = start.elapsed().as_secs_f32().max(0.001);
-                let rate = processed as f32 / elapsed;
-                let remaining = total.saturating_sub(processed);
+                let rate = completed as f32 / elapsed;
+                let remaining = total.saturating_sub(completed as usize);
                 let eta_secs = if rate > 0.0 {
                     (remaining as f32 / rate).round() as u64
                 } else {
@@ -626,13 +885,34 @@ impl LibrarianAgent {
                 };
                 info!(
                     "Entity extraction progress: {}/{} notes (rate: {:.2}/s, eta: {}s)",
-                    processed, total, rate, eta_secs
+                    completed, total, rate, eta_secs
                 );
                 last_progress = Instant::now();
             }
         }
 
-        Ok(processed)
+        self.repo
+            .update_processing_job(
+                &job_id,
+                ProcessingJobUpdate {
+                    status: Some(if failed == 0 {
+                        ProcessingJobStatus::Completed
+                    } else {
+                        ProcessingJobStatus::Failed
+                    }),
+                    completed_count: Some(completed),
+                    failed_count: Some(failed),
+                    finish: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        Ok(ProcessingRunResult {
+            job_id: record_id_to_string(&job_id),
+            completed,
+            failed,
+            cancelled: false,
+        })
     }
 
     /// Extract entities for all notes (optionally clearing existing mentions first)
