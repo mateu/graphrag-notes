@@ -1037,4 +1037,53 @@ mod tests {
             .unwrap()
             .contains("\"embedding\""));
     }
+
+    #[tokio::test]
+    async fn verify_rejects_embeddings_with_a_manifest_dimension_mismatch() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(
+            &graphrag_db::compatibility::EmbeddingIdentity::new("fixture", "model", 1024),
+            None,
+        )
+        .await
+        .unwrap();
+        repo.create_note(Note::new("dimension fixture").with_embedding(vec![0.1; 1024]))
+            .await
+            .unwrap();
+        let path = temp.path().join("wrong-dimension");
+        create_backup(&repo, &path, true).await.unwrap();
+        let payload_path = path.join(RECORDS_FILE);
+        let mut records = fs::read_to_string(&payload_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        let vector = records
+            .iter_mut()
+            .find(|record| record.table == "note")
+            .unwrap()
+            .record["embedding"]
+            .as_array_mut()
+            .unwrap();
+        vector.pop();
+        let payload = records
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+            + "\n";
+        fs::write(&payload_path, &payload).unwrap();
+        let manifest_path = path.join(MANIFEST_FILE);
+        let mut manifest: PortableBackupManifest =
+            serde_json::from_reader(File::open(&manifest_path).unwrap()).unwrap();
+        manifest.payload.sha256 = format!("{:x}", Sha256::digest(payload.as_bytes()));
+        manifest.payload.bytes = payload.len() as u64;
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(verify_backup(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("dimension"));
+    }
 }
