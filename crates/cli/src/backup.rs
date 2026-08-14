@@ -692,8 +692,10 @@ fn summary_from_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use graphrag_core::{EdgeType, Entity, EntityType, Note, Source};
-    use graphrag_db::init_memory;
+    use graphrag_core::{
+        ChatConversation, ChatMessage, EdgeType, Entity, EntityType, Note, Source,
+    };
+    use graphrag_db::{init_memory, repository::EdgeProposalDraft};
     use tempfile::tempdir;
 
     async fn populated_repo() -> Repository {
@@ -755,6 +757,131 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn empty_backup_round_trip_is_valid_and_restores_a_fresh_schema() {
+        let temp = tempdir().unwrap();
+        let backup_path = temp.path().join("empty");
+        let created = create_backup(
+            &Repository::new(init_memory().await.unwrap()),
+            &backup_path,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.records, 0);
+        assert_eq!(verify_backup(&backup_path).unwrap(), created);
+        let target = temp.path().join("empty-restored");
+        let restored = restore_backup(&backup_path, &target, false).await.unwrap();
+        assert_eq!(restored.records, 0);
+        assert!(target.is_dir());
+    }
+
+    #[tokio::test]
+    async fn chat_and_graph_records_round_trip_with_provenance_and_proposals() {
+        let temp = tempdir().unwrap();
+        let repo = populated_repo().await;
+        let note = repo
+            .create_note(Note::new("provenance note"))
+            .await
+            .unwrap();
+        let conversation: ChatConversation = serde_json::from_value(serde_json::json!({
+            "uuid": "portable-chat", "name": "Portable chat", "summary": "chat summary",
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let conversation_id = repo
+            .upsert_conversation(&conversation, None, serde_json::json!({}), None)
+            .await
+            .unwrap();
+        let message: ChatMessage = serde_json::from_value(serde_json::json!({
+            "uuid": "portable-message", "sender": "human", "text": "portable chat message", "content": []
+        }))
+        .unwrap();
+        let message_id = repo
+            .upsert_message(&conversation_id, &conversation.uuid, 0, &message, None)
+            .await
+            .unwrap();
+        repo.link_note_to_conversation(note.id.as_ref().unwrap(), &conversation_id)
+            .await
+            .unwrap();
+        repo.link_note_to_message(note.id.as_ref().unwrap(), &message_id)
+            .await
+            .unwrap();
+        let other = repo
+            .create_note(Note::new("proposal endpoint"))
+            .await
+            .unwrap();
+        repo.upsert_edge_proposal(EdgeProposalDraft {
+            from_id: note.id.clone().unwrap(),
+            to_id: other.id.clone().unwrap(),
+            edge_type: EdgeType::RelatedTo,
+            confidence: 0.7,
+            reason: "portable graph fixture".into(),
+            generator: "test".into(),
+            generator_version: Some("1".into()),
+            model: None,
+        })
+        .await
+        .unwrap();
+        let backup_path = temp.path().join("chat-graph");
+        let created = create_backup(&repo, &backup_path, false).await.unwrap();
+        assert!(created
+            .record_counts
+            .get("conversation")
+            .is_some_and(|count| *count == 1));
+        assert!(created
+            .record_counts
+            .get("message")
+            .is_some_and(|count| *count == 1));
+        assert!(created
+            .record_counts
+            .get("proposed_edge")
+            .is_some_and(|count| *count == 1));
+        let target = temp.path().join("chat-graph-restored");
+        restore_backup(&backup_path, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        assert_eq!(
+            count_repository_records(&restored).await.unwrap(),
+            created.record_counts
+        );
+    }
+
+    #[tokio::test]
+    async fn default_export_removes_local_paths_and_secret_fields() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut source = Source::manual().with_title("private source");
+        source.uri = Some("/private/operator/notes.md".into());
+        source.normalized_uri = Some("file:///private/operator/notes.md".into());
+        repo.create_source(source).await.unwrap();
+        let path = temp.path().join("sanitized");
+        create_backup(&repo, &path, false).await.unwrap();
+        let payload = fs::read_to_string(path.join(RECORDS_FILE)).unwrap();
+        assert!(!payload.contains("/private/operator"));
+        let mut secret_shape =
+            serde_json::json!({"api_key": "never-export", "nested": {"token": "also-never"}});
+        sanitize_record(&mut secret_shape, false);
+        assert_eq!(secret_shape, serde_json::json!({"nested": {}}));
+    }
+
+    #[tokio::test]
+    async fn export_paginates_a_large_fixture_without_changing_counts() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        for number in 0..(EXPORT_PAGE_SIZE * 2 + 1) {
+            repo.create_note(Note::new(format!("paged portable note {number}")))
+                .await
+                .unwrap();
+        }
+        let path = temp.path().join("paged");
+        let summary = create_backup(&repo, &path, false).await.unwrap();
+        assert_eq!(
+            summary.record_counts.get("note"),
+            Some(&((EXPORT_PAGE_SIZE * 2 + 1) as u64))
+        );
+        assert_eq!(verify_backup(&path).unwrap(), summary);
     }
 
     #[tokio::test]

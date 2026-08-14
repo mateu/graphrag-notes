@@ -3699,4 +3699,88 @@ mod tests {
             Duration::from_secs(30)
         );
     }
+
+    #[test]
+    fn portable_and_reindex_json_summaries_have_stable_machine_fields() {
+        let backup = backup::BackupSummary {
+            path: PathBuf::from("/tmp/archive"),
+            schema_version: 9,
+            records: 4,
+            record_counts: std::collections::BTreeMap::from([("note".into(), 4)]),
+            includes_embeddings: false,
+            dry_run: true,
+        };
+        let backup_json = serde_json::to_value(&backup).unwrap();
+        for field in [
+            "path",
+            "schema_version",
+            "records",
+            "record_counts",
+            "includes_embeddings",
+            "dry_run",
+        ] {
+            assert!(
+                backup_json.get(field).is_some(),
+                "missing backup field {field}"
+            );
+        }
+        let reindex = ReindexOutput {
+            dry_run: true,
+            scope: "notes".into(),
+            item_count: 4,
+            provider: "fixture".into(),
+            model: "model".into(),
+            dimension: 1024,
+            job_id: None,
+            completed: None,
+            cancelled: false,
+        };
+        let reindex_json = serde_json::to_value(reindex).unwrap();
+        for field in [
+            "dry_run",
+            "scope",
+            "item_count",
+            "provider",
+            "model",
+            "dimension",
+            "job_id",
+            "completed",
+            "cancelled",
+        ] {
+            assert!(
+                reindex_json.get(field).is_some(),
+                "missing reindex field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn reindex_cli_requires_an_explicit_scope_unless_resuming() {
+        let cli = Cli::try_parse_from([
+            "graphrag",
+            "reindex",
+            "--all",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Reindex {
+                all: true,
+                dry_run: true,
+                ..
+            }
+        ));
+        let resume =
+            Cli::try_parse_from(["graphrag", "reindex", "--resume", "processing_job:one"]).unwrap();
+        assert!(matches!(
+            resume.command,
+            Commands::Reindex {
+                resume: Some(_),
+                ..
+            }
+        ));
+    }
 }

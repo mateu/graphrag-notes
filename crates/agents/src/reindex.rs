@@ -149,9 +149,18 @@ impl ReindexAgent {
             .clone()
             .ok_or_else(|| AgentError::Processing("reindex job has no id".into()))?;
         let job_text = graphrag_core::record_id_to_string(&job_id);
-        let mut completed = 0_u64;
+        // `checkpoint` is persisted only after the corresponding staged
+        // batch commits.  On resume we can therefore skip that durable prefix
+        // exactly; a crash during a later batch merely repeats the unclaimed
+        // suffix, never re-embeds acknowledged work.
+        let start_index = job
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| job.item_ids.iter().position(|id| id == checkpoint))
+            .map_or(0, |index| index.saturating_add(1));
+        let mut completed = u64::try_from(job.completed_count.max(0)).unwrap_or(0);
 
-        for ids in job.item_ids.chunks(REINDEX_BATCH_SIZE) {
+        for ids in job.item_ids[start_index..].chunks(REINDEX_BATCH_SIZE) {
             if self.cancellation_requested.load(Ordering::Acquire) {
                 self.repo
                     .update_processing_job(
@@ -159,7 +168,6 @@ impl ReindexAgent {
                         ProcessingJobUpdate {
                             status: Some(ProcessingJobStatus::Cancelled),
                             completed_count: Some(completed),
-                            checkpoint: Some(None),
                             finish: true,
                             ..Default::default()
                         },
@@ -289,12 +297,45 @@ impl ReindexAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DeterministicEmbedder;
+    use crate::{DeterministicEmbedder, Embedder, InferenceCapabilities};
+    use async_trait::async_trait;
     use graphrag_core::Note;
     use graphrag_db::{init_memory, ProcessingJobStatus};
 
     fn vector(value: f32) -> Vec<f32> {
         vec![value; graphrag_db::schema::EMBEDDING_DIMENSION]
+    }
+
+    struct CancellingEmbedder {
+        cancelled: Arc<AtomicBool>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Embedder for CancellingEmbedder {
+        async fn embed(&self, _text: &str, _is_query: bool) -> Result<Vec<f32>> {
+            Ok(vector(0.4))
+        }
+
+        async fn embed_batch(&self, texts: &[String], _is_query: bool) -> Result<Vec<Vec<f32>>> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            self.cancelled.store(true, Ordering::Release);
+            Ok(texts.iter().map(|_| vector(0.4)).collect())
+        }
+
+        async fn health(&self) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn capabilities(&self) -> InferenceCapabilities {
+            InferenceCapabilities {
+                provider: "test".into(),
+                model: "cancel-after-batch".into(),
+                endpoint: "offline://test".into(),
+                known_dimension: Some(1024),
+                cache_identity: "test".into(),
+            }
+        }
     }
 
     #[tokio::test]
@@ -469,5 +510,50 @@ mod tests {
                 .model,
             "old-model"
         );
+    }
+
+    #[tokio::test]
+    async fn resume_skips_checkpointed_batches_instead_of_reembedding_them() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
+            .await
+            .unwrap();
+        for number in 0..(REINDEX_BATCH_SIZE + 1) {
+            repo.create_note(Note::new(format!("resume {number}")).with_embedding(vector(0.1)))
+                .await
+                .unwrap();
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stopping: SharedEmbedder = Arc::new(CancellingEmbedder {
+            cancelled: cancelled.clone(),
+            calls: calls.clone(),
+        });
+        let agent = ReindexAgent::new(repo.clone(), stopping).with_cancellation_flag(cancelled);
+        let preview = agent
+            .preview(ReindexScope {
+                notes: true,
+                messages: false,
+                summaries: false,
+            })
+            .await
+            .unwrap();
+        let cancelled_run = agent
+            .start(preview, EmbeddingIdentity::new("new", "new", 1024))
+            .await
+            .unwrap();
+        assert!(cancelled_run.cancelled);
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        let resumed_embedder: SharedEmbedder =
+            Arc::new(DeterministicEmbedder::default().with_identity("new", "new"));
+        let resumed = ReindexAgent::new(repo, resumed_embedder)
+            .resume(
+                &cancelled_run.job_id,
+                EmbeddingIdentity::new("new", "new", 1024),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed.completed, (REINDEX_BATCH_SIZE + 1) as u64);
     }
 }
