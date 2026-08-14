@@ -2156,6 +2156,37 @@ impl Repository {
         self.link_note_to_entity_locked(note_id, entity_id).await
     }
 
+    /// Upsert extracted entities and attach the complete result set to a note
+    /// while holding the source lifecycle lock.  Reconciliation snapshots
+    /// dependent records under that same lock, so a concurrent import sees
+    /// either the entire extraction result or none of it; it can never copy a
+    /// prefix of a multi-entity extraction to a successor generation.
+    #[instrument(skip(self, entities))]
+    pub async fn upsert_entities_and_link_note(
+        &self,
+        note_id: &RecordId,
+        entities: Vec<Entity>,
+    ) -> Result<usize> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "an entity-link endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
+
+        let mut linked = 0;
+        for entity in entities {
+            let entity = self.upsert_entity(entity).await?;
+            let entity_id = entity.id.as_ref().ok_or_else(|| {
+                DbError::CreateFailed("upserted entity did not receive an id".into())
+            })?;
+            self.link_note_to_entity_locked(note_id, entity_id).await?;
+            linked += 1;
+        }
+        Ok(linked)
+    }
+
     async fn link_note_to_entity_locked(
         &self,
         note_id: &surrealdb::types::RecordId,
@@ -2387,7 +2418,7 @@ impl Repository {
                 .await?
                 .take(0)?;
             for conversation_id in conversation_ids {
-                self.link_note_to_conversation(new_id, &conversation_id)
+                self.link_note_to_conversation_locked(new_id, &conversation_id)
                     .await?;
             }
 
@@ -2398,7 +2429,8 @@ impl Repository {
                 .await?
                 .take(0)?;
             for message_id in message_ids {
-                self.link_note_to_message(new_id, &message_id).await?;
+                self.link_note_to_message_locked(new_id, &message_id)
+                    .await?;
             }
         }
 
@@ -3202,6 +3234,22 @@ impl Repository {
         note_id: &RecordId,
         conversation_id: &RecordId,
     ) -> Result<bool> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.link_note_to_conversation_locked(note_id, conversation_id)
+            .await
+    }
+
+    async fn link_note_to_conversation_locked(
+        &self,
+        note_id: &RecordId,
+        conversation_id: &RecordId,
+    ) -> Result<bool> {
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a conversation-provenance endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
@@ -3238,6 +3286,21 @@ impl Repository {
         note_id: &RecordId,
         message_id: &RecordId,
     ) -> Result<bool> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        self.link_note_to_message_locked(note_id, message_id).await
+    }
+
+    async fn link_note_to_message_locked(
+        &self,
+        note_id: &RecordId,
+        message_id: &RecordId,
+    ) -> Result<bool> {
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a message-provenance endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
         #[derive(Deserialize, SurrealValue)]
         struct CountRow {
             count: Option<u64>,
@@ -3785,6 +3848,38 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    async fn create_provenance_records(repo: &Repository) -> (RecordId, RecordId) {
+        #[derive(Deserialize, SurrealValue)]
+        struct IdRow {
+            id: RecordId,
+        }
+
+        let conversation: Option<IdRow> = repo
+            .db
+            .query(
+                "CREATE conversation SET uuid = $uuid, title = 'test conversation', summary = NONE, source_uri = NONE, account_uuid = NONE, metadata = {}, summary_embedding = NONE, created_at = time::now(), updated_at = time::now() RETURN AFTER",
+            )
+            .bind(("uuid", "test-conversation"))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let conversation_id = conversation.unwrap().id;
+        let message: Option<IdRow> = repo
+            .db
+            .query(
+                "CREATE message SET message_key = $message_key, message_uuid = NONE, conversation_id = $conversation_id, conversation_uuid = $conversation_uuid, message_index = 0, role = 'human', content = 'test message', embedding = NONE, content_blocks = [], attachments = [], files = [], has_files = false, created_at = NONE, updated_at = NONE RETURN AFTER",
+            )
+            .bind(("message_key", "test-message"))
+            .bind(("conversation_id", conversation_id.clone()))
+            .bind(("conversation_uuid", "test-conversation"))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        (conversation_id, message.unwrap().id)
     }
 
     #[tokio::test]
@@ -4535,6 +4630,228 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_snapshots_a_complete_batched_entity_extraction() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        let entities = ["First Extracted Entity", "Second Extracted Entity"]
+            .into_iter()
+            .map(|name| {
+                let mut entity = Entity::new(name, EntityType::Concept);
+                entity.metadata = serde_json::json!({});
+                entity
+            })
+            .collect();
+
+        // Queue the entire extraction result before reconciliation. The
+        // shared lifecycle lock makes reconciliation snapshot both links,
+        // rather than seeing an arbitrary prefix between per-entity writes.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let extraction_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let extraction = tokio::spawn(async move {
+            extraction_repo
+                .upsert_entities_and_link_note(&old_id, entities)
+                .await
+        });
+        tokio::task::yield_now().await;
+        let reconciliation_repo = repo.clone();
+        let reconcile_old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(
+                    &mut second.source,
+                    &[(reconcile_old_id, replacement_id, true)],
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        assert_eq!(extraction.await.unwrap().unwrap(), 2);
+        reconciliation.await.unwrap().unwrap();
+        let entities = repo
+            .get_entities_for_note(&record_id_to_string(replacement.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 2);
+        assert!(entities
+            .iter()
+            .any(|entity| entity.name == "First Extracted Entity"));
+        assert!(entities
+            .iter()
+            .any(|entity| entity.name == "Second Extracted Entity"));
+    }
+
+    #[tokio::test]
+    async fn reconciliation_serializes_provenance_writes_and_copies_them_without_deadlock() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let (conversation_id, message_id) = create_provenance_records(&repo).await;
+        repo.link_note_to_conversation(old.id.as_ref().unwrap(), &conversation_id)
+            .await
+            .unwrap();
+        repo.link_note_to_message(old.id.as_ref().unwrap(), &message_id)
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        // This also exercises the lock-free internal helpers used while the
+        // reconciliation task already owns the lifecycle lock.
+        repo.reconcile_file_import(
+            &mut second.source,
+            &[(
+                old.id.as_ref().unwrap().clone(),
+                replacement.id.as_ref().unwrap().clone(),
+                true,
+            )],
+        )
+        .await
+        .unwrap();
+        assert!(repo
+            .conversation_has_note_links(&conversation_id)
+            .await
+            .unwrap());
+        let copied_messages: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE out FROM note_from_message WHERE in = $note_id")
+            .bind(("note_id", replacement.id.as_ref().unwrap().clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(copied_messages, vec![message_id]);
+
+        // The now-hidden old endpoint must reject later provenance writes;
+        // this prevents a link from being inserted after the copy snapshot
+        // and then lost during cleanup.
+        assert!(repo
+            .link_note_to_conversation(old.id.as_ref().unwrap(), &conversation_id)
+            .await
+            .is_err());
+        assert!(repo
+            .link_note_to_message(old.id.as_ref().unwrap(), &copied_messages[0])
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn reconciliation_prevents_post_snapshot_provenance_writes_from_being_lost() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        let (conversation_id, message_id) = create_provenance_records(&repo).await;
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let reconciliation_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(&mut second.source, &[(old_id, replacement_id, true)])
+                .await
+        });
+        tokio::task::yield_now().await;
+        let conversation_repo = repo.clone();
+        let conversation_note_id = old.id.as_ref().unwrap().clone();
+        let conversation_link = tokio::spawn(async move {
+            conversation_repo
+                .link_note_to_conversation(&conversation_note_id, &conversation_id)
+                .await
+        });
+        tokio::task::yield_now().await;
+        let message_repo = repo.clone();
+        let message_note_id = old.id.as_ref().unwrap().clone();
+        let message_link = tokio::spawn(async move {
+            message_repo
+                .link_note_to_message(&message_note_id, &message_id)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        reconciliation.await.unwrap().unwrap();
+        assert!(conversation_link.await.unwrap().is_err());
+        assert!(message_link.await.unwrap().is_err());
+        let copied_conversations: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE out FROM note_from_conversation WHERE in = $note_id")
+            .bind(("note_id", replacement.id.as_ref().unwrap().clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let copied_messages: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE out FROM note_from_message WHERE in = $note_id")
+            .bind(("note_id", replacement.id.as_ref().unwrap().clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(copied_conversations.is_empty());
+        assert!(copied_messages.is_empty());
     }
 
     #[tokio::test]

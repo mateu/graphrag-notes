@@ -1170,37 +1170,48 @@ impl LibrarianAgent {
         let extraction = self.extractor.extract(&text).await?;
         let entities = extraction.entities;
         let extracted_count = entities.len();
-        let mut linked_count = 0usize;
+        let entities = entities
+            .into_iter()
+            .map(|extracted| {
+                // Map string type to EntityType
+                let entity_type = match extracted
+                    .entity_type
+                    .as_deref()
+                    .unwrap_or("concept")
+                    .to_lowercase()
+                    .as_str()
+                {
+                    "person" | "per" => EntityType::Person,
+                    "organization" | "org" => EntityType::Organization,
+                    "location" | "loc" | "gpe" => EntityType::Location,
+                    "date" | "time" => EntityType::Date,
+                    _ => EntityType::Concept,
+                };
 
-        for extracted in entities {
-            // Map string type to EntityType
-            let entity_type = match extracted
-                .entity_type
-                .as_deref()
-                .unwrap_or("concept")
-                .to_lowercase()
-                .as_str()
-            {
-                "person" | "per" => EntityType::Person,
-                "organization" | "org" => EntityType::Organization,
-                "location" | "loc" | "gpe" => EntityType::Location,
-                "date" | "time" => EntityType::Date,
-                _ => EntityType::Concept,
-            };
-
-            let mut entity = Entity::new(&extracted.name, entity_type);
-            // The persisted entity schema requires an object (or NONE) for
-            // metadata. Extraction supplies no metadata, so use an empty
-            // object instead of `Entity::new`'s JSON null default.
-            entity.metadata = serde_json::json!({});
-            let entity = self.repo.upsert_entity(entity).await?;
-
-            // Link note to entity
-            if let (Some(note_id), Some(entity_id)) = (&note.id, &entity.id) {
-                self.repo.link_note_to_entity(note_id, entity_id).await?;
-                linked_count += 1;
+                let mut entity = Entity::new(&extracted.name, entity_type);
+                // The persisted entity schema requires an object (or NONE) for
+                // metadata. Extraction supplies no metadata, so use an empty
+                // object instead of `Entity::new`'s JSON null default.
+                entity.metadata = serde_json::json!({});
+                entity
+            })
+            .collect::<Vec<_>>();
+        let linked_count = match &note.id {
+            Some(note_id) => {
+                self.repo
+                    .upsert_entities_and_link_note(note_id, entities)
+                    .await?
             }
-        }
+            // Notes are normally persisted before extraction. Retain the
+            // former best-effort entity upserts for callers constructing an
+            // in-memory note, while only persisted notes need link batching.
+            None => {
+                for entity in entities {
+                    self.repo.upsert_entity(entity).await?;
+                }
+                0
+            }
+        };
 
         if extracted_count > 0 || linked_count > 0 {
             debug!(
