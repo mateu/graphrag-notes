@@ -572,6 +572,12 @@ fn clip_around_match(
     counter: &dyn TokenCounter,
 ) -> ClippedSpan {
     let segment = &text[span.clone()];
+    // CJK and URL-like content can be a single lexical run. Word-boundary
+    // expansion would make that whole run the initial candidate and drop it
+    // under a small budget, so use UTF-8 character boundaries in that case.
+    if !segment.chars().any(char::is_whitespace) {
+        return clip_around_characters(text, span, query_terms, max_tokens, counter);
+    }
     let anchor = lexical_anchor(segment, query_terms).unwrap_or(segment.len() / 2);
     let mut start = nearest_boundary_left(segment, anchor);
     let mut end = nearest_boundary_right(segment, anchor);
@@ -622,6 +628,84 @@ fn clip_around_match(
     }
 }
 
+fn clip_around_characters(
+    text: &str,
+    span: &Range<usize>,
+    query_terms: &HashSet<String>,
+    max_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> ClippedSpan {
+    let segment = &text[span.clone()];
+    let Some(mut selected) =
+        lexical_match_range(segment, query_terms).or_else(|| centered_character_range(segment))
+    else {
+        return ClippedSpan {
+            snippet: String::new(),
+            truncated: true,
+            start: None,
+            end: None,
+        };
+    };
+    let mut best = None;
+
+    loop {
+        let candidate = render_clipped_segment(
+            &segment[selected.clone()],
+            selected.start > 0,
+            selected.end < segment.len(),
+        );
+        if counter.count(&candidate) <= max_tokens {
+            best = Some((candidate, selected.clone()));
+        } else if best.is_none() {
+            // The matched term itself is too large; a smaller character range
+            // has a better chance of fitting than abandoning the hit.
+            let single_character_end = next_character_boundary(segment, selected.start);
+            if selected.end == single_character_end {
+                break;
+            }
+            selected.end = single_character_end;
+            continue;
+        }
+
+        let mut expansions = Vec::with_capacity(2);
+        if selected.start > 0 {
+            expansions.push(previous_character_boundary(segment, selected.start)..selected.end);
+        }
+        if selected.end < segment.len() {
+            expansions.push(selected.start..next_character_boundary(segment, selected.end));
+        }
+        let Some(next) = expansions
+            .into_iter()
+            .filter(|range| {
+                counter.count(&render_clipped_segment(
+                    &segment[range.clone()],
+                    range.start > 0,
+                    range.end < segment.len(),
+                )) <= max_tokens
+            })
+            .max_by_key(|range| range.end - range.start)
+        else {
+            break;
+        };
+        selected = next;
+    }
+
+    let Some((snippet, selected)) = best else {
+        return ClippedSpan {
+            snippet: String::new(),
+            truncated: true,
+            start: None,
+            end: None,
+        };
+    };
+    ClippedSpan {
+        snippet,
+        truncated: true,
+        start: Some(span.start + selected.start),
+        end: Some(span.start + selected.end),
+    }
+}
+
 fn render_clipped_segment(segment: &str, omitted_left: bool, omitted_right: bool) -> String {
     // Dropping fence marker lines is preferable to emitting an unmatched fence
     // when a code block cannot fit as a whole.
@@ -649,6 +733,44 @@ fn remove_unmatched_fence_markers(value: &str) -> String {
 fn lexical_anchor(text: &str, terms: &HashSet<String>) -> Option<usize> {
     let lower = text.to_lowercase();
     terms.iter().filter_map(|term| lower.find(term)).min()
+}
+
+fn lexical_match_range(text: &str, terms: &HashSet<String>) -> Option<Range<usize>> {
+    let lower = text.to_lowercase();
+    terms
+        .iter()
+        .filter_map(|term| {
+            lower.find(term).and_then(|start| {
+                let end = start + term.len();
+                (text.is_char_boundary(start) && text.is_char_boundary(end)).then_some(start..end)
+            })
+        })
+        .min_by_key(|range| range.start)
+}
+
+fn centered_character_range(text: &str) -> Option<Range<usize>> {
+    let start = text
+        .char_indices()
+        .nth(text.chars().count() / 2)
+        .map(|(index, _)| index)?;
+    Some(start..next_character_boundary(text, start))
+}
+
+fn previous_character_boundary(text: &str, index: usize) -> usize {
+    text[..index]
+        .char_indices()
+        .next_back()
+        .map(|(start, _)| start)
+        .unwrap_or(0)
+}
+
+fn next_character_boundary(text: &str, index: usize) -> usize {
+    index
+        + text[index..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(0)
 }
 
 fn nearest_boundary_left(text: &str, mut index: usize) -> usize {
@@ -891,7 +1013,7 @@ mod tests {
         assert_eq!(ConservativeTokenCounter.count("你好世界"), 4);
         assert_eq!(ConservativeTokenCounter.count("café"), 2);
         let mut multilingual_options = options();
-        multilingual_options.max_total_tokens = 24;
+        multilingual_options.max_total_tokens = 40;
         multilingual_options.max_chunk_tokens = 6;
         let context = build_augment_context_from_hits(
             "搜尋目標".into(),
@@ -905,8 +1027,11 @@ mod tests {
             multilingual_options,
             0,
         );
-        assert!(context.total_tokens <= 24);
-        assert!(context.chunks.iter().all(|chunk| chunk.approx_tokens <= 6));
+        assert!(context.total_tokens <= 40);
+        assert_eq!(context.chunks.len(), 1);
+        assert!(context.chunks[0].snippet.contains("搜尋目標"));
+        assert!(context.chunks[0].approx_tokens <= 6);
+        assert!(std::str::from_utf8(context.chunks[0].snippet.as_bytes()).is_ok());
     }
 
     #[test]
