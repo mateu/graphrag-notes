@@ -526,8 +526,24 @@ fn heading(line: &str) -> Option<(usize, &str)> {
     {
         return None;
     }
-    let title = trimmed[count..].trim().trim_end_matches('#').trim();
-    (!title.is_empty()).then_some((count, title))
+    let title = trimmed[count..].trim();
+    // A closing ATX sequence is syntactic only when separated from the title
+    // by whitespace. `# C#` therefore has the literal title `C#`, whereas
+    // `# C #` has the title `C`.
+    let without_closing = title
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| *ch == '#')
+        .last()
+        .and_then(|(start, _)| {
+            title[..start]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace)
+                .then_some(title[..start].trim_end())
+        })
+        .unwrap_or(title);
+    Some((count, without_closing))
 }
 
 fn thematic_boundary(line: &str) -> bool {
@@ -575,7 +591,17 @@ fn fence_marker(line: &str) -> Option<(char, usize)> {
         return None;
     }
     let count = trimmed.chars().take_while(|ch| *ch == marker).count();
-    (count >= 3).then_some((marker, count))
+    if count < 3 {
+        return None;
+    }
+    // CommonMark forbids backticks in the info string of a backtick fence.
+    // Treat an invalid opener as ordinary content so it cannot hide later
+    // document structure behind an unterminated code block.
+    let info_start = nth_char_byte(trimmed, count);
+    if marker == '`' && trimmed[info_start..].contains('`') {
+        return None;
+    }
+    Some((marker, count))
 }
 
 fn is_closing_fence(line: &str, marker: (char, usize)) -> bool {
@@ -735,6 +761,26 @@ mod tests {
     }
 
     #[test]
+    fn atx_headings_allow_empty_titles_and_only_strip_spaced_closing_hashes() {
+        assert_eq!(heading("# "), Some((1, "")));
+        assert_eq!(heading("# C#"), Some((1, "C#")));
+        assert_eq!(heading("# C ###"), Some((1, "C")));
+
+        let chunks = chunk(
+            "# \n\nContent belongs below an empty ATX heading.",
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 200,
+                max_size: 240,
+                overlap_size: 0,
+            },
+        );
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].heading_path, [""]);
+        assert!(!chunks[0].content.contains("# "));
+    }
+
+    #[test]
     fn indented_fences_remain_literal_content_and_do_not_hide_headings() {
         let markdown = "    ```rust\nlet four_space = true;\n    ```\n\n\t~~~text\ntab fence content\n\t~~~\n\n# Actual Heading\n\nBody remains structurally visible.";
         let chunks = chunk(
@@ -751,6 +797,25 @@ mod tests {
         assert!(chunks[0].heading_path.is_empty());
         assert!(chunks[0].content.contains("```rust"));
         assert!(chunks[0].content.contains("~~~text"));
+        assert_eq!(chunks[1].heading_path, ["Actual Heading"]);
+    }
+
+    #[test]
+    fn backtick_fence_info_strings_cannot_contain_backticks() {
+        assert!(fence_marker("```rust").is_some());
+        assert!(fence_marker("```rust`invalid").is_none());
+
+        let chunks = chunk(
+            "```rust`invalid\nthis remains prose\n\n# Actual Heading\n\nThe heading remains visible.",
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 240,
+                max_size: 280,
+                overlap_size: 0,
+            },
+        );
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].content.contains("```rust`invalid"));
         assert_eq!(chunks[1].heading_path, ["Actual Heading"]);
     }
 
