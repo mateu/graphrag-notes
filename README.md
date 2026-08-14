@@ -41,6 +41,31 @@ A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, a
 - **Local-First**: all data stored locally, inference runs locally
 - **Chat Retrieval**: import chats, search messages, and build prompt-ready augmentation context with citations
 - **Source lifecycle**: idempotent Markdown imports with inspect, dry-run deletion, and safe reimport operations
+- **Markdown-aware ingestion**: structure-aware chunks retain heading provenance and stable identities across source refreshes
+
+### Markdown chunking
+
+Markdown imports use a deterministic, local chunker rather than blank-line
+splitting. Sizes are **Unicode characters** (not bytes or model tokens):
+`librarian.min_chunk_size`, `target_chunk_size`, and `max_chunk_size` define
+the soft and hard bounds, while `chunk_overlap` copies a tail from the prior
+chunk when it still fits below the hard maximum. Headings, paragraphs, lists,
+block quotes, thematic boundaries, and fenced code are recognized. Short
+adjacent blocks under the same heading are merged; long prose prefers sentence
+boundaries, then UTF-8-safe character boundaries.
+
+Fenced code is kept whole whenever it fits. A fenced block larger than the hard
+maximum is exceptionally split at UTF-8-safe boundaries and marked as such in
+its persisted chunk metadata. Displayed note content remains source text;
+heading context is added only to the text embedded and indexed for search.
+
+Each chunk records a deterministic key, ordinal, heading path, source line and
+byte span, overlap predecessor, and content hash. On a changed reimport, exact
+matches retain their note IDs and embeddings, changed structural locations are
+re-embedded in place, and removed chunks are deleted through the source
+lifecycle cascade. Tune these settings in `config.toml` or with
+`GRAPHRAG_LIBRARIAN_{MIN,TARGET,MAX}_CHUNK_SIZE` and
+`GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP`.
 
 ### Augmentation packing
 

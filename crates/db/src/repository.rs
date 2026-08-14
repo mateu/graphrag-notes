@@ -395,7 +395,13 @@ impl Repository {
                 "CREATE note SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, source_id = $source_id, \
-                    source_generation = $source_generation, tags = $tags, \
+                    source_generation = $source_generation, chunk_key = $chunk_key, \
+                    chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
+                    source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
+                    source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
+                    chunk_overlap_chars = $chunk_overlap_chars, content_hash = $content_hash, \
+                    search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
                  RETURN AFTER",
             )
@@ -415,6 +421,18 @@ impl Repository {
                 "source_generation",
                 note.source_generation.map(|generation| generation as i64),
             ))
+            .bind(("chunk_key", note.chunk_key.clone()))
+            .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
+            .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
+            .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
+            .bind(("source_end_line", note.source_end_line.map(|value| value as i64)))
+            .bind(("source_start_byte", note.source_start_byte.map(|value| value as i64)))
+            .bind(("source_end_byte", note.source_end_byte.map(|value| value as i64)))
+            .bind(("chunk_overlap_from", note.chunk_overlap_from.clone()))
+            .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
+            .bind(("content_hash", note.content_hash.clone()))
+            .bind(("search_content", note.search_content.clone()))
             .bind(("tags", note.tags.clone()))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
@@ -440,7 +458,13 @@ impl Repository {
             .query(
                 "UPDATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
-                    embedding = $embedding, tags = $tags, \
+                    embedding = $embedding, chunk_key = $chunk_key, \
+                    chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
+                    source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
+                    source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
+                    chunk_overlap_chars = $chunk_overlap_chars, content_hash = $content_hash, \
+                    search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
@@ -454,6 +478,18 @@ impl Repository {
             .bind(("tags", note.tags.clone()))
             .bind(("source_id", note.source_id.clone()))
             .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
+            .bind(("chunk_key", note.chunk_key.clone()))
+            .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
+            .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
+            .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
+            .bind(("source_end_line", note.source_end_line.map(|value| value as i64)))
+            .bind(("source_start_byte", note.source_start_byte.map(|value| value as i64)))
+            .bind(("source_end_byte", note.source_end_byte.map(|value| value as i64)))
+            .bind(("chunk_overlap_from", note.chunk_overlap_from.clone()))
+            .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
+            .bind(("content_hash", note.content_hash.clone()))
+            .bind(("search_content", note.search_content.clone()))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
             .await?
@@ -599,6 +635,25 @@ impl Repository {
             .await?
             .take(0)?;
 
+        Ok(notes)
+    }
+
+    /// Return the current persisted Markdown chunks for one source. The caller
+    /// uses this before staging a new source generation to retain IDs and
+    /// embeddings for chunks whose deterministic key/content are unchanged.
+    #[instrument(skip(self, source_id))]
+    pub async fn get_source_chunks(&self, source_id: &RecordId) -> Result<Vec<Note>> {
+        let notes: Vec<Note> = self
+            .db
+            .query(
+                "SELECT * FROM note WHERE source_id = $source_id \
+                 AND chunk_key IS NOT NONE \
+                 AND source_generation = source_id.successful_generation \
+                 ORDER BY chunk_ordinal ASC, id ASC",
+            )
+            .bind(("source_id", source_id.clone()))
+            .await?
+            .take(0)?;
         Ok(notes)
     }
 
@@ -807,9 +862,9 @@ impl Repository {
                     tags,
                     created_at,
                     source_id.uri AS source_uri,
-                    (search::score(0) * 0.7 + search::score(1) * 0.3) AS fts_score
+                    (search::score(0) * 0.7 + search::score(1) * 0.2 + search::score(2) * 0.1) AS fts_score
                 FROM note
-                WHERE (content @0@ $query OR title @1@ $query)
+                WHERE (search_content @0@ $query OR content @1@ $query OR title @2@ $query)
                   AND ($since = NONE OR created_at >= <datetime>$since)
                   AND ($source_uri = NONE OR source_id.uri = $source_uri)
                   AND (

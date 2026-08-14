@@ -221,7 +221,12 @@ impl Default for GardenerConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct LibrarianConfig {
     pub min_chunk_size: usize,
+    /// Target Markdown chunk size in Unicode scalar values (characters).
+    pub target_chunk_size: usize,
     pub max_chunk_size: usize,
+    /// Tail characters copied from the preceding chunk when it fits under the
+    /// hard maximum.
+    pub chunk_overlap: usize,
     pub skip_entity_extraction: bool,
     pub extract_log_each: bool,
     /// Maximum characters sent to entity extraction. Zero preserves the
@@ -236,7 +241,9 @@ impl Default for LibrarianConfig {
     fn default() -> Self {
         Self {
             min_chunk_size: 50,
+            target_chunk_size: 700,
             max_chunk_size: 1000,
+            chunk_overlap: 100,
             skip_entity_extraction: false,
             extract_log_each: false,
             extract_max_chars: 8000,
@@ -560,8 +567,18 @@ impl RuntimeConfig {
         )?;
         set_usize(
             env,
+            "GRAPHRAG_LIBRARIAN_TARGET_CHUNK_SIZE",
+            &mut self.librarian.target_chunk_size,
+        )?;
+        set_usize(
+            env,
             "GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE",
             &mut self.librarian.max_chunk_size,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP",
+            &mut self.librarian.chunk_overlap,
         )?;
 
         self.normalize_provider_names();
@@ -689,7 +706,11 @@ impl RuntimeConfig {
             || self.augment.max_tokens == 0
             || self.augment.max_chunk_tokens == 0
             || self.librarian.min_chunk_size == 0
+            || self.librarian.target_chunk_size == 0
             || self.librarian.max_chunk_size < self.librarian.min_chunk_size
+            || self.librarian.target_chunk_size < self.librarian.min_chunk_size
+            || self.librarian.target_chunk_size > self.librarian.max_chunk_size
+            || self.librarian.chunk_overlap >= self.librarian.max_chunk_size
             || (self.librarian.max_chunk_size != usize::MAX
                 && self.librarian.max_chunk_size < self.librarian.min_chunk_size.saturating_mul(2))
             || self.librarian.extract_progress_every == 0
@@ -698,7 +719,7 @@ impl RuntimeConfig {
             || self.librarian.import_progress_every_secs == 0
             || self.gardener.max_suggestions == 0
         {
-            return Err(ConfigError::Validation("limits must be positive; librarian.max_chunk_size must be at least min_chunk_size and, when bounded, at least twice min_chunk_size".into()));
+            return Err(ConfigError::Validation("limits must be positive; librarian.min_chunk_size <= target_chunk_size <= max_chunk_size, overlap must be below max_chunk_size, and a bounded max_chunk_size must be at least twice min_chunk_size".into()));
         }
         if !(0.0..=1.0).contains(&self.search.vector_weight)
             || !(0.0..=1.0).contains(&self.search.fulltext_weight)

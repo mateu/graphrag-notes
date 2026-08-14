@@ -1,6 +1,10 @@
 //! Librarian Agent - Ingests content and creates notes
 
-use crate::{inference::validate_embedding_dim, Result, SharedEmbedder, SharedEntityExtractor};
+use crate::{
+    chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker}, classify_retry,
+    inference::validate_embedding_dim,
+    Result, RetryClassification, SharedEmbedder, SharedEntityExtractor,
+};
 use graphrag_core::{
     normalize_file_uri, normalized_content_hash, record_id_to_string, ChatConversation, ChatExport,
     ChatMessage, Entity, EntityType, MessageRole, Note, NoteType, Source, SourceType,
@@ -10,7 +14,7 @@ use graphrag_db::{
     ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository, SourceDeleteSummary,
     SourceImportAction,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -27,6 +31,7 @@ const DEFAULT_MIN_CHUNK_SIZE: usize = 20;
 const DEFAULT_MAX_CHUNK_SIZE: usize = usize::MAX;
 const DEFAULT_ENTITY_JOB_PAGE_SIZE: usize = 100;
 const EMBEDDING_JOB_WINDOW: usize = 32;
+const DEFAULT_TARGET_CHUNK_SIZE: usize = 500;
 
 /// Runtime controls for librarian ingestion and extraction.
 ///
@@ -36,7 +41,12 @@ const EMBEDDING_JOB_WINDOW: usize = 32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibrarianRuntimeConfig {
     pub min_chunk_size: usize,
+    /// Target Markdown chunk size in Unicode scalar values (characters).
+    pub target_chunk_size: usize,
     pub max_chunk_size: usize,
+    /// Tail characters copied into a following Markdown chunk when the hard
+    /// maximum permits it.
+    pub chunk_overlap: usize,
     pub skip_entity_extraction: bool,
     pub extract_log_each: bool,
     /// A value of zero keeps the full note content.
@@ -51,7 +61,9 @@ impl Default for LibrarianRuntimeConfig {
     fn default() -> Self {
         Self {
             min_chunk_size: DEFAULT_MIN_CHUNK_SIZE,
+            target_chunk_size: DEFAULT_TARGET_CHUNK_SIZE,
             max_chunk_size: DEFAULT_MAX_CHUNK_SIZE,
+            chunk_overlap: 0,
             skip_entity_extraction: false,
             extract_log_each: false,
             extract_max_chars: DEFAULT_EXTRACT_MAX_CHARS,
@@ -121,6 +133,26 @@ fn chunk_content(content: &str, min_chunk_size: usize, max_chunk_size: usize) ->
             chunks
         })
         .collect()
+}
+
+fn note_from_markdown_chunk(chunk: &Chunk, embedding: Vec<f32>) -> Note {
+    Note::new(chunk.content.clone())
+        .with_type(NoteType::Raw)
+        .with_embedding(embedding)
+        .with_chunk_metadata(
+            chunk.key.clone(),
+            chunk.location_key.clone(),
+            chunk.ordinal,
+            chunk.heading_path.clone(),
+            chunk.start_line,
+            chunk.end_line,
+            chunk.start_byte,
+            chunk.end_byte,
+            chunk.overlap_from.clone(),
+            chunk.overlap_chars,
+            chunk.content_hash.clone(),
+            chunk.search_text.clone(),
+        )
 }
 
 /// The Librarian agent handles content ingestion
@@ -476,8 +508,17 @@ impl LibrarianAgent {
         let mut source = plan.source;
         let source_id = source.id.clone();
         let generation = source.generation;
+        let existing_chunks = match source_id.as_ref() {
+            Some(source_id) => self.repo.get_source_chunks(source_id).await?,
+            None => Vec::new(),
+        };
         let notes = match self
-            .chunk_and_create_notes(&content, source_id, Some(generation))
+            .chunk_and_create_markdown_notes(
+                &content,
+                source_id,
+                Some(generation),
+                &existing_chunks,
+            )
             .await
         {
             Ok(notes) => notes,
@@ -1505,6 +1546,129 @@ impl LibrarianAgent {
             notes.push(note);
         }
 
+        Ok(notes)
+    }
+
+    /// Chunk Markdown with structural metadata, then reconcile it with the
+    /// previous successful source generation. Exact key/hash matches preserve
+    /// the note record and its embedding; a changed structural location keeps
+    /// the record but receives a new embedding; only new locations are
+    /// created. `complete_file_import` then safely cascades removed chunks.
+    async fn chunk_and_create_markdown_notes(
+        &self,
+        content: &str,
+        source_id: Option<RecordId>,
+        source_generation: Option<u64>,
+        existing_chunks: &[Note],
+    ) -> Result<Vec<Note>> {
+        let Some(source_id) = source_id else {
+            return self
+                .chunk_and_create_notes(content, None, source_generation)
+                .await;
+        };
+        let chunker = MarkdownChunker::new(ChunkingConfig {
+            min_size: self.runtime.min_chunk_size,
+            target_size: self.runtime.target_chunk_size,
+            max_size: self.runtime.max_chunk_size,
+            overlap_size: self.runtime.chunk_overlap,
+        })
+        .map_err(|error| crate::AgentError::Processing(error.to_string()))?;
+        let source_identity = record_id_to_string(&source_id);
+        let chunks = chunker
+            .chunk(&source_identity, content)
+            .map_err(|error| crate::AgentError::Processing(error.to_string()))?;
+
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let by_key = existing_chunks
+            .iter()
+            .filter_map(|note| {
+                note.chunk_key
+                    .as_ref()
+                    .map(|key| (key.clone(), note.clone()))
+            })
+            .collect::<HashMap<_, _>>();
+        let by_location = existing_chunks
+            .iter()
+            .filter_map(|note| {
+                note.chunk_location_key
+                    .as_ref()
+                    .map(|key| (key.clone(), note.clone()))
+            })
+            .collect::<HashMap<_, _>>();
+
+        // Generate every required embedding before mutating any prior record.
+        // This keeps a provider failure from erasing the old visible source
+        // generation during reconciliation.
+        let changed = chunks
+            .iter()
+            .filter(|chunk| {
+                by_key
+                    .get(&chunk.key)
+                    .is_none_or(|note| note.content_hash.as_deref() != Some(&chunk.content_hash))
+            })
+            .collect::<Vec<_>>();
+        let embedding_inputs = changed
+            .iter()
+            .map(|chunk| chunk.search_text.clone())
+            .collect::<Vec<_>>();
+        let embeddings = if embedding_inputs.is_empty() {
+            Vec::new()
+        } else {
+            self.embed_batch(&embedding_inputs).await?
+        };
+        let mut embedding_by_key = changed
+            .into_iter()
+            .zip(embeddings)
+            .map(|(chunk, embedding)| (chunk.key.clone(), embedding))
+            .collect::<HashMap<_, _>>();
+
+        let mut notes = Vec::with_capacity(chunks.len());
+        let mut used_existing = HashSet::new();
+        for chunk in chunks {
+            let exact = by_key.get(&chunk.key).filter(|note| {
+                note.content_hash.as_deref() == Some(chunk.content_hash.as_str())
+                    && used_existing.insert(note.id.clone())
+            });
+            let location = if exact.is_none() {
+                by_location
+                    .get(&chunk.location_key)
+                    .filter(|note| used_existing.insert(note.id.clone()))
+            } else {
+                None
+            };
+            let existing = exact.or(location);
+            let needs_embedding = existing.is_none_or(|note| {
+                note.content_hash.as_deref() != Some(chunk.content_hash.as_str())
+            });
+            let embedding = if needs_embedding {
+                embedding_by_key.remove(&chunk.key).ok_or_else(|| {
+                    crate::AgentError::Processing(
+                        "missing prepared Markdown chunk embedding".into(),
+                    )
+                })?
+            } else {
+                existing.expect("checked").embedding.clone()
+            };
+            let mut note =
+                note_from_markdown_chunk(&chunk, embedding).with_source(source_id.clone());
+            if let Some(generation) = source_generation {
+                note = note.with_source_generation(generation);
+            }
+            let note = if let Some(existing) = existing {
+                let existing_id = existing.id.as_ref().ok_or_else(|| {
+                    crate::AgentError::Processing("existing chunk has no note id".into())
+                })?;
+                self.repo
+                    .update_note(&record_id_to_string(existing_id), note)
+                    .await?
+            } else {
+                self.repo.create_note(note).await?
+            };
+            notes.push(note);
+        }
         Ok(notes)
     }
 
@@ -2543,7 +2707,7 @@ mod tests {
         truncate_for_extraction, LibrarianAgent, LibrarianRuntimeConfig, EMBEDDING_JOB_WINDOW,
     };
     use crate::{DeterministicEmbedder, FixtureEntityExtractor, InferenceCapabilities};
-    use graphrag_core::{Entity, EntityType, Note};
+    use graphrag_core::{record_id_to_string, Entity, EntityType, Note};
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
         init_memory, ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository,
@@ -2971,11 +3135,7 @@ mod tests {
         );
         assert!(failed_run.extract_entities_for_notes(2).await.is_err());
         let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
-        let job_id = job
-            .id
-            .as_ref()
-            .map(graphrag_core::record_id_to_string)
-            .unwrap();
+        let job_id = job.id.as_ref().map(record_id_to_string).unwrap();
         assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
         assert!(
             job.last_error
@@ -2988,11 +3148,11 @@ mod tests {
         assert!(job
             .item_ids
             .iter()
-            .any(|id| id == &graphrag_core::record_id_to_string(first.id.as_ref().unwrap())));
+            .any(|id| id == &record_id_to_string(first.id.as_ref().unwrap())));
         assert!(job
             .item_ids
             .iter()
-            .any(|id| id == &graphrag_core::record_id_to_string(second.id.as_ref().unwrap())));
+            .any(|id| id == &record_id_to_string(second.id.as_ref().unwrap())));
 
         // A failed job retries its entire durable scope. If that retry is
         // immediately cancelled, its stale terminal checkpoint must already
@@ -3632,5 +3792,53 @@ mod tests {
             .unwrap()
             .embedding
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn markdown_reconciliation_preserves_unchanged_chunk_identity_and_provenance() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            chunk_overlap: 0,
+            ..Default::default()
+        });
+        let first_content = "# Planning\n\nFirst independently stable paragraph has useful words.\n\nSecond independently stable paragraph has useful words.";
+        let first = librarian
+            .ingest_markdown_with_options("chunk-reconcile.md", first_content, false)
+            .await
+            .unwrap();
+        assert_eq!(first.notes.len(), 2);
+        let stable_before = first.notes[1].id.as_ref().map(record_id_to_string).unwrap();
+        assert_eq!(first.notes[1].chunk_heading_path, vec!["Planning"]);
+        assert!(first.notes[1].source_start_byte.is_some());
+        assert!(first.notes[1]
+            .search_content
+            .as_deref()
+            .is_some_and(|text| text.starts_with("Planning\n\n")));
+
+        let second_content = "# Planning\n\nFirst independently changed paragraph has useful words.\n\nSecond independently stable paragraph has useful words.";
+        let second = librarian
+            .ingest_markdown_with_options("chunk-reconcile.md", second_content, false)
+            .await
+            .unwrap();
+        assert_eq!(second.notes.len(), 2);
+        assert_eq!(second.action, SourceImportAction::Updated);
+        let stable_after = second.notes[1]
+            .id
+            .as_ref()
+            .map(record_id_to_string)
+            .unwrap();
+        assert_eq!(stable_before, stable_after);
+        assert_eq!(first.notes[0].id, second.notes[0].id);
+        assert_ne!(first.notes[0].content_hash, second.notes[0].content_hash);
+        assert_ne!(first.notes[0].embedding, second.notes[0].embedding);
+        assert_eq!(repo.fulltext_search("Planning", 10).await.unwrap().len(), 2);
     }
 }
