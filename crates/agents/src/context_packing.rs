@@ -398,9 +398,33 @@ fn fit_candidate(
     options: &AugmentOptions,
 ) -> Option<AugmentChunk> {
     let counter = options.token_counter.as_ref();
+    let initial = clip_query_aware(
+        candidate.content(),
+        query,
+        options.max_chunk_tokens,
+        counter,
+    );
+    if initial.snippet.is_empty() {
+        return None;
+    }
+    let shrink_anchor = initial.start.zip(initial.end).and_then(|(start, end)| {
+        let segment = &candidate.content()[start..end];
+        phrase_match_range(segment, query)
+            .or_else(|| lexical_match_range(segment, &normalized_tokens(query)))
+    });
     let mut cap = options.max_chunk_tokens;
     while cap > 0 {
-        let clipped = clip_query_aware(candidate.content(), query, cap, counter);
+        let clipped = if cap == options.max_chunk_tokens {
+            initial.clone()
+        } else {
+            shrink_clipped_span(
+                candidate.content(),
+                &initial,
+                shrink_anchor.clone(),
+                cap,
+                counter,
+            )
+        };
         if clipped.snippet.is_empty() {
             return None;
         }
@@ -436,12 +460,51 @@ fn fit_candidate(
     None
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ClippedSpan {
     snippet: String,
     truncated: bool,
     start: Option<usize>,
     end: Option<usize>,
+}
+
+fn shrink_clipped_span(
+    text: &str,
+    initial: &ClippedSpan,
+    anchor: Option<Range<usize>>,
+    max_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> ClippedSpan {
+    let Some((start, end)) = initial.start.zip(initial.end) else {
+        return ClippedSpan {
+            snippet: String::new(),
+            truncated: true,
+            start: None,
+            end: None,
+        };
+    };
+    let segment = &text[start..end];
+    let Some(selected) = anchor.or_else(|| centered_character_range(segment)) else {
+        return ClippedSpan {
+            snippet: String::new(),
+            truncated: true,
+            start: None,
+            end: None,
+        };
+    };
+    let clipped = clip_around_preselected_characters(
+        segment,
+        &(0..segment.len()),
+        selected,
+        max_tokens,
+        counter,
+    );
+    ClippedSpan {
+        snippet: clipped.snippet,
+        truncated: true,
+        start: clipped.start.map(|offset| start + offset),
+        end: clipped.end.map(|offset| start + offset),
+    }
 }
 
 fn clip_query_aware(
@@ -691,7 +754,7 @@ fn clip_around_characters(
 ) -> ClippedSpan {
     let segment = &text[span.clone()];
     let phrase_range = phrase_match_range(segment, query);
-    let Some(mut selected) = phrase_range
+    let Some(selected) = phrase_range
         .clone()
         .or_else(|| lexical_match_range(segment, query_terms))
         .or_else(|| centered_character_range(segment))
@@ -703,6 +766,17 @@ fn clip_around_characters(
             end: None,
         };
     };
+    clip_around_preselected_characters(text, span, selected, max_tokens, counter)
+}
+
+fn clip_around_preselected_characters(
+    text: &str,
+    span: &Range<usize>,
+    mut selected: Range<usize>,
+    max_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> ClippedSpan {
+    let segment = &text[span.clone()];
     let mut best = None;
 
     loop {
@@ -884,7 +958,10 @@ fn normalized_casefolded_source(text: &str) -> Vec<SourceFoldedChar> {
     let mut cluster_end = 0usize;
     for (start, source) in text.char_indices() {
         let end = start + source.len_utf8();
-        if canonical_combining_class(source) == 0 && !cluster.is_empty() {
+        if canonical_combining_class(source) == 0
+            && !cluster.is_empty()
+            && !hangul_jamo_composes_with(cluster.chars().next_back(), source)
+        {
             append_normalized_cluster(&mut normalized, &cluster, cluster_start, cluster_end);
             cluster.clear();
             cluster_start = start;
@@ -907,6 +984,26 @@ fn normalized_casefolded_source(text: &str) -> Vec<SourceFoldedChar> {
                 .map(move |value| SourceFoldedChar { value, ..mapped })
         })
         .collect()
+}
+
+fn hangul_jamo_composes_with(previous: Option<char>, next: char) -> bool {
+    let Some(previous) = previous else {
+        return false;
+    };
+    (is_hangul_leading_jamo(previous) && is_hangul_vowel_jamo(next))
+        || (is_hangul_vowel_jamo(previous) && is_hangul_trailing_jamo(next))
+}
+
+fn is_hangul_leading_jamo(ch: char) -> bool {
+    matches!(ch as u32, 0x1100..=0x115f | 0xa960..=0xa97c)
+}
+
+fn is_hangul_vowel_jamo(ch: char) -> bool {
+    matches!(ch as u32, 0x1160..=0x11a7 | 0xd7b0..=0xd7c6)
+}
+
+fn is_hangul_trailing_jamo(ch: char) -> bool {
+    matches!(ch as u32, 0x11a8..=0x11ff | 0xd7cb..=0xd7fb)
 }
 
 fn append_normalized_cluster(
@@ -1495,6 +1592,13 @@ mod tests {
         );
         assert_eq!(context.chunks.len(), 1);
         assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
+    }
+
+    #[test]
+    fn normalized_source_mapping_composes_hangul_jamo_with_original_offsets() {
+        let text = "prefix 가 marker suffix";
+        let range = phrase_match_range(text, "가 marker").unwrap();
+        assert_eq!(&text[range], "가 marker");
     }
 
     #[test]
