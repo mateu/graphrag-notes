@@ -46,6 +46,25 @@ fn count_to_i64(count: u64) -> Result<i64> {
         .map_err(|_| DbError::QueryFailed("processing count exceeds database integer range".into()))
 }
 
+/// Rebuild the value indexed for full-text search whenever a note is edited.
+/// Markdown chunk metadata carries its heading context separately from the
+/// displayed source content, so retain that searchable prefix without ever
+/// retaining stale body text from a prior revision.
+fn search_content_for_updated_note(note: &Note) -> String {
+    let headings = note
+        .chunk_heading_path
+        .iter()
+        .filter(|heading| !heading.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" > ");
+    if headings.is_empty() {
+        note.content.clone()
+    } else {
+        format!("{headings}\n\n{}", note.content)
+    }
+}
+
 /// The coarse operation of a durable local processing job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -458,6 +477,7 @@ impl Repository {
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
+        let search_content = search_content_for_updated_note(&note);
         let updated: Option<Note> = self
             .db
             .query(
@@ -496,7 +516,7 @@ impl Repository {
             .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
             .bind(("split_fenced_code", note.split_fenced_code))
             .bind(("content_hash", note.content_hash.clone()))
-            .bind(("search_content", note.search_content.clone()))
+            .bind(("search_content", search_content))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
             .await?
@@ -4277,6 +4297,44 @@ mod tests {
             .unwrap();
         assert_eq!(updated.source_id.as_ref(), Some(&source_id));
         assert_eq!(updated.source_generation, Some(plan.source.generation));
+    }
+
+    #[tokio::test]
+    async fn update_note_rebuilds_markdown_search_content_without_stale_terms() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut markdown_note = Note::new("obsolete-search-token is removed");
+        markdown_note.chunk_heading_path = vec!["Roadmap".into()];
+        markdown_note.search_content = Some("Roadmap\n\nobsolete-search-token is removed".into());
+        let created = repo.create_note(markdown_note).await.unwrap();
+        let created_id = created.id.as_ref().unwrap().clone();
+
+        let mut edited = created.clone();
+        edited.content = "current-search-token is indexed".into();
+        // Model a caller changing only `content`; this stale field used to
+        // keep removed body terms in the highest-weight FTS column.
+        edited.search_content = created.search_content.clone();
+        let updated = repo
+            .update_note(&record_id_to_string(&created_id), edited)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            updated.search_content.as_deref(),
+            Some("Roadmap\n\ncurrent-search-token is indexed")
+        );
+        assert!(repo
+            .fulltext_search("obsolete-search-token", 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|result| result.id != created_id));
+        let current = repo
+            .fulltext_search("current-search-token", 10)
+            .await
+            .unwrap();
+        assert!(current
+            .iter()
+            .any(|result| { result.id == created_id && result.fts_score.is_some() }));
     }
 
     #[tokio::test]
