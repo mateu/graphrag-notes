@@ -275,8 +275,12 @@ async fn inspect_database(checks: &mut Vec<Check>, db: &DbConnection) {
     for (table, index) in [
         ("note", "idx_note_embedding"),
         ("note", "idx_note_content"),
+        ("note", "idx_note_title"),
         ("message", "idx_message_embedding"),
+        ("message", "idx_message_content"),
         ("conversation", "idx_conversation_summary_embedding"),
+        ("conversation", "idx_conversation_summary"),
+        ("conversation", "idx_conversation_title"),
     ] {
         match table_info(db, table).await {
             Ok(info)
@@ -555,6 +559,28 @@ mod tests {
                 .status,
             Status::Healthy
         );
+    }
+
+    #[tokio::test]
+    async fn missing_search_index_is_reported_as_a_failed_schema_check() {
+        let db = init_memory().await.unwrap();
+        db.query("REMOVE INDEX idx_message_content ON message")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        let mut checks = Vec::new();
+        inspect_database(&mut checks, &db).await;
+        let schema = checks
+            .iter()
+            .find(|check| check.name == "schema_objects")
+            .expect("schema object check");
+        assert_eq!(schema.status, Status::Failed);
+        assert!(schema
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("idx_message_content")));
     }
 
     #[tokio::test]
