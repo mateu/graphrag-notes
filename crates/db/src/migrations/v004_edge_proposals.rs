@@ -53,6 +53,5 @@ DEFINE INDEX IF NOT EXISTS idx_derived_from_dedupe ON derived_from FIELDS dedupe
 DEFINE FIELD IF NOT EXISTS provenance ON related_to TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS proposal_id ON related_to TYPE option<record<proposed_edge>>;
 DEFINE FIELD IF NOT EXISTS dedupe_key ON related_to TYPE option<string>;
-DEFINE INDEX IF NOT EXISTS idx_related_to_dedupe ON related_to FIELDS dedupe_key UNIQUE;
 "#,
 };

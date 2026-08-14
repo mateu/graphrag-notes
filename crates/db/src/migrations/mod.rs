@@ -10,10 +10,12 @@ mod v003_source_lifecycle;
 mod v004_edge_proposals;
 
 use crate::{DbConnection, DbError, Result};
+use graphrag_core::record_id_to_string;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
+use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -299,6 +301,12 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
         .check()
         .map_err(|error| migration_failed(migration, error))?;
 
+    if migration.version == v004_edge_proposals::MIGRATION.version {
+        backfill_related_to_dedupe_keys(db)
+            .await
+            .map_err(|error| migration_failed(migration, error))?;
+    }
+
     let recorded = db
         .query(
             "INSERT INTO schema_migration (version, name, checksum, applied_at) \
@@ -323,6 +331,58 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
     Ok(())
 }
 
+/// Normalize the legacy unconstrained `related_to` table before its unique
+/// canonical key is introduced. The migration runner owns this data rewrite
+/// because it needs deterministic, row-by-row deduplication across a
+/// symmetric pair while retaining one existing edge's audit metadata.
+async fn backfill_related_to_dedupe_keys(db: &DbConnection) -> Result<()> {
+    #[derive(Deserialize, SurrealValue)]
+    struct RelatedEdgeRow {
+        id: RecordId,
+        r#in: RecordId,
+        out: RecordId,
+    }
+
+    let edges: Vec<RelatedEdgeRow> = db
+        .query("SELECT id, in, out FROM related_to ORDER BY id ASC")
+        .await?
+        .take(0)?;
+    let mut retained_keys = BTreeSet::new();
+    for edge in edges {
+        let (from, to) = if record_id_to_string(&edge.r#in) <= record_id_to_string(&edge.out) {
+            (edge.r#in, edge.out)
+        } else {
+            (edge.out, edge.r#in)
+        };
+        let dedupe_key = format!(
+            "related_to:{}:{}",
+            record_id_to_string(&from),
+            record_id_to_string(&to)
+        );
+        if !retained_keys.insert(dedupe_key.clone()) {
+            db.query("DELETE $id")
+                .bind(("id", edge.id))
+                .await?
+                .check()?;
+            continue;
+        }
+        db.query("UPDATE $id SET in = $from, out = $to, dedupe_key = $dedupe_key")
+            .bind(("id", edge.id))
+            .bind(("from", from))
+            .bind(("to", to))
+            .bind(("dedupe_key", dedupe_key))
+            .await?
+            .check()?;
+    }
+
+    db.query(
+        "DEFINE INDEX IF NOT EXISTS idx_related_to_dedupe ON related_to FIELDS dedupe_key UNIQUE",
+    )
+    .await?
+    .check()?;
+    Ok(())
+}
+
 fn migration_failed(migration: Migration, error: impl std::fmt::Display) -> DbError {
     DbError::MigrationFailed {
         version: migration.version,
@@ -334,7 +394,10 @@ fn migration_failed(migration: Migration, error: impl std::fmt::Display) -> DbEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Repository;
+    use graphrag_core::{record_id_to_string, EdgeType};
     use surrealdb::engine::local::Mem;
+    use surrealdb::types::RecordId;
     use surrealdb::Surreal;
 
     async fn raw_memory_db() -> DbConnection {
@@ -474,6 +537,96 @@ mod tests {
         assert_eq!(notes.len(), 1);
         let migrations = load_applied_migrations(&db).await.unwrap();
         assert_eq!(migrations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn v004_canonicalizes_legacy_related_to_pairs_before_adding_the_unique_key() {
+        #[derive(Deserialize, SurrealValue)]
+        struct IdRow {
+            id: RecordId,
+        }
+        #[derive(Deserialize, SurrealValue)]
+        struct RelatedRow {
+            id: RecordId,
+            r#in: RecordId,
+            out: RecordId,
+            dedupe_key: String,
+        }
+
+        let db = raw_memory_db().await;
+        apply_migrations(
+            &db,
+            &[
+                v001_initial::MIGRATION,
+                v002_embedding_metadata::MIGRATION,
+                v003_source_lifecycle::MIGRATION,
+            ],
+        )
+        .await
+        .unwrap();
+        let created: Vec<IdRow> = db
+            .query("CREATE note CONTENT { content: 'legacy related note' } RETURN id")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let first = created[0].id.clone();
+        let second: Vec<IdRow> = db
+            .query("CREATE note CONTENT { content: 'another legacy related note' } RETURN id")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let second = second.into_iter().next().unwrap();
+        db.query("CREATE related_to SET in = $in, out = $out, confidence = 0.8")
+            .bind(("in", first.clone()))
+            .bind(("out", second.id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        db.query("CREATE related_to SET in = $in, out = $out, confidence = 0.9")
+            .bind(("in", second.id.clone()))
+            .bind(("out", first.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        apply_migrations(&db, MIGRATIONS).await.unwrap();
+        let rows: Vec<RelatedRow> = db
+            .query("SELECT id, in, out, dedupe_key FROM related_to")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        let from = record_id_to_string(&row.r#in);
+        let to = record_id_to_string(&row.out);
+        assert!(from < to);
+        assert_eq!(row.dedupe_key, format!("related_to:{from}:{to}"));
+
+        let repo = Repository::new(db);
+        let proposal = repo
+            .upsert_gardener_proposal(
+                &first,
+                &second.id,
+                0.95,
+                "legacy pair re-scan".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        repo.accept_edge_proposal(&proposal.id.unwrap(), None, None, false)
+            .await
+            .unwrap();
+        assert_eq!(repo.list_note_edges(10).await.unwrap().len(), 1);
+        assert_eq!(
+            repo.list_note_edges(10).await.unwrap()[0].edge_type,
+            EdgeType::RelatedTo.to_string()
+        );
     }
 
     #[tokio::test]

@@ -9,8 +9,8 @@ use crate::{
     DbConnection, DbError, Result,
 };
 use graphrag_core::{
-    record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, Source,
-    ProposedEdge, ProposedEdgeStatus, SourceIngestionStatus, SourceType,
+    record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, ProposedEdge,
+    ProposedEdgeStatus, Source, SourceIngestionStatus, SourceType,
 };
 use serde::{Deserialize, Serialize};
 use surrealdb::types::RecordId;
@@ -1031,30 +1031,69 @@ impl Repository {
         min_confidence: f32,
         reviewer: Option<String>,
     ) -> Result<usize> {
-        let proposals = self
-            .list_edge_proposals(Some(ProposedEdgeStatus::Pending), 10_000)
-            .await?;
+        self.accept_gardener_proposals_above_in_pages(min_confidence, reviewer, 250)
+            .await
+    }
+
+    /// Accept every matching pending proposal, using a stable record-id cursor
+    /// so a large batch cannot silently stop at an arbitrary first page.
+    async fn accept_gardener_proposals_above_in_pages(
+        &self,
+        min_confidence: f32,
+        reviewer: Option<String>,
+        page_size: usize,
+    ) -> Result<usize> {
+        let page_size = page_size.max(1);
         let mut accepted = 0;
-        for proposal in proposals.into_iter().filter(|proposal| {
-            proposal.edge_type == EdgeType::RelatedTo
-                && proposal.generator == "gardener-similarity"
-                && proposal.confidence >= min_confidence
-        }) {
-            let id = proposal.id.expect("stored proposal has id");
-            if self
-                .accept_edge_proposal(
+        let mut after_id = None;
+
+        loop {
+            let proposals = self
+                .list_pending_gardener_proposals_page(min_confidence, after_id.clone(), page_size)
+                .await?;
+            if proposals.is_empty() {
+                break;
+            }
+            let last_id = proposals
+                .last()
+                .and_then(|proposal| proposal.id.clone())
+                .expect("stored proposal has id");
+
+            for proposal in proposals {
+                let id = proposal.id.expect("stored proposal has id");
+                self.accept_edge_proposal(
                     &id,
                     reviewer.clone(),
                     Some("configured gardener auto-apply policy".into()),
                     false,
                 )
-                .await
-                .is_ok()
-            {
+                .await?;
                 accepted += 1;
             }
+
+            after_id = Some(last_id);
         }
         Ok(accepted)
+    }
+
+    async fn list_pending_gardener_proposals_page(
+        &self,
+        min_confidence: f32,
+        after_id: Option<RecordId>,
+        limit: usize,
+    ) -> Result<Vec<ProposedEdge>> {
+        let rows: Vec<ProposedEdgeRow> = self
+            .db
+            .query(format!(
+                "{} WHERE status = 'pending' AND edge_type = 'related_to' AND generator = 'gardener-similarity' AND confidence >= $min_confidence AND ($after_id = NONE OR id > $after_id) ORDER BY id ASC LIMIT $limit",
+                proposal_select_sql("")
+            ))
+            .bind(("min_confidence", min_confidence.clamp(0.0, 1.0)))
+            .bind(("after_id", after_id))
+            .bind(("limit", limit.max(1)))
+            .await?
+            .take(0)?;
+        rows.into_iter().map(ProposedEdgeRow::into_domain).collect()
     }
 
     /// Delete an accepted edge and mark its source proposal superseded. This is
@@ -2305,7 +2344,6 @@ pub fn parse_record_id(value: &str, expected_table: Option<&str>) -> Result<Reco
     Ok(RecordId::new(table, key))
 }
 
-
 impl Repository {
     async fn query_edges_table(&self, table: &str, limit: usize) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
@@ -3214,6 +3252,48 @@ mod tests {
                 .status,
             ProposedEdgeStatus::Superseded
         );
+    }
+
+    #[tokio::test]
+    async fn bulk_gardener_acceptance_pages_every_match_and_propagates_failures() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (first, second) = two_notes(&repo).await;
+        let third = repo
+            .create_note(Note::new("third"))
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        for (from, to) in [(&first, &second), (&first, &third), (&second, &third)] {
+            repo.upsert_gardener_proposal(from, to, 0.9, "similar".into(), None, None)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            repo.accept_gardener_proposals_above_in_pages(0.8, None, 1)
+                .await
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            repo.list_edge_proposals(Some(ProposedEdgeStatus::Accepted), 10)
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+
+        let failing_repo = Repository::new(init_memory().await.unwrap());
+        let (from, stale_endpoint) = two_notes(&failing_repo).await;
+        failing_repo
+            .upsert_gardener_proposal(&from, &stale_endpoint, 0.9, "similar".into(), None, None)
+            .await
+            .unwrap();
+        let _: Option<Note> = failing_repo.db.delete(stale_endpoint).await.unwrap();
+        assert!(failing_repo
+            .accept_gardener_proposals_above_in_pages(0.8, None, 1)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

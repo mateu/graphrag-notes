@@ -390,6 +390,12 @@ enum GardenCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Scan and apply the explicitly configured auto-apply policy
+    Apply {
+        /// Confirm mutation of accepted edges under the configured policy
+        #[arg(long, required = true)]
+        yes: bool,
+    },
     /// Inspect or act on persisted proposals
     Proposals {
         #[command(subcommand)]
@@ -937,6 +943,7 @@ async fn main() -> Result<()> {
                 config.search.clone(),
                 config.gardener.similarity_threshold,
                 config.gardener.auto_apply_threshold,
+                config.gardener.auto_apply,
                 config.gardener.max_suggestions,
             )
             .await?;
@@ -2042,6 +2049,22 @@ async fn cmd_garden(
                 report.suggestions_generated
             );
         }
+        GardenCommand::Apply { yes } => {
+            if !yes {
+                anyhow::bail!("refusing to apply Gardener proposals without --yes");
+            }
+            if !auto_apply {
+                anyhow::bail!("Gardener auto-apply is disabled; set [gardener].auto_apply = true before using `garden apply`");
+            }
+            let report = gardener.run_maintenance().await?;
+            println!(
+                "Maintenance applied {} policy-approved related_to proposal(s).",
+                report.connections_applied
+            );
+            println!("  • Orphans found: {}", report.orphans_found);
+            println!("  • Proposals generated: {}", report.suggestions_generated);
+            println!("  • Orphans remaining: {}", report.orphans_remaining);
+        }
         GardenCommand::Proposals { command } => {
             cmd_proposals(repo, command).await?;
         }
@@ -2233,6 +2256,7 @@ async fn cmd_interactive(
     search_config: SearchConfig,
     similarity_threshold: f32,
     auto_apply_threshold: f32,
+    auto_apply: bool,
     max_suggestions: usize,
 ) -> Result<()> {
     let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone())
@@ -2240,7 +2264,7 @@ async fn cmd_interactive(
     let search = configured_search_agent(repo.clone(), tei.clone(), &search_config);
     let gardener = GardenerAgent::new(repo.clone())
         .with_threshold(similarity_threshold)
-        .with_auto_apply_threshold(auto_apply_threshold)
+        .with_auto_apply_policy(auto_apply, auto_apply_threshold)
         .with_max_suggestions(max_suggestions);
 
     println!("GraphRAG Notes - Interactive Mode");
@@ -2431,5 +2455,17 @@ mod tests {
             packing_diagnostics_text(&diagnostics),
             "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5"
         );
+    }
+
+    #[test]
+    fn garden_apply_requires_the_explicit_confirmation_flag() {
+        let cli = Cli::try_parse_from(["graphrag", "garden", "apply", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Garden {
+                command: GardenCommand::Apply { yes: true }
+            }
+        ));
+        assert!(Cli::try_parse_from(["graphrag", "garden", "apply"]).is_err());
     }
 }

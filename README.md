@@ -360,6 +360,8 @@ graphrag garden proposals list --status pending
 graphrag garden proposals accept proposed_edge:ID --reason "reviewed" --yes
 # Batch acceptance is deliberately guarded and only accepts Gardener related_to proposals.
 graphrag garden proposals accept --all --min-confidence 0.9 --yes
+# Applies only the explicitly enabled auto-apply policy.
+graphrag garden apply --yes
 # Undo an accepted edge without losing the proposal audit trail.
 graphrag edges undo related_to:ID --dry-run
 graphrag edges undo related_to:ID --yes
