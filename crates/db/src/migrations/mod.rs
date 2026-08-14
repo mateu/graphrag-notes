@@ -108,6 +108,8 @@ pub async fn current_version(db: &DbConnection) -> Result<u32> {
 }
 
 async fn apply_migrations(db: &DbConnection, migrations: &[Migration]) -> Result<()> {
+    validate_registry(migrations)?;
+
     let _guard = migration_lock().lock().await;
     ensure_migration_history(db).await?;
     let applied = load_applied_migrations(db).await?;
@@ -130,6 +132,25 @@ async fn apply_migrations(db: &DbConnection, migrations: &[Migration]) -> Result
             "Applying database schema migration"
         );
         apply_one(db, *migration).await?;
+    }
+
+    Ok(())
+}
+
+/// Reject a malformed binary migration registry before it can modify a database.
+///
+/// `validate_history` validates persisted rows, but an empty database has no
+/// history to compare. Checking the registry independently prevents a gap,
+/// duplicate, or out-of-order entry from being partly applied first.
+fn validate_registry(migrations: &[Migration]) -> Result<()> {
+    for (index, migration) in migrations.iter().enumerate() {
+        let expected = u32::try_from(index + 1).expect("migration registry exceeds u32::MAX");
+        if migration.version != expected {
+            return Err(DbError::MigrationHistory(format!(
+                "migration registry must be ordered and contiguous from version 1; expected version {}, found {} ({})",
+                expected, migration.version, migration.name
+            )));
+        }
     }
 
     Ok(())
@@ -428,5 +449,28 @@ mod tests {
         second.unwrap();
 
         assert_eq!(applied_migrations(&db).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn malformed_migration_registry_is_rejected_before_application() {
+        let v003 = Migration {
+            version: 3,
+            name: "gap",
+            sql: "",
+        };
+        let duplicate_v001 = Migration {
+            version: 1,
+            name: "duplicate",
+            sql: "",
+        };
+
+        assert!(matches!(
+            validate_registry(&[v001_initial::MIGRATION, v003]),
+            Err(DbError::MigrationHistory(_))
+        ));
+        assert!(matches!(
+            validate_registry(&[v001_initial::MIGRATION, duplicate_v001]),
+            Err(DbError::MigrationHistory(_))
+        ));
     }
 }
