@@ -365,6 +365,21 @@ pub struct EvalCaseReport {
     pub name: String,
     pub query: String,
     pub metrics: CaseMetrics,
+    /// Packing diagnostics are emitted in JSON reports so estimated versus
+    /// exact token counts and budget decisions are machine-visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub augmentation: Option<AugmentationDiagnosticsReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AugmentationDiagnosticsReport {
+    pub token_count_mode: String,
+    pub header_tokens: usize,
+    pub dropped_duplicates: usize,
+    pub dropped_near_duplicates: usize,
+    pub dropped_for_relevance: usize,
+    pub dropped_for_budget: usize,
+    pub dropped_for_entity_filter: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1080,6 +1095,7 @@ mod tests {
                 name: "q".into(),
                 query: "q".into(),
                 metrics: evaluate_ranked_results(&case, &[hit], 1, 0),
+                augmentation: None,
             }],
         );
         let current = EvalRunReport::from_cases(
@@ -1088,6 +1104,7 @@ mod tests {
                 name: "q".into(),
                 query: "q".into(),
                 metrics: evaluate_ranked_results(&case, &[], 1, 0),
+                augmentation: None,
             }],
         );
         let thresholds = parse_regression_thresholds(&["provenance=0.1".into()]).unwrap();
@@ -1139,6 +1156,7 @@ mod tests {
                 name: "q".into(),
                 query: "q".into(),
                 metrics: evaluate_ranked_results(&case, &[result("note:a")], 1, 0),
+                augmentation: None,
             }],
         );
         let current = EvalRunReport::from_cases(
@@ -1147,6 +1165,7 @@ mod tests {
                 name: "q".into(),
                 query: "q".into(),
                 metrics: evaluate_ranked_results(&case, &[], 1, 0),
+                augmentation: None,
             }],
         );
         let comparison = build_baseline_comparison(
