@@ -361,6 +361,24 @@ impl Embedder for ResilientEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        // Ollama's embeddings endpoint is one request per prompt; its adapter
+        // implements `embed_batch` by issuing those requests sequentially.
+        // Timing the aggregate would incorrectly reject N individually healthy
+        // requests once their cumulative latency exceeds the request timeout.
+        // Route through `embed` so each provider request owns its timeout,
+        // retry budget, cache lookup, and semaphore permit.
+        if self
+            .inner
+            .capabilities()
+            .provider
+            .eq_ignore_ascii_case("ollama")
+        {
+            let mut embeddings = Vec::with_capacity(texts.len());
+            for text in texts {
+                embeddings.push(self.embed(text, is_query).await?);
+            }
+            return Ok(embeddings);
+        }
         let keys = texts
             .iter()
             .map(|text| self.key(text, is_query))
@@ -651,6 +669,44 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct OllamaBatchProbe {
+        individual_requests: Arc<AtomicUsize>,
+        batch_requests: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Embedder for OllamaBatchProbe {
+        async fn embed(&self, _text: &str, _is_query: bool) -> Result<Vec<f32>> {
+            self.individual_requests.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok(vec![0.0; 1024])
+        }
+
+        async fn embed_batch(&self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>> {
+            self.batch_requests.fetch_add(1, Ordering::SeqCst);
+            let mut values = Vec::with_capacity(texts.len());
+            for text in texts {
+                values.push(self.embed(text, query).await?);
+            }
+            Ok(values)
+        }
+
+        async fn health(&self) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn capabilities(&self) -> InferenceCapabilities {
+            InferenceCapabilities {
+                provider: "ollama".into(),
+                model: "probe".into(),
+                endpoint: "offline://ollama-probe".into(),
+                known_dimension: Some(1024),
+                cache_identity: "ollama-probe-v1".into(),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn concurrency_never_exceeds_configured_bound() {
         let active = Arc::new(AtomicUsize::new(0));
@@ -678,5 +734,31 @@ mod tests {
             result.unwrap();
         }
         assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ollama_batch_times_out_each_provider_request_not_the_full_batch() {
+        let individual_requests = Arc::new(AtomicUsize::new(0));
+        let batch_requests = Arc::new(AtomicUsize::new(0));
+        let inner: Arc<dyn Embedder> = Arc::new(OllamaBatchProbe {
+            individual_requests: individual_requests.clone(),
+            batch_requests: batch_requests.clone(),
+        });
+        let adapter = ResilientEmbedder::new(
+            inner,
+            None,
+            ProcessingConfig {
+                request_timeout: Duration::from_millis(35),
+                retry_attempts: 1,
+                ..Default::default()
+            },
+        );
+        let texts = vec!["first".to_string(), "second".to_string()];
+
+        let embeddings = adapter.embed_batch(&texts, false).await.unwrap();
+
+        assert_eq!(embeddings.len(), 2);
+        assert_eq!(individual_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(batch_requests.load(Ordering::SeqCst), 0);
     }
 }
