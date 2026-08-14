@@ -168,7 +168,14 @@ fn no_processing_work() -> ProcessingRunResult {
 }
 
 fn entity_job_force_clear(scope: Option<&str>) -> bool {
-    scope.is_some_and(|scope| scope.split(';').any(|part| part == "force=true"))
+    scope
+        .and_then(|scope| {
+            scope
+                .split([';', ':'])
+                .find_map(|part| part.strip_prefix("force="))
+        })
+        .and_then(|value| value.parse::<bool>().ok())
+        .unwrap_or(false)
 }
 
 fn entity_job_page_size(scope: Option<&str>, fallback: usize) -> usize {
@@ -2402,11 +2409,11 @@ pub struct ChatImportResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_content, decode_file_uri, no_processing_work, truncate_for_extraction,
-        LibrarianAgent, LibrarianRuntimeConfig,
+        chunk_content, decode_file_uri, entity_job_force_clear, no_processing_work,
+        truncate_for_extraction, LibrarianAgent, LibrarianRuntimeConfig,
     };
     use crate::{DeterministicEmbedder, FixtureEntityExtractor, InferenceCapabilities};
-    use graphrag_core::Note;
+    use graphrag_core::{Entity, EntityType, Note};
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
         init_memory, ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository,
@@ -2573,6 +2580,87 @@ mod tests {
         assert_eq!(config.min_chunk_size, 20);
         assert_eq!(config.max_chunk_size, usize::MAX);
         assert!(!config.skip_entity_extraction);
+    }
+
+    #[test]
+    fn entity_job_force_policy_parses_all_and_explicit_scopes() {
+        assert!(entity_job_force_clear(Some(
+            "all_notes:page_size=100;force=true"
+        )));
+        assert!(entity_job_force_clear(Some("note_ids:force=true")));
+        assert!(!entity_job_force_clear(Some(
+            "all_notes:page_size=100;force=false"
+        )));
+        assert!(!entity_job_force_clear(Some("note_ids:force=invalid")));
+        assert!(!entity_job_force_clear(None));
+    }
+
+    #[tokio::test]
+    async fn explicit_force_scope_clears_mentions_on_initial_run_and_resume() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let initial = repo
+            .create_note(Note::new("initial explicit force target"))
+            .await
+            .unwrap();
+        let resumed = repo
+            .create_note(Note::new("resumed explicit force target"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("preexisting entity", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        for note in [&initial, &resumed] {
+            repo.link_note_to_entity(note.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        let initial_id = graphrag_core::record_id_to_string(initial.id.as_ref().unwrap());
+        let resumed_id = graphrag_core::record_id_to_string(resumed.id.as_ref().unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        assert_eq!(
+            librarian
+                .extract_entities_for_note_ids(&[initial_id.clone()], true)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(repo
+            .get_entities_for_note(&initial_id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::EntityExtraction,
+                None,
+                1,
+                Some("note_ids:force=true".into()),
+                vec![resumed_id.clone()],
+            )
+            .await
+            .unwrap();
+        let job_id = graphrag_core::record_id_to_string(job.id.as_ref().unwrap());
+        repo.cancel_processing_job(job.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            librarian
+                .resume_processing_job(&job_id)
+                .await
+                .unwrap()
+                .completed,
+            1
+        );
+        assert!(repo
+            .get_entities_for_note(&resumed_id)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
