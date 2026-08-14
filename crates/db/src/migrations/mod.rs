@@ -5,6 +5,7 @@
 //! below serializes initialization within one process.
 
 mod v001_initial;
+mod v002_embedding_metadata;
 
 use crate::{DbConnection, DbError, Result};
 use serde::Deserialize;
@@ -15,7 +16,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 1;
+pub const LATEST_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -30,7 +31,7 @@ pub(super) struct Migration {
     pub(super) sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[v001_initial::MIGRATION];
+const MIGRATIONS: &[Migration] = &[v001_initial::MIGRATION, v002_embedding_metadata::MIGRATION];
 
 // This table must exist before the first migration can be inspected. It is
 // deliberately bootstrapped outside the numbered application migrations; the
@@ -342,8 +343,9 @@ mod tests {
 
         assert_eq!(current_version(&db).await.unwrap(), LATEST_SCHEMA_VERSION);
         let migrations = applied_migrations(&db).await.unwrap();
-        assert_eq!(migrations.len(), 1);
+        assert_eq!(migrations.len(), LATEST_SCHEMA_VERSION as usize);
         assert_eq!(migrations[0].name, "initial_schema");
+        assert_eq!(migrations[1].name, "embedding_metadata");
     }
 
     #[tokio::test]
@@ -352,7 +354,10 @@ mod tests {
         apply_all(&db).await.unwrap();
         apply_all(&db).await.unwrap();
 
-        assert_eq!(applied_migrations(&db).await.unwrap().len(), 1);
+        assert_eq!(
+            applied_migrations(&db).await.unwrap().len(),
+            LATEST_SCHEMA_VERSION as usize
+        );
     }
 
     #[tokio::test]
@@ -390,7 +395,10 @@ mod tests {
 
         let error = apply_one(&db, invalid).await.unwrap_err();
         assert!(matches!(error, DbError::MigrationFailed { version: 2, .. }));
-        assert_eq!(applied_migrations(&db).await.unwrap().len(), 1);
+        assert_eq!(
+            applied_migrations(&db).await.unwrap().len(),
+            LATEST_SCHEMA_VERSION as usize
+        );
 
         let retry = apply_migrations(&db, &[v001_initial::MIGRATION, invalid])
             .await
@@ -448,7 +456,10 @@ mod tests {
         first.unwrap();
         second.unwrap();
 
-        assert_eq!(applied_migrations(&db).await.unwrap().len(), 1);
+        assert_eq!(
+            applied_migrations(&db).await.unwrap().len(),
+            LATEST_SCHEMA_VERSION as usize
+        );
     }
 
     #[test]

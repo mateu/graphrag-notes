@@ -27,6 +27,23 @@ pub enum DbError {
     #[error("Database schema migration history is inconsistent: {0}")]
     MigrationHistory(String),
 
+    #[error(
+        "embedding compatibility check failed: database uses {stored_provider}/{stored_model} ({stored_dimension} dimensions), but the active provider is {active_provider}/{active_model} ({active_dimension} dimensions). Reindex with: graphrag reindex --all"
+    )]
+    EmbeddingCompatibility {
+        stored_provider: String,
+        stored_model: String,
+        stored_dimension: usize,
+        active_provider: String,
+        active_model: String,
+        active_dimension: usize,
+    },
+
+    #[error(
+        "database contains {vector_records} legacy vector-bearing records without embedding metadata. Reindex with: graphrag reindex --all"
+    )]
+    LegacyEmbeddingMetadata { vector_records: usize },
+
     #[error("Database schema migration {version} ({name}) failed: {reason}")]
     MigrationFailed {
         version: u32,

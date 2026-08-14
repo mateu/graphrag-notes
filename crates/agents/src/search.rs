@@ -3,6 +3,7 @@
 use crate::{inference::validate_embedding_dim, Result, SharedEmbedder};
 use chrono::{Duration, Utc};
 use graphrag_core::record_id_to_string;
+use graphrag_db::compatibility::EmbeddingIdentity;
 use graphrag_db::repository::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };
@@ -146,6 +147,13 @@ impl SearchAgent {
     async fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
         let embedding = self.embedder.embed(query, true).await?;
         validate_embedding_dim(embedding.len())?;
+        let capability = self.embedder.capabilities();
+        self.repo
+            .record_embedding_metadata(
+                &EmbeddingIdentity::new(capability.provider, capability.model, embedding.len()),
+                None,
+            )
+            .await?;
         Ok(embedding)
     }
 
@@ -600,6 +608,47 @@ fn hit_type_label(hit_type: SearchHitType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DeterministicEmbedder;
+    use graphrag_db::{compatibility::embedding_metadata, init_memory, Repository};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn vector_queries_initialize_metadata_and_reject_a_model_change() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let original = SearchAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().with_identity("fixture", "model-a")),
+        );
+        original.embed_query("first query").await.unwrap();
+        assert_eq!(
+            embedding_metadata(&db)
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding
+                .model,
+            "model-a"
+        );
+
+        let changed = SearchAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default().with_identity("fixture", "model-b")),
+        );
+        let error = changed.embed_query("second query").await.unwrap_err();
+        assert!(error.to_string().contains("graphrag reindex --all"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_embedder_does_not_initialize_metadata() {
+        let db = init_memory().await.unwrap();
+        let search = SearchAgent::new(
+            Repository::new(db.clone()),
+            Arc::new(DeterministicEmbedder::default().fail_next_requests(1, "offline")),
+        );
+        assert!(search.embed_query("offline query").await.is_err());
+        assert!(embedding_metadata(&db).await.unwrap().is_none());
+    }
 
     fn make_hit(id: &str, score: f32, content: &str) -> ScopedSearchResult {
         ScopedSearchResult {
