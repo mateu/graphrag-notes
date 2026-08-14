@@ -2,6 +2,7 @@
 //!
 //! A command-line interface for the GraphRAG Notes system.
 
+mod doctor;
 mod eval;
 
 use anyhow::{Context, Result};
@@ -53,6 +54,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Diagnose configuration, database compatibility, and local providers without changing data
+    Doctor {
+        /// Output format for the diagnostic report
+        #[arg(long, value_enum, default_value_t = DoctorFormat::Human)]
+        format: DoctorFormat,
+    },
+
     /// Inspect or validate the resolved runtime configuration
     Config {
         #[command(subcommand)]
@@ -328,6 +336,12 @@ enum SearchScopeArg {
     All,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DoctorFormat {
+    Human,
+    Json,
+}
+
 fn to_import_mode(mode: ImportModeArg) -> ChatImportMode {
     match mode {
         ImportModeArg::Qa => ChatImportMode::Qa,
@@ -373,17 +387,42 @@ fn librarian_runtime_config(
     }
 }
 
+fn print_doctor_report(report: &doctor::DoctorReport, format: DoctorFormat) -> Result<()> {
+    match format {
+        DoctorFormat::Human => print!("{}", report.render_human()),
+        DoctorFormat::Json => println!("{}", serde_json::to_string_pretty(report)?),
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables from .env if present.
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+    let doctor_format = match &cli.command {
+        Commands::Doctor { format } => Some(*format),
+        _ => None,
+    };
     let overrides = CliOverrides {
         database_path: cli.db_path.clone(),
     };
-    let config = RuntimeConfig::load(cli.config.as_deref(), &overrides)
-        .context("failed to resolve runtime configuration")?;
+    let config = match RuntimeConfig::load(cli.config.as_deref(), &overrides) {
+        Ok(config) => config,
+        Err(error) if doctor_format.is_some() => {
+            let report = doctor::DoctorReport::configuration_error(error);
+            print_doctor_report(&report, doctor_format.expect("doctor format is present"))?;
+            std::process::exit(report.exit_code);
+        }
+        Err(error) => return Err(error).context("failed to resolve runtime configuration"),
+    };
+
+    if let Commands::Doctor { format } = &cli.command {
+        let report = doctor::run(&config, &inference_provider_config(&config), cli.memory).await;
+        print_doctor_report(&report, *format)?;
+        std::process::exit(report.exit_code);
+    }
 
     if let Commands::Config { command } = &cli.command {
         match command {
@@ -718,6 +757,7 @@ async fn main() -> Result<()> {
         Commands::ResetDb { .. } => {
             // Handled before database init.
         }
+        Commands::Doctor { .. } => unreachable!("doctor returns before database initialization"),
     }
 
     Ok(())

@@ -669,6 +669,8 @@ pub struct DeterministicEmbedder {
     failures_remaining: Arc<Mutex<usize>>,
     failure_message: String,
     batch_length_mismatch: bool,
+    provider: String,
+    model: String,
 }
 
 impl Default for DeterministicEmbedder {
@@ -681,6 +683,8 @@ impl Default for DeterministicEmbedder {
             failures_remaining: Arc::new(Mutex::new(0)),
             failure_message: "injected embedding failure".to_string(),
             batch_length_mismatch: false,
+            provider: "deterministic-test".to_string(),
+            model: "fixture".to_string(),
         }
     }
 }
@@ -722,6 +726,14 @@ impl DeterministicEmbedder {
 
     pub fn with_batch_length_mismatch(mut self) -> Self {
         self.batch_length_mismatch = true;
+        self
+    }
+
+    /// Override the identity exposed to compatibility tests without involving
+    /// a live inference provider.
+    pub fn with_identity(mut self, provider: impl Into<String>, model: impl Into<String>) -> Self {
+        self.provider = provider.into();
+        self.model = model.into();
         self
     }
 
@@ -778,8 +790,8 @@ impl Embedder for DeterministicEmbedder {
 
     fn capabilities(&self) -> InferenceCapabilities {
         InferenceCapabilities {
-            provider: "deterministic-test".to_string(),
-            model: "fixture".to_string(),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
             endpoint: "offline://deterministic-embedder".to_string(),
             known_dimension: Some(self.default_embedding.len()),
         }

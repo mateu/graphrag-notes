@@ -5,6 +5,7 @@ use graphrag_core::{
     record_id_to_string, ChatConversation, ChatExport, ChatMessage, Entity, EntityType,
     MessageRole, Note, NoteType, Source, SourceType,
 };
+use graphrag_db::compatibility::{EmbeddingIdentity, ExtractionIdentity};
 use graphrag_db::Repository;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -217,6 +218,7 @@ impl LibrarianAgent {
     async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
         let embedding = self.embedder.embed(text, false).await?;
         validate_embedding_dim(embedding.len())?;
+        self.record_embedding_compatibility(embedding.len()).await?;
         Ok(embedding)
     }
 
@@ -226,7 +228,28 @@ impl LibrarianAgent {
         for embedding in &embeddings {
             validate_embedding_dim(embedding.len())?;
         }
+        if let Some(embedding) = embeddings.first() {
+            self.record_embedding_compatibility(embedding.len()).await?;
+        }
         Ok(embeddings)
+    }
+
+    /// Record the identity only after the provider has successfully returned a
+    /// vector.  This prevents an unavailable provider from creating metadata
+    /// and makes both single and batch ingestion paths enforce the same guard.
+    async fn record_embedding_compatibility(&self, dimension: usize) -> Result<()> {
+        let embedding = self.embedder.capabilities();
+        let extraction = self.extractor.capabilities();
+        self.repo
+            .record_embedding_metadata(
+                &EmbeddingIdentity::new(embedding.provider, embedding.model, dimension),
+                Some(&ExtractionIdentity::new(
+                    extraction.provider,
+                    extraction.model,
+                )),
+            )
+            .await?;
+        Ok(())
     }
 
     /// Ingest raw text content and create a note

@@ -1,6 +1,12 @@
 //! Repository pattern for database operations
 
-use crate::{DbConnection, DbError, Result};
+use crate::{
+    compatibility::{
+        check_embedding_compatibility, record_embedding_metadata, CompatibilityState,
+        EmbeddingIdentity, ExtractionIdentity,
+    },
+    DbConnection, DbError, Result,
+};
 use graphrag_core::{
     record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, Source,
 };
@@ -38,6 +44,25 @@ impl Repository {
     /// Create a new repository
     pub fn new(db: DbConnection) -> Self {
         Self { db }
+    }
+
+    /// Check the active embedding identity before a vector read or write.
+    /// This method is read-only and therefore safe to use for search paths.
+    pub async fn check_embedding_compatibility(
+        &self,
+        embedding: &EmbeddingIdentity,
+    ) -> Result<CompatibilityState> {
+        check_embedding_compatibility(&self.db, embedding).await
+    }
+
+    /// Initialize empty-corpus metadata after a successful embedding probe.
+    /// Existing metadata is never overwritten by a different model.
+    pub async fn record_embedding_metadata(
+        &self,
+        embedding: &EmbeddingIdentity,
+        extraction: Option<&ExtractionIdentity>,
+    ) -> Result<CompatibilityState> {
+        record_embedding_metadata(&self.db, embedding, extraction).await
     }
 
     // ==========================================

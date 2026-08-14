@@ -150,6 +150,36 @@ rejected with a clear error; do not manually edit migration records. New
 application migrations must be additive, immutable, and committed as a new
 numbered migration rather than editing one that may already have run.
 
+### Doctor and embedding compatibility
+
+Run the read-only local-stack diagnostic before changing providers or
+troubleshooting a database:
+
+```bash
+graphrag doctor
+graphrag doctor --format json
+```
+
+`doctor` never applies migrations, repairs data, deletes records, or rebuilds
+indexes. Its JSON contract has a stable `schema_version`, overall `status`,
+`exit_code`, and a list of named checks. Exit code `0` is healthy, `1` is
+warning-only, and `2` is a failed diagnostic.
+
+Every vector write and vector query records or verifies the active embedding
+provider, model, and dimension against the database metadata. A different
+dimension or a different model with the same dimension is rejected before
+vector work begins. Reindexing is deliberately not automatic; the diagnostic
+prints the future command `graphrag reindex --all` rather than silently
+changing an existing index.
+
+| Doctor diagnostic | Corrective action |
+| --- | --- |
+| `database_open`: RocksDB lock | Stop the other GraphRAG process using the reported database path, then retry. |
+| `application_schema` or `schema_objects` failed | Use a binary that supports the database or run one normal GraphRAG command to apply pending migrations; never edit migration rows manually. |
+| `embedding_metadata` missing | Start a healthy embeddings provider, then run an ingestion or vector-search command to initialize the empty corpus metadata. |
+| `embedding compatibility check failed` | Keep the prior embedding provider/model, or rebuild explicitly with `graphrag reindex --all` when that command is available. |
+| `embedding_provider` or `extraction_provider` unavailable | Start the configured local provider. Database-only commands such as `list`, `stats`, and `schema-version` remain available while it is down. |
+
 ### 1. Start inference backends
 
 #### Option A: TEI + TGI via Docker Compose

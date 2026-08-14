@@ -2,6 +2,7 @@
 //!
 //! Provides SurrealDB integration with schema management and queries.
 
+pub mod compatibility;
 pub mod error;
 pub mod migrations;
 pub mod repository;
@@ -10,6 +11,7 @@ pub mod schema;
 pub use error::{DbError, Result};
 pub use repository::Repository;
 
+#[cfg(feature = "rocksdb")]
 use std::path::Path;
 #[cfg(feature = "rocksdb")]
 use surrealdb::engine::local::RocksDb;
@@ -22,8 +24,19 @@ pub type DbConnection = Surreal<Db>;
 /// Initialize database with RocksDB (persistent)
 #[cfg(feature = "rocksdb")]
 pub async fn init_persistent(path: impl AsRef<Path>) -> Result<DbConnection> {
-    let db = Surreal::new::<RocksDb>(path.as_ref()).await?;
+    let db = connect_persistent(path).await?;
     setup_database(&db).await?;
+    Ok(db)
+}
+
+/// Open an existing persistent database without applying application
+/// migrations.  Operational diagnostics use this so inspection cannot mutate
+/// a user's schema or data.  Opening an absent path is intentionally left to
+/// callers: `graphrag doctor` reports that state without creating a store.
+#[cfg(feature = "rocksdb")]
+pub async fn connect_persistent(path: impl AsRef<Path>) -> Result<DbConnection> {
+    let db = Surreal::new::<RocksDb>(path.as_ref()).await?;
+    db.use_ns("graphrag").use_db("notes").await?;
     Ok(db)
 }
 
