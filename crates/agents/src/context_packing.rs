@@ -952,7 +952,8 @@ fn nearest_boundary_right(text: &str, mut index: usize) -> usize {
 }
 
 fn normalized_tokens(text: &str) -> HashSet<String> {
-    text.split(|ch: char| !ch.is_alphanumeric())
+    let mut tokens = text
+        .split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
         .flat_map(|token| {
             // Whitespace-delimited scripts retain word tokens. A run in a
@@ -965,7 +966,21 @@ fn normalized_tokens(text: &str) -> HashSet<String> {
                 vec![token.to_lowercase()]
             }
         })
-        .collect()
+        .collect::<HashSet<_>>();
+    if tokens.is_empty() {
+        // Symbols, emoji, and punctuation are still meaningful content for
+        // duplicate suppression. Preserve their canonical lowercased scalar
+        // sequence as one deterministic token instead of treating every such
+        // record as wholly disjoint.
+        let canonical = text
+            .chars()
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        if !canonical.is_empty() {
+            tokens.insert(format!("symbol:{canonical}"));
+        }
+    }
+    tokens
 }
 
 fn unspaced_script_bigrams(token: &str) -> Vec<String> {
@@ -1220,6 +1235,25 @@ mod tests {
         );
         assert_eq!(context.chunks.len(), 2);
         assert_eq!(context.diagnostics.dropped_near_duplicates, 0);
+    }
+
+    #[test]
+    fn identical_symbol_only_records_are_near_duplicate_suppressed() {
+        let symbols = "🎉 !!! ✨";
+        assert!(!normalized_tokens(symbols).is_empty());
+        let context = build_augment_context_from_hits(
+            "celebration".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("n:symbol-a", 0.9, symbols),
+                hit("n:symbol-b", 0.8, symbols),
+            ],
+            options(),
+            0,
+        );
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
     }
 
     #[test]

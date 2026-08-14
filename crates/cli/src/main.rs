@@ -13,9 +13,9 @@ use eval::{
     EvalOutputFormat, EvalRunReport, EvalScope, RankedResult, EVAL_SCHEMA_VERSION,
 };
 use graphrag_agents::{
-    AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, InferenceProviderConfig,
-    InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, SearchAgent, SearchHitType,
-    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
+    InferenceProviderConfig, InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig,
+    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, Source};
@@ -469,6 +469,22 @@ fn augment_options(
         near_duplicate_threshold: config.near_duplicate_threshold,
         ..Default::default()
     }
+}
+
+fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> String {
+    let token_count_mode = match diagnostics.token_count_mode {
+        TokenCountMode::Exact => "exact",
+        TokenCountMode::Estimated => "estimated",
+    };
+    format!(
+        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_entity_filter={}",
+        diagnostics.header_tokens,
+        diagnostics.dropped_duplicates,
+        diagnostics.dropped_near_duplicates,
+        diagnostics.dropped_for_relevance,
+        diagnostics.dropped_for_budget,
+        diagnostics.dropped_for_entity_filter,
+    )
 }
 
 fn librarian_runtime_config(
@@ -1666,11 +1682,6 @@ async fn cmd_augment(
         )
         .await?;
 
-    if ctx.chunks.is_empty() {
-        println!("No augmentation context found.");
-        return Ok(());
-    }
-
     println!("Augmentation context:");
     println!("  • Query: {}", ctx.query);
     println!("  • Scope: {:?}", ctx.scope);
@@ -1680,9 +1691,14 @@ async fn cmd_augment(
     println!("  • Chunks selected: {}", ctx.chunks.len());
     println!("  • Approx tokens used: {}", ctx.total_tokens);
     println!(
-        "  • Dropped (duplicates/budget/entity-filter): {}/{}/{}",
-        ctx.dropped_duplicates, ctx.dropped_for_budget, ctx.dropped_for_entity_filter
+        "  • Packing diagnostics: {}",
+        packing_diagnostics_text(&ctx.diagnostics)
     );
+
+    if ctx.chunks.is_empty() {
+        println!("No augmentation context found.");
+        return Ok(());
+    }
 
     println!("\nPrompt-ready context block:\n");
     println!("{}", ctx.render_prompt_block());
@@ -1805,7 +1821,7 @@ async fn cmd_eval_augment(
                 None => "UNSCORED",
             };
             println!(
-                "{}. {} [{}] k={} chunks={} tokens={} latency={}ms",
+                "{}. {} [{}] k={} chunks={} tokens={} latency={}ms | packing: {}",
                 idx + 1,
                 case.display_name(),
                 status,
@@ -1813,6 +1829,7 @@ async fn cmd_eval_augment(
                 metrics.chunks,
                 metrics.tokens,
                 metrics.latency_ms,
+                packing_diagnostics_text(&ctx.diagnostics),
             );
         }
         reports.push(EvalCaseReport {
@@ -2172,5 +2189,22 @@ mod tests {
         assert_eq!(options.novelty_weight, 0.4);
         assert_eq!(options.min_relevance, 0.2);
         assert_eq!(options.near_duplicate_threshold, 0.7);
+    }
+
+    #[test]
+    fn human_packing_diagnostics_include_all_budget_and_selection_decisions() {
+        let diagnostics = AugmentDiagnostics {
+            token_count_mode: TokenCountMode::Estimated,
+            header_tokens: 12,
+            dropped_duplicates: 1,
+            dropped_near_duplicates: 2,
+            dropped_for_relevance: 3,
+            dropped_for_budget: 4,
+            dropped_for_entity_filter: 5,
+        };
+        assert_eq!(
+            packing_diagnostics_text(&diagnostics),
+            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5"
+        );
     }
 }
