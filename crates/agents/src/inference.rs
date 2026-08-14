@@ -33,6 +33,12 @@ pub trait Embedder: Send + Sync {
     async fn embed_batch(&self, texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>>;
     async fn health(&self) -> Result<bool>;
     fn capabilities(&self) -> InferenceCapabilities;
+    /// Maximum inputs accepted by one provider request, when the provider
+    /// supports batch embedding. The resilience layer uses this to put its
+    /// timeout and retry boundary around each actual HTTP request.
+    fn max_batch_size(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// A shareable entity-extraction provider used by agents.
@@ -376,6 +382,10 @@ impl Embedder for TeiClient {
                 self.prompt_name_passage.as_deref().unwrap_or(""),
             ),
         }
+    }
+
+    fn max_batch_size(&self) -> Option<usize> {
+        matches!(self.provider, TeiProvider::Tei).then_some(self.max_batch)
     }
 }
 

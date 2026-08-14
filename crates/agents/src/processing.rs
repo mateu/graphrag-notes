@@ -361,19 +361,15 @@ impl Embedder for ResilientEmbedder {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        // Ollama embeds one prompt per request, while TEI may split one public
-        // batch into several provider requests. Timing either aggregate would
-        // reject individually healthy requests once their cumulative latency
-        // exceeds the request timeout. Route through `embed` so each HTTP
-        // request owns its timeout, retry budget, cache lookup, and semaphore.
-        if matches!(
-            self.inner
-                .capabilities()
-                .provider
-                .to_ascii_lowercase()
-                .as_str(),
-            "ollama" | "tei"
-        ) {
+        // Ollama embeds one prompt per request. Route through `embed` so each
+        // provider request owns its timeout, retry budget, cache lookup, and
+        // semaphore permit.
+        if self
+            .inner
+            .capabilities()
+            .provider
+            .eq_ignore_ascii_case("ollama")
+        {
             let mut embeddings = Vec::with_capacity(texts.len());
             for text in texts {
                 embeddings.push(self.embed(text, is_query).await?);
@@ -402,13 +398,20 @@ impl Embedder for ResilientEmbedder {
                 .iter()
                 .map(|index| texts[*index].clone())
                 .collect::<Vec<_>>();
-            let inner = self.inner.clone();
-            let embeddings = execute_with_retry(&self.config, &self.limiter, &self.stats, || {
-                let inner = inner.clone();
-                let inputs = inputs.clone();
-                async move { inner.embed_batch(&inputs, is_query).await }
-            })
-            .await?;
+            let batch_size = self.inner.max_batch_size().unwrap_or(inputs.len()).max(1);
+            let mut embeddings = Vec::with_capacity(inputs.len());
+            for chunk in inputs.chunks(batch_size) {
+                let inner = self.inner.clone();
+                let chunk = chunk.to_vec();
+                let mut chunk_embeddings =
+                    execute_with_retry(&self.config, &self.limiter, &self.stats, || {
+                        let inner = inner.clone();
+                        let chunk = chunk.clone();
+                        async move { inner.embed_batch(&chunk, is_query).await }
+                    })
+                    .await?;
+                embeddings.append(&mut chunk_embeddings);
+            }
             if embeddings.len() != misses.len() {
                 return Err(AgentError::Processing(format!(
                     "embedding provider returned {} embeddings for a batch of {} inputs",
@@ -673,6 +676,7 @@ mod tests {
     #[derive(Clone)]
     struct OllamaBatchProbe {
         provider: String,
+        max_batch_size: Option<usize>,
         individual_requests: Arc<AtomicUsize>,
         batch_requests: Arc<AtomicUsize>,
     }
@@ -687,6 +691,10 @@ mod tests {
 
         async fn embed_batch(&self, texts: &[String], query: bool) -> Result<Vec<Vec<f32>>> {
             self.batch_requests.fetch_add(1, Ordering::SeqCst);
+            if self.provider.eq_ignore_ascii_case("tei") {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                return Ok(vec![vec![0.0; 1024]; texts.len()]);
+            }
             let mut values = Vec::with_capacity(texts.len());
             for text in texts {
                 values.push(self.embed(text, query).await?);
@@ -706,6 +714,10 @@ mod tests {
                 known_dimension: Some(1024),
                 cache_identity: "ollama-probe-v1".into(),
             }
+        }
+
+        fn max_batch_size(&self) -> Option<usize> {
+            self.max_batch_size
         }
     }
 
@@ -744,6 +756,7 @@ mod tests {
         let batch_requests = Arc::new(AtomicUsize::new(0));
         let inner: Arc<dyn Embedder> = Arc::new(OllamaBatchProbe {
             provider: "ollama".into(),
+            max_batch_size: None,
             individual_requests: individual_requests.clone(),
             batch_requests: batch_requests.clone(),
         });
@@ -771,6 +784,7 @@ mod tests {
         let batch_requests = Arc::new(AtomicUsize::new(0));
         let inner: Arc<dyn Embedder> = Arc::new(OllamaBatchProbe {
             provider: "tei".into(),
+            max_batch_size: Some(2),
             individual_requests: individual_requests.clone(),
             batch_requests: batch_requests.clone(),
         });
@@ -784,11 +798,20 @@ mod tests {
             },
         );
         let embeddings = adapter
-            .embed_batch(&["first".to_string(), "second".to_string()], false)
+            .embed_batch(
+                &[
+                    "first".to_string(),
+                    "second".to_string(),
+                    "third".to_string(),
+                    "fourth".to_string(),
+                    "fifth".to_string(),
+                ],
+                false,
+            )
             .await
             .unwrap();
-        assert_eq!(embeddings.len(), 2);
-        assert_eq!(individual_requests.load(Ordering::SeqCst), 2);
-        assert_eq!(batch_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(embeddings.len(), 5);
+        assert_eq!(individual_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(batch_requests.load(Ordering::SeqCst), 3);
     }
 }
