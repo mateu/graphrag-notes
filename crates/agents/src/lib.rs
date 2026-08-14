@@ -10,6 +10,7 @@ pub mod error;
 pub mod gardener;
 pub mod inference;
 pub mod librarian;
+pub mod processing;
 pub mod search;
 
 pub use error::{AgentError, Result};
@@ -22,6 +23,10 @@ pub use inference::{
 pub use librarian::{
     ChatImportMode, ChatImportPreview, ChatImportResult, ChatIngestOptions, LibrarianAgent,
     LibrarianRuntimeConfig, MarkdownImportResult,
+};
+pub use processing::{
+    classify_retry, retry_delay, ProcessingConfig, ProcessingStatsSnapshot, ResilientEmbedder,
+    ResilientEntityExtractor, RetryClassification,
 };
 pub use search::{
     AugmentContext, AugmentDiagnostics, AugmentOptions, ConservativeTokenCounter, SearchAgent,

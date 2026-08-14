@@ -15,7 +15,8 @@ use eval::{
 use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
     InferenceProviderConfig, InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig,
-    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    ProcessingConfig, ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType,
+    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
@@ -26,7 +27,8 @@ use graphrag_db::{
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -51,6 +53,18 @@ struct Cli {
     /// Verbose output (DEBUG logs)
     #[arg(short, long)]
     verbose: bool,
+
+    /// Maximum in-flight requests per inference provider/operation.
+    #[arg(long, global = true, value_name = "N")]
+    concurrency: Option<usize>,
+
+    /// Maximum inference attempts including the initial request.
+    #[arg(long, global = true, value_name = "N")]
+    retry_attempts: Option<usize>,
+
+    /// Bypass the durable local inference cache for this invocation.
+    #[arg(long, global = true)]
+    no_cache: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -529,6 +543,43 @@ fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig 
     }
 }
 
+fn processing_config(
+    config: &RuntimeConfig,
+    concurrency: Option<usize>,
+    retry_attempts: Option<usize>,
+    no_cache: bool,
+) -> ProcessingConfig {
+    ProcessingConfig {
+        concurrency: concurrency.unwrap_or(config.inference.processing_concurrency),
+        request_timeout: Duration::from_secs(config.inference.timeout_secs),
+        retry_attempts: retry_attempts.unwrap_or(config.inference.retry_attempts),
+        initial_backoff: Duration::from_millis(config.inference.retry_initial_backoff_ms),
+        max_backoff: Duration::from_millis(config.inference.retry_max_backoff_ms),
+        use_cache: config.inference.cache_enabled && !no_cache,
+    }
+    .normalized()
+}
+
+/// Ollama extraction has its own typed request timeout because structured
+/// generation is materially slower than a TEI embedding request. The outer
+/// resilient wrapper must never shorten that provider contract.
+fn extraction_processing_config(
+    config: &RuntimeConfig,
+    concurrency: Option<usize>,
+    retry_attempts: Option<usize>,
+    no_cache: bool,
+) -> ProcessingConfig {
+    let mut processing = processing_config(config, concurrency, retry_attempts, no_cache);
+    if config
+        .inference
+        .extraction_provider
+        .eq_ignore_ascii_case("ollama")
+    {
+        processing.request_timeout = Duration::from_secs(config.inference.ollama_timeout_secs);
+    }
+    processing
+}
+
 fn configured_search_agent(
     repo: Repository,
     embedder: SharedEmbedder,
@@ -744,8 +795,22 @@ async fn main() -> Result<()> {
 
     let repo = Repository::new(db);
     let providers = InferenceProviders::from_config(&inference_config);
-    let tei = providers.embedder;
-    let tgi = providers.extractor;
+    let processing = processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache);
+    let extraction_processing =
+        extraction_processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache);
+    // The wrappers share their semaphores and counters across every clone in
+    // this invocation, so imports, extraction, and search cannot overload a
+    // local provider merely by arriving through different commands.
+    let tei: SharedEmbedder = Arc::new(ResilientEmbedder::new(
+        providers.embedder,
+        Some(repo.clone()),
+        processing,
+    ));
+    let tgi: SharedEntityExtractor = Arc::new(ResilientEntityExtractor::new(
+        providers.extractor,
+        Some(repo.clone()),
+        extraction_processing,
+    ));
 
     // Check inference services only when needed
     let needs_tei = matches!(
