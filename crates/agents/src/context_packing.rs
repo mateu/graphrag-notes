@@ -7,11 +7,12 @@
 use crate::search::{ScopedSearchResult, SearchHitType, SearchScope};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
 use unicode_casefold::UnicodeCaseFold;
+use unicode_normalization::UnicodeNormalization;
 
 /// Whether token counts were produced by a supplied tokenizer or the safe
 /// local estimate. The mode is deliberately part of diagnostics: an estimate
@@ -232,7 +233,8 @@ pub(crate) fn build_augment_context_from_hits(
 
         let tokens = similarity_tokens(candidate.content());
         if selected.iter().any(|selected| {
-            jaccard_similarity(&tokens, &selected.full_tokens) >= options.near_duplicate_threshold
+            multiset_jaccard_similarity(&tokens, &selected.full_tokens)
+                >= options.near_duplicate_threshold
         }) {
             dropped_near_duplicates += 1;
             continue;
@@ -330,7 +332,7 @@ struct SelectedChunk {
     chunk: AugmentChunk,
     /// The full untruncated record token set. Diversity and duplicate checks
     /// deliberately never compare a new record to only a selected snippet.
-    full_tokens: HashSet<String>,
+    full_tokens: HashMap<String, usize>,
 }
 
 impl Candidate {
@@ -351,13 +353,13 @@ impl Candidate {
 
 fn selection_score(
     candidate: &Candidate,
-    selected: &[HashSet<String>],
+    selected: &[HashMap<String, usize>],
     novelty_weight: f32,
 ) -> f32 {
     let candidate_tokens = similarity_tokens(candidate.content());
     let novelty = selected
         .iter()
-        .map(|chosen| 1.0 - jaccard_similarity(&candidate_tokens, chosen))
+        .map(|chosen| 1.0 - multiset_jaccard_similarity(&candidate_tokens, chosen))
         .fold(1.0_f32, f32::min);
     let novelty_weight = novelty_weight.clamp(0.0, 1.0);
     candidate.relevance * (1.0 - novelty_weight) + novelty * novelty_weight
@@ -830,16 +832,23 @@ fn source_searchable_term(term: &str) -> Option<String> {
 /// Find a Unicode case-insensitive phrase without deriving offsets from a
 /// case-folded allocation. Returned byte ranges always index `text` itself.
 fn phrase_match_range(text: &str, phrase: &str) -> Option<Range<usize>> {
-    let wanted = phrase.case_fold().collect::<Vec<_>>();
+    let wanted = phrase.nfc().case_fold().collect::<Vec<_>>();
     if wanted.is_empty() {
         return None;
     }
-    text.char_indices().find_map(|(start, _)| {
-        casefolded_prefix_end(&text[start..], &wanted).and_then(|end| {
-            let range = start..start + end;
-            (!phrase_requires_lexical_boundaries(phrase) || is_lexical_boundary(text, &range))
-                .then_some(range)
-        })
+    let folded = normalized_casefolded_source(text);
+    (0..folded.len()).find_map(|start| {
+        let matched = folded
+            .iter()
+            .skip(start)
+            .zip(&wanted)
+            .all(|(source, wanted)| source.value == *wanted);
+        if !matched || folded.len().saturating_sub(start) < wanted.len() {
+            return None;
+        }
+        let range = folded[start].start..folded[start + wanted.len() - 1].end;
+        (!phrase_requires_lexical_boundaries(phrase) || is_lexical_boundary(text, &range))
+            .then_some(range)
     })
 }
 
@@ -859,25 +868,47 @@ fn is_lexical_boundary(text: &str, range: &Range<usize>) -> bool {
     !before_is_alphanumeric && !after_is_alphanumeric
 }
 
-fn casefolded_prefix_end(text: &str, wanted: &[char]) -> Option<usize> {
-    let mut matched = 0usize;
-    for (offset, ch) in text.char_indices() {
-        for folded in ch.case_fold() {
-            if wanted.get(matched) != Some(&folded) {
-                return None;
-            }
-            matched += 1;
-            // A source scalar may lowercase into multiple scalars (notably
-            // `İ` -> `i` plus a combining dot). Once the query is complete,
-            // the remaining expansion must not turn that valid match into a
-            // false negative; the returned offset still covers the complete
-            // original scalar.
-            if matched == wanted.len() {
-                return Some(offset + ch.len_utf8());
-            }
-        }
+#[derive(Debug, Clone, Copy)]
+struct SourceFoldedChar {
+    value: char,
+    start: usize,
+    end: usize,
+}
+
+fn normalized_casefolded_source(text: &str) -> Vec<SourceFoldedChar> {
+    let mut prefix = String::new();
+    let mut normalized = Vec::<SourceFoldedChar>::new();
+    for (start, source) in text.char_indices() {
+        let end = start + source.len_utf8();
+        prefix.push(source);
+        let next = prefix.nfc().collect::<Vec<_>>();
+        let shared = normalized
+            .iter()
+            .map(|mapped| mapped.value)
+            .zip(&next)
+            .take_while(|(previous, current)| previous == *current)
+            .count();
+        let replacement_start = normalized
+            .get(shared)
+            .map(|mapped| mapped.start)
+            .unwrap_or(start);
+        normalized.truncate(shared);
+        normalized.extend(next.into_iter().skip(shared).map(|value| SourceFoldedChar {
+            value,
+            start: replacement_start,
+            end,
+        }));
     }
-    None
+
+    normalized
+        .into_iter()
+        .flat_map(|mapped| {
+            mapped
+                .value
+                .case_fold()
+                .map(move |value| SourceFoldedChar { value, ..mapped })
+        })
+        .collect()
 }
 
 fn centered_character_range(text: &str) -> Option<Range<usize>> {
@@ -950,7 +981,8 @@ fn nearest_boundary_right(text: &str, mut index: usize) -> usize {
 }
 
 fn normalized_tokens(text: &str) -> HashSet<String> {
-    let mut tokens = text
+    let normalized = text.nfc().collect::<String>();
+    let mut tokens = normalized
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
         .flat_map(|token| {
@@ -982,27 +1014,33 @@ fn normalized_tokens(text: &str) -> HashSet<String> {
 }
 
 /// Tokens used exclusively for diversity and duplicate comparisons. Unspaced
-/// scripts retain each bigram's position so repeated or reordered bigrams do
-/// not collapse into the same `HashSet` inventory.
-fn similarity_tokens(text: &str) -> HashSet<String> {
-    let mut tokens = HashSet::new();
-    for (run_index, token) in text
+/// scripts use order-sensitive bigram shingles with multiplicity, which keeps
+/// shifted passages similar without collapsing a reordered passage to an
+/// identical set inventory.
+fn similarity_tokens(text: &str) -> HashMap<String, usize> {
+    let mut tokens = HashMap::new();
+    let normalized = text.nfc().collect::<String>();
+    for token in normalized
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
-        .enumerate()
     {
         if token.chars().any(is_unspaced_script_char) {
-            for (position, bigram) in unspaced_script_bigrams(token).into_iter().enumerate() {
-                tokens.insert(format!("cjk:{run_index}:{position}:{bigram}"));
+            for bigram in unspaced_script_bigrams(token) {
+                *tokens.entry(format!("cjk:{bigram}")).or_default() += 1;
             }
         } else {
-            tokens.insert(format!("word:{}", token.case_fold().collect::<String>()));
+            *tokens
+                .entry(format!(
+                    "word:{}",
+                    token.nfc().case_fold().collect::<String>()
+                ))
+                .or_default() += 1;
         }
     }
     if tokens.is_empty() {
-        let canonical = text.case_fold().collect::<String>();
+        let canonical = text.nfc().case_fold().collect::<String>();
         if !canonical.is_empty() {
-            tokens.insert(format!("symbol:{canonical}"));
+            tokens.insert(format!("symbol:{canonical}"), 1);
         }
     }
     tokens
@@ -1039,6 +1077,25 @@ fn jaccard_similarity(left: &HashSet<String>, right: &HashSet<String>) -> f32 {
     }
     let intersection = left.intersection(right).count() as f32;
     intersection / (left.len() + right.len() - intersection as usize) as f32
+}
+
+fn multiset_jaccard_similarity(
+    left: &HashMap<String, usize>,
+    right: &HashMap<String, usize>,
+) -> f32 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let intersection = left
+        .iter()
+        .map(|(token, count)| (*count).min(right.get(token).copied().unwrap_or_default()))
+        .sum::<usize>();
+    let union = left
+        .values()
+        .sum::<usize>()
+        .saturating_add(right.values().sum::<usize>())
+        .saturating_sub(intersection);
+    intersection as f32 / union as f32
 }
 
 fn hit_type_label(hit_type: SearchHitType) -> &'static str {
@@ -1270,7 +1327,10 @@ mod tests {
             jaccard_similarity(&normalized_tokens(first), &normalized_tokens(second)),
             1.0
         );
-        assert!(jaccard_similarity(&similarity_tokens(first), &similarity_tokens(second)) < 0.85);
+        assert!(
+            multiset_jaccard_similarity(&similarity_tokens(first), &similarity_tokens(second))
+                < 0.85
+        );
 
         let mut duplicate_options = options();
         duplicate_options.max_total_tokens = 300;
@@ -1285,6 +1345,35 @@ mod tests {
         );
         assert_eq!(context.chunks.len(), 2);
         assert_eq!(context.diagnostics.dropped_near_duplicates, 0);
+    }
+
+    #[test]
+    fn shifted_cjk_passages_remain_near_duplicates() {
+        let original = "天地玄黃宇宙洪荒日月盈昃";
+        let prefixed = "序".to_string() + original;
+        assert!(
+            multiset_jaccard_similarity(
+                &similarity_tokens(original),
+                &similarity_tokens(&prefixed)
+            ) >= 0.85
+        );
+
+        let mut duplicate_options = options();
+        duplicate_options.max_total_tokens = 300;
+        duplicate_options.near_duplicate_threshold = 0.85;
+        let context = build_augment_context_from_hits(
+            "天地".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("n:original", 0.9, original),
+                hit("n:prefixed", 0.8, &prefixed),
+            ],
+            duplicate_options,
+            0,
+        );
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
     }
 
     #[test]
@@ -1372,6 +1461,29 @@ mod tests {
         assert!(clipped.truncated);
         assert!(clipped.snippet.contains("Straße marker"));
         assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 25);
+    }
+
+    #[test]
+    fn canonical_unicode_forms_match_and_deduplicate() {
+        let composed = "café notes";
+        let decomposed = "cafe\u{301} notes";
+        let range = phrase_match_range(decomposed, "CAFÉ").unwrap();
+        assert_eq!(&decomposed[range], "cafe\u{301}");
+        assert_eq!(similarity_tokens(composed), similarity_tokens(decomposed));
+
+        let context = build_augment_context_from_hits(
+            "café".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("n:composed", 0.9, composed),
+                hit("n:decomposed", 0.8, decomposed),
+            ],
+            options(),
+            0,
+        );
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 1);
     }
 
     #[test]
