@@ -654,13 +654,13 @@ fn normalized_ids(values: &[String]) -> BTreeSet<String> {
 fn normalized_strings(values: &[String]) -> BTreeSet<String> {
     values
         .iter()
-        .map(|value| value.trim().to_ascii_lowercase())
+        .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty())
         .collect()
 }
 
 fn result_prompt_text(result: &RankedResult) -> String {
-    result.text.to_ascii_lowercase()
+    result.text.to_lowercase()
 }
 
 #[cfg(test)]
@@ -799,6 +799,21 @@ mod tests {
         let mut metadata_only = result("note:innocuous");
         metadata_only.source_uri = Some("file:///private/notes.md".into());
         assert!(!evaluate_ranked_results(&case, &[metadata_only], 1, 0).forbidden_result_found);
+    }
+
+    #[test]
+    fn text_expectations_are_unicode_case_insensitive() {
+        let case = case(serde_json::json!({
+            "query": "q",
+            "expected_contains": ["café"],
+            "forbidden_contains": ["секрет"]
+        }));
+        let mut result = result("note:unicode");
+        result.text = "CAFÉ СЕКРЕТ".into();
+
+        let metrics = evaluate_ranked_results(&case, &[result], 1, 0);
+        assert_eq!(metrics.substring_expectation_matched, Some(true));
+        assert!(metrics.forbidden_result_found);
     }
 
     #[test]
