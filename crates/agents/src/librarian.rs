@@ -1013,6 +1013,17 @@ impl LibrarianAgent {
                 });
             }
             for (item_index, item_id) in window.iter().enumerate() {
+                // A provider call can request cancellation while this page is
+                // in flight. Check again after each checkpointed item rather
+                // than starting the next provider call in the same page.
+                if self.processing_job_cancelled(&job_id).await? {
+                    return Ok(ProcessingRunResult {
+                        job_id: record_id_to_string(&job_id),
+                        completed,
+                        failed,
+                        cancelled: true,
+                    });
+                }
                 let index = window_index * page_size + item_index;
                 let Some(note) = self.repo.get_note(item_id).await? else {
                     failed += 1;
@@ -2673,7 +2684,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_entity_extraction_stops_between_persisted_id_pages() {
+    async fn all_entity_extraction_stops_between_persisted_id_items() {
         let repo = Repository::new(init_memory().await.unwrap());
         for content in ["first page", "second page", "third page"] {
             repo.create_note(Note::new(content)).await.unwrap();
@@ -2690,12 +2701,12 @@ mod tests {
         )
         .with_cancellation_flag(cancellation_requested);
 
-        // A page size of one makes the persisted page boundary observable:
-        // the first extraction requests cancellation, so no later page is
-        // loaded or sent to the extractor.
+        // One persisted page contains all three notes. The first extraction
+        // requests cancellation, so the in-page check must prevent later
+        // notes from reaching the provider.
         assert_eq!(
             librarian
-                .extract_entities_for_all_notes(1, false)
+                .extract_entities_for_all_notes(3, false)
                 .await
                 .unwrap(),
             1
