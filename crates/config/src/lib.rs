@@ -93,6 +93,10 @@ pub struct InferenceConfig {
     pub max_relationships: usize,
     pub ollama_timeout_secs: u64,
     pub ollama_options: Option<serde_json::Value>,
+    #[serde(skip)]
+    embedding_url_from_file: bool,
+    #[serde(skip)]
+    extraction_url_from_file: bool,
 }
 
 impl Default for InferenceConfig {
@@ -114,6 +118,8 @@ impl Default for InferenceConfig {
             max_relationships: 15,
             ollama_timeout_secs: 120,
             ollama_options: None,
+            embedding_url_from_file: false,
+            extraction_url_from_file: false,
         }
     }
 }
@@ -266,11 +272,23 @@ impl RuntimeConfig {
             path: path.into(),
             source,
         })?;
-        let mut config: Self =
+        let raw: toml::Value =
             toml::from_str(&content).map_err(|source| ConfigError::ParseFile {
                 path: path.into(),
                 source,
             })?;
+        let mut config: Self = raw
+            .clone()
+            .try_into()
+            .map_err(|source| ConfigError::ParseFile {
+                path: path.into(),
+                source,
+            })?;
+        let inference = raw.get("inference").and_then(toml::Value::as_table);
+        config.inference.embedding_url_from_file =
+            inference.is_some_and(|table| table.contains_key("embedding_url"));
+        config.inference.extraction_url_from_file =
+            inference.is_some_and(|table| table.contains_key("extraction_url"));
         config.database.path = expand_home_directory(&config.database.path);
         Ok(config)
     }
@@ -423,13 +441,23 @@ impl RuntimeConfig {
         // The legacy environment setup allowed callers to set only the
         // provider. Apply that fallback only when the provider itself came
         // from the environment so an explicit TOML endpoint remains intact.
-        if env("TEI_PROVIDER").is_some_and(|provider| provider.eq_ignore_ascii_case("ollama"))
+        if self
+            .inference
+            .embedding_provider
+            .eq_ignore_ascii_case("ollama")
             && env("TEI_URL").is_none()
+            && (env("TEI_PROVIDER").is_some_and(|provider| provider.eq_ignore_ascii_case("ollama"))
+                || !self.inference.embedding_url_from_file)
         {
             self.inference.embedding_url = self.inference.ollama_url.clone();
         }
-        if env("TGI_PROVIDER").is_some_and(|provider| provider.eq_ignore_ascii_case("ollama"))
+        if self
+            .inference
+            .extraction_provider
+            .eq_ignore_ascii_case("ollama")
             && env("TGI_URL").is_none()
+            && (env("TGI_PROVIDER").is_some_and(|provider| provider.eq_ignore_ascii_case("ollama"))
+                || !self.inference.extraction_url_from_file)
         {
             self.inference.extraction_url = self.inference.ollama_url.clone();
         }
@@ -463,6 +491,30 @@ impl RuntimeConfig {
             if value.trim().is_empty() {
                 return Err(ConfigError::Validation(format!("{name} must not be empty")));
             }
+        }
+        if !matches!(
+            self.inference
+                .embedding_provider
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "tei" | "ollama"
+        ) {
+            return Err(ConfigError::Validation(
+                "inference.embedding_provider must be tei or ollama".into(),
+            ));
+        }
+        if !matches!(
+            self.inference
+                .extraction_provider
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "tgi" | "ollama"
+        ) {
+            return Err(ConfigError::Validation(
+                "inference.extraction_provider must be tgi or ollama".into(),
+            ));
         }
         if self.inference.timeout_secs == 0
             || self.inference.tei_max_batch == 0
@@ -887,6 +939,39 @@ mod tests {
     }
 
     #[test]
+    fn provider_only_toml_uses_the_shared_ollama_endpoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("graphrag.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [inference]
+                embedding_provider = "ollama"
+                extraction_provider = "ollama"
+                ollama_url = "http://remote-ollama.example:11434"
+            "#,
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            Some(&config_path),
+            &CliOverrides::default(),
+            &env(&[]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.inference.embedding_url,
+            "http://remote-ollama.example:11434"
+        );
+        assert_eq!(
+            config.inference.extraction_url,
+            "http://remote-ollama.example:11434"
+        );
+    }
+
+    #[test]
     fn invalid_legacy_controls_fail_with_field_specific_errors() {
         let error = RuntimeConfig::load_with_env_and_default_path(
             None,
@@ -918,6 +1003,17 @@ mod tests {
         assert!(error
             .to_string()
             .contains("STRICT_ENTITY_JSON must be a boolean"));
+
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("TEI_PROVIDER", "olama")]),
+            None,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("inference.embedding_provider must be tei or ollama"));
     }
 
     #[test]
