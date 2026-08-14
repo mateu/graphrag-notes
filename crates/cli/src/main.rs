@@ -371,6 +371,7 @@ async fn main() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
         .with_env_filter(log_filter)
         .with_target(false)
+        .with_writer(std::io::stderr)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
@@ -1336,7 +1337,7 @@ async fn cmd_eval_augment(
     let mut report = EvalRunReport::from_cases(metadata, reports);
     if let Some(baseline_path) = baseline_path {
         let baseline = load_baseline(&baseline_path)?;
-        report.baseline = Some(build_baseline_comparison(&report, &baseline, &thresholds));
+        report.baseline = Some(build_baseline_comparison(&report, &baseline, &thresholds)?);
     }
     let regressions = report
         .baseline

@@ -212,7 +212,7 @@ pub fn evaluate_ranked_results(
         expected_text.iter().any(|needle| {
             ranked
                 .iter()
-                .any(|result| result_haystack(result).contains(needle))
+                .any(|result| result_prompt_text(result).contains(needle))
         })
     });
     let forbidden_ids = normalized_ids(&case.forbidden_ids);
@@ -223,7 +223,7 @@ pub fn evaluate_ranked_results(
         normalize_id(&result.id).is_some_and(|id| forbidden_ids.contains(&id))
             || forbidden_text
                 .iter()
-                .any(|needle| result_haystack(result).contains(needle))
+                .any(|needle| result_prompt_text(result).contains(needle))
     });
 
     let expected_sources = normalized_strings(&case.expected_source_uris);
@@ -531,32 +531,32 @@ pub fn compare_baseline(
     current: &EvalRunReport,
     baseline: &EvalRunReport,
     thresholds: &[RegressionThreshold],
-) -> Vec<String> {
-    thresholds
-        .iter()
-        .filter_map(|threshold| {
-            let current_value = threshold.metric.value(&current.summary)?;
-            let baseline_value = threshold.metric.value(&baseline.summary)?;
-            let drop = baseline_value - current_value;
-            (drop > threshold.max_drop).then(|| {
-                format!(
-                    "{} regressed by {:.4} (baseline {:.4}, current {:.4}, allowed {:.4})",
-                    threshold.metric.label(),
-                    drop,
-                    baseline_value,
-                    current_value,
-                    threshold.max_drop
-                )
-            })
-        })
-        .collect()
+) -> Result<Vec<String>> {
+    let mut regressions = Vec::new();
+    for threshold in thresholds {
+        let metric = threshold.metric.label();
+        let current_value = threshold.metric.value(&current.summary).with_context(|| {
+            format!("Configured regression metric `{metric}` is unavailable in the current report")
+        })?;
+        let baseline_value = threshold.metric.value(&baseline.summary).with_context(|| {
+            format!("Configured regression metric `{metric}` is unavailable in the baseline report")
+        })?;
+        let drop = baseline_value - current_value;
+        if drop > threshold.max_drop {
+            regressions.push(format!(
+                "{} regressed by {:.4} (baseline {:.4}, current {:.4}, allowed {:.4})",
+                metric, drop, baseline_value, current_value, threshold.max_drop
+            ));
+        }
+    }
+    Ok(regressions)
 }
 
 pub fn build_baseline_comparison(
     current: &EvalRunReport,
     baseline: &EvalRunReport,
     thresholds: &[RegressionThreshold],
-) -> BaselineComparison {
+) -> Result<BaselineComparison> {
     let metrics = [
         RegressionMetric::RecallAtK,
         RegressionMetric::PrecisionAtK,
@@ -576,10 +576,10 @@ pub fn build_baseline_comparison(
         })
     })
     .collect();
-    BaselineComparison {
+    Ok(BaselineComparison {
         metrics,
-        regressions: compare_baseline(current, baseline, thresholds),
-    }
+        regressions: compare_baseline(current, baseline, thresholds)?,
+    })
 }
 
 pub fn load_eval_cases(path: &Path) -> Result<Vec<EvalAugmentCase>> {
@@ -659,15 +659,8 @@ fn normalized_strings(values: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
-fn result_haystack(result: &RankedResult) -> String {
-    format!(
-        "{}\n{}\n{}\n{}",
-        result.id,
-        result.text,
-        result.source_uri.as_deref().unwrap_or_default(),
-        result.conversation_uuid.as_deref().unwrap_or_default(),
-    )
-    .to_ascii_lowercase()
+fn result_prompt_text(result: &RankedResult) -> String {
+    result.text.to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -788,6 +781,10 @@ mod tests {
         let mut bad = result("note:bad");
         bad.text = "secret".into();
         assert!(evaluate_ranked_results(&case, &[bad], 1, 0).forbidden_result_found);
+
+        let mut metadata_only = result("note:innocuous");
+        metadata_only.source_uri = Some("file:///private/notes.md".into());
+        assert!(!evaluate_ranked_results(&case, &[metadata_only], 1, 0).forbidden_result_found);
     }
 
     #[test]
@@ -833,10 +830,20 @@ mod tests {
             }],
         );
         let thresholds = parse_regression_thresholds(&["provenance=0.1".into()]).unwrap();
-        assert_eq!(compare_baseline(&current, &baseline, &thresholds).len(), 1);
+        assert_eq!(
+            compare_baseline(&current, &baseline, &thresholds)
+                .unwrap()
+                .len(),
+            1
+        );
         let permissive = parse_regression_thresholds(&["provenance=1.0".into()]).unwrap();
-        assert!(compare_baseline(&current, &baseline, &permissive).is_empty());
+        assert!(compare_baseline(&current, &baseline, &permissive)
+            .unwrap()
+            .is_empty());
         assert!(parse_regression_thresholds(&["recall=1.2".into()]).is_err());
+
+        let ndcg = parse_regression_thresholds(&["ndcg=0.1".into()]).unwrap();
+        assert!(compare_baseline(&current, &baseline, &ndcg).is_err());
     }
 
     #[test]
@@ -885,7 +892,8 @@ mod tests {
             &current,
             &baseline,
             &parse_regression_thresholds(&["recall=0.5".into()]).unwrap(),
-        );
+        )
+        .unwrap();
         assert_eq!(comparison.metrics.len(), 3);
         assert_eq!(comparison.regressions.len(), 1);
         assert!(comparison.metrics.iter().all(|delta| delta.delta <= 0.0));
