@@ -1,7 +1,8 @@
 //! Librarian Agent - Ingests content and creates notes
 
 use crate::{
-    chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker}, classify_retry,
+    chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker},
+    classify_retry,
     inference::validate_embedding_dim,
     Result, RetryClassification, SharedEmbedder, SharedEntityExtractor,
 };
