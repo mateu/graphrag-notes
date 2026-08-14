@@ -103,6 +103,70 @@ pub fn verify_backup(path: &Path) -> Result<BackupSummary> {
     let manifest = read_manifest(path)?;
     validate_manifest_schema(&manifest)?;
     let payload_path = path.join(&manifest.payload.path);
+    verify_payload(&payload_path, &manifest)?;
+    Ok(summary_from_manifest(path, &manifest, false))
+}
+
+/// Export the portable record stream as a standalone JSONL file with a
+/// sidecar `<path>.manifest.json`. This is the same validated logical format
+/// as `backup create`, merely packaged for tooling that expects a JSONL file.
+pub async fn export_jsonl(repo: &Repository, path: &Path) -> Result<BackupSummary> {
+    if path.exists() || jsonl_manifest_path(path).exists() {
+        bail!(
+            "refusing to overwrite existing export {} or its manifest sidecar",
+            path.display()
+        );
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    if !parent.is_dir() {
+        bail!("export parent {} does not exist", parent.display());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("export path must have a UTF-8 file name")?;
+    let staging = sibling_staging_path(path, "export")?;
+    fs::create_dir(&staging)?;
+    let result = async {
+        let staged_payload = staging.join(filename);
+        let mut manifest = PortableBackupManifest::new(migrations::latest_version(), false);
+        manifest.payload = write_records(repo, &staged_payload, false).await?;
+        manifest.payload.path = filename.to_string();
+        manifest.record_counts = count_records(&staged_payload)?;
+        manifest.validate_format().map_err(anyhow::Error::msg)?;
+        verify_payload(&staged_payload, &manifest)?;
+        write_manifest(&staging.join(MANIFEST_FILE), &manifest)?;
+        Ok::<_, anyhow::Error>(manifest)
+    }
+    .await;
+    match result {
+        Ok(manifest) => {
+            fs::rename(staging.join(filename), path)?;
+            fs::rename(staging.join(MANIFEST_FILE), jsonl_manifest_path(path))?;
+            fs::remove_dir(&staging)?;
+            Ok(summary_from_manifest(path, &manifest, false))
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            Err(error)
+        }
+    }
+}
+
+/// Verify a standalone JSONL export and its sidecar manifest without opening
+/// a database.
+pub fn verify_jsonl(path: &Path) -> Result<BackupSummary> {
+    let manifest = read_manifest_file(&jsonl_manifest_path(path))?;
+    validate_manifest_schema(&manifest)?;
+    let name = path.file_name().and_then(|name| name.to_str());
+    if name != Some(manifest.payload.path.as_str()) {
+        bail!("JSONL manifest payload name does not match the export path");
+    }
+    verify_payload(path, &manifest)?;
+    Ok(summary_from_manifest(path, &manifest, false))
+}
+
+fn verify_payload(payload_path: &Path, manifest: &PortableBackupManifest) -> Result<()> {
     if !payload_path.is_file() {
         bail!(
             "portable backup payload {} is missing",
@@ -132,7 +196,7 @@ pub fn verify_backup(path: &Path) -> Result<BackupSummary> {
         bail!("portable backup table counts do not match the manifest");
     }
     validate_references(&validation.ids, &validation.references)?;
-    Ok(summary_from_manifest(path, &manifest, false))
+    Ok(())
 }
 
 /// Restore a verified backup into a newly created database directory. Restore
@@ -144,7 +208,35 @@ pub async fn restore_backup(
     target_db_path: &Path,
     dry_run: bool,
 ) -> Result<BackupSummary> {
-    let verified = verify_backup(backup_path)?;
+    let manifest = read_manifest(backup_path)?;
+    validate_manifest_schema(&manifest)?;
+    let payload_path = backup_path.join(&manifest.payload.path);
+    verify_payload(&payload_path, &manifest)?;
+    restore_verified_payload(&manifest, &payload_path, target_db_path, dry_run).await
+}
+
+/// Restore a verified standalone JSONL export into a fresh staged database.
+pub async fn import_jsonl(
+    path: &Path,
+    target_db_path: &Path,
+    dry_run: bool,
+) -> Result<BackupSummary> {
+    let manifest = read_manifest_file(&jsonl_manifest_path(path))?;
+    validate_manifest_schema(&manifest)?;
+    if path.file_name().and_then(|name| name.to_str()) != Some(manifest.payload.path.as_str()) {
+        bail!("JSONL manifest payload name does not match the import path");
+    }
+    verify_payload(path, &manifest)?;
+    restore_verified_payload(&manifest, path, target_db_path, dry_run).await
+}
+
+async fn restore_verified_payload(
+    manifest: &PortableBackupManifest,
+    payload_path: &Path,
+    target_db_path: &Path,
+    dry_run: bool,
+) -> Result<BackupSummary> {
+    let verified = summary_from_manifest(payload_path, manifest, false);
     ensure_absent_target(target_db_path)?;
     if dry_run {
         return Ok(BackupSummary {
@@ -160,7 +252,7 @@ pub async fn restore_backup(
             .await
             .with_context(|| format!("open fresh staged restore database {}", staging.display()))?;
         let repo = Repository::new(db);
-        restore_records(&repo, backup_path).await?;
+        restore_records(&repo, payload_path).await?;
         let restored = count_repository_records(&repo).await?;
         if restored != verified.record_counts {
             bail!("restored table counts do not match the verified backup manifest");
@@ -267,6 +359,10 @@ fn sanitize_record(value: &mut serde_json::Value, include_embeddings: bool) {
                 let lower = key.to_ascii_lowercase();
                 if (!include_embeddings
                     && matches!(key.as_str(), "embedding" | "summary_embedding"))
+                    // Staging vectors are transient implementation state and
+                    // must never leak into a portable archive, even when a
+                    // caller elects to include a labelled active vector set.
+                    || matches!(key.as_str(), "reindex_embedding" | "reindex_summary_embedding")
                     || matches!(lower.as_str(), "secret" | "api_key" | "token" | "password")
                 {
                     return false;
@@ -306,7 +402,10 @@ fn strip_source_title_path(record: &mut serde_json::Value) {
 }
 
 fn read_manifest(path: &Path) -> Result<PortableBackupManifest> {
-    let manifest_path = path.join(MANIFEST_FILE);
+    read_manifest_file(&path.join(MANIFEST_FILE))
+}
+
+fn read_manifest_file(manifest_path: &Path) -> Result<PortableBackupManifest> {
     let reader = File::open(&manifest_path)
         .with_context(|| format!("open portable backup manifest {}", manifest_path.display()))?;
     serde_json::from_reader(reader)
@@ -502,8 +601,7 @@ fn validate_references(ids: &BTreeSet<String>, references: &[(String, String)]) 
 }
 
 async fn restore_records(repo: &Repository, backup_path: &Path) -> Result<()> {
-    let manifest = read_manifest(backup_path)?;
-    let file = File::open(backup_path.join(&manifest.payload.path))?;
+    let file = File::open(backup_path)?;
     let reader = BufReader::new(file);
     for line in reader.lines() {
         let line = line?;
@@ -512,6 +610,10 @@ async fn restore_records(repo: &Repository, backup_path: &Path) -> Result<()> {
             .await?;
     }
     Ok(())
+}
+
+fn jsonl_manifest_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.manifest.json", path.display()))
 }
 
 async fn count_repository_records(repo: &Repository) -> Result<BTreeMap<String, u64>> {
@@ -638,7 +740,9 @@ mod tests {
         assert_eq!(verify_backup(&backup_path).unwrap(), created);
 
         let restored = Repository::new(init_memory().await.unwrap());
-        restore_records(&restored, &backup_path).await.unwrap();
+        restore_records(&restored, &backup_path.join(RECORDS_FILE))
+            .await
+            .unwrap();
         assert_eq!(
             count_repository_records(&restored).await.unwrap(),
             created.record_counts
@@ -752,6 +856,27 @@ mod tests {
         let reopened = Repository::new(init_persistent(&target).await.unwrap());
         assert_eq!(
             count_repository_records(&reopened).await.unwrap(),
+            created.record_counts
+        );
+    }
+
+    #[tokio::test]
+    async fn jsonl_export_and_import_use_the_same_verified_fresh_target_flow() {
+        let temp = tempdir().unwrap();
+        let export_path = temp.path().join("notes.jsonl");
+        let created = export_jsonl(&populated_repo().await, &export_path)
+            .await
+            .unwrap();
+        assert!(export_path.is_file());
+        assert!(jsonl_manifest_path(&export_path).is_file());
+        assert_eq!(verify_jsonl(&export_path).unwrap(), created);
+
+        let target = temp.path().join("jsonl-restored-db");
+        let imported = import_jsonl(&export_path, &target, false).await.unwrap();
+        assert_eq!(imported.record_counts, created.record_counts);
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        assert_eq!(
+            count_repository_records(&restored).await.unwrap(),
             created.record_counts
         );
     }

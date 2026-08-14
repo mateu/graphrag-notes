@@ -6,7 +6,7 @@ use crate::{
         EmbeddingIdentity, ExtractionIdentity,
     },
     fusion::{self, FusionConfig, FusionEvidence, FusionRecord},
-    DbConnection, DbError, Result,
+    migrations, DbConnection, DbError, Result,
 };
 use chrono::{DateTime, Utc};
 use graphrag_core::{
@@ -311,6 +311,7 @@ fn search_content_for_note_update(existing: &Note, replacement: &Note) -> String
 pub enum ProcessingJobType {
     Embedding,
     EntityExtraction,
+    Reindex,
 }
 
 impl ProcessingJobType {
@@ -318,6 +319,7 @@ impl ProcessingJobType {
         match self {
             Self::Embedding => "embedding",
             Self::EntityExtraction => "entity_extraction",
+            Self::Reindex => "reindex",
         }
     }
 
@@ -325,6 +327,7 @@ impl ProcessingJobType {
         match value {
             "embedding" => Some(Self::Embedding),
             "entity_extraction" => Some(Self::EntityExtraction),
+            "reindex" => Some(Self::Reindex),
             _ => None,
         }
     }
@@ -403,6 +406,14 @@ pub struct InferenceCacheEntry {
     pub version: String,
     pub input_hash: String,
     pub value: serde_json::Value,
+}
+
+/// One durable reindex item. Its id determines whether `text` comes from a
+/// note, chat message, or conversation summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReindexItem {
+    pub id: String,
+    pub text: String,
 }
 
 fn source_content_value(source: &Source) -> Result<serde_json::Value> {
@@ -706,6 +717,187 @@ impl Repository {
         job.ok_or_else(|| {
             DbError::NotFound("resumable processing_job".into(), record_id_to_string(id))
         })
+    }
+
+    /// Snapshot the exact visible corpus selected for a reindex job. The
+    /// durable job stores these logical IDs so a resume never silently picks
+    /// up unrelated later records.
+    pub async fn snapshot_reindex_item_ids(
+        &self,
+        notes: bool,
+        messages: bool,
+        summaries: bool,
+    ) -> Result<Vec<String>> {
+        let mut ids = Vec::new();
+        if notes {
+            ids.extend(
+                self.reindex_ids_for_query(&format!(
+                    "SELECT VALUE id FROM note WHERE {VISIBLE_NOTE_CONDITION} ORDER BY id ASC"
+                ))
+                .await?,
+            );
+        }
+        if messages {
+            ids.extend(
+                self.reindex_ids_for_query("SELECT VALUE id FROM message ORDER BY id ASC")
+                    .await?,
+            );
+        }
+        if summaries {
+            ids.extend(
+                self.reindex_ids_for_query(
+                    "SELECT VALUE id FROM conversation WHERE summary IS NOT NONE AND summary != '' ORDER BY id ASC",
+                )
+                .await?,
+            );
+        }
+        Ok(ids)
+    }
+
+    async fn reindex_ids_for_query(&self, query: &str) -> Result<Vec<String>> {
+        let ids: Vec<RecordId> = self.db.query(query).await?.take(0)?;
+        Ok(ids.iter().map(record_id_to_string).collect())
+    }
+
+    /// Load one previously snapshotted reindex item. A record removed after
+    /// snapshot is reported as absent and can be reconciled as completed by
+    /// the worker without widening its durable scope.
+    pub async fn get_reindex_item(&self, id: &str) -> Result<Option<ReindexItem>> {
+        let record = parse_record_id(id, None)?;
+        #[derive(Deserialize, SurrealValue)]
+        struct TextRow {
+            id: RecordId,
+            text: String,
+        }
+        let query = match record.table.as_str() {
+            "note" => "SELECT id, content AS text FROM $id",
+            "message" => "SELECT id, content AS text FROM $id",
+            "conversation" => {
+                "SELECT id, summary AS text FROM $id WHERE summary IS NOT NONE AND summary != ''"
+            }
+            table => {
+                return Err(DbError::QueryFailed(format!(
+                    "{table} is not a supported reindex record table"
+                )))
+            }
+        };
+        let row: Option<TextRow> = self.db.query(query).bind(("id", record)).await?.take(0)?;
+        Ok(row.map(|row| ReindexItem {
+            id: record_id_to_string(&row.id),
+            text: row.text,
+        }))
+    }
+
+    /// Persist a newly computed vector in the inactive reindex field. Search
+    /// continues to read the old active vector until [`Self::commit_reindex`]
+    /// validates and swaps the full selected generation.
+    pub async fn stage_reindex_embedding(&self, id: &str, embedding: Vec<f32>) -> Result<()> {
+        let record = parse_record_id(id, None)?;
+        let field = match record.table.as_str() {
+            "note" | "message" => "reindex_embedding",
+            "conversation" => "reindex_summary_embedding",
+            table => {
+                return Err(DbError::QueryFailed(format!(
+                    "{table} is not a supported reindex record table"
+                )))
+            }
+        };
+        self.db
+            .query(format!("UPDATE $id SET {field} = $embedding"))
+            .bind(("id", record))
+            .bind(("embedding", embedding))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    /// Atomically publish all staged vectors and the corresponding model
+    /// identity. Any provider failure or cancellation before this method leaves
+    /// every active vector and metadata field on the last known-good model.
+    pub async fn commit_reindex(
+        &self,
+        item_ids: &[String],
+        embedding: &EmbeddingIdentity,
+    ) -> Result<()> {
+        let mut notes = Vec::new();
+        let mut messages = Vec::new();
+        let mut conversations = Vec::new();
+        for id in item_ids {
+            let record = parse_record_id(id, None)?;
+            match record.table.as_str() {
+                "note" => notes.push(record),
+                "message" => messages.push(record),
+                "conversation" => conversations.push(record),
+                table => {
+                    return Err(DbError::QueryFailed(format!(
+                        "{table} is not a supported reindex record table"
+                    )))
+                }
+            }
+        }
+        self.ensure_reindex_staged("note", "reindex_embedding", &notes)
+            .await?;
+        self.ensure_reindex_staged("message", "reindex_embedding", &messages)
+            .await?;
+        self.ensure_reindex_staged("conversation", "reindex_summary_embedding", &conversations)
+            .await?;
+
+        let dimension = i64::try_from(embedding.dimension).map_err(|_| {
+            DbError::QueryFailed("embedding dimension exceeds database integer range".into())
+        })?;
+        self.db
+            .query(
+                "BEGIN TRANSACTION; \
+                 UPDATE note SET embedding = reindex_embedding, reindex_embedding = NONE WHERE id IN $notes; \
+                 UPDATE message SET embedding = reindex_embedding, reindex_embedding = NONE WHERE id IN $messages; \
+                 UPDATE conversation SET summary_embedding = reindex_summary_embedding, reindex_summary_embedding = NONE WHERE id IN $conversations; \
+                 UPSERT graphrag_metadata SET key = 'active_embedding', \
+                     application_schema_version = $schema_version, embedding_provider = $provider, \
+                     embedding_model = $model, embedding_dimension = $dimension, \
+                     generation = IF generation = NONE THEN 1 ELSE generation + 1 END, last_reindex_at = time::now(), \
+                     last_reindex_status = 'completed', updated_at = time::now() WHERE key = 'active_embedding'; \
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("notes", notes))
+            .bind(("messages", messages))
+            .bind(("conversations", conversations))
+            .bind(("schema_version", i64::from(migrations::latest_version())))
+            .bind(("provider", embedding.provider.clone()))
+            .bind(("model", embedding.model.clone()))
+            .bind(("dimension", dimension))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    async fn ensure_reindex_staged(
+        &self,
+        table: &str,
+        field: &str,
+        ids: &[RecordId],
+    ) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        #[derive(Deserialize, SurrealValue)]
+        struct CountRow {
+            #[serde(default)]
+            count: Option<u64>,
+        }
+        let row: Option<CountRow> = self
+            .db
+            .query(format!(
+                "SELECT count() AS count FROM {table} WHERE id IN $ids AND {field} IS NONE GROUP ALL"
+            ))
+            .bind(("ids", ids.to_vec()))
+            .await?
+            .take(0)?;
+        if row.and_then(|row| row.count).unwrap_or(0) != 0 {
+            return Err(DbError::QueryFailed(format!(
+                "reindex staging is incomplete for {table}"
+            )));
+        }
+        Ok(())
     }
 
     /// Read a durable local inference result by its fully semantic cache key.

@@ -13,6 +13,7 @@ mod v006_inference_cache;
 mod v007_processing_jobs;
 mod v008_markdown_chunks;
 mod v009_entity_graph_aliases;
+mod v010_reindex_staging;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -25,7 +26,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 9;
+pub const LATEST_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -50,6 +51,7 @@ const MIGRATIONS: &[Migration] = &[
     v007_processing_jobs::MIGRATION,
     v008_markdown_chunks::MIGRATION,
     v009_entity_graph_aliases::MIGRATION,
+    v010_reindex_staging::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is

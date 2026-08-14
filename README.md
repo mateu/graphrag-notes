@@ -204,6 +204,12 @@ graphrag backup restore /safe/backups/notes-2026-08-14 \
   --db-path /tmp/graphrag-restore --dry-run
 graphrag backup restore /safe/backups/notes-2026-08-14 \
   --db-path /tmp/graphrag-restore
+
+# JSONL transport has the same checksum-manifest contract. Import always
+# names a fresh destination and can be validated without creating it.
+graphrag export /safe/notes.jsonl --format jsonl --output json
+graphrag import-data /safe/notes.jsonl --db-path /tmp/graphrag-import --dry-run --format json
+graphrag import-data /safe/notes.jsonl --db-path /tmp/graphrag-import
 ```
 
 Restore stages a sibling database, applies the current application migrations,
@@ -224,6 +230,26 @@ engine-specific Surreal export/import procedure to cross that engine boundary.
 It is also distinct from reindexing/model migration, which rebuilds derived
 vectors for an existing logical corpus rather than recovering its source and
 graph data.
+
+### Reindexing after an embedding-model change
+
+Use `reindex` when intentionally changing embedding provider or model. It
+probes the active provider first and rejects dimensions other than the current
+1024-dimension index. `--dry-run` reports the immutable item count and target
+identity without creating a job or writing vectors.
+
+```bash
+graphrag reindex --all --dry-run --format json
+graphrag reindex --all
+# Resume the exact persisted job after an interruption or provider failure.
+graphrag reindex --resume processing_job:... --format json
+```
+
+Reindex uses the normal durable inference cache in bounded batches, but writes
+new vectors into inactive staging fields. Search continues with the prior model
+until every selected item validates; one final transaction publishes all
+vectors and advances embedding metadata. Failed or cancelled jobs therefore
+leave the prior indexed generation intact.
 
 ### Application schema migrations
 
@@ -523,6 +549,9 @@ graphrag interactive
 | `extract-entities` | Extract entities for notes missing entity links |
 | `jobs list/show/resume/cancel` | Inspect and control durable local inference work |
 | `backup create/verify/restore` | Create, validate, and safely restore a portable logical backup |
+| `export <path> --format jsonl` | Stream portable logical records with a checksum manifest sidecar |
+| `import-data <path>` | Validate and import JSONL only into an explicit fresh database |
+| `reindex --notes|--messages|--summaries|--all` | Durably rebuild vectors with all-or-nothing model cutover |
 
 ### Retrieval evaluation
 

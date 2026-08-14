@@ -92,10 +92,14 @@ impl PortableBackupManifest {
                 self.format_version, PORTABLE_BACKUP_FORMAT_VERSION
             ));
         }
-        // v1 intentionally has one fixed payload. Keeping the path fixed
-        // prevents an untrusted manifest from escaping its archive directory
-        // during verification or restore.
-        if self.payload.path != "records.jsonl" {
+        // v1 permits one payload with a plain filename. This prevents an
+        // untrusted manifest from escaping its archive directory while also
+        // allowing `export <path> --format jsonl` sidecar manifests.
+        if self.payload.path.is_empty()
+            || self.payload.path == "."
+            || self.payload.path == ".."
+            || self.payload.path.contains(['/', '\\'])
+        {
             return Err("portable backup payload path is unsafe".into());
         }
         if self.payload.sha256.len() != 64

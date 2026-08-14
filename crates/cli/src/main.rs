@@ -17,12 +17,14 @@ use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
     GraphEvidence, GraphMode, GraphPathStep, GraphRetrievalConfig, InferenceProviderConfig,
     InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, ProcessingConfig,
-    ProcessingRunResult, ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType,
-    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    ProcessingConfig, ProcessingRunResult, ReindexAgent, ReindexScope, ResilientEmbedder,
+    ResilientEntityExtractor, SearchAgent, SearchHitType, SearchScope, SharedEmbedder,
+    SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
 use graphrag_db::{
+    compatibility::EmbeddingIdentity,
     fusion::{FusionConfig, FusionStrategy},
     init_memory, init_persistent, migrations, parse_record_id,
     repository::RelatedNotes,
@@ -84,6 +86,25 @@ enum Commands {
     Backup {
         #[command(subcommand)]
         command: BackupCommand,
+    },
+
+    /// Export portable logical records as JSONL plus a checksum manifest sidecar
+    Export {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value_t = PortableDataFormat::Jsonl)]
+        format: PortableDataFormat,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        output: BackupOutputFormat,
+    },
+
+    /// Import a verified portable JSONL export into a fresh database path
+    ImportData {
+        path: PathBuf,
+        /// Validate all safety preconditions without writing the target
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        format: BackupOutputFormat,
     },
 
     /// Diagnose configuration, database compatibility, and local providers without changing data
@@ -302,6 +323,30 @@ enum Commands {
         command: JobsCommand,
     },
 
+    /// Rebuild embeddings through a durable, all-or-nothing cutover job
+    Reindex {
+        /// Reindex visible notes
+        #[arg(long)]
+        notes: bool,
+        /// Reindex chat messages
+        #[arg(long)]
+        messages: bool,
+        /// Reindex conversation summaries
+        #[arg(long)]
+        summaries: bool,
+        /// Reindex notes, messages, and summaries
+        #[arg(long)]
+        all: bool,
+        /// Show the immutable job scope and provider preflight without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Resume a failed or cancelled reindex processing job
+        #[arg(long, value_name = "JOB_ID")]
+        resume: Option<String>,
+        #[arg(long, value_enum, default_value_t = JobOutputFormat::Human)]
+        format: JobOutputFormat,
+    },
+
     /// Show database statistics
     Stats,
 
@@ -415,6 +460,11 @@ enum BackupCommand {
 enum BackupOutputFormat {
     Human,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum PortableDataFormat {
+    Jsonl,
 }
 
 #[derive(Subcommand)]
@@ -868,6 +918,24 @@ async fn main() -> Result<()> {
         print_backup_summary(&backup::verify_backup(path)?, *format)?;
         return Ok(());
     }
+    if let Commands::ImportData {
+        path,
+        dry_run,
+        format,
+    } = &cli.command
+    {
+        if cli.memory {
+            anyhow::bail!("import-data requires a fresh persistent --db-path, not --memory");
+        }
+        let target = cli.db_path.as_deref().context(
+            "import-data requires an explicit fresh --db-path; it never imports over the configured database",
+        )?;
+        print_backup_summary(
+            &backup::import_jsonl(path, target, *dry_run).await?,
+            *format,
+        )?;
+        return Ok(());
+    }
     if let Commands::Backup {
         command:
             BackupCommand::Restore {
@@ -1011,6 +1079,7 @@ async fn main() -> Result<()> {
             | Commands::Search { .. }
             | Commands::Augment { .. }
             | Commands::EvalAugment { .. }
+            | Commands::Reindex { .. }
             | Commands::Interactive
     );
     let needs_tgi = matches!(
@@ -1057,6 +1126,7 @@ async fn main() -> Result<()> {
     let cancellation_requested = matches!(
         &cli.command,
         Commands::ExtractEntities { .. }
+            | Commands::Reindex { .. }
             | Commands::Jobs {
                 command: JobsCommand::Resume { .. }
             }
@@ -1065,6 +1135,16 @@ async fn main() -> Result<()> {
 
     // Execute command
     match cli.command {
+        Commands::Export {
+            path,
+            format: PortableDataFormat::Jsonl,
+            output,
+        } => {
+            print_backup_summary(&backup::export_jsonl(&repo, &path).await?, output)?;
+        }
+        Commands::ImportData { .. } => {
+            unreachable!("import-data returns before database startup")
+        }
         Commands::Backup {
             command:
                 BackupCommand::Create {
@@ -1223,6 +1303,31 @@ async fn main() -> Result<()> {
                     .clone()
                     .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
                 command,
+            )
+            .await?;
+        }
+        Commands::Reindex {
+            notes,
+            messages,
+            summaries,
+            all,
+            dry_run,
+            resume,
+            format,
+        } => {
+            cmd_reindex(
+                repo,
+                tei,
+                cancellation_requested
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+                notes,
+                messages,
+                summaries,
+                all,
+                dry_run,
+                resume,
+                format,
             )
             .await?;
         }
@@ -1432,6 +1537,149 @@ async fn cmd_jobs(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct ReindexOutput {
+    dry_run: bool,
+    scope: String,
+    item_count: usize,
+    provider: String,
+    model: String,
+    dimension: usize,
+    job_id: Option<String>,
+    completed: Option<u64>,
+    cancelled: bool,
+}
+
+fn print_reindex_output(output: &ReindexOutput, format: JobOutputFormat) -> Result<()> {
+    match format {
+        JobOutputFormat::Json => println!("{}", serde_json::to_string(output)?),
+        JobOutputFormat::Human => {
+            if output.dry_run {
+                println!(
+                    "Reindex dry run: scope={} items={}",
+                    output.scope, output.item_count
+                );
+            } else {
+                println!(
+                    "Reindex job {}: completed={}/{}{}",
+                    output.job_id.as_deref().unwrap_or("-"),
+                    output.completed.unwrap_or(0),
+                    output.item_count,
+                    if output.cancelled { " (cancelled)" } else { "" }
+                );
+            }
+            println!(
+                "Embedding target: {}/{} ({} dimensions)",
+                output.provider, output.model, output.dimension
+            );
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_reindex(
+    repo: Repository,
+    tei: SharedEmbedder,
+    cancellation_requested: Arc<AtomicBool>,
+    notes: bool,
+    messages: bool,
+    summaries: bool,
+    all: bool,
+    dry_run: bool,
+    resume: Option<String>,
+    format: JobOutputFormat,
+) -> Result<()> {
+    if resume.is_some() && (notes || messages || summaries || all || dry_run) {
+        anyhow::bail!("--resume cannot be combined with scope selectors or --dry-run");
+    }
+    let capabilities = tei.capabilities();
+    // A real probe is deliberately performed before creating/resuming a job:
+    // provider configuration alone is not a proof of the indexed dimension.
+    let probe = tei.embed("graphrag reindex dimension probe", false).await?;
+    if probe.len() != graphrag_db::schema::EMBEDDING_DIMENSION {
+        anyhow::bail!(
+            "active embedding provider {}/{} returned {} dimensions; this database schema indexes {}. Choose a compatible model before reindexing",
+            capabilities.provider,
+            capabilities.model,
+            probe.len(),
+            graphrag_db::schema::EMBEDDING_DIMENSION,
+        );
+    }
+    let identity = EmbeddingIdentity::new(
+        capabilities.provider.clone(),
+        capabilities.model.clone(),
+        probe.len(),
+    );
+    let agent = ReindexAgent::new(repo.clone(), tei).with_cancellation_flag(cancellation_requested);
+    if let Some(job_id) = resume {
+        let result = agent.resume(&job_id, identity).await?;
+        let job = repo
+            .get_processing_job(&result.job_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("reindex job disappeared: {}", result.job_id))?;
+        print_reindex_output(
+            &ReindexOutput {
+                dry_run: false,
+                scope: job.scope.unwrap_or_else(|| "reindex".into()),
+                item_count: job.item_ids.len(),
+                provider: capabilities.provider,
+                model: capabilities.model,
+                dimension: probe.len(),
+                job_id: Some(result.job_id),
+                completed: Some(result.completed),
+                cancelled: result.cancelled,
+            },
+            format,
+        )?;
+        return Ok(());
+    }
+    let scope = if all {
+        ReindexScope::all()
+    } else {
+        ReindexScope {
+            notes,
+            messages,
+            summaries,
+        }
+    };
+    let preview = agent.preview(scope).await?;
+    if dry_run {
+        print_reindex_output(
+            &ReindexOutput {
+                dry_run: true,
+                scope: preview.scope.label(),
+                item_count: preview.item_ids.len(),
+                provider: capabilities.provider,
+                model: capabilities.model,
+                dimension: probe.len(),
+                job_id: None,
+                completed: None,
+                cancelled: false,
+            },
+            format,
+        )?;
+        return Ok(());
+    }
+    let item_count = preview.item_ids.len();
+    let scope = preview.scope.label();
+    let result = agent.start(preview, identity).await?;
+    print_reindex_output(
+        &ReindexOutput {
+            dry_run: false,
+            scope,
+            item_count,
+            provider: capabilities.provider,
+            model: capabilities.model,
+            dimension: probe.len(),
+            job_id: Some(result.job_id),
+            completed: Some(result.completed),
+            cancelled: result.cancelled,
+        },
+        format,
+    )
+}
+
 /// Validate only the provider required by the persisted job before changing
 /// its state to running. Embedding jobs do not need extraction service health,
 /// and entity jobs do not need embeddings service health.
@@ -1455,6 +1703,10 @@ async fn ensure_resume_provider_health(
                 anyhow::bail!("Extraction service unavailable")
             }
         }
+        Some(ProcessingJobType::Reindex) => anyhow::bail!(
+            "reindex jobs must be resumed with `graphrag reindex --resume {}`",
+            job.id.as_ref().map(record_id_to_string).unwrap_or_default()
+        ),
         None => anyhow::bail!("Unsupported processing job type: {}", job.job_type),
     }
     Ok(())
