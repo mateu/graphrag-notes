@@ -468,15 +468,15 @@ impl RuntimeConfig {
         {
             self.inference.extraction_url = self.inference.ollama_url.clone();
         }
-        if env("TEI_PROVIDER")
-            .is_some_and(|provider| !provider.trim().eq_ignore_ascii_case("ollama"))
-            && env("TEI_URL").is_none_or(|url| url.trim().is_empty())
+        if env("TEI_PROVIDER").is_some_and(|provider| {
+            !provider.trim().is_empty() && !provider.trim().eq_ignore_ascii_case("ollama")
+        }) && env("TEI_URL").is_none_or(|url| url.trim().is_empty())
         {
             self.inference.embedding_url = "http://localhost:8081".into();
         }
-        if env("TGI_PROVIDER")
-            .is_some_and(|provider| !provider.trim().eq_ignore_ascii_case("ollama"))
-            && env("TGI_URL").is_none_or(|url| url.trim().is_empty())
+        if env("TGI_PROVIDER").is_some_and(|provider| {
+            !provider.trim().is_empty() && !provider.trim().eq_ignore_ascii_case("ollama")
+        }) && env("TGI_URL").is_none_or(|url| url.trim().is_empty())
         {
             self.inference.extraction_url = "http://localhost:8082".into();
         }
@@ -1013,7 +1013,7 @@ mod tests {
         let config = RuntimeConfig::load_with_env_and_default_path(
             Some(&config_path),
             &CliOverrides::default(),
-            &env(&[]),
+            &env(&[("TEI_PROVIDER", " "), ("TGI_PROVIDER", "\t")]),
             None,
         )
         .unwrap();

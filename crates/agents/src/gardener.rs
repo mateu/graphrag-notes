@@ -178,7 +178,7 @@ impl GardenerAgent {
         // Auto-apply high-confidence suggestions
         let mut applied = 0;
         for suggestion in &suggestions {
-            if suggestion.similarity > self.auto_apply_threshold {
+            if suggestion.similarity >= self.auto_apply_threshold {
                 if self.apply_connection(suggestion).await.is_ok() {
                     applied += 1;
                 }
