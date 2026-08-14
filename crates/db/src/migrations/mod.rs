@@ -8,6 +8,7 @@ mod v001_initial;
 
 use crate::{DbConnection, DbError, Result};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use surrealdb_types::SurrealValue;
@@ -38,14 +39,32 @@ const MIGRATION_HISTORY_SCHEMA: &str = r#"
 DEFINE TABLE IF NOT EXISTS schema_migration SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS version ON schema_migration TYPE int;
 DEFINE FIELD IF NOT EXISTS name ON schema_migration TYPE string;
+DEFINE FIELD IF NOT EXISTS checksum ON schema_migration TYPE string;
 DEFINE FIELD IF NOT EXISTS applied_at ON schema_migration TYPE datetime DEFAULT time::now();
 DEFINE INDEX IF NOT EXISTS idx_schema_migration_version ON schema_migration FIELDS version UNIQUE;
+
+-- A durable start marker prevents a crashed or partially failed migration from
+-- being rerun against a schema that may already have been changed by DDL.
+DEFINE TABLE IF NOT EXISTS schema_migration_attempt SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS version ON schema_migration_attempt TYPE int;
+DEFINE FIELD IF NOT EXISTS name ON schema_migration_attempt TYPE string;
+DEFINE FIELD IF NOT EXISTS checksum ON schema_migration_attempt TYPE string;
+DEFINE FIELD IF NOT EXISTS started_at ON schema_migration_attempt TYPE datetime DEFAULT time::now();
+DEFINE INDEX IF NOT EXISTS idx_schema_migration_attempt_version ON schema_migration_attempt FIELDS version UNIQUE;
 "#;
 
 #[derive(Debug, Deserialize, SurrealValue)]
 struct MigrationRecord {
     version: i64,
     name: String,
+    checksum: String,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct MigrationAttemptRecord {
+    version: i64,
+    name: String,
+    checksum: String,
 }
 
 static MIGRATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -92,6 +111,7 @@ async fn apply_migrations(db: &DbConnection, migrations: &[Migration]) -> Result
     let _guard = migration_lock().lock().await;
     ensure_migration_history(db).await?;
     let applied = load_applied_migrations(db).await?;
+    reject_incomplete_attempts(db, &applied).await?;
     validate_history(&applied, migrations)?;
 
     let applied_versions: BTreeMap<u32, &str> = applied
@@ -134,9 +154,38 @@ async fn ensure_migration_history(db: &DbConnection) -> Result<()> {
 
 async fn load_applied_migrations(db: &DbConnection) -> Result<Vec<MigrationRecord>> {
     Ok(db
-        .query("SELECT version, name FROM schema_migration ORDER BY version ASC")
+        .query("SELECT version, name, checksum FROM schema_migration ORDER BY version ASC")
         .await?
         .take(0)?)
+}
+
+async fn reject_incomplete_attempts(db: &DbConnection, applied: &[MigrationRecord]) -> Result<()> {
+    let attempts: Vec<MigrationAttemptRecord> = db
+        .query("SELECT version, name, checksum FROM schema_migration_attempt ORDER BY version ASC")
+        .await?
+        .take(0)?;
+
+    for attempt in attempts {
+        if let Some(record) = applied
+            .iter()
+            .find(|record| record.version == attempt.version)
+        {
+            if record.name == attempt.name && record.checksum == attempt.checksum {
+                db.query("DELETE schema_migration_attempt WHERE version = $version")
+                    .bind(("version", attempt.version))
+                    .await?
+                    .check()?;
+                continue;
+            }
+        }
+
+        return Err(DbError::MigrationHistory(format!(
+            "migration {} ({}) was interrupted or failed after it began; inspect the database before clearing its attempt record",
+            attempt.version, attempt.name
+        )));
+    }
+
+    Ok(())
 }
 
 fn validate_history(applied: &[MigrationRecord], migrations: &[Migration]) -> Result<()> {
@@ -144,9 +193,9 @@ fn validate_history(applied: &[MigrationRecord], migrations: &[Migration]) -> Re
         .last()
         .map(|migration| migration.version)
         .unwrap_or(0);
-    let expected: BTreeMap<u32, &str> = migrations
+    let expected: BTreeMap<u32, &Migration> = migrations
         .iter()
-        .map(|migration| (migration.version, migration.name))
+        .map(|migration| (migration.version, migration))
         .collect();
 
     let mut previous = 0_u32;
@@ -174,13 +223,19 @@ fn validate_history(applied: &[MigrationRecord], migrations: &[Migration]) -> Re
             )));
         }
 
-        let expected_name = expected.get(&version).ok_or_else(|| {
+        let expected_migration = expected.get(&version).ok_or_else(|| {
             DbError::MigrationHistory(format!("migration {} is not registered", version))
         })?;
-        if record.name != *expected_name {
+        if record.name != expected_migration.name {
             return Err(DbError::MigrationHistory(format!(
                 "migration {} is named {:?}, expected {:?}",
-                version, record.name, expected_name
+                version, record.name, expected_migration.name
+            )));
+        }
+        if record.checksum != checksum(**expected_migration) {
+            return Err(DbError::MigrationHistory(format!(
+                "migration {} checksum does not match its registered SQL",
+                version
             )));
         }
 
@@ -190,43 +245,61 @@ fn validate_history(applied: &[MigrationRecord], migrations: &[Migration]) -> Re
     Ok(())
 }
 
+fn checksum(migration: Migration) -> String {
+    format!("{:x}", Sha256::digest(migration.sql.as_bytes()))
+}
+
 async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
+    db.query(
+        "INSERT INTO schema_migration_attempt (version, name, checksum, started_at) \
+         VALUES ($version, $name, $checksum, time::now())",
+    )
+    .bind(("version", i64::from(migration.version)))
+    .bind(("name", migration.name))
+    .bind(("checksum", checksum(migration)))
+    .await
+    .map_err(|error| migration_failed(migration, error))?
+    .check()
+    .map_err(|error| migration_failed(migration, error))?;
+
     let definition = db
         .query(migration.sql)
         .await
-        .map_err(|error| DbError::MigrationFailed {
-            version: migration.version,
-            name: migration.name.to_string(),
-            reason: error.to_string(),
-        })?;
+        .map_err(|error| migration_failed(migration, error))?;
     definition
         .check()
-        .map_err(|error| DbError::MigrationFailed {
-            version: migration.version,
-            name: migration.name.to_string(),
-            reason: error.to_string(),
-        })?;
+        .map_err(|error| migration_failed(migration, error))?;
 
     let recorded = db
         .query(
-            "INSERT INTO schema_migration (version, name, applied_at) \
-             VALUES ($version, $name, time::now())",
+            "INSERT INTO schema_migration (version, name, checksum, applied_at) \
+             VALUES ($version, $name, $checksum, time::now())",
         )
         .bind(("version", i64::from(migration.version)))
         .bind(("name", migration.name))
+        .bind(("checksum", checksum(migration)))
         .await
-        .map_err(|error| DbError::MigrationFailed {
-            version: migration.version,
-            name: migration.name.to_string(),
-            reason: error.to_string(),
-        })?;
-    recorded.check().map_err(|error| DbError::MigrationFailed {
+        .map_err(|error| migration_failed(migration, error))?;
+    recorded
+        .check()
+        .map_err(|error| migration_failed(migration, error))?;
+
+    db.query("DELETE schema_migration_attempt WHERE version = $version")
+        .bind(("version", i64::from(migration.version)))
+        .await
+        .map_err(|error| migration_failed(migration, error))?
+        .check()
+        .map_err(|error| migration_failed(migration, error))?;
+
+    Ok(())
+}
+
+fn migration_failed(migration: Migration, error: impl std::fmt::Display) -> DbError {
+    DbError::MigrationFailed {
         version: migration.version,
         name: migration.name.to_string(),
         reason: error.to_string(),
-    })?;
-
-    Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -266,8 +339,8 @@ mod tests {
         let db = raw_memory_db().await;
         apply_all(&db).await.unwrap();
         db.query(
-            "INSERT INTO schema_migration (version, name, applied_at) \
-             VALUES (99, 'future_schema', time::now())",
+            "INSERT INTO schema_migration (version, name, checksum, applied_at) \
+             VALUES (99, 'future_schema', 'future', time::now())",
         )
         .await
         .unwrap()
@@ -291,12 +364,31 @@ mod tests {
         let invalid = Migration {
             version: 2,
             name: "invalid_test_migration",
-            sql: "THIS IS NOT VALID SURREALQL;",
+            sql: "DEFINE TABLE invalid_test_probe SCHEMAFULL; THIS IS NOT VALID SURREALQL;",
         };
 
         let error = apply_one(&db, invalid).await.unwrap_err();
         assert!(matches!(error, DbError::MigrationFailed { version: 2, .. }));
         assert_eq!(applied_migrations(&db).await.unwrap().len(), 1);
+
+        let retry = apply_migrations(&db, &[v001_initial::MIGRATION, invalid])
+            .await
+            .unwrap_err();
+        assert!(matches!(retry, DbError::MigrationHistory(_)));
+    }
+
+    #[tokio::test]
+    async fn changed_migration_sql_is_rejected_by_its_checksum() {
+        let db = raw_memory_db().await;
+        apply_all(&db).await.unwrap();
+        db.query("UPDATE schema_migration SET checksum = 'tampered' WHERE version = 1")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        let error = applied_migrations(&db).await.unwrap_err();
+        assert!(matches!(error, DbError::MigrationHistory(_)));
     }
 
     #[tokio::test]
