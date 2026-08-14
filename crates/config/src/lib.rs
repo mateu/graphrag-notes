@@ -223,10 +223,14 @@ pub struct LibrarianConfig {
     pub min_chunk_size: usize,
     /// Target Markdown chunk size in Unicode scalar values (characters).
     pub target_chunk_size: usize,
+    #[serde(skip)]
+    target_chunk_size_from_file: bool,
     pub max_chunk_size: usize,
     /// Tail characters copied from the preceding chunk when it fits under the
     /// hard maximum.
     pub chunk_overlap: usize,
+    #[serde(skip)]
+    chunk_overlap_from_file: bool,
     pub skip_entity_extraction: bool,
     pub extract_log_each: bool,
     /// Maximum characters sent to entity extraction. Zero preserves the
@@ -242,8 +246,10 @@ impl Default for LibrarianConfig {
         Self {
             min_chunk_size: 50,
             target_chunk_size: 700,
+            target_chunk_size_from_file: false,
             max_chunk_size: 1000,
             chunk_overlap: 100,
+            chunk_overlap_from_file: false,
             skip_entity_extraction: false,
             extract_log_each: false,
             extract_max_chars: 8000,
@@ -341,12 +347,15 @@ impl RuntimeConfig {
         config.inference.extraction_url_from_file =
             inference.is_some_and(|table| table.contains_key("extraction_url"));
         if let Some(librarian) = raw.get("librarian").and_then(toml::Value::as_table) {
+            config.librarian.target_chunk_size_from_file =
+                librarian.contains_key("target_chunk_size");
+            config.librarian.chunk_overlap_from_file = librarian.contains_key("chunk_overlap");
             // `target_chunk_size` and `chunk_overlap` were added after the
             // original min/max-only configuration. Derive omitted values from
             // the explicit legacy bounds before validation, rather than
             // rejecting an otherwise valid existing config because today's
             // global defaults do not fit its smaller maximum.
-            if !librarian.contains_key("target_chunk_size") {
+            if !config.librarian.target_chunk_size_from_file {
                 // `usize::clamp` panics when its lower bound exceeds its
                 // upper bound. Leave an invalid legacy min/max pair intact
                 // for normal configuration validation to report, instead of
@@ -358,7 +367,7 @@ impl RuntimeConfig {
                     );
                 }
             }
-            if !librarian.contains_key("chunk_overlap") {
+            if !config.librarian.chunk_overlap_from_file {
                 config.librarian.chunk_overlap = config
                     .librarian
                     .chunk_overlap
@@ -607,18 +616,19 @@ impl RuntimeConfig {
             "GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP",
             &mut self.librarian.chunk_overlap,
         )?;
-        // Existing environment-only installations could set the historical
-        // min/max pair without the newer target/overlap controls. Re-clamp
-        // omitted controls after all environment overrides have landed; an
-        // explicitly supplied target or overlap remains subject to validation.
+        // Existing installations could set the historical min/max pair
+        // without the newer target/overlap controls. Re-clamp only controls
+        // omitted across both TOML and the environment after every override
+        // has landed. An explicit control from either source must remain
+        // visible to validation instead of being silently rewritten.
         if self.librarian.min_chunk_size <= self.librarian.max_chunk_size {
-            if !target_chunk_size_from_env {
+            if !self.librarian.target_chunk_size_from_file && !target_chunk_size_from_env {
                 self.librarian.target_chunk_size = self
                     .librarian
                     .target_chunk_size
                     .clamp(self.librarian.min_chunk_size, self.librarian.max_chunk_size);
             }
-            if !chunk_overlap_from_env {
+            if !self.librarian.chunk_overlap_from_file && !chunk_overlap_from_env {
                 self.librarian.chunk_overlap = self
                     .librarian
                     .chunk_overlap
@@ -1089,6 +1099,39 @@ mod tests {
         assert_eq!(config.librarian.max_chunk_size, 80);
         assert_eq!(config.librarian.target_chunk_size, 80);
         assert_eq!(config.librarian.chunk_overlap, 79);
+    }
+
+    #[test]
+    fn legacy_environment_bounds_do_not_clamp_explicit_file_chunking_controls() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("explicit-chunking.toml");
+        fs::write(
+            &path,
+            "[librarian]\ntarget_chunk_size = 700\nchunk_overlap = 100\n",
+        )
+        .unwrap();
+
+        let mut config = RuntimeConfig::from_file(&path).unwrap();
+        config
+            .apply_env(&env(&[("GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE", "80")]))
+            .unwrap();
+
+        // TOML values remain explicit even when a legacy environment bound
+        // is the only override. They must fail validation rather than be
+        // silently clamped as though they were omitted controls.
+        assert_eq!(config.librarian.max_chunk_size, 80);
+        assert_eq!(config.librarian.target_chunk_size, 700);
+        assert_eq!(config.librarian.chunk_overlap, 100);
+        assert!(config.validate().is_err());
+
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            Some(&path),
+            &CliOverrides::default(),
+            &env(&[("GRAPHRAG_LIBRARIAN_MAX_CHUNK_SIZE", "80")]),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::Validation(_)));
     }
 
     #[test]
