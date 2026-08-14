@@ -1150,7 +1150,7 @@ impl Repository {
             .bind(("id", edge_id.clone()))
             .await?
             .check()?;
-        self.db.query("UPDATE proposed_edge SET status = 'superseded', reviewed_at = time::now(), action_reason = $reason, updated_at = time::now() WHERE resulting_edge_id = $id")
+        self.db.query("UPDATE proposed_edge SET status = 'superseded', reviewed_at = time::now(), action_reason = $reason, resulting_edge_id = NONE, updated_at = time::now() WHERE resulting_edge_id = $id")
             .bind(("id", edge_id.clone())).bind(("reason", action_reason.unwrap_or_else(|| "accepted edge undone".into()))).await?.check()?;
         Ok(true)
     }
@@ -1806,7 +1806,7 @@ impl Repository {
         let notes = self
             .source_owned_note_ids(source_id, generation, older_than_generation)
             .await?;
-        self.supersede_pending_proposals_for_notes(&notes).await?;
+        self.supersede_proposals_for_removed_notes(&notes).await?;
         for note_id in notes {
             self.db
                 .query(
@@ -1826,9 +1826,25 @@ impl Repository {
         Ok(summary)
     }
 
+    /// Retire every mutable proposal whose source-owned endpoint is being
+    /// removed. Accepted proposals lose their resulting edge reference along
+    /// with the edge itself, matching [`Self::undo_edge`] semantics.
+    async fn supersede_proposals_for_removed_notes(&self, notes: &[RecordId]) -> Result<()> {
+        for note_id in notes {
+            self.db
+                .query(
+                    "UPDATE proposed_edge SET status = 'superseded', reviewed_at = time::now(), action_reason = 'proposal endpoint removed by source lifecycle', resulting_edge_id = NONE, updated_at = time::now() WHERE (status = 'pending' OR status = 'accepted') AND (in = $note OR out = $note)",
+                )
+                .bind(("note", note_id.clone()))
+                .await?
+                .check()?;
+        }
+        Ok(())
+    }
+
     /// Retire pending suggestions whose source-owned endpoint is no longer
-    /// usable. This applies both to physical source deletion and to a
-    /// promoted generation that is hidden before deferred cleanup finishes.
+    /// usable. Promotion uses this narrower transition because old-generation
+    /// accepted edges remain intact until deferred destructive cleanup runs.
     async fn supersede_pending_proposals_for_notes(&self, notes: &[RecordId]) -> Result<()> {
         for note_id in notes {
             self.db
@@ -1874,6 +1890,7 @@ impl Repository {
         let mut summary = SourceDeleteSummary::default();
         summary.notes = notes.len() as u64;
         summary.note_edges = self.count_note_edges_for_notes(&notes).await?;
+        summary.proposals = self.count_mutable_proposals_for_notes(&notes).await?;
         for note_id in notes {
             let counts: Vec<SourceDeleteCount> = self
                 .db
@@ -1925,6 +1942,28 @@ impl Repository {
             total += row.and_then(|row| row.count).unwrap_or(0);
         }
         Ok(total)
+    }
+
+    /// Count proposal records that source cleanup will transition. Proposal
+    /// rows are not deleted: they retain an auditable terminal decision.
+    async fn count_mutable_proposals_for_notes(&self, notes: &[RecordId]) -> Result<u64> {
+        if notes.is_empty() {
+            return Ok(0);
+        }
+        #[derive(Deserialize, SurrealValue)]
+        struct CountRow {
+            #[serde(default)]
+            count: Option<u64>,
+        }
+        let row: Option<CountRow> = self
+            .db
+            .query(
+                "SELECT count() FROM proposed_edge WHERE (status = 'pending' OR status = 'accepted') AND (in IN $notes OR out IN $notes) GROUP ALL",
+            )
+            .bind(("notes", notes.to_vec()))
+            .await?
+            .take(0)?;
+        Ok(row.and_then(|row| row.count).unwrap_or(0))
     }
 
     // ==========================================
@@ -2485,6 +2524,8 @@ pub struct SourceDeleteSummary {
     pub notes: u64,
     pub mentions: u64,
     pub note_edges: u64,
+    /// Pending or accepted proposals transitioned to `superseded`.
+    pub proposals: u64,
     pub note_conversation_provenance: u64,
     pub note_message_provenance: u64,
 }
@@ -3016,6 +3057,37 @@ mod tests {
             .await
             .unwrap();
         let old_generation_proposal_id = old_generation_proposal.id.unwrap();
+        let old_generation_accepted_partner = repo
+            .create_note(
+                Note::new("first generation accepted partner")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let old_generation_accepted_proposal = repo
+            .upsert_gardener_proposal(
+                first_note.id.as_ref().unwrap(),
+                old_generation_accepted_partner.id.as_ref().unwrap(),
+                0.9,
+                "old generation accepted relationship".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let old_generation_accepted_proposal_id = old_generation_accepted_proposal.id.unwrap();
+        let old_generation_accepted_edge_id = repo
+            .accept_edge_proposal(
+                &old_generation_accepted_proposal_id,
+                Some("reviewer".into()),
+                Some("approved before reimport".into()),
+                true,
+            )
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
 
         let mut second = begin_markdown(&repo, "second", false).await;
         let second_note = repo
@@ -3074,12 +3146,24 @@ mod tests {
         // cleanup instead of leaving hidden old generations forever.
         let retry = begin_markdown(&repo, "second", false).await;
         assert_eq!(retry.action, SourceImportAction::Unchanged);
-        assert_eq!(retry.cleanup.notes, 2);
+        assert_eq!(retry.cleanup.notes, 3);
+        assert_eq!(retry.cleanup.proposals, 1);
         assert!(repo
             .get_note(&record_id_to_string(first_note.id.as_ref().unwrap()))
             .await
             .unwrap()
             .is_none());
+        let accepted_proposal = repo
+            .get_edge_proposal(&old_generation_accepted_proposal_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted_proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(accepted_proposal.resulting_edge_id, None);
+        assert!(!repo
+            .note_edge_exists(&old_generation_accepted_edge_id)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -3134,6 +3218,29 @@ mod tests {
             .await
             .unwrap();
         let proposal_id = proposal.id.unwrap();
+        let accepted_proposal = repo
+            .upsert_gardener_proposal(
+                derived_second.id.as_ref().unwrap(),
+                unrelated.id.as_ref().unwrap(),
+                0.9,
+                "accepted source-derived note looks related".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let accepted_proposal_id = accepted_proposal.id.unwrap();
+        let accepted_edge_id = repo
+            .accept_edge_proposal(
+                &accepted_proposal_id,
+                Some("reviewer".into()),
+                Some("approved before source removal".into()),
+                true,
+            )
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
         let mut retained_entity = Entity::new("Retained entity", EntityType::Concept);
         retained_entity.metadata = serde_json::json!({});
         let entity = repo.upsert_entity(retained_entity).await.unwrap();
@@ -3145,7 +3252,8 @@ mod tests {
         let preview = repo.preview_source_delete(&plan.source).await.unwrap();
         assert_eq!(preview.notes, 2);
         assert_eq!(preview.mentions, 1);
-        assert_eq!(preview.note_edges, 2);
+        assert_eq!(preview.note_edges, 3);
+        assert_eq!(preview.proposals, 2);
         let confirmed = repo.delete_source(&plan.source).await.unwrap();
         assert_eq!(confirmed, preview);
         assert!(repo
@@ -3169,6 +3277,14 @@ mod tests {
             proposal.action_reason.as_deref(),
             Some("proposal endpoint removed by source lifecycle")
         );
+        let accepted_proposal = repo
+            .get_edge_proposal(&accepted_proposal_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(accepted_proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(accepted_proposal.resulting_edge_id, None);
+        assert!(!repo.note_edge_exists(&accepted_edge_id).await.unwrap());
         // Source cleanup must retire the pending proposal before policy batch
         // acceptance sees it, rather than failing on its missing endpoint.
         assert_eq!(
@@ -3317,14 +3433,9 @@ mod tests {
             .undo_edge(&edge_id, Some("reversed".into()))
             .await
             .unwrap());
-        assert_eq!(
-            repo.get_edge_proposal(&accepted_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            ProposedEdgeStatus::Superseded
-        );
+        let undone_proposal = repo.get_edge_proposal(&accepted_id).await.unwrap().unwrap();
+        assert_eq!(undone_proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(undone_proposal.resulting_edge_id, None);
 
         let rejected = repo
             .upsert_gardener_proposal(

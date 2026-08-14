@@ -1107,7 +1107,7 @@ fn print_import_summary(
     };
     match format {
         SourceOutputFormat::Human => println!(
-            "Source {} generation {}: {} (created {}, unchanged {}, updated {}, deleted {}, failed {}; cleanup notes {}, mentions {}, note edges {}, conversation provenance {}, message provenance {})",
+            "Source {} generation {}: {} (created {}, unchanged {}, updated {}, deleted {}, failed {}; cleanup notes {}, mentions {}, note edges {}, proposals {}, conversation provenance {}, message provenance {})",
             output.source_uri,
             output.generation,
             output.action,
@@ -1119,6 +1119,7 @@ fn print_import_summary(
             output.cleanup.notes,
             output.cleanup.mentions,
             output.cleanup.note_edges,
+            output.cleanup.proposals,
             output.cleanup.note_conversation_provenance,
             output.cleanup.note_message_provenance,
         ),
@@ -1239,12 +1240,13 @@ fn print_delete_summary(
     match format {
         SourceOutputFormat::Json => println!("{}", serde_json::to_string(&output)?),
         SourceOutputFormat::Human => println!(
-            "{} source {}: notes={}, mentions={}, note_edges={}, conversation_provenance={}, message_provenance={}",
+            "{} source {}: notes={}, mentions={}, note_edges={}, proposals={}, conversation_provenance={}, message_provenance={}",
             if dry_run { "Would delete" } else { "Deleted" },
             output.source_id,
             summary.notes,
             summary.mentions,
             summary.note_edges,
+            summary.proposals,
             summary.note_conversation_provenance,
             summary.note_message_provenance,
         ),
