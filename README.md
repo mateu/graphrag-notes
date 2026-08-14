@@ -246,6 +246,30 @@ graphrag interactive
 | `embedding-dim` | Show embedding dimension for the active provider |
 | `extract-entities` | Extract entities for notes missing entity links |
 
+### Retrieval evaluation
+
+`eval-augment` accepts a JSON array or JSONL file. Legacy cases using `expected_ids` and
+`expected_contains` remain valid. Version 2 cases may add `k`, graded `relevance` records,
+expected source or conversation provenance, and forbidden IDs/text. Exact IDs are normalized
+case-insensitively; substring expectations are reported separately from rank metrics.
+
+```bash
+# Create a stable JSON report to review or commit as a baseline.
+graphrag eval-augment tests/fixtures/eval/cases-v2.jsonl --format json > /tmp/eval-baseline.json
+
+# Fail only if a selected quality metric falls more than the permitted amount.
+graphrag eval-augment tests/fixtures/eval/cases-v2.jsonl \
+  --baseline /tmp/eval-baseline.json \
+  --max-regression recall_at_k=0.02 \
+  --max-regression mrr=0.02
+```
+
+Reports include Recall@k, Precision@k, MRR, nDCG@k for graded cases, provenance accuracy,
+context budget use, and per-query/aggregate latency. Cases with no expectation are explicitly
+`UNSCORED`: they contribute to latency and budget statistics but not relevance aggregates. The
+fixture identifiers under `tests/fixtures/eval/` are synthetic and contain no private notes or
+chat data.
+
 ## Development
 
 ### Run Tests

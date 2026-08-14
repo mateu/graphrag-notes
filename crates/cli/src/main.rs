@@ -2,8 +2,15 @@
 //!
 //! A command-line interface for the GraphRAG Notes system.
 
+mod eval;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use eval::{
+    build_baseline_comparison, evaluate_ranked_results, load_baseline, load_eval_cases,
+    parse_regression_thresholds, EvalCaseReport, EvalMetadata, EvalOutputFormat, EvalRunReport,
+    EvalScope, RankedResult, EVAL_SCHEMA_VERSION,
+};
 use graphrag_agents::{
     AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, InferenceProviders,
     LibrarianAgent, SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor,
@@ -13,6 +20,7 @@ use graphrag_db::{init_memory, init_persistent, migrations, Repository};
 use serde::Deserialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -194,6 +202,18 @@ enum Commands {
         /// Exit with status 1 when any expected case misses
         #[arg(long)]
         fail_on_miss: bool,
+
+        /// Output format for the evaluation report
+        #[arg(long, value_enum, default_value_t = EvalOutputFormat::Human)]
+        format: EvalOutputFormat,
+
+        /// Compare aggregate metrics against a prior JSON report
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        /// Allowed metric decrease, such as `recall_at_k=0.02` (repeatable)
+        #[arg(long = "max-regression", value_name = "METRIC=MAX_DROP")]
+        max_regression: Vec<String>,
     },
 
     /// List recent notes
@@ -405,6 +425,7 @@ async fn main() -> Result<()> {
             | Commands::MigrateChats { .. }
             | Commands::Search { .. }
             | Commands::Augment { .. }
+            | Commands::EvalAugment { .. }
             | Commands::Interactive
     );
     let needs_tgi = matches!(
@@ -486,6 +507,9 @@ async fn main() -> Result<()> {
             max_tokens,
             max_chunk_tokens,
             fail_on_miss,
+            format,
+            baseline,
+            max_regression,
         } => {
             cmd_eval_augment(
                 repo,
@@ -498,6 +522,9 @@ async fn main() -> Result<()> {
                 max_tokens,
                 max_chunk_tokens,
                 fail_on_miss,
+                format,
+                baseline,
+                max_regression,
             )
             .await?;
         }
@@ -569,45 +596,6 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum EvalScope {
-    Notes,
-    Messages,
-    All,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct EvalAugmentCase {
-    query: String,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    scope: Option<EvalScope>,
-    #[serde(default)]
-    limit: Option<usize>,
-    #[serde(default)]
-    since_days: Option<u32>,
-    #[serde(default)]
-    source_uri: Option<String>,
-    #[serde(default)]
-    entity: Option<String>,
-    #[serde(default)]
-    max_tokens: Option<usize>,
-    #[serde(default)]
-    max_chunk_tokens: Option<usize>,
-    #[serde(default)]
-    expected_ids: Vec<String>,
-    #[serde(default)]
-    expected_contains: Vec<String>,
-}
-
-impl EvalAugmentCase {
-    fn has_expectations(&self) -> bool {
-        !self.expected_ids.is_empty() || !self.expected_contains.is_empty()
-    }
 }
 
 async fn cmd_add(
@@ -1243,21 +1231,23 @@ async fn cmd_eval_augment(
     default_max_tokens: usize,
     default_max_chunk_tokens: usize,
     fail_on_miss: bool,
+    format: EvalOutputFormat,
+    baseline_path: Option<PathBuf>,
+    max_regression: Vec<String>,
 ) -> Result<()> {
     let cases = load_eval_cases(&path)?;
     if cases.is_empty() {
         anyhow::bail!("No eval cases found in {}", path.display());
     }
+    let thresholds = parse_regression_thresholds(&max_regression)?;
 
     let search = SearchAgent::new(repo, tei);
+    let mut reports = Vec::with_capacity(cases.len());
 
-    let mut expected_cases = 0usize;
-    let mut passed_cases = 0usize;
-    let mut total_chunks = 0usize;
-    let mut total_tokens = 0usize;
-
-    println!("Running {} eval cases from {}", cases.len(), path.display());
-    println!();
+    if matches!(format, EvalOutputFormat::Human) {
+        println!("Running {} eval cases from {}", cases.len(), path.display());
+        println!();
+    }
 
     for (idx, case) in cases.iter().enumerate() {
         let scope = case
@@ -1265,14 +1255,17 @@ async fn cmd_eval_augment(
             .map(eval_scope_to_search_scope)
             .unwrap_or_else(|| search_scope_arg_to_scope(default_scope));
         let limit = case.limit.unwrap_or(default_limit);
+        let k = case.resolved_k(default_limit);
         let since_days = case.since_days.or(default_since_days);
         let source_uri = case
             .source_uri
             .clone()
             .or_else(|| default_source_uri.clone());
+        let requested_source_uri = source_uri.clone();
         let max_tokens = case.max_tokens.unwrap_or(default_max_tokens);
         let max_chunk_tokens = case.max_chunk_tokens.unwrap_or(default_max_chunk_tokens);
 
+        let started = Instant::now();
         let ctx = search
             .build_augmented_context(
                 &case.query,
@@ -1287,153 +1280,88 @@ async fn cmd_eval_augment(
                 },
             )
             .await?;
+        let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+        let ranked: Vec<RankedResult> = ctx
+            .chunks
+            .iter()
+            .map(|chunk| RankedResult {
+                id: chunk.id.clone(),
+                text: format!(
+                    "{}\n{}",
+                    chunk.title.as_deref().unwrap_or_default(),
+                    chunk.snippet
+                ),
+                // A source-filtered retrieval guarantees this provenance for every returned
+                // chunk. Unfiltered source provenance needs to be carried by SearchAgent.
+                source_uri: requested_source_uri.clone(),
+                conversation_uuid: chunk.conversation_uuid.clone(),
+                approx_tokens: chunk.approx_tokens,
+            })
+            .collect();
+        let metrics = evaluate_ranked_results(case, &ranked, k, latency_ms);
 
-        total_chunks += ctx.chunks.len();
-        total_tokens += ctx.total_tokens;
-
-        let (matched_id, matched_text) = evaluate_case_match(case, &ctx);
-        let had_expectations = case.has_expectations();
-        let passed = !had_expectations || matched_id || matched_text;
-
-        if had_expectations {
-            expected_cases += 1;
-            if passed {
-                passed_cases += 1;
-            }
+        if matches!(format, EvalOutputFormat::Human) {
+            let status = match metrics.checks_passed {
+                Some(true) => "PASS",
+                Some(false) => "MISS",
+                None => "UNSCORED",
+            };
+            println!(
+                "{}. {} [{}] k={} chunks={} tokens={} latency={}ms",
+                idx + 1,
+                case.display_name(),
+                status,
+                metrics.k,
+                metrics.chunks,
+                metrics.tokens,
+                metrics.latency_ms,
+            );
         }
-
-        println!(
-            "{}. {} [{}] chunks={} tokens={} matched(id/text)={}/{}",
-            idx + 1,
-            case.name.as_deref().unwrap_or(&case.query),
-            if passed { "PASS" } else { "MISS" },
-            ctx.chunks.len(),
-            ctx.total_tokens,
-            if matched_id { "yes" } else { "no" },
-            if matched_text { "yes" } else { "no" },
-        );
+        reports.push(EvalCaseReport {
+            name: case.display_name().to_string(),
+            query: case.query.clone(),
+            metrics,
+        });
     }
 
-    println!("\nEval summary:");
-    println!("  • Cases total: {}", cases.len());
-    println!("  • Cases with expectations: {}", expected_cases);
-    println!("  • Cases passed: {}", passed_cases);
-    let hit_rate = if expected_cases > 0 {
-        (passed_cases as f64 / expected_cases as f64) * 100.0
-    } else {
-        100.0
+    let metadata = EvalMetadata {
+        schema_version: EVAL_SCHEMA_VERSION,
+        provider: std::env::var("TEI_PROVIDER").unwrap_or_else(|_| "tei".to_string()),
+        model: std::env::var("TEI_MODEL").unwrap_or_else(|_| "provider-default".to_string()),
     };
-    println!("  • Hit rate: {:.1}%", hit_rate);
-    println!(
-        "  • Avg chunks/case: {:.2}",
-        total_chunks as f64 / cases.len() as f64
-    );
-    println!(
-        "  • Avg tokens/case: {:.2}",
-        total_tokens as f64 / cases.len() as f64
-    );
+    let mut report = EvalRunReport::from_cases(metadata, reports);
+    if let Some(baseline_path) = baseline_path {
+        let baseline = load_baseline(&baseline_path)?;
+        report.baseline = Some(build_baseline_comparison(&report, &baseline, &thresholds));
+    }
+    let regressions = report
+        .baseline
+        .as_ref()
+        .map(|comparison| comparison.regressions.as_slice())
+        .unwrap_or_default();
 
-    if fail_on_miss && expected_cases > passed_cases {
+    match format {
+        EvalOutputFormat::Human => {
+            println!();
+            print!("{}", report.human_report());
+        }
+        EvalOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+    }
+
+    if fail_on_miss && report.summary.cases_missed > 0 {
         anyhow::bail!(
             "Eval failed: {} case(s) missed expectations",
-            expected_cases - passed_cases
+            report.summary.cases_missed
+        );
+    }
+    if !regressions.is_empty() {
+        anyhow::bail!(
+            "Eval failed: {} configured regression threshold(s) exceeded",
+            regressions.len()
         );
     }
 
     Ok(())
-}
-
-fn evaluate_case_match(
-    case: &EvalAugmentCase,
-    ctx: &graphrag_agents::AugmentContext,
-) -> (bool, bool) {
-    let expected_ids: Vec<String> = case
-        .expected_ids
-        .iter()
-        .map(|id| id.trim().to_lowercase())
-        .filter(|id| !id.is_empty())
-        .collect();
-    let expected_contains: Vec<String> = case
-        .expected_contains
-        .iter()
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    let mut matched_id = expected_ids.is_empty();
-    let mut matched_text = expected_contains.is_empty();
-
-    for chunk in &ctx.chunks {
-        let chunk_id = chunk.id.to_lowercase();
-        if !matched_id && expected_ids.iter().any(|id| id == &chunk_id) {
-            matched_id = true;
-        }
-
-        if !matched_text {
-            let mut haystack = String::new();
-            haystack.push_str(&chunk.id.to_lowercase());
-            haystack.push('\n');
-            haystack.push_str(&chunk.snippet.to_lowercase());
-            if let Some(title) = chunk.title.as_ref() {
-                haystack.push('\n');
-                haystack.push_str(&title.to_lowercase());
-            }
-            if let Some(conv) = chunk.conversation_uuid.as_ref() {
-                haystack.push('\n');
-                haystack.push_str(&conv.to_lowercase());
-            }
-            if expected_contains
-                .iter()
-                .any(|needle| haystack.contains(needle))
-            {
-                matched_text = true;
-            }
-        }
-
-        if matched_id && matched_text {
-            break;
-        }
-    }
-
-    (matched_id, matched_text)
-}
-
-fn load_eval_cases(path: &PathBuf) -> Result<Vec<EvalAugmentCase>> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read eval file: {}", path.display()))?;
-
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if trimmed.starts_with('[') {
-        let cases: Vec<EvalAugmentCase> = serde_json::from_str(trimmed).with_context(|| {
-            format!(
-                "Failed to parse eval JSON array from file: {}",
-                path.display()
-            )
-        })?;
-        return Ok(cases);
-    }
-
-    let mut cases = Vec::new();
-    for (lineno, line) in content.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let case: EvalAugmentCase = serde_json::from_str(line).with_context(|| {
-            format!(
-                "Failed to parse eval JSON object at {}:{}",
-                path.display(),
-                lineno + 1
-            )
-        })?;
-        cases.push(case);
-    }
-
-    Ok(cases)
 }
 
 fn eval_scope_to_search_scope(scope: EvalScope) -> SearchScope {

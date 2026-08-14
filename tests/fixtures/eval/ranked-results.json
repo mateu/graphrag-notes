@@ -1,0 +1,21 @@
+[
+  {
+    "name": "note-with-source-filter",
+    "results": [
+      {"id":"note:music","text":"A local music service on the media host","source_uri":"fixture://notes/homelab.md","approx_tokens":10},
+      {"id":"note:network","text":"Network settings for the media host","source_uri":"fixture://notes/homelab.md","approx_tokens":8}
+    ]
+  },
+  {
+    "name": "message-provenance",
+    "results": [
+      {"id":"message:adapter-1","text":"Pair the adapter before connecting","conversation_uuid":"fixture-conversation-support","approx_tokens":7}
+    ]
+  },
+  {
+    "name": "conversation-summary",
+    "results": [
+      {"id":"conversation:project-summary","text":"The migration decision is to retain stable identifiers.","approx_tokens":9}
+    ]
+  }
+]
