@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
+use unicode_casefold::UnicodeCaseFold;
 
 /// Whether token counts were produced by a supplied tokenizer or the safe
 /// local estimate. The mode is deliberately part of diagnostics: an estimate
@@ -229,7 +230,7 @@ pub(crate) fn build_augment_context_from_hits(
             .expect("candidates is non-empty");
         let candidate = candidates.swap_remove(next_index);
 
-        let tokens = normalized_tokens(candidate.content());
+        let tokens = similarity_tokens(candidate.content());
         if selected.iter().any(|selected| {
             jaccard_similarity(&tokens, &selected.full_tokens) >= options.near_duplicate_threshold
         }) {
@@ -353,7 +354,7 @@ fn selection_score(
     selected: &[HashSet<String>],
     novelty_weight: f32,
 ) -> f32 {
-    let candidate_tokens = normalized_tokens(candidate.content());
+    let candidate_tokens = similarity_tokens(candidate.content());
     let novelty = selected
         .iter()
         .map(|chosen| 1.0 - jaccard_similarity(&candidate_tokens, chosen))
@@ -829,10 +830,7 @@ fn source_searchable_term(term: &str) -> Option<String> {
 /// Find a Unicode case-insensitive phrase without deriving offsets from a
 /// case-folded allocation. Returned byte ranges always index `text` itself.
 fn phrase_match_range(text: &str, phrase: &str) -> Option<Range<usize>> {
-    let wanted = phrase
-        .chars()
-        .flat_map(char::to_lowercase)
-        .collect::<Vec<_>>();
+    let wanted = phrase.case_fold().collect::<Vec<_>>();
     if wanted.is_empty() {
         return None;
     }
@@ -864,7 +862,7 @@ fn is_lexical_boundary(text: &str, range: &Range<usize>) -> bool {
 fn casefolded_prefix_end(text: &str, wanted: &[char]) -> Option<usize> {
     let mut matched = 0usize;
     for (offset, ch) in text.char_indices() {
-        for folded in ch.to_lowercase() {
+        for folded in ch.case_fold() {
             if wanted.get(matched) != Some(&folded) {
                 return None;
             }
@@ -976,6 +974,33 @@ fn normalized_tokens(text: &str) -> HashSet<String> {
             .chars()
             .flat_map(char::to_lowercase)
             .collect::<String>();
+        if !canonical.is_empty() {
+            tokens.insert(format!("symbol:{canonical}"));
+        }
+    }
+    tokens
+}
+
+/// Tokens used exclusively for diversity and duplicate comparisons. Unspaced
+/// scripts retain each bigram's position so repeated or reordered bigrams do
+/// not collapse into the same `HashSet` inventory.
+fn similarity_tokens(text: &str) -> HashSet<String> {
+    let mut tokens = HashSet::new();
+    for (run_index, token) in text
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .enumerate()
+    {
+        if token.chars().any(is_unspaced_script_char) {
+            for (position, bigram) in unspaced_script_bigrams(token).into_iter().enumerate() {
+                tokens.insert(format!("cjk:{run_index}:{position}:{bigram}"));
+            }
+        } else {
+            tokens.insert(format!("word:{}", token.case_fold().collect::<String>()));
+        }
+    }
+    if tokens.is_empty() {
+        let canonical = text.case_fold().collect::<String>();
         if !canonical.is_empty() {
             tokens.insert(format!("symbol:{canonical}"));
         }
@@ -1238,6 +1263,31 @@ mod tests {
     }
 
     #[test]
+    fn repeated_cjk_bigrams_keep_position_and_order_for_similarity() {
+        let first = "甲乙甲乙";
+        let second = "乙甲乙甲";
+        assert_eq!(
+            jaccard_similarity(&normalized_tokens(first), &normalized_tokens(second)),
+            1.0
+        );
+        assert!(jaccard_similarity(&similarity_tokens(first), &similarity_tokens(second)) < 0.85);
+
+        let mut duplicate_options = options();
+        duplicate_options.max_total_tokens = 300;
+        duplicate_options.near_duplicate_threshold = 0.85;
+        let context = build_augment_context_from_hits(
+            "甲乙".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit("n:first", 0.9, first), hit("n:second", 0.8, second)],
+            duplicate_options,
+            0,
+        );
+        assert_eq!(context.chunks.len(), 2);
+        assert_eq!(context.diagnostics.dropped_near_duplicates, 0);
+    }
+
+    #[test]
     fn zero_novelty_preserves_incoming_scoped_tie_order_for_citations() {
         // This is the retrieval order established by search's scoped tie
         // contract: hit type first, then record ID, after fused-score ties.
@@ -1304,6 +1354,24 @@ mod tests {
         let range = phrase_match_range(text, "i").unwrap();
         assert_eq!(&text[range.clone()], "İ");
         assert_eq!(range.end, "İ".len());
+    }
+
+    #[test]
+    fn full_casefolding_matches_sharp_s_and_final_sigma_in_clipped_text() {
+        assert_eq!(
+            &"The Straße marker"[phrase_match_range("The Straße marker", "STRASSE").unwrap()],
+            "Straße"
+        );
+        assert_eq!(&"σος"[phrase_match_range("σος", "ΣΟΣ").unwrap()], "σος");
+        let clipped = clip_query_aware(
+            "intro sentence. This deliberately oversized sentence contains the Straße marker and enough trailing words that it must be clipped before ending. final sentence.",
+            "STRASSE marker",
+            25,
+            &ConservativeTokenCounter,
+        );
+        assert!(clipped.truncated);
+        assert!(clipped.snippet.contains("Straße marker"));
+        assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 25);
     }
 
     #[test]

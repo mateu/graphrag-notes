@@ -16,6 +16,7 @@ thiserror.workspace = true
 tracing.workspace = true
 surrealdb.workspace = true
 chrono.workspace = true
+unicode-casefold = "0.2.0"
 
 [dev-dependencies]
 graphrag-config = { path = "../config" }
