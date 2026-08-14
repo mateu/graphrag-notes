@@ -13,6 +13,43 @@ use tracing::{debug, info, instrument};
 const DEFAULT_PROGRESS_EVERY: usize = 10;
 const DEFAULT_PROGRESS_EVERY_SECS: u64 = 5;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 8000;
+const DEFAULT_MIN_CHUNK_SIZE: usize = 20;
+const DEFAULT_MAX_CHUNK_SIZE: usize = usize::MAX;
+
+/// Runtime controls for librarian ingestion and extraction.
+///
+/// The CLI constructs this from the resolved application configuration so the
+/// agent never needs to read process environment variables directly. Defaults
+/// retain the library's historical behavior for programmatic callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibrarianRuntimeConfig {
+    pub min_chunk_size: usize,
+    pub max_chunk_size: usize,
+    pub skip_entity_extraction: bool,
+    pub extract_log_each: bool,
+    /// A value of zero keeps the full note content.
+    pub extract_max_chars: usize,
+    pub extract_progress_every: usize,
+    pub extract_progress_every_secs: u64,
+    pub import_progress_every: usize,
+    pub import_progress_every_secs: u64,
+}
+
+impl Default for LibrarianRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            min_chunk_size: DEFAULT_MIN_CHUNK_SIZE,
+            max_chunk_size: DEFAULT_MAX_CHUNK_SIZE,
+            skip_entity_extraction: false,
+            extract_log_each: false,
+            extract_max_chars: DEFAULT_EXTRACT_MAX_CHARS,
+            extract_progress_every: DEFAULT_PROGRESS_EVERY,
+            extract_progress_every_secs: DEFAULT_PROGRESS_EVERY_SECS,
+            import_progress_every: DEFAULT_PROGRESS_EVERY,
+            import_progress_every_secs: DEFAULT_PROGRESS_EVERY_SECS,
+        }
+    }
+}
 
 fn ensure_batch_length(expected: usize, actual: usize) -> Result<()> {
     if expected == actual {
@@ -23,33 +60,7 @@ fn ensure_batch_length(expected: usize, actual: usize) -> Result<()> {
     )))
 }
 
-fn skip_entity_extraction() -> bool {
-    std::env::var("SKIP_ENTITY_EXTRACTION")
-        .map(|value| {
-            let value = value.trim().to_ascii_lowercase();
-            matches!(value.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false)
-}
-
-fn extract_log_each() -> bool {
-    std::env::var("EXTRACT_LOG_EACH")
-        .map(|value| {
-            let value = value.trim().to_ascii_lowercase();
-            matches!(value.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(false)
-}
-
-fn extract_max_chars() -> usize {
-    std::env::var("EXTRACT_MAX_CHARS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_EXTRACT_MAX_CHARS)
-}
-
-fn truncate_for_extraction(text: &str) -> String {
-    let max_chars = extract_max_chars();
+fn truncate_for_extraction(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return text.to_string();
     }
@@ -68,11 +79,44 @@ fn truncate_for_extraction(text: &str) -> String {
     collected
 }
 
+fn chunk_content(content: &str, min_chunk_size: usize, max_chunk_size: usize) -> Vec<String> {
+    content
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|paragraph| !paragraph.is_empty())
+        .filter(|paragraph| paragraph.chars().count() >= min_chunk_size)
+        .flat_map(|paragraph| {
+            if max_chunk_size == usize::MAX || paragraph.chars().count() <= max_chunk_size {
+                return vec![paragraph.to_string()];
+            }
+
+            let chars: Vec<char> = paragraph.chars().collect();
+            let mut chunks = Vec::new();
+            let mut start = 0;
+            while start < chars.len() {
+                let remaining = chars.len() - start;
+                let take = if min_chunk_size <= max_chunk_size
+                    && remaining > max_chunk_size
+                    && remaining - max_chunk_size < min_chunk_size
+                {
+                    remaining - min_chunk_size
+                } else {
+                    remaining.min(max_chunk_size)
+                };
+                chunks.push(chars[start..start + take].iter().collect());
+                start += take;
+            }
+            chunks
+        })
+        .collect()
+}
+
 /// The Librarian agent handles content ingestion
 pub struct LibrarianAgent {
     repo: Repository,
     embedder: SharedEmbedder,
     extractor: SharedEntityExtractor,
+    runtime: LibrarianRuntimeConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +204,14 @@ impl LibrarianAgent {
             repo,
             embedder,
             extractor,
+            runtime: LibrarianRuntimeConfig::default(),
         }
+    }
+
+    /// Supply resolved runtime controls for this agent instance.
+    pub fn with_runtime_config(mut self, runtime: LibrarianRuntimeConfig) -> Self {
+        self.runtime = runtime;
+        self
     }
 
     async fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
@@ -304,11 +355,11 @@ impl LibrarianAgent {
     }
 
     async fn extract_and_link_entities_inner(&self, note: &Note, force: bool) -> Result<()> {
-        if !force && skip_entity_extraction() {
+        if !force && self.runtime.skip_entity_extraction {
             return Ok(());
         }
 
-        let text = truncate_for_extraction(&note.content);
+        let text = truncate_for_extraction(&note.content, self.runtime.extract_max_chars);
         let extraction = self.extractor.extract(&text).await?;
         let entities = extraction.entities;
         let extracted_count = entities.len();
@@ -358,17 +409,9 @@ impl LibrarianAgent {
             return Ok(0);
         }
 
-        let progress_every = std::env::var("EXTRACT_PROGRESS_EVERY")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_PROGRESS_EVERY);
-        let progress_every_secs = std::env::var("EXTRACT_PROGRESS_EVERY_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_PROGRESS_EVERY_SECS);
-        let log_each = extract_log_each();
+        let progress_every = self.runtime.extract_progress_every;
+        let progress_every_secs = self.runtime.extract_progress_every_secs;
+        let log_each = self.runtime.extract_log_each;
 
         let mut processed = 0usize;
         let total = notes.len();
@@ -451,17 +494,9 @@ impl LibrarianAgent {
         limit: usize,
         force_clear: bool,
     ) -> Result<usize> {
-        let progress_every = std::env::var("EXTRACT_PROGRESS_EVERY")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_PROGRESS_EVERY);
-        let progress_every_secs = std::env::var("EXTRACT_PROGRESS_EVERY_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_PROGRESS_EVERY_SECS);
-        let log_each = extract_log_each();
+        let progress_every = self.runtime.extract_progress_every;
+        let progress_every_secs = self.runtime.extract_progress_every_secs;
+        let log_each = self.runtime.extract_log_each;
 
         let mut processed = 0usize;
         let start = Instant::now();
@@ -559,7 +594,7 @@ impl LibrarianAgent {
             return Ok(0);
         }
 
-        let log_each = extract_log_each();
+        let log_each = self.runtime.extract_log_each;
         let mut processed = 0usize;
 
         for (index, note_id_raw) in note_ids.iter().enumerate() {
@@ -619,13 +654,14 @@ impl LibrarianAgent {
         content: &str,
         source_id: Option<String>,
     ) -> Result<Vec<Note>> {
-        // Simple chunking: split by double newlines (paragraphs)
-        // Future: smarter chunking with overlap
-        let chunks: Vec<&str> = content
-            .split("\n\n")
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty() && s.len() > 20) // Skip very short chunks
-            .collect();
+        // Split by paragraphs and apply the resolved size limits. Long
+        // paragraphs are bounded by characters to keep embedding requests
+        // predictable without changing the retrieval algorithm.
+        let chunks = chunk_content(
+            content,
+            self.runtime.min_chunk_size,
+            self.runtime.max_chunk_size,
+        );
 
         if chunks.is_empty() {
             // Treat whole content as one note
@@ -643,13 +679,12 @@ impl LibrarianAgent {
         }
 
         // Generate embeddings in batch
-        let texts: Vec<String> = chunks.iter().map(|s| s.to_string()).collect();
-        let embeddings = self.embed_batch(&texts).await?;
+        let embeddings = self.embed_batch(&chunks).await?;
 
         let mut notes = Vec::new();
 
         for (chunk, embedding) in chunks.iter().zip(embeddings.into_iter()) {
-            let mut note = Note::new(*chunk)
+            let mut note = Note::new(chunk.clone())
                 .with_type(NoteType::Raw)
                 .with_embedding(embedding);
 
@@ -688,16 +723,8 @@ impl LibrarianAgent {
         options: ChatIngestOptions,
     ) -> Result<ChatImportResult> {
         let total = export.conversation_count();
-        let progress_every = std::env::var("IMPORT_PROGRESS_EVERY")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_PROGRESS_EVERY);
-        let progress_every_secs = std::env::var("IMPORT_PROGRESS_EVERY_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_PROGRESS_EVERY_SECS);
+        let progress_every = self.runtime.import_progress_every;
+        let progress_every_secs = self.runtime.import_progress_every_secs;
         let mut last_progress = Instant::now();
 
         info!(
@@ -1659,6 +1686,30 @@ pub struct ChatImportResult {
 
 #[cfg(test)]
 mod tests {
-    // Integration tests require local inference backends
-    // See tests/integration_test.rs
+    use super::{chunk_content, truncate_for_extraction, LibrarianRuntimeConfig};
+
+    #[test]
+    fn runtime_config_defaults_preserve_library_behavior() {
+        let config = LibrarianRuntimeConfig::default();
+        assert_eq!(config.min_chunk_size, 20);
+        assert_eq!(config.max_chunk_size, usize::MAX);
+        assert!(!config.skip_entity_extraction);
+    }
+
+    #[test]
+    fn chunking_honors_resolved_minimum_and_maximum_sizes() {
+        assert_eq!(
+            chunk_content("abcdefghijk", 2, 5),
+            vec!["abcde", "fghi", "jk"]
+        );
+        assert_eq!(chunk_content("abcdef", 2, 5), vec!["abcd", "ef"]);
+        let content = "tiny\n\nabcdefghijkl";
+        assert_eq!(chunk_content(content, 11, 20), vec!["abcdefghijkl"]);
+    }
+
+    #[test]
+    fn extraction_truncation_uses_runtime_limit() {
+        assert_eq!(truncate_for_extraction("abcdef", 0), "abcdef");
+        assert_eq!(truncate_for_extraction("abcdef", 3), "abc\n\n[truncated]");
+    }
 }

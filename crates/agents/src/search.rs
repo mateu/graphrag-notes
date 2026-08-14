@@ -12,6 +12,9 @@ use std::collections::HashSet;
 
 use tracing::{debug, info, instrument};
 
+const DEFAULT_VECTOR_WEIGHT: f32 = 0.65;
+const DEFAULT_FULLTEXT_WEIGHT: f32 = 0.35;
+
 /// Search result with optional graph context
 #[derive(Debug)]
 pub struct EnrichedSearchResult {
@@ -116,12 +119,28 @@ impl AugmentContext {
 pub struct SearchAgent {
     repo: Repository,
     embedder: SharedEmbedder,
+    vector_weight: f32,
+    fulltext_weight: f32,
 }
 
 impl SearchAgent {
     /// Create a new Search agent
     pub fn new(repo: Repository, embedder: SharedEmbedder) -> Self {
-        Self { repo, embedder }
+        Self {
+            repo,
+            embedder,
+            vector_weight: DEFAULT_VECTOR_WEIGHT,
+            fulltext_weight: DEFAULT_FULLTEXT_WEIGHT,
+        }
+    }
+
+    /// Set the weights used when ranking mixed search scopes. The CLI obtains
+    /// validated values from `graphrag-config`; this builder retains the
+    /// historic defaults for library callers.
+    pub fn with_hybrid_weights(mut self, vector_weight: f32, fulltext_weight: f32) -> Self {
+        self.vector_weight = vector_weight;
+        self.fulltext_weight = fulltext_weight;
+        self
     }
 
     async fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
@@ -154,7 +173,15 @@ impl SearchAgent {
         // Perform hybrid search
         let results = self
             .repo
-            .hybrid_search_notes(query, embedding, limit, since, source_uri)
+            .hybrid_search_notes_with_weights(
+                query,
+                embedding,
+                limit,
+                since,
+                source_uri,
+                self.vector_weight,
+                self.fulltext_weight,
+            )
             .await?;
 
         info!("Found {} results", results.len());
@@ -234,28 +261,60 @@ impl SearchAgent {
         if matches!(scope, SearchScope::Notes | SearchScope::All) {
             let notes = self
                 .repo
-                .hybrid_search_notes(query, embedding.clone(), limit, since, source_uri.clone())
+                .hybrid_search_notes_with_weights(
+                    query,
+                    embedding.clone(),
+                    limit,
+                    since,
+                    source_uri.clone(),
+                    self.vector_weight,
+                    self.fulltext_weight,
+                )
                 .await?;
-            scoped_results.extend(notes.into_iter().map(Self::from_note_result));
+            scoped_results.extend(
+                notes
+                    .into_iter()
+                    .map(|result| self.from_note_result(result)),
+            );
         }
 
         if matches!(scope, SearchScope::Messages | SearchScope::All) {
             let messages = self
                 .repo
-                .hybrid_search_messages(query, embedding.clone(), limit, since, source_uri.clone())
+                .hybrid_search_messages_with_weights(
+                    query,
+                    embedding.clone(),
+                    limit,
+                    since,
+                    source_uri.clone(),
+                    self.vector_weight,
+                    self.fulltext_weight,
+                )
                 .await?;
-            scoped_results.extend(messages.into_iter().map(Self::from_message_result));
+            scoped_results.extend(
+                messages
+                    .into_iter()
+                    .map(|result| self.from_message_result(result)),
+            );
         }
 
         if matches!(scope, SearchScope::All) {
             let conversations = self
                 .repo
-                .hybrid_search_conversation_summaries(query, embedding, limit, since, source_uri)
+                .hybrid_search_conversation_summaries_with_weights(
+                    query,
+                    embedding,
+                    limit,
+                    since,
+                    source_uri,
+                    self.vector_weight,
+                    self.fulltext_weight,
+                )
                 .await?;
             scoped_results.extend(
                 conversations
                     .into_iter()
-                    .map(Self::from_conversation_result),
+                    .map(|result| self.from_conversation_result(result)),
             );
         }
 
@@ -322,8 +381,8 @@ impl SearchAgent {
         ))
     }
 
-    fn from_note_result(result: SearchResult) -> ScopedSearchResult {
-        let score = Self::rank_score(result.vec_distance, result.fts_score);
+    fn from_note_result(&self, result: SearchResult) -> ScopedSearchResult {
+        let score = self.rank_score(result.vec_distance, result.fts_score);
         ScopedSearchResult {
             hit_type: SearchHitType::Note,
             id: record_id_to_string(&result.id),
@@ -338,8 +397,8 @@ impl SearchAgent {
         }
     }
 
-    fn from_message_result(result: MessageSearchResult) -> ScopedSearchResult {
-        let score = Self::rank_score(result.vec_distance, result.fts_score);
+    fn from_message_result(&self, result: MessageSearchResult) -> ScopedSearchResult {
+        let score = self.rank_score(result.vec_distance, result.fts_score);
         ScopedSearchResult {
             hit_type: SearchHitType::Message,
             id: record_id_to_string(&result.id),
@@ -358,8 +417,8 @@ impl SearchAgent {
         }
     }
 
-    fn from_conversation_result(result: ConversationSearchResult) -> ScopedSearchResult {
-        let score = Self::rank_score(result.vec_distance, result.fts_score);
+    fn from_conversation_result(&self, result: ConversationSearchResult) -> ScopedSearchResult {
+        let score = self.rank_score(result.vec_distance, result.fts_score);
         let title = result
             .title
             .clone()
@@ -379,14 +438,14 @@ impl SearchAgent {
         }
     }
 
-    fn rank_score(vec_distance: Option<f32>, fts_score: Option<f32>) -> f32 {
+    fn rank_score(&self, vec_distance: Option<f32>, fts_score: Option<f32>) -> f32 {
         let vec_component = vec_distance
             .map(|distance| 1.0 / (1.0 + distance.max(0.0)))
             .unwrap_or(0.0);
         let fts_component = fts_score
             .map(|score| (score / 10.0).min(1.0))
             .unwrap_or(0.0);
-        (vec_component * 0.7) + (fts_component * 0.3)
+        (vec_component * self.vector_weight) + (fts_component * self.fulltext_weight)
     }
 
     /// Find notes similar to a given note
@@ -650,5 +709,11 @@ mod tests {
         assert_eq!(ctx.chunks[0].approx_tokens, 4);
         assert!(ctx.chunks[0].truncated);
         assert_eq!(ctx.chunks[0].snippet, "one two three four ...");
+    }
+
+    #[test]
+    fn library_default_weights_preserve_historical_ranking() {
+        assert_eq!(DEFAULT_VECTOR_WEIGHT, 0.65);
+        assert_eq!(DEFAULT_FULLTEXT_WEIGHT, 0.35);
     }
 }

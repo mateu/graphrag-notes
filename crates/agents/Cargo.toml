@@ -18,4 +18,5 @@ surrealdb.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
+graphrag-config = { path = "../config" }
 tempfile.workspace = true

@@ -20,6 +20,8 @@ pub struct GardenerAgent {
     repo: Repository,
     /// Minimum similarity threshold for suggesting connections
     similarity_threshold: f32,
+    auto_apply_threshold: f32,
+    max_suggestions: usize,
 }
 
 impl GardenerAgent {
@@ -28,12 +30,27 @@ impl GardenerAgent {
         Self {
             repo,
             similarity_threshold: 0.7,
+            auto_apply_threshold: 0.85,
+            max_suggestions: 50,
         }
     }
 
     /// Set the similarity threshold
     pub fn with_threshold(mut self, threshold: f32) -> Self {
         self.similarity_threshold = threshold;
+        self
+    }
+
+    /// Set the minimum confidence required to automatically create a
+    /// suggested connection during maintenance.
+    pub fn with_auto_apply_threshold(mut self, threshold: f32) -> Self {
+        self.auto_apply_threshold = threshold;
+        self
+    }
+
+    /// Limit how many candidate connections a maintenance run produces.
+    pub fn with_max_suggestions(mut self, max_suggestions: usize) -> Self {
+        self.max_suggestions = max_suggestions;
         self
     }
 
@@ -64,6 +81,9 @@ impl GardenerAgent {
         let mut suggestions = Vec::new();
 
         for orphan in orphans {
+            if suggestions.len() >= self.max_suggestions {
+                break;
+            }
             if orphan.embedding.is_empty() {
                 debug!("Skipping orphan without embedding: {:?}", orphan.id);
                 continue;
@@ -102,6 +122,9 @@ impl GardenerAgent {
                             sim.similarity * 100.0
                         ),
                     });
+                    if suggestions.len() >= self.max_suggestions {
+                        break;
+                    }
                 }
             }
         }
@@ -155,7 +178,7 @@ impl GardenerAgent {
         // Auto-apply high-confidence suggestions
         let mut applied = 0;
         for suggestion in &suggestions {
-            if suggestion.similarity > 0.85 {
+            if suggestion.similarity >= self.auto_apply_threshold {
                 if self.apply_connection(suggestion).await.is_ok() {
                     applied += 1;
                 }

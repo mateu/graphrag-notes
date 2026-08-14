@@ -13,11 +13,10 @@ use tracing::{debug, info};
 
 const DEFAULT_TEI_URL: &str = "http://localhost:8081";
 const DEFAULT_TEI_PROVIDER: &str = "tei";
-const DEFAULT_OLLAMA_EMBED_MODEL: &str = "bge-m3:latest";
 const DEFAULT_TGI_URL: &str = "http://localhost:8082";
 const DEFAULT_TGI_PROVIDER: &str = "tgi";
-const DEFAULT_OLLAMA_MODEL: &str = "phi4-mini:latest";
 const DEFAULT_TEI_MAX_BATCH: usize = 32;
+const DEFAULT_INFERENCE_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_OLLAMA_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_STRICT_ENTITY_JSON: bool = true;
 const DEFAULT_MAX_ENTITIES: usize = 30;
@@ -65,7 +64,7 @@ pub struct InferenceProviders {
 
 /// Small, typed factory input that configuration code can construct without
 /// coupling agents to process environment reads.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InferenceProviderConfig {
     pub embedding_provider: String,
     pub embedding_url: String,
@@ -73,6 +72,15 @@ pub struct InferenceProviderConfig {
     pub extraction_provider: String,
     pub extraction_url: String,
     pub extraction_model: String,
+    pub timeout_secs: u64,
+    pub tei_max_batch: usize,
+    pub tei_prompt_name_query: Option<String>,
+    pub tei_prompt_name_passage: Option<String>,
+    pub strict_entity_json: bool,
+    pub max_entities: usize,
+    pub max_relationships: usize,
+    pub ollama_timeout_secs: u64,
+    pub ollama_options: Option<Value>,
 }
 
 impl Default for InferenceProviderConfig {
@@ -84,80 +92,46 @@ impl Default for InferenceProviderConfig {
             extraction_provider: DEFAULT_TGI_PROVIDER.to_string(),
             extraction_url: DEFAULT_TGI_URL.to_string(),
             extraction_model: "unknown".to_string(),
+            timeout_secs: DEFAULT_INFERENCE_TIMEOUT_SECS,
+            tei_max_batch: DEFAULT_TEI_MAX_BATCH,
+            tei_prompt_name_query: None,
+            tei_prompt_name_passage: None,
+            strict_entity_json: DEFAULT_STRICT_ENTITY_JSON,
+            max_entities: DEFAULT_MAX_ENTITIES,
+            max_relationships: DEFAULT_MAX_RELATIONSHIPS,
+            ollama_timeout_secs: DEFAULT_OLLAMA_TIMEOUT_SECS,
+            ollama_options: None,
         }
     }
 }
 
 impl InferenceProviders {
-    /// Build the local TEI/TGI or Ollama adapters using the established
-    /// `TEI_*` and `TGI_*` environment variables.
-    pub fn from_environment() -> Self {
-        let embedding_provider = env_or_default("TEI_PROVIDER", DEFAULT_TEI_PROVIDER);
-        let extraction_provider = env_or_default("TGI_PROVIDER", DEFAULT_TGI_PROVIDER);
-        Self::from_config(&InferenceProviderConfig {
-            embedding_url: env_or_default(
-                "TEI_URL",
-                if embedding_provider.eq_ignore_ascii_case("ollama") {
-                    "http://localhost:11434"
-                } else {
-                    DEFAULT_TEI_URL
-                },
-            ),
-            embedding_model: env_or_default(
-                "TEI_MODEL",
-                if embedding_provider.eq_ignore_ascii_case("ollama") {
-                    DEFAULT_OLLAMA_EMBED_MODEL
-                } else {
-                    "unknown"
-                },
-            ),
-            extraction_url: env_or_default(
-                "TGI_URL",
-                if extraction_provider.eq_ignore_ascii_case("ollama") {
-                    "http://localhost:11434"
-                } else {
-                    DEFAULT_TGI_URL
-                },
-            ),
-            extraction_model: env_or_default(
-                "TGI_MODEL",
-                if extraction_provider.eq_ignore_ascii_case("ollama") {
-                    DEFAULT_OLLAMA_MODEL
-                } else {
-                    "unknown"
-                },
-            ),
-            embedding_provider,
-            extraction_provider,
-        })
-    }
-
     /// Construct adapters from resolved settings without consulting the process
     /// environment. This keeps the factory deterministic under test and is the
     /// integration point for typed runtime configuration.
     pub fn from_config(config: &InferenceProviderConfig) -> Self {
         let embedder: SharedEmbedder = if config.embedding_provider.eq_ignore_ascii_case("ollama") {
-            Arc::new(TeiClient::ollama(
-                &config.embedding_url,
-                &config.embedding_model,
-            ))
+            Arc::new(
+                TeiClient::ollama(&config.embedding_url, &config.embedding_model)
+                    .with_runtime_config(config),
+            )
         } else {
-            Arc::new(TeiClient::configured(
-                &config.embedding_url,
-                &config.embedding_model,
-            ))
+            Arc::new(
+                TeiClient::configured(&config.embedding_url, &config.embedding_model)
+                    .with_runtime_config(config),
+            )
         };
         let extractor: SharedEntityExtractor =
             if config.extraction_provider.eq_ignore_ascii_case("ollama") {
-                Arc::new(TgiClient::ollama(
-                    &config.extraction_url,
-                    &config.extraction_model,
-                ))
+                Arc::new(
+                    TgiClient::ollama(&config.extraction_url, &config.extraction_model)
+                        .with_runtime_config(config),
+                )
             } else {
-                Arc::new(TgiClient::configured(
-                    &config.extraction_url,
-                    &config.extraction_model,
-                ))
+                Arc::new(
+                    TgiClient::configured(&config.extraction_url, &config.extraction_model)
+                        .with_runtime_config(config),
+                )
             };
 
         Self {
@@ -167,41 +141,15 @@ impl InferenceProviders {
     }
 }
 
-fn strict_entity_json() -> bool {
-    std::env::var("STRICT_ENTITY_JSON")
-        .map(|value| {
-            let value = value.trim().to_ascii_lowercase();
-            matches!(value.as_str(), "1" | "true" | "yes" | "on")
-        })
-        .unwrap_or(DEFAULT_STRICT_ENTITY_JSON)
-}
-
-fn max_entities() -> usize {
-    std::env::var("EXTRACT_MAX_ENTITIES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_MAX_ENTITIES)
-}
-
-fn max_relationships() -> usize {
-    std::env::var("EXTRACT_MAX_RELATIONSHIPS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(DEFAULT_MAX_RELATIONSHIPS)
-}
-
-fn env_or_default(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
 #[derive(Clone)]
 pub struct TeiClient {
     client: Client,
     base_url: String,
     provider: TeiProvider,
     model: String,
+    max_batch: usize,
+    prompt_name_query: Option<String>,
+    prompt_name_passage: Option<String>,
 }
 
 impl TeiClient {
@@ -215,6 +163,9 @@ impl TeiClient {
             base_url: base_url.into(),
             provider: TeiProvider::Tei,
             model: model.into(),
+            max_batch: DEFAULT_TEI_MAX_BATCH,
+            prompt_name_query: None,
+            prompt_name_passage: None,
         }
     }
 
@@ -224,7 +175,21 @@ impl TeiClient {
             base_url: base_url.into(),
             provider: TeiProvider::Ollama,
             model: model.into(),
+            max_batch: DEFAULT_TEI_MAX_BATCH,
+            prompt_name_query: None,
+            prompt_name_passage: None,
         }
+    }
+
+    fn with_runtime_config(mut self, config: &InferenceProviderConfig) -> Self {
+        self.client = Client::builder()
+            .timeout(Duration::from_secs(config.timeout_secs))
+            .build()
+            .expect("valid inference HTTP client configuration");
+        self.max_batch = config.tei_max_batch;
+        self.prompt_name_query = config.tei_prompt_name_query.clone();
+        self.prompt_name_passage = config.tei_prompt_name_passage.clone();
+        self
     }
 
     pub async fn embed(&self, text: &str, is_query: bool) -> Result<Vec<f32>> {
@@ -235,16 +200,16 @@ impl TeiClient {
         }
 
         let prompt_name = if is_query {
-            std::env::var("TEI_PROMPT_NAME_QUERY").ok()
+            self.prompt_name_query.as_deref()
         } else {
-            std::env::var("TEI_PROMPT_NAME_PASSAGE").ok()
+            self.prompt_name_passage.as_deref()
         };
 
         let url = format!("{}/embed", self.base_url);
         let request = TeiEmbedRequest {
             inputs: text,
             truncate: true,
-            prompt_name: prompt_name.as_deref(),
+            prompt_name,
         };
 
         let response = self
@@ -278,25 +243,19 @@ impl TeiClient {
         }
 
         let prompt_name = if is_query {
-            std::env::var("TEI_PROMPT_NAME_QUERY").ok()
+            self.prompt_name_query.as_deref()
         } else {
-            std::env::var("TEI_PROMPT_NAME_PASSAGE").ok()
+            self.prompt_name_passage.as_deref()
         };
-
-        let max_batch = std::env::var("TEI_MAX_BATCH")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_TEI_MAX_BATCH);
 
         let url = format!("{}/embed", self.base_url);
         let mut results = Vec::with_capacity(texts.len());
 
-        for chunk in texts.chunks(max_batch) {
+        for chunk in texts.chunks(self.max_batch) {
             let request = TeiEmbedBatchRequest {
                 inputs: chunk,
                 truncate: true,
-                prompt_name: prompt_name.as_deref(),
+                prompt_name,
             };
 
             let response = self
@@ -417,6 +376,11 @@ pub struct TgiClient {
     json_schema: Option<Value>,
     provider: TgiProvider,
     model: String,
+    strict_entity_json: bool,
+    max_entities: usize,
+    max_relationships: usize,
+    ollama_timeout_secs: u64,
+    ollama_options: Option<Value>,
 }
 
 impl TgiClient {
@@ -431,6 +395,11 @@ impl TgiClient {
             json_schema: None,
             provider: TgiProvider::Tgi,
             model: model.into(),
+            strict_entity_json: DEFAULT_STRICT_ENTITY_JSON,
+            max_entities: DEFAULT_MAX_ENTITIES,
+            max_relationships: DEFAULT_MAX_RELATIONSHIPS,
+            ollama_timeout_secs: DEFAULT_OLLAMA_TIMEOUT_SECS,
+            ollama_options: None,
         }
     }
 
@@ -441,7 +410,25 @@ impl TgiClient {
             json_schema: None,
             provider: TgiProvider::Ollama,
             model: model.into(),
+            strict_entity_json: DEFAULT_STRICT_ENTITY_JSON,
+            max_entities: DEFAULT_MAX_ENTITIES,
+            max_relationships: DEFAULT_MAX_RELATIONSHIPS,
+            ollama_timeout_secs: DEFAULT_OLLAMA_TIMEOUT_SECS,
+            ollama_options: None,
         }
+    }
+
+    fn with_runtime_config(mut self, config: &InferenceProviderConfig) -> Self {
+        self.client = Client::builder()
+            .timeout(Duration::from_secs(config.timeout_secs))
+            .build()
+            .expect("valid inference HTTP client configuration");
+        self.strict_entity_json = config.strict_entity_json;
+        self.max_entities = config.max_entities;
+        self.max_relationships = config.max_relationships;
+        self.ollama_timeout_secs = config.ollama_timeout_secs;
+        self.ollama_options = config.ollama_options.clone();
+        self
     }
 
     pub fn with_json_schema(mut self, schema: Value) -> Self {
@@ -450,8 +437,8 @@ impl TgiClient {
     }
 
     pub async fn extract(&self, text: &str) -> Result<EntityExtraction> {
-        let entity_cap = max_entities();
-        let relationship_cap = max_relationships();
+        let entity_cap = self.max_entities;
+        let relationship_cap = self.max_relationships;
         let prompt = format!(
             "Return ONLY valid JSON. No markdown, no extra keys.\n\nSchema:\n{{\"entities\":[{{\"name\":string,\"type\":string}}],\"relationships\":[{{\"source\":string,\"target\":string,\"relationship_type\":string}}]}}\n\nRules:\n- Strings only, double-quoted\n- Keep strings short (1-6 words)\n- If unsure, return empty arrays\n- Max {entity_cap} entities, max {relationship_cap} relationships\n\nText:\n{}",
             text,
@@ -462,18 +449,19 @@ impl TgiClient {
             TgiProvider::Tgi => {
                 let generated = self.tgi_generate(prompt).await?;
                 let cleaned = normalize_json_payload(&generated);
-                let extraction = parse_entity_extraction(&cleaned).map_err(|e| {
-                    AgentError::Processing(format!(
-                        "TGI returned invalid JSON: {} ({})",
-                        generated, e
-                    ))
-                })?;
+                let extraction = parse_entity_extraction(&cleaned, self.strict_entity_json)
+                    .map_err(|e| {
+                        AgentError::Processing(format!(
+                            "TGI returned invalid JSON: {} ({})",
+                            generated, e
+                        ))
+                    })?;
                 Ok(extraction)
             }
             TgiProvider::Ollama => {
-                let options = parse_ollama_options()?;
+                let options = self.ollama_options.clone();
                 let budgets = ollama_predict_budgets(&options);
-                let strict = strict_entity_json();
+                let strict = self.strict_entity_json;
 
                 for (idx, budget) in budgets.iter().enumerate() {
                     let attempt_options = merge_options(
@@ -486,7 +474,7 @@ impl TgiClient {
                         .ollama_chat_generate_with_meta(&prompt, attempt_options)
                         .await?;
                     let cleaned = normalize_json_payload(&generated);
-                    if let Ok(extraction) = parse_entity_extraction(&cleaned) {
+                    if let Ok(extraction) = parse_entity_extraction(&cleaned, strict) {
                         return Ok(extraction);
                     }
 
@@ -529,7 +517,7 @@ impl TgiClient {
                     .ollama_chat_generate_with_meta(&retry_prompt, retry_options)
                     .await?;
                 let cleaned_retry = normalize_json_payload(&generated_retry);
-                let extraction = parse_entity_extraction(&cleaned_retry).map_err(|e| {
+                let extraction = parse_entity_extraction(&cleaned_retry, strict).map_err(|e| {
                     AgentError::Processing(format!(
                         "TGI returned invalid JSON: {} ({})",
                         generated_retry, e
@@ -585,11 +573,6 @@ impl TgiClient {
         options: Option<Value>,
     ) -> Result<(String, Option<String>)> {
         let url = format!("{}/api/chat", self.base_url);
-        let timeout_secs = std::env::var("TGI_OLLAMA_TIMEOUT_SECS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(DEFAULT_OLLAMA_TIMEOUT_SECS);
         let system_prompt = "You are a strict JSON generator. Output MUST be a single JSON object matching the provided schema. No prose, no markdown.";
         let request = OllamaChatRequest {
             model: self.model.clone(),
@@ -604,7 +587,7 @@ impl TgiClient {
                 },
             ],
             stream: false,
-            format: Some(entity_extraction_schema()),
+            format: Some(self.entity_extraction_schema()),
             options,
         };
 
@@ -612,7 +595,7 @@ impl TgiClient {
             .client
             .post(&url)
             .json(&request)
-            .timeout(Duration::from_secs(timeout_secs))
+            .timeout(Duration::from_secs(self.ollama_timeout_secs))
             .send()
             .await?
             .error_for_status()?
@@ -641,6 +624,10 @@ impl TgiClient {
         }
 
         Ok((content, response.done_reason))
+    }
+
+    fn entity_extraction_schema(&self) -> Value {
+        entity_extraction_schema(self.max_entities, self.max_relationships)
     }
 }
 
@@ -1125,29 +1112,6 @@ fn normalize_json_payload(payload: &str) -> String {
     without_fence
 }
 
-fn parse_ollama_options() -> Result<Option<Value>> {
-    let raw = match std::env::var("TGI_OLLAMA_OPTIONS") {
-        Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
-
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-
-    let value: Value = serde_json::from_str(trimmed)
-        .map_err(|e| AgentError::Processing(format!("Invalid TGI_OLLAMA_OPTIONS JSON: {}", e)))?;
-
-    if !value.is_object() {
-        return Err(AgentError::Processing(
-            "TGI_OLLAMA_OPTIONS must be a JSON object".to_string(),
-        ));
-    }
-
-    Ok(Some(value))
-}
-
 fn merge_options(base: Option<Value>, override_value: Option<Value>) -> Option<Value> {
     match (base, override_value) {
         (None, None) => None,
@@ -1313,15 +1277,45 @@ mod tests {
         );
         assert_eq!(configured.extractor.capabilities().model, "mistral-small");
     }
+
+    #[test]
+    fn provider_runtime_settings_are_injected_without_environment_reads() {
+        let config = InferenceProviderConfig {
+            timeout_secs: 17,
+            tei_max_batch: 3,
+            tei_prompt_name_query: Some("query".into()),
+            tei_prompt_name_passage: Some("passage".into()),
+            strict_entity_json: false,
+            max_entities: 4,
+            max_relationships: 2,
+            ollama_timeout_secs: 91,
+            ollama_options: Some(json!({ "temperature": 0 })),
+            ..InferenceProviderConfig::default()
+        };
+
+        let tei = TeiClient::configured("http://tei", "model").with_runtime_config(&config);
+        assert_eq!(tei.max_batch, 3);
+        assert_eq!(tei.prompt_name_query.as_deref(), Some("query"));
+        assert_eq!(tei.prompt_name_passage.as_deref(), Some("passage"));
+
+        let tgi = TgiClient::ollama("http://ollama", "model").with_runtime_config(&config);
+        assert!(!tgi.strict_entity_json);
+        assert_eq!(tgi.ollama_timeout_secs, 91);
+        assert_eq!(tgi.ollama_options, Some(json!({ "temperature": 0 })));
+        assert_eq!(
+            tgi.entity_extraction_schema()["properties"]["entities"]["maxItems"],
+            json!(4)
+        );
+        assert!(parse_entity_extraction("not JSON", true).is_err());
+        assert!(parse_entity_extraction("entities: [{\"name\":\"Rust\"}]", false).is_ok());
+    }
 }
 
 fn should_retry_ollama_parse_failure(done_reason: Option<&str>) -> bool {
     !matches!(done_reason, Some("stop"))
 }
 
-fn entity_extraction_schema() -> Value {
-    let entity_cap = max_entities();
-    let relationship_cap = max_relationships();
+fn entity_extraction_schema(entity_cap: usize, relationship_cap: usize) -> Value {
     let max_name_len: usize = 80;
     let max_type_len: usize = 40;
     let max_rel_len: usize = 40;
@@ -1361,11 +1355,11 @@ fn entity_extraction_schema() -> Value {
     })
 }
 
-fn parse_entity_extraction(payload: &str) -> Result<EntityExtraction> {
+fn parse_entity_extraction(payload: &str, strict_entity_json: bool) -> Result<EntityExtraction> {
     let value: Value = match serde_json::from_str(payload) {
         Ok(value) => value,
         Err(_) => {
-            if strict_entity_json() {
+            if strict_entity_json {
                 return Err(AgentError::Processing(format!(
                     "Invalid JSON payload: {}",
                     payload

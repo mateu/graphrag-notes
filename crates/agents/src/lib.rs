@@ -15,10 +15,11 @@ pub use error::{AgentError, Result};
 pub use gardener::GardenerAgent;
 pub use inference::{
     DeterministicEmbedder, Embedder, EntityExtraction, EntityExtractor, ExtractedEntity,
-    ExtractedRelationship, FixtureEntityExtractor, InferenceCapabilities, InferenceProviders,
-    SharedEmbedder, SharedEntityExtractor, TeiClient, TgiClient,
+    ExtractedRelationship, FixtureEntityExtractor, InferenceCapabilities, InferenceProviderConfig,
+    InferenceProviders, SharedEmbedder, SharedEntityExtractor, TeiClient, TgiClient,
 };
 pub use librarian::{
     ChatImportMode, ChatImportPreview, ChatImportResult, ChatIngestOptions, LibrarianAgent,
+    LibrarianRuntimeConfig,
 };
 pub use search::{AugmentContext, AugmentOptions, SearchAgent, SearchHitType, SearchScope};
