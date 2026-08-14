@@ -546,8 +546,19 @@ impl LibrarianAgent {
                 self.process_pending_embeddings_job(Some(resumed)).await
             }
             Some(ProcessingJobType::EntityExtraction) => {
-                self.extract_entities_for_notes_job(100, Some(resumed))
-                    .await
+                // Failed entity passes retry their full durable scope, while
+                // a cleanly cancelled pass continues after its checkpoint.
+                // This preserves recovery from provider failures without
+                // replaying already committed force-mode extraction work.
+                let resume_from_checkpoint =
+                    job.status == ProcessingJobStatus::Cancelled.as_str() && job.failed_count == 0;
+                self.extract_entities_for_notes_job(
+                    100,
+                    Some(resumed),
+                    true,
+                    resume_from_checkpoint,
+                )
+                .await
             }
             None => Err(crate::AgentError::Processing(format!(
                 "unsupported processing job type: {}",
@@ -916,7 +927,9 @@ impl LibrarianAgent {
     /// Extract entities for notes missing entity links
     #[instrument(skip(self))]
     pub async fn extract_entities_for_notes(&self, limit: usize) -> Result<usize> {
-        let result = self.extract_entities_for_notes_job(limit, None).await?;
+        let result = self
+            .extract_entities_for_notes_job(limit, None, false, false)
+            .await?;
         Ok(usize::try_from(result.completed).unwrap_or(usize::MAX))
     }
 
@@ -924,8 +937,10 @@ impl LibrarianAgent {
         &self,
         limit: usize,
         existing: Option<graphrag_db::ProcessingJob>,
+        resumed: bool,
+        resume_from_checkpoint: bool,
     ) -> Result<ProcessingRunResult> {
-        let (job, resumed, page_size, force_clear) = match existing {
+        let (job, page_size, force_clear) = match existing {
             Some(job) => {
                 if job.item_ids.is_empty() {
                     return Err(crate::AgentError::Processing(
@@ -935,7 +950,7 @@ impl LibrarianAgent {
                 let page_size =
                     entity_job_page_size(job.scope.as_deref(), DEFAULT_ENTITY_JOB_PAGE_SIZE);
                 let force_clear = entity_job_force_clear(job.scope.as_deref());
-                (job, true, page_size, force_clear)
+                (job, page_size, force_clear)
             }
             None => {
                 let notes = self.repo.get_notes_without_entities(limit).await?;
@@ -956,21 +971,36 @@ impl LibrarianAgent {
                         item_ids,
                     )
                     .await?;
-                (job, false, limit.max(1), false)
+                (job, limit.max(1), false)
             }
         };
         let job_id = job.id.clone().ok_or_else(|| {
             crate::AgentError::Processing("created processing job has no record id".into())
         })?;
-        // A resume reconciles the persisted item set from scratch. Historical
-        // failures are diagnostic evidence, not a terminal verdict: a repaired
-        // provider must be able to move the job back to `completed`.
-        let mut completed = if resumed {
+        let item_ids = job.item_ids.clone();
+        // A cleanly cancelled entity job has checkpointed each committed item.
+        // Continue after that durable checkpoint so `--force` never clears or
+        // relinks an already completed note on resume. A failed job instead
+        // retries its complete persisted scope after provider repair.
+        let checkpoint_index = resume_from_checkpoint
+            .then(|| {
+                job.checkpoint.as_ref().and_then(|checkpoint| {
+                    item_ids.iter().position(|item_id| item_id == checkpoint)
+                })
+            })
+            .flatten();
+        let start_index = checkpoint_index.map_or(0, |index| index + 1);
+        let restore_checkpoint_counts = checkpoint_index.is_some();
+        let mut completed = if restore_checkpoint_counts {
+            u64::try_from(job.completed_count.max(0)).unwrap_or(0)
+        } else if resumed {
             0
         } else {
             u64::try_from(job.completed_count.max(0)).unwrap_or(0)
         };
-        let mut failed = if resumed {
+        let mut failed = if restore_checkpoint_counts {
+            u64::try_from(job.failed_count.max(0)).unwrap_or(0)
+        } else if resumed {
             0
         } else {
             u64::try_from(job.failed_count.max(0)).unwrap_or(0)
@@ -993,13 +1023,12 @@ impl LibrarianAgent {
         let progress_every_secs = self.runtime.extract_progress_every_secs;
         let log_each = self.runtime.extract_log_each;
 
-        let item_ids = job.item_ids;
         let total = item_ids.len();
         let start = Instant::now();
         let mut last_progress = Instant::now();
 
         let mut first_error = None;
-        for (window_index, window) in item_ids.chunks(page_size).enumerate() {
+        for (window_index, window) in item_ids[start_index..].chunks(page_size).enumerate() {
             // Item IDs are durable, but note payloads are loaded only for the
             // current bounded window. This keeps `extract-entities --all`
             // memory bounded and observes cancellation before fetching the
@@ -1024,13 +1053,13 @@ impl LibrarianAgent {
                         cancelled: true,
                     });
                 }
-                let index = window_index * page_size + item_index;
+                let index = start_index + window_index * page_size + item_index;
                 let Some(note) = self.repo.get_note(item_id).await? else {
-                    failed += 1;
-                    let error = format!("selected note was deleted before processing: {item_id}");
-                    if first_error.is_none() {
-                        first_error = Some(error.clone());
-                    }
+                    // A deleted item is terminally skipped: it cannot be
+                    // extracted later, and retrying it would keep an
+                    // otherwise healthy durable job permanently failed.
+                    completed += 1;
+                    debug!("Selected note was deleted before processing: {item_id}");
                     self.repo
                         .update_processing_job(
                             &job_id,
@@ -1038,7 +1067,7 @@ impl LibrarianAgent {
                                 completed_count: Some(completed),
                                 failed_count: Some(failed),
                                 checkpoint: Some(Some(item_id.clone())),
-                                last_error: Some(Some(error)),
+                                last_error: Some(first_error.clone()),
                                 ..Default::default()
                             },
                         )
@@ -1177,10 +1206,10 @@ impl LibrarianAgent {
                 item_ids,
             )
             .await?;
-        // Reuse the same persisted-item execution path as resume. Resetting
-        // a just-created job is harmless, and ensures every entity mode has
-        // the same checkpoints, cancellation state, and retry behavior.
-        self.extract_entities_for_notes_job(0, Some(job)).await
+        // Reuse the persisted-item executor while keeping newly created jobs
+        // distinct from a real checkpoint resume.
+        self.extract_entities_for_notes_job(0, Some(job), false, false)
+            .await
     }
 
     /// Return the durable item set for `extract-entities --all`. A
@@ -2362,7 +2391,8 @@ mod tests {
     use graphrag_core::Note;
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
-        init_memory, ProcessingJobStatus, Repository, SourceImportAction,
+        init_memory, ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository,
+        SourceImportAction,
     };
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -2545,7 +2575,7 @@ mod tests {
         );
         assert_eq!(
             librarian
-                .extract_entities_for_notes_job(100, None)
+                .extract_entities_for_notes_job(100, None, false, false)
                 .await
                 .unwrap(),
             no_processing_work()
@@ -2716,14 +2746,14 @@ mod tests {
                 cancellation_requested: cancellation_requested.clone(),
             }),
         )
-        .with_cancellation_flag(cancellation_requested);
+        .with_cancellation_flag(cancellation_requested.clone());
 
         // One persisted page contains all three notes. The first extraction
         // requests cancellation, so the in-page check must prevent later
         // notes from reaching the provider.
         assert_eq!(
             librarian
-                .extract_entities_for_all_notes(3, false)
+                .extract_entities_for_all_notes(3, true)
                 .await
                 .unwrap(),
             1
@@ -2734,6 +2764,95 @@ mod tests {
         assert_eq!(job.status, ProcessingJobStatus::Cancelled.as_str());
         assert_eq!(job.completed_count, 1);
         assert_eq!(job.failed_count, 0);
+        let job_id = graphrag_core::record_id_to_string(job.id.as_ref().unwrap());
+
+        // Resume keeps the completed prefix out of the force-mode executor:
+        // exactly the two remaining note IDs reach the provider.
+        let resumed = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(CancellingEntityExtractor {
+                calls: calls.clone(),
+                cancellation_requested,
+            }),
+        )
+        .with_cancellation_flag(Arc::new(AtomicBool::new(false)))
+        .resume_processing_job(&job_id)
+        .await
+        .unwrap();
+        assert_eq!(resumed.completed, 3);
+        assert_eq!(resumed.failed, 0);
+        assert!(!resumed.cancelled);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            repo.get_processing_job(&job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProcessingJobStatus::Completed.as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn entity_resume_skips_deleted_persisted_items() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first = repo
+            .create_note(Note::new("first extracted"))
+            .await
+            .unwrap();
+        let deleted = repo
+            .create_note(Note::new("deleted queued item"))
+            .await
+            .unwrap();
+        let remaining = repo
+            .create_note(Note::new("remaining queued item"))
+            .await
+            .unwrap();
+        let first_id = graphrag_core::record_id_to_string(first.id.as_ref().unwrap());
+        let deleted_id = graphrag_core::record_id_to_string(deleted.id.as_ref().unwrap());
+        let remaining_id = graphrag_core::record_id_to_string(remaining.id.as_ref().unwrap());
+        let job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::EntityExtraction,
+                None,
+                3,
+                Some("all_notes:page_size=3;force=false".into()),
+                vec![first_id.clone(), deleted_id.clone(), remaining_id.clone()],
+            )
+            .await
+            .unwrap();
+        let job_id = graphrag_core::record_id_to_string(job.id.as_ref().unwrap());
+        repo.update_processing_job(
+            job.id.as_ref().unwrap(),
+            ProcessingJobUpdate {
+                completed_count: Some(1),
+                checkpoint: Some(Some(first_id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        repo.cancel_processing_job(job.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.delete_note(&deleted_id).await.unwrap();
+
+        let result = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .resume_processing_job(&job_id)
+        .await
+        .unwrap();
+        assert_eq!(result.completed, 3);
+        assert_eq!(result.failed, 0);
+        let job = repo.get_processing_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(job.status, ProcessingJobStatus::Completed.as_str());
+        assert_eq!(job.completed_count, 3);
+        assert_eq!(job.failed_count, 0);
+        assert_eq!(job.checkpoint.as_deref(), Some(remaining_id.as_str()));
     }
 
     #[tokio::test]
