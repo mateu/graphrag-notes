@@ -86,6 +86,13 @@ pub struct InferenceConfig {
     pub ollama_url: String,
     pub timeout_secs: u64,
     pub tei_max_batch: usize,
+    pub tei_prompt_name_query: Option<String>,
+    pub tei_prompt_name_passage: Option<String>,
+    pub strict_entity_json: bool,
+    pub max_entities: usize,
+    pub max_relationships: usize,
+    pub ollama_timeout_secs: u64,
+    pub ollama_options: Option<serde_json::Value>,
 }
 
 impl Default for InferenceConfig {
@@ -100,6 +107,13 @@ impl Default for InferenceConfig {
             ollama_url: "http://localhost:11434".into(),
             timeout_secs: 30,
             tei_max_batch: 32,
+            tei_prompt_name_query: None,
+            tei_prompt_name_passage: None,
+            strict_entity_json: true,
+            max_entities: 30,
+            max_relationships: 15,
+            ollama_timeout_secs: 120,
+            ollama_options: None,
         }
     }
 }
@@ -160,12 +174,28 @@ impl Default for GardenerConfig {
 pub struct LibrarianConfig {
     pub min_chunk_size: usize,
     pub max_chunk_size: usize,
+    pub skip_entity_extraction: bool,
+    pub extract_log_each: bool,
+    /// Maximum characters sent to entity extraction. Zero preserves the
+    /// legacy meaning of no truncation.
+    pub extract_max_chars: usize,
+    pub extract_progress_every: usize,
+    pub extract_progress_every_secs: u64,
+    pub import_progress_every: usize,
+    pub import_progress_every_secs: u64,
 }
 impl Default for LibrarianConfig {
     fn default() -> Self {
         Self {
             min_chunk_size: 50,
             max_chunk_size: 1000,
+            skip_entity_extraction: false,
+            extract_log_each: false,
+            extract_max_chars: 8000,
+            extract_progress_every: 10,
+            extract_progress_every_secs: 5,
+            import_progress_every: 10,
+            import_progress_every_secs: 5,
         }
     }
 }
@@ -258,6 +288,77 @@ impl RuntimeConfig {
         set_string(env, "TGI_MODEL", &mut self.inference.extraction_model);
         set_string(env, "OLLAMA_URL", &mut self.inference.ollama_url);
         set_usize(env, "TEI_MAX_BATCH", &mut self.inference.tei_max_batch)?;
+        set_optional_string(
+            env,
+            "TEI_PROMPT_NAME_QUERY",
+            &mut self.inference.tei_prompt_name_query,
+        );
+        set_optional_string(
+            env,
+            "TEI_PROMPT_NAME_PASSAGE",
+            &mut self.inference.tei_prompt_name_passage,
+        );
+        set_bool(
+            env,
+            "STRICT_ENTITY_JSON",
+            &mut self.inference.strict_entity_json,
+        );
+        set_usize(
+            env,
+            "EXTRACT_MAX_ENTITIES",
+            &mut self.inference.max_entities,
+        )?;
+        set_usize(
+            env,
+            "EXTRACT_MAX_RELATIONSHIPS",
+            &mut self.inference.max_relationships,
+        )?;
+        set_u64(
+            env,
+            "TGI_OLLAMA_TIMEOUT_SECS",
+            &mut self.inference.ollama_timeout_secs,
+        )?;
+        set_json_object(
+            env,
+            "TGI_OLLAMA_OPTIONS",
+            &mut self.inference.ollama_options,
+        )?;
+
+        set_bool(
+            env,
+            "SKIP_ENTITY_EXTRACTION",
+            &mut self.librarian.skip_entity_extraction,
+        );
+        set_bool(
+            env,
+            "EXTRACT_LOG_EACH",
+            &mut self.librarian.extract_log_each,
+        );
+        set_usize(
+            env,
+            "EXTRACT_MAX_CHARS",
+            &mut self.librarian.extract_max_chars,
+        )?;
+        set_usize(
+            env,
+            "EXTRACT_PROGRESS_EVERY",
+            &mut self.librarian.extract_progress_every,
+        )?;
+        set_u64(
+            env,
+            "EXTRACT_PROGRESS_EVERY_SECS",
+            &mut self.librarian.extract_progress_every_secs,
+        )?;
+        set_usize(
+            env,
+            "IMPORT_PROGRESS_EVERY",
+            &mut self.librarian.import_progress_every,
+        )?;
+        set_u64(
+            env,
+            "IMPORT_PROGRESS_EVERY_SECS",
+            &mut self.librarian.import_progress_every_secs,
+        )?;
 
         set_u64(
             env,
@@ -362,6 +463,9 @@ impl RuntimeConfig {
                 "inference.extraction_model",
                 &self.inference.extraction_model,
             ),
+            ("inference.embedding_url", &self.inference.embedding_url),
+            ("inference.extraction_url", &self.inference.extraction_url),
+            ("inference.ollama_url", &self.inference.ollama_url),
         ] {
             if value.trim().is_empty() {
                 return Err(ConfigError::Validation(format!("{name} must not be empty")));
@@ -369,12 +473,19 @@ impl RuntimeConfig {
         }
         if self.inference.timeout_secs == 0
             || self.inference.tei_max_batch == 0
+            || self.inference.max_entities == 0
+            || self.inference.max_relationships == 0
+            || self.inference.ollama_timeout_secs == 0
             || self.search.default_limit == 0
             || self.augment.default_limit == 0
             || self.augment.max_tokens == 0
             || self.augment.max_chunk_tokens == 0
             || self.librarian.min_chunk_size == 0
             || self.librarian.max_chunk_size < self.librarian.min_chunk_size
+            || self.librarian.extract_progress_every == 0
+            || self.librarian.extract_progress_every_secs == 0
+            || self.librarian.import_progress_every == 0
+            || self.librarian.import_progress_every_secs == 0
             || self.gardener.max_suggestions == 0
         {
             return Err(ConfigError::Validation("limits must be positive and librarian.max_chunk_size must be at least min_chunk_size".into()));
@@ -401,6 +512,16 @@ impl RuntimeConfig {
                 "logging.level must be trace, debug, info, warn, error, or off".into(),
             ));
         }
+        if self
+            .inference
+            .ollama_options
+            .as_ref()
+            .is_some_and(|options| !options.is_object())
+        {
+            return Err(ConfigError::Validation(
+                "inference.ollama_options must be a TOML/JSON object".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -418,6 +539,47 @@ fn set_string(env: &impl Fn(&str) -> Option<String>, key: &str, target: &mut Str
         *target = value;
     }
 }
+
+fn set_optional_string(
+    env: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    target: &mut Option<String>,
+) {
+    if let Some(value) = env(key) {
+        *target = Some(value);
+    }
+}
+
+fn set_bool(env: &impl Fn(&str) -> Option<String>, key: &str, target: &mut bool) {
+    if let Some(value) = env(key) {
+        let value = value.trim().to_ascii_lowercase();
+        *target = matches!(value.as_str(), "1" | "true" | "yes" | "on");
+    }
+}
+
+fn set_json_object(
+    env: &impl Fn(&str) -> Option<String>,
+    key: &str,
+    target: &mut Option<serde_json::Value>,
+) -> Result<(), ConfigError> {
+    let Some(raw) = env(key) else {
+        return Ok(());
+    };
+    if raw.trim().is_empty() {
+        *target = None;
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| ConfigError::Validation(format!("{key} must be valid JSON: {error}")))?;
+    if !value.is_object() {
+        return Err(ConfigError::Validation(format!(
+            "{key} must be a JSON object"
+        )));
+    }
+    *target = Some(value);
+    Ok(())
+}
+
 fn set_path(env: &impl Fn(&str) -> Option<String>, key: &str, target: &mut PathBuf) {
     if let Some(value) = env(key).filter(|value| !value.trim().is_empty()) {
         *target = expand_home_directory(Path::new(&value));
@@ -622,6 +784,111 @@ mod tests {
             config.inference.extraction_url,
             "http://ollama.example:11434"
         );
+    }
+
+    #[test]
+    fn legacy_inference_and_librarian_environment_settings_are_typed() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[
+                ("TEI_PROMPT_NAME_QUERY", "query"),
+                ("TEI_PROMPT_NAME_PASSAGE", "passage"),
+                ("STRICT_ENTITY_JSON", "false"),
+                ("EXTRACT_MAX_ENTITIES", "7"),
+                ("EXTRACT_MAX_RELATIONSHIPS", "4"),
+                ("TGI_OLLAMA_TIMEOUT_SECS", "45"),
+                ("TGI_OLLAMA_OPTIONS", r#"{"temperature":0,"num_ctx":1024}"#),
+                ("SKIP_ENTITY_EXTRACTION", "yes"),
+                ("EXTRACT_LOG_EACH", "on"),
+                ("EXTRACT_MAX_CHARS", "0"),
+                ("EXTRACT_PROGRESS_EVERY", "11"),
+                ("EXTRACT_PROGRESS_EVERY_SECS", "6"),
+                ("IMPORT_PROGRESS_EVERY", "12"),
+                ("IMPORT_PROGRESS_EVERY_SECS", "7"),
+            ]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.inference.tei_prompt_name_query.as_deref(),
+            Some("query")
+        );
+        assert_eq!(
+            config.inference.tei_prompt_name_passage.as_deref(),
+            Some("passage")
+        );
+        assert!(!config.inference.strict_entity_json);
+        assert_eq!(config.inference.max_entities, 7);
+        assert_eq!(config.inference.max_relationships, 4);
+        assert_eq!(config.inference.ollama_timeout_secs, 45);
+        assert_eq!(
+            config.inference.ollama_options,
+            Some(serde_json::json!({"temperature": 0, "num_ctx": 1024}))
+        );
+        assert!(config.librarian.skip_entity_extraction);
+        assert!(config.librarian.extract_log_each);
+        assert_eq!(config.librarian.extract_max_chars, 0);
+        assert_eq!(config.librarian.extract_progress_every, 11);
+        assert_eq!(config.librarian.extract_progress_every_secs, 6);
+        assert_eq!(config.librarian.import_progress_every, 12);
+        assert_eq!(config.librarian.import_progress_every_secs, 7);
+    }
+
+    #[test]
+    fn toml_supports_typed_ollama_options_and_librarian_controls() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("graphrag.toml");
+        fs::write(
+            &config_path,
+            r#"
+                [inference]
+                ollama_options = { temperature = 0, num_ctx = 1024 }
+                [librarian]
+                skip_entity_extraction = true
+                extract_max_chars = 0
+            "#,
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            Some(&config_path),
+            &CliOverrides::default(),
+            &env(&[]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.inference.ollama_options,
+            Some(serde_json::json!({"temperature": 0, "num_ctx": 1024}))
+        );
+        assert!(config.librarian.skip_entity_extraction);
+        assert_eq!(config.librarian.extract_max_chars, 0);
+    }
+
+    #[test]
+    fn invalid_legacy_controls_fail_with_field_specific_errors() {
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("TGI_OLLAMA_OPTIONS", "[]")]),
+            None,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("TGI_OLLAMA_OPTIONS must be a JSON object"));
+
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("EXTRACT_PROGRESS_EVERY", "0")]),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("limits must be positive"));
     }
 
     #[test]

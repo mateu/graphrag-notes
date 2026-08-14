@@ -237,6 +237,19 @@ Environment compatibility is preserved: `TEI_PROVIDER`, `TEI_URL`,
 `[database].path`. The complete supported override list and defaults are in
 [`.env.example`](.env.example).
 
+The remaining established inference and Librarian environment names are also
+typed and validated: `TEI_PROMPT_NAME_QUERY`, `TEI_PROMPT_NAME_PASSAGE`,
+`STRICT_ENTITY_JSON`, `EXTRACT_MAX_ENTITIES`, `EXTRACT_MAX_RELATIONSHIPS`,
+`TGI_OLLAMA_TIMEOUT_SECS`, `TGI_OLLAMA_OPTIONS`,
+`SKIP_ENTITY_EXTRACTION`, `EXTRACT_LOG_EACH`, `EXTRACT_MAX_CHARS`,
+`EXTRACT_PROGRESS_EVERY`, `EXTRACT_PROGRESS_EVERY_SECS`,
+`IMPORT_PROGRESS_EVERY`, and `IMPORT_PROGRESS_EVERY_SECS`. Use
+`[inference].ollama_options` as an inline TOML table (for example,
+`{ temperature = 0, num_ctx = 1024 }`); the environment equivalent is a JSON
+object. `EXTRACT_MAX_CHARS=0` intentionally preserves its legacy meaning of no
+truncation. Invalid values are rejected by `config validate` rather than being
+silently ignored.
+
 ### 3. Add Some Notes
 
 ```bash

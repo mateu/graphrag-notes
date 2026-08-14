@@ -20,6 +20,15 @@ ollama_url = "http://localhost:11434"
 # Request timeout and maximum TEI batch size.
 timeout_secs = 30
 tei_max_batch = 32
+# Optional TEI prompt names. Leave commented to let the service defaults apply.
+# tei_prompt_name_query = "query"
+# tei_prompt_name_passage = "passage"
+# Entity extraction controls. Invalid JSON is rejected at startup.
+strict_entity_json = true
+max_entities = 30
+max_relationships = 15
+ollama_timeout_secs = 120
+# ollama_options = { temperature = 0, num_ctx = 1024 }
 
 [search]
 # Default number of results to return
@@ -47,6 +56,14 @@ max_suggestions = 50
 min_chunk_size = 50
 # Maximum chunk size
 max_chunk_size = 1000
+# Entity extraction/import controls. `extract_max_chars = 0` means no truncation.
+skip_entity_extraction = false
+extract_log_each = false
+extract_max_chars = 8000
+extract_progress_every = 10
+extract_progress_every_secs = 5
+import_progress_every = 10
+import_progress_every_secs = 5
 
 [logging]
 # Log level: trace, debug, info, warn, error
