@@ -23,25 +23,6 @@ pub struct Repository {
     db: DbConnection,
 }
 
-fn note_content_value(note: &Note) -> Result<serde_json::Value> {
-    let mut value = serde_json::to_value(note)
-        .map_err(|e| DbError::QueryFailed(format!("note serialization failed: {e}")))?;
-    if let Some(obj) = value.as_object_mut() {
-        // Always remove id – the record id is determined by the create/update target
-        obj.remove("id");
-        // RecordId serializes as a structural JSON object, while SurrealQL
-        // requires a typed record value. `create_note` binds it separately.
-        obj.remove("source_id");
-        if note.title.is_none() {
-            obj.remove("title");
-        }
-        if note.embedding.is_empty() {
-            obj.remove("embedding");
-        }
-    }
-    Ok(value)
-}
-
 fn source_content_value(source: &Source) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(source)
         .map_err(|error| DbError::QueryFailed(format!("source serialization failed: {error}")))?;
@@ -104,31 +85,41 @@ impl Repository {
     /// Create a new note
     #[instrument(skip(self, note))]
     pub async fn create_note(&self, note: Note) -> Result<Note> {
-        // Use SurrealDB's high-level create API so we get back the stored
-        // record including its generated `id`.
-        let source_id = note.source_id.clone();
+        // Source ownership is written in the same CREATE statement as the
+        // note. Splitting this into a later UPDATE leaves an interruption
+        // window where a staged import leaks an unowned, visible note.
         let created: Option<Note> = self
             .db
-            .create("note")
-            .content(note_content_value(&note)?)
-            .await?;
-        let mut created = created.ok_or_else(|| DbError::QueryFailed("create_note".into()))?;
-        if let Some(source_id) = source_id {
-            self.db
-                .query("UPDATE $note SET source_id = $source")
-                .bind((
-                    "note",
-                    created
-                        .id
-                        .clone()
-                        .ok_or_else(|| DbError::CreateFailed("note id".into()))?,
-                ))
-                .bind(("source", source_id.clone()))
-                .await?
-                .check()?;
-            created.source_id = Some(source_id);
-        }
-        Ok(created)
+            .query(
+                "CREATE note SET \
+                    note_type = $note_type, title = $title, content = $content, \
+                    embedding = $embedding, source_id = $source_id, \
+                    source_generation = $source_generation, tags = $tags, \
+                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
+                 RETURN AFTER",
+            )
+            .bind((
+                "note_type",
+                serde_json::to_value(&note.note_type)
+                    .map_err(|error| DbError::QueryFailed(error.to_string()))?,
+            ))
+            .bind(("title", note.title.clone()))
+            .bind(("content", note.content.clone()))
+            .bind((
+                "embedding",
+                (!note.embedding.is_empty()).then_some(note.embedding.clone()),
+            ))
+            .bind(("source_id", note.source_id.clone()))
+            .bind((
+                "source_generation",
+                note.source_generation.map(|generation| generation as i64),
+            ))
+            .bind(("tags", note.tags.clone()))
+            .bind(("created_at", note.created_at.to_rfc3339()))
+            .bind(("updated_at", note.updated_at.to_rfc3339()))
+            .await?
+            .take(0)?;
+        created.ok_or_else(|| DbError::QueryFailed("create_note".into()))
     }
 
     /// Get a note by ID
@@ -142,11 +133,30 @@ impl Repository {
     /// Update a note
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
+        let raw_id = id.strip_prefix("note:").unwrap_or(id);
         let updated: Option<Note> = self
             .db
-            .update(("note", id))
-            .content(note_content_value(&note)?)
-            .await?;
+            .query(
+                "UPDATE $id SET \
+                    note_type = $note_type, title = $title, content = $content, \
+                    embedding = $embedding, tags = $tags, \
+                    source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
+                    source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
+                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
+                 RETURN AFTER",
+            )
+            .bind(("id", RecordId::new("note", raw_id)))
+            .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
+            .bind(("title", note.title.clone()))
+            .bind(("content", note.content.clone()))
+            .bind(("embedding", (!note.embedding.is_empty()).then_some(note.embedding.clone())))
+            .bind(("tags", note.tags.clone()))
+            .bind(("source_id", note.source_id.clone()))
+            .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
+            .bind(("created_at", note.created_at.to_rfc3339()))
+            .bind(("updated_at", note.updated_at.to_rfc3339()))
+            .await?
+            .take(0)?;
 
         updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
@@ -1192,24 +1202,36 @@ impl Repository {
         })
     }
 
-    /// Mark an import successful and remove only derived records from older
-    /// generations. Manual and legacy notes have no generation and survive.
+    /// Promote an import before removing superseded records. If cleanup is
+    /// interrupted, the new generation is already searchable and the old
+    /// generation remains recoverable (but hidden) for a later cleanup.
+    /// Manual and legacy notes have no generation and survive.
     #[instrument(skip(self, source))]
     pub async fn complete_file_import(&self, source: &mut Source) -> Result<SourceDeleteSummary> {
         let source_id = source
             .id
             .as_ref()
-            .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
+            .ok_or_else(|| DbError::CreateFailed("source id".into()))?
+            .clone();
         let summary = self
-            .delete_source_notes(source_id, Some(source.generation), true)
+            .source_delete_summary(&source_id, Some(source.generation), true)
             .await?;
+        self.promote_file_import(source).await?;
+        // Do this only after durable promotion. A failure here can leave old
+        // records behind, but cannot leave the corpus with no visible complete
+        // generation; visibility selects `successful_generation`.
+        self.delete_source_notes(&source_id, Some(source.generation), true)
+            .await?;
+        Ok(summary)
+    }
+
+    async fn promote_file_import(&self, source: &mut Source) -> Result<()> {
         source.successful_generation = source.generation;
         source.status = SourceIngestionStatus::Ready;
         source.last_error = None;
         source.updated_at = chrono::Utc::now();
         source.last_ingested_at = Some(source.updated_at);
-        self.replace_source(source).await?;
-        Ok(summary)
+        self.replace_source(source).await
     }
 
     /// Remove partially-created notes for a failed generation and retain the
@@ -2127,6 +2149,93 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn source_owned_notes_are_created_and_updated_with_ownership_intact() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let plan = begin_markdown(&repo, "content", false).await;
+        let source_id = plan.source.id.as_ref().unwrap().clone();
+        let created = repo
+            .create_note(
+                Note::new("owned content")
+                    .with_source(source_id.clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+
+        // Creation writes both ownership fields in the single CREATE command;
+        // there is no unowned persisted state to leak if import work stops.
+        assert_eq!(created.source_id.as_ref(), Some(&source_id));
+        assert_eq!(created.source_generation, Some(plan.source.generation));
+
+        let mut edited = created.clone();
+        edited.content = "edited content".into();
+        // Callers that do not repeat source ownership must not accidentally
+        // detach a source-owned note during a content update.
+        edited.source_id = None;
+        edited.source_generation = None;
+        let updated = repo
+            .update_note(&record_id_to_string(created.id.as_ref().unwrap()), edited)
+            .await
+            .unwrap();
+        assert_eq!(updated.source_id.as_ref(), Some(&source_id));
+        assert_eq!(updated.source_generation, Some(plan.source.generation));
+    }
+
+    #[tokio::test]
+    async fn promotion_selects_the_new_generation_before_old_cleanup() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        repo.create_note(
+            Note::new("first generation")
+                .with_source(source_id.clone())
+                .with_source_generation(first.source.generation),
+        )
+        .await
+        .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        repo.create_note(
+            Note::new("second generation")
+                .with_source(source_id)
+                .with_source_generation(second.source.generation),
+        )
+        .await
+        .unwrap();
+        // Simulate a process stopping after durable promotion but before the
+        // best-effort destructive cleanup. The new complete generation is
+        // immediately searchable; the old one is merely hidden/recoverable.
+        repo.promote_file_import(&mut second.source).await.unwrap();
+        assert_eq!(
+            second.source.successful_generation,
+            second.source.generation
+        );
+        assert_eq!(
+            repo.fulltext_search("second generation", 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(repo
+            .fulltext_search("first generation", 10)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let cleanup = repo
+            .delete_source_notes(
+                second.source.id.as_ref().unwrap(),
+                Some(second.source.generation),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleanup.notes, 1);
     }
 
     #[tokio::test]

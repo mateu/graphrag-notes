@@ -1040,11 +1040,9 @@ async fn cmd_sources(
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("source not found: {id_or_uri}"))?;
             let summary = repo.preview_source_delete(&source).await?;
-            if !dry_run && !yes {
-                anyhow::bail!(
-                    "refusing to delete without --yes; use --dry-run to inspect the cascade"
-                );
-            }
+            // Safe by default: omitting both flags prints the same exact
+            // preview as --dry-run. Only --yes authorizes mutation.
+            let dry_run = delete_is_dry_run(dry_run, yes);
             if !dry_run {
                 repo.delete_source(&source).await?;
             }
@@ -1064,6 +1062,10 @@ async fn cmd_sources(
         }
     }
     Ok(())
+}
+
+fn delete_is_dry_run(dry_run: bool, yes: bool) -> bool {
+    dry_run || !yes
 }
 
 fn print_delete_summary(
@@ -1105,7 +1107,7 @@ fn print_delete_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::import_path_utf8;
+    use super::{delete_is_dry_run, import_path_utf8};
     use std::path::PathBuf;
 
     #[cfg(unix)]
@@ -1117,6 +1119,13 @@ mod tests {
         let second = PathBuf::from(std::ffi::OsString::from_vec(vec![b'b', 0x81]));
         assert!(import_path_utf8(&first).is_err());
         assert!(import_path_utf8(&second).is_err());
+    }
+
+    #[test]
+    fn source_delete_defaults_to_a_non_mutating_preview() {
+        assert!(delete_is_dry_run(false, false));
+        assert!(delete_is_dry_run(true, false));
+        assert!(!delete_is_dry_run(false, true));
     }
 }
 
