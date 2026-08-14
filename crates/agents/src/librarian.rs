@@ -659,8 +659,37 @@ impl LibrarianAgent {
                 .iter()
                 .map(|note| note.content.clone())
                 .collect::<Vec<_>>();
-            let embeddings: Vec<Result<Vec<f32>>> = match self.embed_batch(&texts).await {
-                Ok(embeddings) => embeddings.into_iter().map(Ok).collect(),
+            let mut first_error = None;
+            match self.embed_batch(&texts).await {
+                Ok(embeddings) => {
+                    for (note, embedding) in notes.iter().zip(embeddings) {
+                        if self.processing_job_cancelled(&job_id).await? {
+                            return Ok(ProcessingRunResult {
+                                job_id: record_id_to_string(&job_id),
+                                completed,
+                                failed,
+                                cancelled: true,
+                            });
+                        }
+                        self.checkpoint_embedding_outcome(
+                            &job_id,
+                            note,
+                            Ok(embedding),
+                            &mut completed,
+                            &mut failed,
+                            &mut first_error,
+                        )
+                        .await?;
+                        if self.processing_job_cancelled(&job_id).await? {
+                            return Ok(ProcessingRunResult {
+                                job_id: record_id_to_string(&job_id),
+                                completed,
+                                failed,
+                                cancelled: true,
+                            });
+                        }
+                    }
+                }
                 // A rejected batch should not discard independently valid
                 // items. Fall back once per item so the job records the exact
                 // permanent failure and can be resumed after provider repair.
@@ -683,62 +712,38 @@ impl LibrarianAgent {
                         return Err(batch_error);
                     }
                     debug!("Embedding batch failed; falling back to per-item processing: {batch_error}");
-                    let mut outcomes = Vec::with_capacity(notes.len());
                     for note in &notes {
-                        outcomes.push(self.embed_text(&note.content).await);
-                    }
-                    outcomes
-                }
-            };
-
-            let mut first_error = None;
-            for (note, outcome) in notes.iter().zip(embeddings) {
-                let checkpoint = note.id.as_ref().map(record_id_to_string);
-                match outcome {
-                    Ok(embedding) => {
-                        if let Some(id) = &note.id {
-                            self.repo.update_note_embedding(id, embedding).await?;
-                            completed += 1;
+                        // A cancellation that arrives while a slow fallback
+                        // request is in flight still lets that request finish,
+                        // then checkpoints its outcome before preventing the
+                        // next request in this bounded window.
+                        if self.processing_job_cancelled(&job_id).await? {
+                            return Ok(ProcessingRunResult {
+                                job_id: record_id_to_string(&job_id),
+                                completed,
+                                failed,
+                                cancelled: true,
+                            });
                         }
-                        self.repo
-                            .update_processing_job(
-                                &job_id,
-                                ProcessingJobUpdate {
-                                    completed_count: Some(completed),
-                                    failed_count: Some(failed),
-                                    checkpoint: Some(checkpoint),
-                                    last_error: Some(first_error.clone()),
-                                    ..Default::default()
-                                },
-                            )
-                            .await?;
-                    }
-                    Err(error) => {
-                        failed += 1;
-                        if first_error.is_none() {
-                            first_error = Some(error.to_string());
+                        let outcome = self.embed_text(&note.content).await;
+                        self.checkpoint_embedding_outcome(
+                            &job_id,
+                            note,
+                            outcome,
+                            &mut completed,
+                            &mut failed,
+                            &mut first_error,
+                        )
+                        .await?;
+                        if self.processing_job_cancelled(&job_id).await? {
+                            return Ok(ProcessingRunResult {
+                                job_id: record_id_to_string(&job_id),
+                                completed,
+                                failed,
+                                cancelled: true,
+                            });
                         }
-                        self.repo
-                            .update_processing_job(
-                                &job_id,
-                                ProcessingJobUpdate {
-                                    completed_count: Some(completed),
-                                    failed_count: Some(failed),
-                                    checkpoint: Some(checkpoint),
-                                    last_error: Some(Some(error.to_string())),
-                                    ..Default::default()
-                                },
-                            )
-                            .await?;
                     }
-                }
-                if self.processing_job_cancelled(&job_id).await? {
-                    return Ok(ProcessingRunResult {
-                        job_id: record_id_to_string(&job_id),
-                        completed,
-                        failed,
-                        cancelled: true,
-                    });
                 }
             }
             if failed > 0 {
@@ -759,6 +764,60 @@ impl LibrarianAgent {
                 )));
             }
         }
+    }
+
+    /// Persist one embedding outcome before asking whether cancellation should
+    /// stop a fallback window. This keeps successful work resumable even when
+    /// a Ctrl-C arrives during a slow individual provider request.
+    async fn checkpoint_embedding_outcome(
+        &self,
+        job_id: &RecordId,
+        note: &Note,
+        outcome: Result<Vec<f32>>,
+        completed: &mut u64,
+        failed: &mut u64,
+        first_error: &mut Option<String>,
+    ) -> Result<()> {
+        let checkpoint = note.id.as_ref().map(record_id_to_string);
+        match outcome {
+            Ok(embedding) => {
+                if let Some(id) = &note.id {
+                    self.repo.update_note_embedding(id, embedding).await?;
+                    *completed += 1;
+                }
+                self.repo
+                    .update_processing_job(
+                        job_id,
+                        ProcessingJobUpdate {
+                            completed_count: Some(*completed),
+                            failed_count: Some(*failed),
+                            checkpoint: Some(checkpoint),
+                            last_error: Some(first_error.clone()),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+            Err(error) => {
+                *failed += 1;
+                if first_error.is_none() {
+                    *first_error = Some(error.to_string());
+                }
+                self.repo
+                    .update_processing_job(
+                        job_id,
+                        ProcessingJobUpdate {
+                            completed_count: Some(*completed),
+                            failed_count: Some(*failed),
+                            checkpoint: Some(checkpoint),
+                            last_error: Some(Some(error.to_string())),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     async fn processing_job_cancelled(&self, id: &RecordId) -> Result<bool> {
@@ -2333,10 +2392,53 @@ mod tests {
         chunk_content, decode_file_uri, no_processing_work, truncate_for_extraction,
         LibrarianAgent, LibrarianRuntimeConfig,
     };
-    use crate::{DeterministicEmbedder, FixtureEntityExtractor};
+    use crate::{DeterministicEmbedder, FixtureEntityExtractor, InferenceCapabilities};
     use graphrag_core::Note;
     use graphrag_db::{init_memory, ProcessingJobStatus, Repository, SourceImportAction};
-    use std::sync::{atomic::AtomicBool, Arc};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+
+    #[derive(Clone)]
+    struct CancellingFallbackEmbedder {
+        fallback_calls: Arc<AtomicUsize>,
+        cancellation_requested: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Embedder for CancellingFallbackEmbedder {
+        async fn embed(&self, _text: &str, _is_query: bool) -> crate::Result<Vec<f32>> {
+            self.fallback_calls.fetch_add(1, Ordering::SeqCst);
+            // Model the first Ctrl-C arriving during this slow fallback
+            // request. The caller must checkpoint this result and stop before
+            // starting the next individual request.
+            self.cancellation_requested.store(true, Ordering::Release);
+            Ok(vec![0.0; 1024])
+        }
+
+        async fn embed_batch(
+            &self,
+            _texts: &[String],
+            _is_query: bool,
+        ) -> crate::Result<Vec<Vec<f32>>> {
+            Err(crate::AgentError::InferenceService("batch timeout".into()))
+        }
+
+        async fn health(&self) -> crate::Result<bool> {
+            Ok(true)
+        }
+
+        fn capabilities(&self) -> InferenceCapabilities {
+            InferenceCapabilities {
+                provider: "cancelling-fixture".into(),
+                model: "fixture".into(),
+                endpoint: "offline://cancelling-fallback".into(),
+                known_dimension: Some(1024),
+                cache_identity: "cancelling-fallback-v1".into(),
+            }
+        }
+    }
 
     #[test]
     fn runtime_config_defaults_preserve_library_behavior() {
@@ -2581,5 +2683,62 @@ mod tests {
                 .is_some_and(|error| error.contains("timeout")),
             "the success after a fallback failure must not clear diagnostics"
         );
+    }
+
+    #[tokio::test]
+    async fn embedding_fallback_checkpoints_then_stops_on_cancellation() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first = repo
+            .create_note(Note::new("first fallback embedding"))
+            .await
+            .unwrap();
+        let second = repo
+            .create_note(Note::new("second fallback embedding"))
+            .await
+            .unwrap();
+        let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(CancellingFallbackEmbedder {
+                fallback_calls: fallback_calls.clone(),
+                cancellation_requested: cancellation_requested.clone(),
+            }),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(cancellation_requested);
+
+        let result = librarian
+            .process_pending_embeddings_job(None)
+            .await
+            .unwrap();
+        assert!(result.cancelled);
+        assert_eq!(result.completed, 1);
+        assert_eq!(result.failed, 0);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+
+        let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.status, ProcessingJobStatus::Cancelled.as_str());
+        assert_eq!(job.completed_count, 1);
+        assert!(job.checkpoint.is_some());
+        let first = repo
+            .get_note(&graphrag_core::record_id_to_string(
+                first.id.as_ref().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        let second = repo
+            .get_note(&graphrag_core::record_id_to_string(
+                second.id.as_ref().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        let embedded = [first, second]
+            .into_iter()
+            .filter(|note| !note.embedding.is_empty())
+            .count();
+        assert_eq!(embedded, 1);
     }
 }
