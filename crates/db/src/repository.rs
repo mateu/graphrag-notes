@@ -400,7 +400,8 @@ impl Repository {
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
-                    chunk_overlap_chars = $chunk_overlap_chars, content_hash = $content_hash, \
+                    chunk_overlap_chars = $chunk_overlap_chars, split_fenced_code = $split_fenced_code, \
+                    content_hash = $content_hash, \
                     search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
                  RETURN AFTER",
@@ -431,6 +432,7 @@ impl Repository {
             .bind(("source_end_byte", note.source_end_byte.map(|value| value as i64)))
             .bind(("chunk_overlap_from", note.chunk_overlap_from.clone()))
             .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
+            .bind(("split_fenced_code", note.split_fenced_code))
             .bind(("content_hash", note.content_hash.clone()))
             .bind(("search_content", note.search_content.clone()))
             .bind(("tags", note.tags.clone()))
@@ -463,7 +465,8 @@ impl Repository {
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
-                    chunk_overlap_chars = $chunk_overlap_chars, content_hash = $content_hash, \
+                    chunk_overlap_chars = $chunk_overlap_chars, split_fenced_code = $split_fenced_code, \
+                    content_hash = $content_hash, \
                     search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
@@ -488,6 +491,7 @@ impl Repository {
             .bind(("source_end_byte", note.source_end_byte.map(|value| value as i64)))
             .bind(("chunk_overlap_from", note.chunk_overlap_from.clone()))
             .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
+            .bind(("split_fenced_code", note.split_fenced_code))
             .bind(("content_hash", note.content_hash.clone()))
             .bind(("search_content", note.search_content.clone()))
             .bind(("created_at", note.created_at.to_rfc3339()))
@@ -1646,7 +1650,7 @@ impl Repository {
     async fn mark_claimed_proposal_stale(&self, id: &RecordId, reason: &str) -> Result<()> {
         self.db
             .query(
-                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = $reason, resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting' AND resulting_edge_id IS NONE",
+                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = $reason, resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting'",
             )
             .bind(("id", id.clone()))
             .bind(("reason", reason.to_string()))
@@ -1658,7 +1662,7 @@ impl Repository {
     async fn mark_claimed_proposal_materialized(&self, id: &RecordId) -> Result<()> {
         self.db
             .query(
-                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = 'equivalent edge already materialized independently', resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting' AND resulting_edge_id IS NONE",
+                "UPDATE $id SET status = 'superseded', superseded_at = time::now(), supersession_reason = 'equivalent edge already materialized independently', resulting_edge_id = NONE, updated_at = time::now() WHERE status = 'accepting'",
             )
             .bind(("id", id.clone()))
             .await?

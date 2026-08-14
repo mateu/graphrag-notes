@@ -150,11 +150,15 @@ impl Chunker for MarkdownChunker {
             let mut overlap_chars = 0;
             if self.config.overlap_size > 0 && !previous_content.is_empty() {
                 let overlap = tail_chars(&previous_content, self.config.overlap_size);
+                // The display representation includes the two newline
+                // separator characters, which count toward the hard limit.
+                const OVERLAP_SEPARATOR: &str = "\n\n";
                 if !overlap.is_empty()
-                    && char_count(&overlap) + char_count(&content) <= self.config.max_size
+                    && char_count(&overlap) + char_count(OVERLAP_SEPARATOR) + char_count(&content)
+                        <= self.config.max_size
                 {
                     overlap_chars = char_count(&overlap);
-                    content = format!("{overlap}\n\n{content}");
+                    content = format!("{overlap}{OVERLAP_SEPARATOR}{content}");
                     overlap_from = previous_key.clone();
                 }
             }
@@ -734,6 +738,24 @@ mod tests {
         assert!(chunks[1]
             .content
             .starts_with(&tail_chars(&chunks[0].content, 12)));
+    }
+
+    #[test]
+    fn overlap_separator_is_included_in_the_hard_maximum() {
+        let chunks = chunk(
+            "abcdefghij\n\nklmnopqrst",
+            ChunkingConfig {
+                min_size: 1,
+                target_size: 10,
+                max_size: 20,
+                overlap_size: 10,
+            },
+        );
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|chunk| char_count(&chunk.content) <= 20));
+        // 10 overlap chars + 10 content chars would have fit before the
+        // separator was counted, but `\n\n` would have made a 22-char chunk.
+        assert!(chunks[1].overlap_from.is_none());
     }
 
     #[test]
