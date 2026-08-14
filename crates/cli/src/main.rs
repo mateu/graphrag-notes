@@ -22,7 +22,8 @@ use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
 use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
-    init_memory, init_persistent, migrations, parse_record_id, Repository, SourceDeleteSummary,
+    init_memory, init_persistent, migrations, parse_record_id, ProcessingJob, ProcessingJobType,
+    Repository, SourceDeleteSummary,
 };
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
@@ -1251,6 +1252,11 @@ async fn cmd_jobs(
             print_job(&job, JobOutputFormat::Human)?;
         }
         JobsCommand::Resume { id } => {
+            let job = repo
+                .get_processing_job(&id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Processing job not found: {id}"))?;
+            ensure_resume_provider_health(&job, &tei, &tgi).await?;
             let librarian = LibrarianAgent::new(repo, tei, tgi)
                 .with_runtime_config(librarian_config)
                 .with_cancellation_flag(cancellation_requested);
@@ -1260,6 +1266,34 @@ async fn cmd_jobs(
                 result.job_id, result.completed, result.failed, result.cancelled
             );
         }
+    }
+    Ok(())
+}
+
+/// Validate only the provider required by the persisted job before changing
+/// its state to running. Embedding jobs do not need extraction service health,
+/// and entity jobs do not need embeddings service health.
+async fn ensure_resume_provider_health(
+    job: &ProcessingJob,
+    tei: &SharedEmbedder,
+    tgi: &SharedEntityExtractor,
+) -> Result<()> {
+    match job.job_type_enum() {
+        Some(ProcessingJobType::Embedding) => {
+            if !tei.health().await.unwrap_or(false) {
+                eprintln!("Error: embeddings service is not reachable.");
+                eprintln!("  TEI (embeddings): {}", tei.capabilities().endpoint);
+                anyhow::bail!("Embeddings service unavailable")
+            }
+        }
+        Some(ProcessingJobType::EntityExtraction) => {
+            if !tgi.health().await.unwrap_or(false) {
+                eprintln!("Error: extraction service is not reachable.");
+                eprintln!("  TGI (extraction): {}", tgi.capabilities().endpoint);
+                anyhow::bail!("Extraction service unavailable")
+            }
+        }
+        None => anyhow::bail!("Unsupported processing job type: {}", job.job_type),
     }
     Ok(())
 }
@@ -2720,6 +2754,72 @@ mod tests {
         assert!(!request_cancellation(&requested));
         assert!(requested.load(Ordering::Acquire));
         assert!(request_cancellation(&requested));
+    }
+
+    #[tokio::test]
+    async fn resume_health_check_uses_only_the_job_required_provider() {
+        use graphrag_agents::{DeterministicEmbedder, FixtureEntityExtractor};
+
+        let repo = Repository::new(init_memory().await.unwrap());
+        let embedding_job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::Embedding,
+                None,
+                1,
+                Some("test".into()),
+                vec!["note:embedding".into()],
+            )
+            .await
+            .unwrap();
+        let entity_job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::EntityExtraction,
+                None,
+                1,
+                Some("test".into()),
+                vec!["note:entity".into()],
+            )
+            .await
+            .unwrap();
+        let healthy_embedder: SharedEmbedder = Arc::new(DeterministicEmbedder::default());
+        let unhealthy_embedder: SharedEmbedder =
+            Arc::new(DeterministicEmbedder::default().unhealthy());
+        let healthy_extractor: SharedEntityExtractor = Arc::new(FixtureEntityExtractor::default());
+        let unhealthy_extractor: SharedEntityExtractor =
+            Arc::new(FixtureEntityExtractor::default().unhealthy());
+
+        assert!(ensure_resume_provider_health(
+            &embedding_job,
+            &healthy_embedder,
+            &unhealthy_extractor,
+        )
+        .await
+        .is_ok());
+        assert!(ensure_resume_provider_health(
+            &embedding_job,
+            &unhealthy_embedder,
+            &healthy_extractor,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("Embeddings service unavailable"));
+        assert!(ensure_resume_provider_health(
+            &entity_job,
+            &unhealthy_embedder,
+            &healthy_extractor,
+        )
+        .await
+        .is_ok());
+        assert!(ensure_resume_provider_health(
+            &entity_job,
+            &healthy_embedder,
+            &unhealthy_extractor,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("Extraction service unavailable"));
     }
 
     #[test]

@@ -1183,14 +1183,29 @@ impl LibrarianAgent {
         self.extract_entities_for_notes_job(0, Some(job)).await
     }
 
-    async fn all_note_ids_for_entity_extraction(&self, page_size: usize) -> Result<Vec<String>> {
-        if page_size == 0 {
-            return Ok(Vec::new());
+    /// Return the durable item set for `extract-entities --all`. A
+    /// cancellation before the job exists returns `None`: no work has been
+    /// committed yet, so there is intentionally no empty/cancelled job to
+    /// resume.
+    async fn all_note_ids_for_entity_extraction(
+        &self,
+        page_size: usize,
+    ) -> Result<Option<Vec<String>>> {
+        if page_size == 0 || self.cancellation_requested.load(Ordering::Acquire) {
+            return Ok(None);
         }
         let mut item_ids = Vec::new();
         let mut offset = 0;
         loop {
+            if self.cancellation_requested.load(Ordering::Acquire) {
+                return Ok(None);
+            }
             let notes = self.repo.get_notes_page(page_size, offset).await?;
+            // The query may have been in flight when Ctrl-C arrived. Check
+            // before retaining this page or creating a durable job.
+            if self.cancellation_requested.load(Ordering::Acquire) {
+                return Ok(None);
+            }
             if notes.is_empty() {
                 break;
             }
@@ -1202,7 +1217,7 @@ impl LibrarianAgent {
             );
             offset += count;
         }
-        Ok(item_ids)
+        Ok(Some(item_ids))
     }
 
     /// Extract entities for all notes (optionally clearing existing mentions first)
@@ -1212,7 +1227,9 @@ impl LibrarianAgent {
         limit: usize,
         force_clear: bool,
     ) -> Result<usize> {
-        let item_ids = self.all_note_ids_for_entity_extraction(limit).await?;
+        let Some(item_ids) = self.all_note_ids_for_entity_extraction(limit).await? else {
+            return Ok(0);
+        };
         let result = self
             .create_entity_extraction_job(
                 item_ids,
@@ -2737,6 +2754,9 @@ mod tests {
             all.extract_entities_for_all_notes(10, false).await.unwrap(),
             0
         );
+        // Cancellation during the initial `--all` ID snapshot happens before
+        // a durable job exists, so it must leave no empty job behind.
+        assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
         let explicit = LibrarianAgent::new(
             repo,
             Arc::new(DeterministicEmbedder::default()),
@@ -2768,16 +2788,20 @@ mod tests {
             .create_note(Note::new("second durable entity selection"))
             .await
             .unwrap();
-        let cancelled = Arc::new(AtomicBool::new(true));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let all_calls = Arc::new(AtomicUsize::new(0));
         let all = LibrarianAgent::new(
             repo.clone(),
             Arc::new(DeterministicEmbedder::default()),
-            Arc::new(FixtureEntityExtractor::default()),
+            Arc::new(CancellingEntityExtractor {
+                calls: all_calls,
+                cancellation_requested: cancelled.clone(),
+            }),
         )
         .with_cancellation_flag(cancelled.clone());
         assert_eq!(
             all.extract_entities_for_all_notes(1, true).await.unwrap(),
-            0
+            1
         );
 
         let all_job = repo
