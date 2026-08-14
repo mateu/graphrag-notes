@@ -592,7 +592,7 @@ mod tests {
             hits,
             AugmentOptions {
                 max_chunks: 5,
-                max_total_tokens: 35,
+                max_total_tokens: 75,
                 max_chunk_tokens: 30,
                 ..Default::default()
             },
@@ -600,7 +600,7 @@ mod tests {
         );
 
         assert_eq!(ctx.chunks.len(), 1);
-        assert!(ctx.total_tokens <= 35);
+        assert!(ctx.total_tokens <= 75);
         assert_eq!(ctx.dropped_for_budget, 1);
     }
 
@@ -615,15 +615,15 @@ mod tests {
             hits,
             AugmentOptions {
                 max_chunks: 2,
-                max_total_tokens: 100,
-                max_chunk_tokens: 5,
+                max_total_tokens: 200,
+                max_chunk_tokens: 15,
                 ..Default::default()
             },
             0,
         );
 
         assert_eq!(ctx.chunks.len(), 1);
-        assert!(ctx.chunks[0].approx_tokens <= 5);
+        assert!(ctx.chunks[0].approx_tokens <= 15);
         assert!(ctx.chunks[0].truncated);
     }
 

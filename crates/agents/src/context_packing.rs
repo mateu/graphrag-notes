@@ -986,6 +986,10 @@ mod tests {
             created_at: None,
             source_uri: None,
             score,
+            fusion: graphrag_db::fusion::FusionEvidence {
+                fused_score: score,
+                ..Default::default()
+            },
             conversation_uuid: None,
             message_index: None,
             role: None,
