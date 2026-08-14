@@ -3,6 +3,7 @@
 //! Provides SurrealDB integration with schema management and queries.
 
 pub mod error;
+pub mod migrations;
 pub mod repository;
 pub mod schema;
 
@@ -49,5 +50,29 @@ mod tests {
         let db = init_memory().await.expect("Failed to init memory db");
         // Just verify it connects
         let _: Vec<serde_json::Value> = db.select("note").await.unwrap();
+    }
+
+    #[cfg(feature = "rocksdb")]
+    #[tokio::test]
+    async fn persistent_database_keeps_schema_version_after_reopen() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+
+        {
+            let db = init_persistent(temporary_directory.path()).await.unwrap();
+            assert_eq!(
+                migrations::current_version(&db).await.unwrap(),
+                migrations::LATEST_SCHEMA_VERSION
+            );
+        }
+
+        // SurrealDB releases the embedded-engine lock asynchronously after the
+        // final client session is dropped.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let reopened = init_persistent(temporary_directory.path()).await.unwrap();
+        assert_eq!(
+            migrations::current_version(&reopened).await.unwrap(),
+            migrations::LATEST_SCHEMA_VERSION
+        );
     }
 }

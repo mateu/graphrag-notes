@@ -19,6 +19,21 @@ pub enum DbError {
     #[error("Schema initialization failed: {0}")]
     SchemaInit(String),
 
+    #[error(
+        "Database schema migration {version} is newer than this binary supports (latest: {latest})"
+    )]
+    UnsupportedSchemaVersion { version: u32, latest: u32 },
+
+    #[error("Database schema migration history is inconsistent: {0}")]
+    MigrationHistory(String),
+
+    #[error("Database schema migration {version} ({name}) failed: {reason}")]
+    MigrationFailed {
+        version: u32,
+        name: String,
+        reason: String,
+    },
+
     #[error("SurrealDB error: {0}")]
     Surreal(#[from] surrealdb::Error),
 }
