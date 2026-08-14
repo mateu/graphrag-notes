@@ -822,19 +822,19 @@ impl Repository {
     ) -> Result<RelatedNotes> {
         let result: Vec<RelatedNotes> = self
             .db
-            .query(
+            .query(format!(
                 r#"
                 SELECT 
-                    (SELECT * FROM ->supports->note) AS supporting,
-                    (SELECT * FROM <-supports<-note) AS supported_by,
-                    (SELECT * FROM ->contradicts->note) AS contradicting,
-                    (SELECT * FROM <-contradicts<-note) AS contradicted_by,
-                    (SELECT * FROM ->related_to->note) AS related,
-                    (SELECT * FROM <-related_to<-note) AS related_from
+                    (SELECT * FROM ->supports->note WHERE {VISIBLE_NOTE_CONDITION}) AS supporting,
+                    (SELECT * FROM <-supports<-note WHERE {VISIBLE_NOTE_CONDITION}) AS supported_by,
+                    (SELECT * FROM ->contradicts->note WHERE {VISIBLE_NOTE_CONDITION}) AS contradicting,
+                    (SELECT * FROM <-contradicts<-note WHERE {VISIBLE_NOTE_CONDITION}) AS contradicted_by,
+                    (SELECT * FROM ->related_to->note WHERE {VISIBLE_NOTE_CONDITION}) AS related,
+                    (SELECT * FROM <-related_to<-note WHERE {VISIBLE_NOTE_CONDITION}) AS related_from
                 FROM note
-                WHERE id = $id
+                WHERE id = $id AND {VISIBLE_NOTE_CONDITION}
             "#,
-            )
+            ))
             .bind(("id", note_id.clone()))
             .await?
             .take(0)?;
@@ -2183,6 +2183,45 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn related_notes_hide_staged_source_generations() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let anchor = repo.create_note(Note::new("manual anchor")).await.unwrap();
+        let plan = begin_markdown(&repo, "staged", false).await;
+        let staged = repo
+            .create_note(
+                Note::new("staged source note")
+                    .with_source(plan.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+
+        let anchor_id = anchor.id.as_ref().unwrap();
+        let staged_id = staged.id.as_ref().unwrap();
+        // Cover both graph directions for every relationship projection.
+        for edge_type in [
+            EdgeType::Supports,
+            EdgeType::Contradicts,
+            EdgeType::RelatedTo,
+        ] {
+            repo.create_edge(anchor_id, staged_id, edge_type.clone(), None)
+                .await
+                .unwrap();
+            repo.create_edge(staged_id, anchor_id, edge_type, None)
+                .await
+                .unwrap();
+        }
+
+        let related = repo.get_related_notes(anchor_id).await.unwrap();
+        assert!(related.supporting.is_empty());
+        assert!(related.supported_by.is_empty());
+        assert!(related.contradicting.is_empty());
+        assert!(related.contradicted_by.is_empty());
+        assert!(related.related.is_empty());
+        assert!(related.related_from.is_empty());
     }
 
     #[tokio::test]

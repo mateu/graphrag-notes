@@ -12,3 +12,6 @@ thiserror.workspace = true
 surrealdb.workspace = true
 surrealdb-types.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

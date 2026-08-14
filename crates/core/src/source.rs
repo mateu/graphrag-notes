@@ -1,5 +1,6 @@
 //! Source types - where notes come from
 
+use crate::{CoreError, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -135,11 +136,11 @@ impl Source {
     }
 
     /// Create a source from a file
-    pub fn from_file(path: impl Into<String>, source_type: SourceType) -> Self {
+    pub fn from_file(path: impl Into<String>, source_type: SourceType) -> Result<Self> {
         let path = path.into();
-        let normalized_uri = normalize_file_uri(&path);
+        let normalized_uri = normalize_file_uri(&path)?;
         let now = Utc::now();
-        Self {
+        Ok(Self {
             id: None,
             source_type,
             title: Some(path.clone()),
@@ -155,7 +156,7 @@ impl Source {
             created_at: now,
             updated_at: now,
             last_ingested_at: None,
-        }
+        })
     }
 
     /// Builder: set title
@@ -202,11 +203,21 @@ impl Source {
 /// exist. Existing paths are canonicalized (resolving symlinks); otherwise a
 /// lexical absolute path with `.` and `..` removed is used. This keeps imports
 /// stable across repeated invocations and test environments.
-pub fn normalize_file_uri(path: impl AsRef<Path>) -> String {
+pub fn normalize_file_uri(path: impl AsRef<Path>) -> Result<String> {
     let path = path.as_ref();
     let normalized = std::fs::canonicalize(path).unwrap_or_else(|_| lexical_absolute_path(path));
-    let display = normalize_windows_verbatim_path(&normalized.to_string_lossy());
-    file_uri_from_normalized_display(&display)
+    let display = normalized.to_str().ok_or_else(|| {
+        CoreError::Validation("source path must be valid UTF-8 after canonicalization".into())
+    })?;
+    let display = if cfg!(windows) {
+        normalize_windows_path(display)
+    } else {
+        // A verbatim Windows path can be supplied in tests or through a
+        // cross-platform caller. Ordinary Unix backslashes are valid filename
+        // characters and must remain part of the source identity.
+        normalize_windows_verbatim_path(display)
+    };
+    Ok(file_uri_from_normalized_display(&display))
 }
 
 fn file_uri_from_normalized_display(display: &str) -> String {
@@ -225,14 +236,28 @@ fn file_uri_from_normalized_display(display: &str) -> String {
 /// ordinary drive/UNC forms used for stable file URIs. Kept platform-neutral
 /// so the behavior can be regression-tested on every host.
 pub fn normalize_windows_verbatim_path(path: &str) -> String {
-    let path = path.replace('\\', "/");
-    if let Some(unc) = path.strip_prefix("//?/UNC/") {
-        return format!("//{unc}");
+    if let Some(unc) = path
+        .strip_prefix(r"\\?\UNC\")
+        .or_else(|| path.strip_prefix("//?/UNC/"))
+    {
+        return format!("//{}", unc.replace('\\', "/"));
     }
-    if let Some(disk) = path.strip_prefix("//?/") {
-        return disk.to_string();
+    if let Some(disk) = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+    {
+        return disk.replace('\\', "/");
     }
-    path
+    path.to_string()
+}
+
+fn normalize_windows_path(path: &str) -> String {
+    let normalized = normalize_windows_verbatim_path(path);
+    if normalized == path {
+        path.replace('\\', "/")
+    } else {
+        normalized
+    }
 }
 
 fn lexical_absolute_path(path: &Path) -> PathBuf {
@@ -277,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_file_source() {
-        let source = Source::from_file("/path/to/file.md", SourceType::Markdown);
+        let source = Source::from_file("/path/to/file.md", SourceType::Markdown).unwrap();
 
         assert_eq!(source.source_type, SourceType::Markdown);
         assert_eq!(source.uri, Some("file:///path/to/file.md".into()));
@@ -286,7 +311,7 @@ mod tests {
 
     #[test]
     fn file_uri_is_lexically_stable_when_a_path_does_not_exist() {
-        let uri = normalize_file_uri("./fixture/../fixture/notes.md");
+        let uri = normalize_file_uri("./fixture/../fixture/notes.md").unwrap();
         assert!(uri.starts_with("file://"));
         assert!(uri.ends_with("/fixture/notes.md"));
     }
@@ -321,5 +346,33 @@ mod tests {
             )),
             "file://server/share/alpha.md"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_backslashes_remain_part_of_the_source_identity() {
+        let uri = normalize_file_uri("notes\\with\\backslashes.md").unwrap();
+        assert!(uri.ends_with("/notes\\with\\backslashes.md"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+    #[test]
+    fn non_utf8_canonical_source_target_is_rejected() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory
+            .path()
+            .join(OsString::from_vec(b"non-utf8-\xff.md".to_vec()));
+        std::fs::write(&target, "content").unwrap();
+        let link = directory.path().join("utf8-link.md");
+        symlink(&target, &link).unwrap();
+
+        let error = normalize_file_uri(&link).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("source path must be valid UTF-8 after canonicalization"));
     }
 }

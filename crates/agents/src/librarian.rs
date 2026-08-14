@@ -365,7 +365,8 @@ impl LibrarianAgent {
         C: Into<String> + std::fmt::Debug,
     {
         let content = content.into();
-        let normalized_uri = normalize_file_uri(path);
+        let normalized_uri = normalize_file_uri(path)
+            .map_err(|error| crate::AgentError::Processing(error.to_string()))?;
         info!("Ingesting markdown from: {}", normalized_uri);
         let plan = self
             .repo
