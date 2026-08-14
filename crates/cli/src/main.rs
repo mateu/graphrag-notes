@@ -463,6 +463,7 @@ enum EdgesCommand {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProposalStatusArg {
     Pending,
+    Accepting,
     Accepted,
     Rejected,
     Superseded,
@@ -472,6 +473,7 @@ impl From<ProposalStatusArg> for ProposedEdgeStatus {
     fn from(value: ProposalStatusArg) -> Self {
         match value {
             ProposalStatusArg::Pending => Self::Pending,
+            ProposalStatusArg::Accepting => Self::Accepting,
             ProposalStatusArg::Accepted => Self::Accepted,
             ProposalStatusArg::Rejected => Self::Rejected,
             ProposalStatusArg::Superseded => Self::Superseded,
@@ -2130,6 +2132,9 @@ async fn cmd_proposals(repo: Repository, command: ProposalCommand) -> Result<()>
             }
             if let Some(reason) = proposal.action_reason.as_deref() {
                 println!("Action reason: {reason}");
+            }
+            if let Some(reason) = proposal.supersession_reason.as_deref() {
+                println!("Supersession reason: {reason}");
             }
         }
         ProposalCommand::Accept {

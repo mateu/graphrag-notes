@@ -8,6 +8,7 @@ mod v001_initial;
 mod v002_embedding_metadata;
 mod v003_source_lifecycle;
 mod v004_edge_proposals;
+mod v005_proposal_supersession_audit;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -20,7 +21,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 4;
+pub const LATEST_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -40,6 +41,7 @@ const MIGRATIONS: &[Migration] = &[
     v002_embedding_metadata::MIGRATION,
     v003_source_lifecycle::MIGRATION,
     v004_edge_proposals::MIGRATION,
+    v005_proposal_supersession_audit::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is

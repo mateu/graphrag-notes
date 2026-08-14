@@ -130,6 +130,9 @@ pub struct SuggestedEdge {
 #[serde(rename_all = "snake_case")]
 pub enum ProposedEdgeStatus {
     Pending,
+    /// An acceptance claim is being completed. Retries finish this state
+    /// idempotently; it is never presented as a completed acceptance.
+    Accepting,
     Accepted,
     Rejected,
     Superseded,
@@ -139,6 +142,7 @@ impl std::fmt::Display for ProposedEdgeStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Pending => "pending",
+            Self::Accepting => "accepting",
             Self::Accepted => "accepted",
             Self::Rejected => "rejected",
             Self::Superseded => "superseded",
@@ -175,7 +179,13 @@ pub struct ProposedEdge {
     #[serde(default)]
     pub action_reason: Option<String>,
     #[serde(default)]
+    pub acceptance_is_manual: Option<bool>,
+    #[serde(default)]
     pub resulting_edge_id: Option<RecordId>,
+    #[serde(default)]
+    pub superseded_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub supersession_reason: Option<String>,
 }
 
 #[cfg(test)]
