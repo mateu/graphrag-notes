@@ -3,6 +3,7 @@
 use crate::Result;
 use graphrag_core::{record_id_to_string, EdgeType, Note, ProposedEdge};
 use graphrag_db::Repository;
+use std::collections::BTreeSet;
 use tracing::{debug, info, instrument};
 
 /// A suggested connection between notes
@@ -91,6 +92,10 @@ impl GardenerAgent {
         info!("Finding connections for {} orphan notes", orphans.len());
 
         let mut suggestions = Vec::new();
+        // `related_to` is symmetric. Orphan A can nominate B and orphan B
+        // can nominate A in the same scan, but both map to one canonical
+        // proposal. Keep this scan's output one-to-one with that proposal.
+        let mut seen_pairs = BTreeSet::new();
 
         for orphan in orphans {
             if suggestions.len() >= self.max_suggestions {
@@ -124,6 +129,10 @@ impl GardenerAgent {
                 // Get the full target note
                 let target_id = record_id_to_string(&sim.id);
                 if let Some(target_note) = self.repo.get_note(&target_id).await? {
+                    let pair = canonical_related_pair(&note_id, &target_id);
+                    if !seen_pairs.insert(pair) {
+                        continue;
+                    }
                     suggestions.push(SuggestedConnection {
                         from_note: orphan.clone(),
                         to_note: target_note,
@@ -274,6 +283,14 @@ impl GardenerAgent {
     }
 }
 
+fn canonical_related_pair(first: &str, second: &str) -> (String, String) {
+    if first <= second {
+        (first.to_owned(), second.to_owned())
+    } else {
+        (second.to_owned(), first.to_owned())
+    }
+}
+
 /// Report from a maintenance run
 #[derive(Debug)]
 pub struct MaintenanceReport {
@@ -311,7 +328,9 @@ mod tests {
 
         let preview = gardener.scan(true).await.unwrap();
         assert!(preview.dry_run);
-        assert!(preview.suggestions_generated > 0);
+        // Equal embeddings make each orphan nominate the other. A symmetric
+        // `related_to` proposal must still be surfaced once per scan.
+        assert_eq!(preview.suggestions_generated, 1);
         assert!(repo.list_edge_proposals(None, 10).await.unwrap().is_empty());
         assert!(repo.list_note_edges(10).await.unwrap().is_empty());
 

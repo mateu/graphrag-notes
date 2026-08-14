@@ -2207,8 +2207,8 @@ async fn cmd_edges(repo: Repository, command: EdgesCommand) -> Result<()> {
     }
     if dry_run {
         println!(
-            "Dry run: {} would be deleted if it exists; no changes made.",
-            record_id_to_string(&id)
+            "{}",
+            edge_dry_run_message(&record_id_to_string(&id), repo.note_edge_exists(&id).await?)
         );
         return Ok(());
     }
@@ -2230,6 +2230,14 @@ async fn cmd_edges(repo: Repository, command: EdgesCommand) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn edge_dry_run_message(id: &str, exists: bool) -> String {
+    if exists {
+        format!("Dry run: {id} exists and would be deleted; no changes made.")
+    } else {
+        format!("Dry run: {id} is absent; no changes made.")
+    }
 }
 
 async fn cmd_stats(repo: Repository) -> Result<()> {
@@ -2426,6 +2434,18 @@ mod tests {
         assert!(delete_is_dry_run(false, false));
         assert!(delete_is_dry_run(true, false));
         assert!(!delete_is_dry_run(false, true));
+    }
+
+    #[test]
+    fn edge_dry_run_reports_actual_existence() {
+        assert_eq!(
+            edge_dry_run_message("related_to:example", true),
+            "Dry run: related_to:example exists and would be deleted; no changes made."
+        );
+        assert_eq!(
+            edge_dry_run_message("related_to:example", false),
+            "Dry run: related_to:example is absent; no changes made."
+        );
     }
 
     #[test]
