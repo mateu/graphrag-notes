@@ -965,7 +965,7 @@ fn print_import_summary(
     };
     match format {
         SourceOutputFormat::Human => println!(
-            "Source {} generation {}: {} (created {}, unchanged {}, updated {}, deleted {}, failed {})",
+            "Source {} generation {}: {} (created {}, unchanged {}, updated {}, deleted {}, failed {}; cleanup notes {}, mentions {}, note edges {}, conversation provenance {}, message provenance {})",
             output.source_uri,
             output.generation,
             output.action,
@@ -974,6 +974,11 @@ fn print_import_summary(
             output.updated,
             output.deleted,
             output.failed,
+            output.cleanup.notes,
+            output.cleanup.mentions,
+            output.cleanup.note_edges,
+            output.cleanup.note_conversation_provenance,
+            output.cleanup.note_message_provenance,
         ),
         SourceOutputFormat::Json => println!("{}", serde_json::to_string(&output)?),
     }

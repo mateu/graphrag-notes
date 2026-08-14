@@ -855,12 +855,12 @@ impl Repository {
                 SELECT * FROM note 
                 WHERE 
                     {VISIBLE_NOTE_CONDITION} AND
-                    array::len(->supports->note) = 0 AND
-                    array::len(<-supports<-note) = 0 AND
-                    array::len(->contradicts->note) = 0 AND
-                    array::len(<-contradicts<-note) = 0 AND
-                    array::len(->related_to->note) = 0 AND
-                    array::len(<-related_to<-note) = 0
+                    array::len((SELECT * FROM ->supports->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM <-supports<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM ->contradicts->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM <-contradicts<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM ->related_to->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
+                    array::len((SELECT * FROM <-related_to<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0
             "#
             ))
             .await?
@@ -1176,10 +1176,11 @@ impl Repository {
                 // cleanup. An otherwise unchanged retry is the natural
                 // recovery path; finish that deferred cleanup before reporting
                 // a no-op so stale records cannot accumulate indefinitely.
-                self.cleanup_non_successful_generations(&existing).await?;
+                let cleanup = self.cleanup_non_successful_generations(&existing).await?;
                 return Ok(SourceImportPlan {
                     source: existing,
                     action: SourceImportAction::Unchanged,
+                    cleanup,
                 });
             }
 
@@ -1197,6 +1198,7 @@ impl Repository {
             return Ok(SourceImportPlan {
                 source: existing,
                 action: SourceImportAction::Updated,
+                cleanup: SourceDeleteSummary::default(),
             });
         }
 
@@ -1221,6 +1223,7 @@ impl Repository {
         Ok(SourceImportPlan {
             source: self.create_source(source).await?,
             action: SourceImportAction::Created,
+            cleanup: SourceDeleteSummary::default(),
         })
     }
 
@@ -1836,6 +1839,9 @@ pub enum SourceImportAction {
 pub struct SourceImportPlan {
     pub source: Source,
     pub action: SourceImportAction,
+    /// Deletions recovered before returning an unchanged import decision.
+    /// Other actions defer cleanup until their import successfully promotes.
+    pub cleanup: SourceDeleteSummary,
 }
 
 /// Deterministic cascade counts used by dry-run and completed import output.
@@ -2225,6 +2231,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn orphan_notes_ignore_hidden_source_generation_neighbors() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let anchor = repo.create_note(Note::new("manual anchor")).await.unwrap();
+        let plan = begin_markdown(&repo, "staged", false).await;
+        let staged = repo
+            .create_note(
+                Note::new("staged source note")
+                    .with_source(plan.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+
+        let anchor_id = anchor.id.as_ref().unwrap();
+        let staged_id = staged.id.as_ref().unwrap();
+        // A staged source generation is invisible in every graph direction,
+        // so it cannot prevent a visible manual note from being an orphan.
+        for edge_type in [
+            EdgeType::Supports,
+            EdgeType::Contradicts,
+            EdgeType::RelatedTo,
+        ] {
+            repo.create_edge(anchor_id, staged_id, edge_type.clone(), None)
+                .await
+                .unwrap();
+            repo.create_edge(staged_id, anchor_id, edge_type, None)
+                .await
+                .unwrap();
+        }
+
+        let orphans = repo.find_orphan_notes().await.unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].id.as_ref(), anchor.id.as_ref());
+    }
+
+    #[tokio::test]
     async fn source_owned_notes_are_created_and_updated_with_ownership_intact() {
         let repo = Repository::new(init_memory().await.unwrap());
         let plan = begin_markdown(&repo, "content", false).await;
@@ -2322,6 +2364,7 @@ mod tests {
         // cleanup instead of leaving hidden old generations forever.
         let retry = begin_markdown(&repo, "second", false).await;
         assert_eq!(retry.action, SourceImportAction::Unchanged);
+        assert_eq!(retry.cleanup.notes, 1);
         assert!(repo
             .get_note(&record_id_to_string(first_note.id.as_ref().unwrap()))
             .await

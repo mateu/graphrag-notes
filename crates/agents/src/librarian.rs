@@ -381,6 +381,7 @@ impl LibrarianAgent {
             .await?;
 
         if plan.action == SourceImportAction::Unchanged {
+            let cleanup = plan.cleanup;
             return Ok(MarkdownImportResult {
                 source_id: plan
                     .source
@@ -394,9 +395,9 @@ impl LibrarianAgent {
                 created: 0,
                 unchanged: 1,
                 updated: 0,
-                deleted: 0,
+                deleted: cleanup.notes,
                 failed: 0,
-                cleanup: SourceDeleteSummary::default(),
+                cleanup,
                 notes: Vec::new(),
             });
         }
@@ -1883,7 +1884,14 @@ pub struct ChatImportResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_content, decode_file_uri, truncate_for_extraction, LibrarianRuntimeConfig};
+    use super::{
+        chunk_content, decode_file_uri, truncate_for_extraction, LibrarianAgent,
+        LibrarianRuntimeConfig,
+    };
+    use crate::{DeterministicEmbedder, FixtureEntityExtractor};
+    use graphrag_core::Note;
+    use graphrag_db::{init_memory, Repository, SourceImportAction};
+    use std::sync::Arc;
 
     #[test]
     fn runtime_config_defaults_preserve_library_behavior() {
@@ -1924,5 +1932,39 @@ mod tests {
             decode_file_uri("file://server/share/notes.md", true).unwrap(),
             "//server/share/notes.md"
         );
+    }
+
+    #[tokio::test]
+    async fn unchanged_markdown_import_reports_recovered_cleanup() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        let content = "enough markdown content to create a stable source note";
+        let first = librarian
+            .ingest_markdown_with_options("cleanup-recovery.md", content, false)
+            .await
+            .unwrap();
+        let source = repo.get_source(&first.source_uri).await.unwrap().unwrap();
+        repo.create_note(
+            Note::new("stale hidden generation")
+                .with_source(source.id.unwrap())
+                .with_source_generation(0),
+        )
+        .await
+        .unwrap();
+
+        let retry = librarian
+            .ingest_markdown_with_options("cleanup-recovery.md", content, false)
+            .await
+            .unwrap();
+        assert_eq!(retry.action, SourceImportAction::Unchanged);
+        assert_eq!(retry.deleted, 1);
+        assert_eq!(retry.cleanup.notes, 1);
+        assert_eq!(retry.cleanup.note_edges, 0);
+        assert_eq!(retry.cleanup.note_conversation_provenance, 0);
+        assert_eq!(retry.cleanup.note_message_provenance, 0);
     }
 }
