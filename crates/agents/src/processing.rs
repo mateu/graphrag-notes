@@ -134,6 +134,12 @@ fn classify_message(message: &str) -> RetryClassification {
 /// Deterministic, bounded jitter for a retry attempt. Determinism keeps unit
 /// tests and automation reproducible while avoiding synchronized retry storms.
 pub fn retry_delay(config: &ProcessingConfig, retry_index: usize) -> Duration {
+    retry_delay_with_seed(config, retry_index, 0)
+}
+
+/// A deterministic seed gives concurrent operations different bounded jitter
+/// without making tests or automation nondeterministic.
+pub fn retry_delay_with_seed(config: &ProcessingConfig, retry_index: usize, seed: u64) -> Duration {
     let exponent = u32::try_from(retry_index.saturating_sub(1))
         .unwrap_or(u32::MAX)
         .min(20);
@@ -147,7 +153,7 @@ pub fn retry_delay(config: &ProcessingConfig, retry_index: usize) -> Duration {
     }
     let nanos = base.as_nanos();
     // 80..120% jitter, derived solely from the attempt number.
-    let factor = 80_u128 + ((retry_index as u128 * 73 + 19) % 41);
+    let factor = 80_u128 + ((retry_index as u128 * 73 + u128::from(seed) * 31 + 19) % 41);
     let jittered = nanos.saturating_mul(factor) / 100;
     Duration::from_nanos(u64::try_from(jittered.min(u128::from(u64::MAX))).unwrap_or(u64::MAX))
         .min(config.max_backoff)
@@ -168,6 +174,7 @@ where
         .await
         .map_err(|_| AgentError::Processing("inference concurrency limiter closed".into()))?;
     let mut attempt = 1_usize;
+    let jitter_seed = stats.requests.load(Ordering::Relaxed);
     loop {
         stats.requests.fetch_add(1, Ordering::Relaxed);
         let result = tokio::time::timeout(config.request_timeout, operation())
@@ -184,7 +191,7 @@ where
                     && attempt < config.retry_attempts =>
             {
                 stats.retries.fetch_add(1, Ordering::Relaxed);
-                tokio::time::sleep(retry_delay(config, attempt)).await;
+                tokio::time::sleep(retry_delay_with_seed(config, attempt, jitter_seed)).await;
                 attempt += 1;
             }
             Err(error) => {
@@ -221,8 +228,8 @@ impl CacheKey {
             .collect::<String>();
         let input_hash = hash(&normalized);
         let semantic = format!(
-            "operation={operation}\0provider={}\0model={}\0provider_settings={}\0version={version}\0input={input_hash}",
-            capability.provider, capability.model, capability.cache_identity
+            "operation={operation}\0provider={}\0endpoint={}\0model={}\0provider_settings={}\0version={version}\0input={input_hash}",
+            capability.provider, capability.endpoint, capability.model, capability.cache_identity
         );
         Self {
             key: hash(&semantic),
@@ -499,6 +506,18 @@ impl EntityExtractor for ResilientEntityExtractor {
                 }
             }
         }
+        // Ollama strict JSON extraction can issue several progressively larger
+        // generation requests. Its client applies the configured timeout to
+        // each request; wrapping the whole sequence here would turn their
+        // cumulative duration into a false timeout.
+        if self
+            .inner
+            .capabilities()
+            .provider
+            .eq_ignore_ascii_case("ollama")
+        {
+            return self.inner.extract(text).await;
+        }
         let text = text.to_string();
         let inner = self.inner.clone();
         let extraction = execute_with_retry(&self.config, &self.limiter, &self.stats, || {
@@ -564,6 +583,10 @@ mod tests {
         };
         assert!(retry_delay(&config, 1) >= Duration::from_millis(80));
         assert!(retry_delay(&config, 3) <= Duration::from_millis(500));
+        assert_ne!(
+            retry_delay_with_seed(&config, 1, 1),
+            retry_delay_with_seed(&config, 1, 2)
+        );
     }
 
     #[tokio::test]
