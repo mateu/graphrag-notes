@@ -1031,8 +1031,34 @@ impl Repository {
         min_confidence: f32,
         reviewer: Option<String>,
     ) -> Result<usize> {
-        self.accept_gardener_proposals_above_in_pages(min_confidence, reviewer, 250)
-            .await
+        self.accept_gardener_proposals_above_with_audit(
+            min_confidence,
+            reviewer,
+            "configured gardener auto-apply policy".into(),
+            false,
+        )
+        .await
+    }
+
+    /// Accept every matching proposal with the supplied, auditable reviewer
+    /// decision. Interactive/manual workflows must set `is_manual` to true;
+    /// scheduled policy application uses the automatic default above.
+    #[instrument(skip(self))]
+    pub async fn accept_gardener_proposals_above_with_audit(
+        &self,
+        min_confidence: f32,
+        reviewer: Option<String>,
+        action_reason: String,
+        is_manual: bool,
+    ) -> Result<usize> {
+        self.accept_gardener_proposals_above_in_pages(
+            min_confidence,
+            reviewer,
+            action_reason,
+            is_manual,
+            250,
+        )
+        .await
     }
 
     /// Accept every matching pending proposal, using a stable record-id cursor
@@ -1041,6 +1067,8 @@ impl Repository {
         &self,
         min_confidence: f32,
         reviewer: Option<String>,
+        action_reason: String,
+        is_manual: bool,
         page_size: usize,
     ) -> Result<usize> {
         let page_size = page_size.max(1);
@@ -1064,8 +1092,8 @@ impl Repository {
                 self.accept_edge_proposal(
                     &id,
                     reviewer.clone(),
-                    Some("configured gardener auto-apply policy".into()),
-                    false,
+                    Some(action_reason.clone()),
+                    is_manual,
                 )
                 .await?;
                 accepted += 1;
@@ -3270,9 +3298,15 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(
-            repo.accept_gardener_proposals_above_in_pages(0.8, None, 1)
-                .await
-                .unwrap(),
+            repo.accept_gardener_proposals_above_in_pages(
+                0.8,
+                Some("cli batch acceptance".into()),
+                "reviewed as a related note".into(),
+                true,
+                1,
+            )
+            .await
+            .unwrap(),
             3
         );
         assert_eq!(
@@ -3282,6 +3316,19 @@ mod tests {
                 .len(),
             3
         );
+        let accepted = repo
+            .list_edge_proposals(Some(ProposedEdgeStatus::Accepted), 10)
+            .await
+            .unwrap();
+        assert!(accepted.iter().all(|proposal| {
+            proposal.action_reason.as_deref() == Some("reviewed as a related note")
+        }));
+        assert!(repo
+            .list_note_edges(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|edge| edge.is_manual));
 
         let failing_repo = Repository::new(init_memory().await.unwrap());
         let (from, stale_endpoint) = two_notes(&failing_repo).await;
@@ -3291,7 +3338,13 @@ mod tests {
             .unwrap();
         let _: Option<Note> = failing_repo.db.delete(stale_endpoint).await.unwrap();
         assert!(failing_repo
-            .accept_gardener_proposals_above_in_pages(0.8, None, 1)
+            .accept_gardener_proposals_above_in_pages(
+                0.8,
+                None,
+                "automatic policy".into(),
+                false,
+                1,
+            )
             .await
             .is_err());
     }

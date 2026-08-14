@@ -2150,7 +2150,12 @@ async fn cmd_proposals(repo: Repository, command: ProposalCommand) -> Result<()>
                     anyhow::bail!("--min-confidence must be between 0 and 1");
                 }
                 let count = repo
-                    .accept_gardener_proposals_above(threshold, Some("cli batch acceptance".into()))
+                    .accept_gardener_proposals_above_with_audit(
+                        threshold,
+                        Some("cli batch acceptance".into()),
+                        reason.unwrap_or_else(|| "explicit CLI batch acceptance".into()),
+                        true,
+                    )
                     .await?;
                 println!("Accepted {count} policy-approved related_to proposal(s).");
             } else {
