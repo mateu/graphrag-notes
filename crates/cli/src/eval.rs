@@ -231,16 +231,17 @@ pub fn evaluate_ranked_results(
     let has_provenance_expectation =
         !expected_sources.is_empty() || !expected_conversations.is_empty();
     let provenance_accuracy = has_provenance_expectation.then(|| {
-        let matching_results = results
-            .iter()
-            .filter(|result| {
-                result.source_uri.as_deref().is_some_and(|actual| {
-                    expected_sources.contains(&actual.trim().to_ascii_lowercase())
-                }) || result.conversation_uuid.as_deref().is_some_and(|actual| {
-                    expected_conversations.contains(&actual.trim().to_ascii_lowercase())
+        let matching_results =
+            results
+                .iter()
+                .filter(|result| {
+                    result.source_uri.as_deref().is_some_and(|actual| {
+                        expected_sources.contains(&actual.trim().to_lowercase())
+                    }) || result.conversation_uuid.as_deref().is_some_and(|actual| {
+                        expected_conversations.contains(&actual.trim().to_lowercase())
+                    })
                 })
-            })
-            .count();
+                .count();
         matching_results as f64 / results.len().max(1) as f64
     });
 
@@ -814,6 +815,21 @@ mod tests {
         let metrics = evaluate_ranked_results(&case, &[result], 1, 0);
         assert_eq!(metrics.substring_expectation_matched, Some(true));
         assert!(metrics.forbidden_result_found);
+    }
+
+    #[test]
+    fn provenance_expectations_are_unicode_case_insensitive() {
+        let case = case(serde_json::json!({
+            "query": "q",
+            "expected_source_uris": ["file:///CAFÉ.md"]
+        }));
+        let mut result = result("note:unicode");
+        result.source_uri = Some("file:///café.md".into());
+
+        assert_eq!(
+            evaluate_ranked_results(&case, &[result], 1, 0).provenance_accuracy,
+            Some(1.0)
+        );
     }
 
     #[test]

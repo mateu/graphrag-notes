@@ -352,7 +352,13 @@ impl TeiClient {
 
     /// Model identifier used by the selected provider.
     pub fn model(&self) -> &str {
-        &self.model
+        match self.provider {
+            // TEI's health/embed API does not expose its serving image or model
+            // identifier. Returning the Ollama fallback here would make an eval
+            // baseline claim a model that was never used.
+            TeiProvider::Tei => "unknown",
+            TeiProvider::Ollama => &self.model,
+        }
     }
 
     async fn ollama_embed(&self, text: &str) -> Result<Vec<f32>> {
