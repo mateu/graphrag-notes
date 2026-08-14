@@ -14,7 +14,9 @@ pub mod search;
 pub use error::{AgentError, Result};
 pub use gardener::GardenerAgent;
 pub use inference::{
-    EntityExtraction, ExtractedEntity, ExtractedRelationship, TeiClient, TgiClient,
+    DeterministicEmbedder, Embedder, EntityExtraction, EntityExtractor, ExtractedEntity,
+    ExtractedRelationship, FixtureEntityExtractor, InferenceCapabilities, InferenceProviders,
+    SharedEmbedder, SharedEntityExtractor, TeiClient, TgiClient,
 };
 pub use librarian::{
     ChatImportMode, ChatImportPreview, ChatImportResult, ChatIngestOptions, LibrarianAgent,
