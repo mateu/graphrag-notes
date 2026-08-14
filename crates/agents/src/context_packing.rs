@@ -1027,6 +1027,7 @@ fn hangul_jamo_composes_with(previous: Option<char>, next: char) -> bool {
     };
     (is_hangul_leading_jamo(previous) && is_hangul_vowel_jamo(next))
         || (is_hangul_vowel_jamo(previous) && is_hangul_trailing_jamo(next))
+        || (is_hangul_lv_syllable(previous) && is_hangul_trailing_jamo(next))
 }
 
 fn is_hangul_leading_jamo(ch: char) -> bool {
@@ -1039,6 +1040,11 @@ fn is_hangul_vowel_jamo(ch: char) -> bool {
 
 fn is_hangul_trailing_jamo(ch: char) -> bool {
     matches!(ch as u32, 0x11a8..=0x11ff | 0xd7cb..=0xd7fb)
+}
+
+fn is_hangul_lv_syllable(ch: char) -> bool {
+    let scalar = ch as u32;
+    (0xac00..=0xd7a3).contains(&scalar) && (scalar - 0xac00) % 28 == 0
 }
 
 fn append_normalized_cluster(
@@ -1770,6 +1776,13 @@ mod tests {
         let text = "prefix 가 marker suffix";
         let range = phrase_match_range(text, "가 marker").unwrap();
         assert_eq!(&text[range], "가 marker");
+    }
+
+    #[test]
+    fn normalized_source_mapping_composes_hangul_lv_syllable_and_trailing_jamo() {
+        let text = "prefix 각 marker suffix";
+        let range = phrase_match_range(text, "각 marker").unwrap();
+        assert_eq!(&text[range], "각 marker");
     }
 
     #[test]
