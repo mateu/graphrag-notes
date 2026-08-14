@@ -619,6 +619,8 @@ impl LibrarianAgent {
                     cancelled: true,
                 });
             }
+            let completed_before_reconciliation = completed;
+            let failed_before_reconciliation = failed;
             let mut notes = Vec::with_capacity(WINDOW);
             while notes.len() < WINDOW {
                 let Some(item_id) = item_ids.pop_front() else {
@@ -629,6 +631,32 @@ impl LibrarianAgent {
                     Some(note) => notes.push(note),
                     None => completed += 1,
                 }
+            }
+            // Reconciliation can consume a whole resume window when its
+            // selected notes were embedded or deleted by an earlier attempt.
+            // Persist those durable counts before either checking Ctrl-C or
+            // starting the next inference request.
+            if completed != completed_before_reconciliation
+                || failed != failed_before_reconciliation
+            {
+                self.repo
+                    .update_processing_job(
+                        &job_id,
+                        ProcessingJobUpdate {
+                            completed_count: Some(completed),
+                            failed_count: Some(failed),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+            if self.processing_job_cancelled(&job_id).await? {
+                return Ok(ProcessingRunResult {
+                    job_id: record_id_to_string(&job_id),
+                    completed,
+                    failed,
+                    cancelled: true,
+                });
             }
             if notes.is_empty() {
                 if !item_ids.is_empty() {
@@ -2394,7 +2422,10 @@ mod tests {
     };
     use crate::{DeterministicEmbedder, FixtureEntityExtractor, InferenceCapabilities};
     use graphrag_core::Note;
-    use graphrag_db::{init_memory, ProcessingJobStatus, Repository, SourceImportAction};
+    use graphrag_db::{
+        compatibility::{EmbeddingIdentity, ExtractionIdentity},
+        init_memory, ProcessingJobStatus, Repository, SourceImportAction,
+    };
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -2436,6 +2467,43 @@ mod tests {
                 endpoint: "offline://cancelling-fallback".into(),
                 known_dimension: Some(1024),
                 cache_identity: "cancelling-fallback-v1".into(),
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct CancellingBatchEmbedder {
+        cancellation_requested: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Embedder for CancellingBatchEmbedder {
+        async fn embed(&self, _text: &str, _is_query: bool) -> crate::Result<Vec<f32>> {
+            Ok(vec![0.0; 1024])
+        }
+
+        async fn embed_batch(
+            &self,
+            texts: &[String],
+            _is_query: bool,
+        ) -> crate::Result<Vec<Vec<f32>>> {
+            // Model Ctrl-C arriving while the next batch is in flight, after
+            // resume reconciliation has consumed already-finished items.
+            self.cancellation_requested.store(true, Ordering::Release);
+            Ok(vec![vec![0.0; 1024]; texts.len()])
+        }
+
+        async fn health(&self) -> crate::Result<bool> {
+            Ok(true)
+        }
+
+        fn capabilities(&self) -> InferenceCapabilities {
+            InferenceCapabilities {
+                provider: "cancelling-batch-fixture".into(),
+                model: "fixture".into(),
+                endpoint: "offline://cancelling-batch".into(),
+                known_dimension: Some(1024),
+                cache_identity: "cancelling-batch-v1".into(),
             }
         }
     }
@@ -2740,5 +2808,76 @@ mod tests {
             .filter(|note| !note.embedding.is_empty())
             .count();
         assert_eq!(embedded, 1);
+    }
+
+    #[tokio::test]
+    async fn embedding_resume_persists_reconciliation_before_next_batch_cancellation() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(
+            &EmbeddingIdentity::new("cancelling-batch-fixture", "fixture", 1024),
+            Some(&ExtractionIdentity::new("fixture-test", "fixture")),
+        )
+        .await
+        .unwrap();
+        let embedded = repo
+            .create_note(Note::new("already embedded").with_embedding(vec![0.0; 1024]))
+            .await
+            .unwrap();
+        let deleted = repo
+            .create_note(Note::new("deleted before resume"))
+            .await
+            .unwrap();
+        let pending = repo
+            .create_note(Note::new("pending when cancellation arrives"))
+            .await
+            .unwrap();
+        let deleted_id = graphrag_core::record_id_to_string(deleted.id.as_ref().unwrap());
+        repo.delete_note(&deleted_id).await.unwrap();
+        let job = repo
+            .create_processing_job_with_scope(
+                graphrag_db::ProcessingJobType::Embedding,
+                None,
+                3,
+                Some("resume-fixture".into()),
+                vec![
+                    graphrag_core::record_id_to_string(embedded.id.as_ref().unwrap()),
+                    deleted_id,
+                    graphrag_core::record_id_to_string(pending.id.as_ref().unwrap()),
+                ],
+            )
+            .await
+            .unwrap();
+        let job_id = graphrag_core::record_id_to_string(job.id.as_ref().unwrap());
+        repo.cancel_processing_job(job.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let cancellation_requested = Arc::new(AtomicBool::new(false));
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(CancellingBatchEmbedder {
+                cancellation_requested: cancellation_requested.clone(),
+            }),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(cancellation_requested);
+
+        let result = librarian.resume_processing_job(&job_id).await.unwrap();
+        assert!(result.cancelled);
+        assert_eq!(result.completed, 2);
+        assert_eq!(result.failed, 0);
+
+        let job = repo.get_processing_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(job.status, ProcessingJobStatus::Cancelled.as_str());
+        assert_eq!(job.completed_count, 2);
+        assert_eq!(job.failed_count, 0);
+        assert!(repo
+            .get_note(&graphrag_core::record_id_to_string(
+                pending.id.as_ref().unwrap()
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .embedding
+            .is_empty());
     }
 }
