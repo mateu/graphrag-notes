@@ -693,7 +693,8 @@ fn summary_from_manifest(
 mod tests {
     use super::*;
     use graphrag_core::{
-        ChatConversation, ChatMessage, EdgeType, Entity, EntityType, Note, Source,
+        record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, EntityType, Note,
+        Source,
     };
     use graphrag_db::{init_memory, repository::EdgeProposalDraft};
     use tempfile::tempdir;
@@ -813,18 +814,19 @@ mod tests {
             .create_note(Note::new("proposal endpoint"))
             .await
             .unwrap();
-        repo.upsert_edge_proposal(EdgeProposalDraft {
-            from_id: note.id.clone().unwrap(),
-            to_id: other.id.clone().unwrap(),
-            edge_type: EdgeType::RelatedTo,
-            confidence: 0.7,
-            reason: "portable graph fixture".into(),
-            generator: "test".into(),
-            generator_version: Some("1".into()),
-            model: None,
-        })
-        .await
-        .unwrap();
+        let proposal = repo
+            .upsert_edge_proposal(EdgeProposalDraft {
+                from_id: note.id.clone().unwrap(),
+                to_id: other.id.clone().unwrap(),
+                edge_type: EdgeType::RelatedTo,
+                confidence: 0.7,
+                reason: "portable graph fixture".into(),
+                generator: "test".into(),
+                generator_version: Some("1".into()),
+                model: None,
+            })
+            .await
+            .unwrap();
         let backup_path = temp.path().join("chat-graph");
         let created = create_backup(&repo, &backup_path, false).await.unwrap();
         assert!(created
@@ -846,6 +848,22 @@ mod tests {
             count_repository_records(&restored).await.unwrap(),
             created.record_counts
         );
+        // Portable restore creates records at their exported logical IDs; it
+        // does not best-effort remap graph/provenance endpoints.
+        assert!(restored
+            .get_note(&record_id_to_string(note.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+        let restored_proposal = restored
+            .get_edge_proposal(proposal.id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let expected_endpoints = [note.id.unwrap(), other.id.unwrap()];
+        assert!(expected_endpoints.contains(&restored_proposal.from_id));
+        assert!(expected_endpoints.contains(&restored_proposal.to_id));
+        assert_ne!(restored_proposal.from_id, restored_proposal.to_id);
     }
 
     #[tokio::test]
