@@ -34,10 +34,10 @@ pub trait TokenCounter: Send + Sync {
 
 /// A deterministic, deliberately conservative tokenizer-free estimate.
 ///
-/// Every alphanumeric scalar and punctuation mark is charged separately. This
-/// deliberately treats arbitrary ASCII identifiers (hashes, URLs, and opaque
-/// model tokens) as a worst case and avoids under-counting scripts that do not
-/// use whitespace. This is suitable for enforcing a hard budget in fallback
+/// Every ASCII non-whitespace scalar is charged separately, while non-ASCII
+/// scalars are charged by UTF-8 byte length. This deliberately treats hashes,
+/// URLs, opaque identifiers, CJK, and emoji as a safe upper bound rather than
+/// under-counting a model tokenizer. This is suitable for hard-budget fallback
 /// mode.
 #[derive(Debug, Default)]
 pub struct ConservativeTokenCounter;
@@ -46,8 +46,8 @@ impl TokenCounter for ConservativeTokenCounter {
     fn count(&self, text: &str) -> usize {
         let mut count = 0usize;
         for ch in text.chars() {
-            if ch.is_alphanumeric() || ch == '_' || !ch.is_whitespace() {
-                count += 1;
+            if !ch.is_whitespace() {
+                count += if ch.is_ascii() { 1 } else { ch.len_utf8() };
             }
         }
         count
@@ -588,6 +588,15 @@ fn clip_around_match(
     {
         return clip_around_characters(text, span, query, query_terms, max_tokens, counter);
     }
+    if phrase_range.as_ref().is_some_and(|range| {
+        counter.count(&render_clipped_segment(
+            &segment[range.clone()],
+            range.start > 0,
+            range.end < segment.len(),
+        )) > max_tokens
+    }) {
+        return clip_around_characters(text, span, query, query_terms, max_tokens, counter);
+    }
     let anchor = phrase_range.as_ref().map_or_else(
         || lexical_anchor(segment, query_terms).unwrap_or(segment.len() / 2),
         |range| range.start,
@@ -653,7 +662,9 @@ fn clip_around_characters(
     counter: &dyn TokenCounter,
 ) -> ClippedSpan {
     let segment = &text[span.clone()];
-    let Some(mut selected) = phrase_match_range(segment, query)
+    let phrase_range = phrase_match_range(segment, query);
+    let Some(mut selected) = phrase_range
+        .clone()
         .or_else(|| lexical_match_range(segment, query_terms))
         .or_else(|| centered_character_range(segment))
     else {
@@ -676,12 +687,13 @@ fn clip_around_characters(
             best = Some((candidate, selected.clone()));
         } else if best.is_none() {
             // The matched term itself is too large; a smaller character range
-            // has a better chance of fitting than abandoning the hit.
-            let single_character_end = next_character_boundary(segment, selected.start);
-            if selected.end == single_character_end {
+            // has a better chance of fitting than abandoning the hit. Start
+            // from its center so an oversized phrase remains query-centered.
+            let narrowed = centered_character_range_in(segment, &selected);
+            if narrowed == selected {
                 break;
             }
-            selected.end = single_character_end;
+            selected = narrowed;
             continue;
         }
 
@@ -770,8 +782,28 @@ fn phrase_match_range(text: &str, phrase: &str) -> Option<Range<usize>> {
         return None;
     }
     text.char_indices().find_map(|(start, _)| {
-        casefolded_prefix_end(&text[start..], &wanted).map(|end| start..start + end)
+        casefolded_prefix_end(&text[start..], &wanted).and_then(|end| {
+            let range = start..start + end;
+            (!phrase_requires_lexical_boundaries(phrase) || is_lexical_boundary(text, &range))
+                .then_some(range)
+        })
     })
+}
+
+fn phrase_requires_lexical_boundaries(phrase: &str) -> bool {
+    phrase.chars().any(char::is_alphanumeric) && !phrase.chars().any(is_unspaced_script_char)
+}
+
+fn is_lexical_boundary(text: &str, range: &Range<usize>) -> bool {
+    let before_is_alphanumeric = text[..range.start]
+        .chars()
+        .next_back()
+        .is_some_and(char::is_alphanumeric);
+    let after_is_alphanumeric = text[range.end..]
+        .chars()
+        .next()
+        .is_some_and(char::is_alphanumeric);
+    !before_is_alphanumeric && !after_is_alphanumeric
 }
 
 fn casefolded_prefix_end(text: &str, wanted: &[char]) -> Option<usize> {
@@ -796,6 +828,17 @@ fn centered_character_range(text: &str) -> Option<Range<usize>> {
         .nth(text.chars().count() / 2)
         .map(|(index, _)| index)?;
     Some(start..next_character_boundary(text, start))
+}
+
+fn centered_character_range_in(text: &str, range: &Range<usize>) -> Range<usize> {
+    let selected = &text[range.clone()];
+    let offset = selected
+        .char_indices()
+        .nth(selected.chars().count() / 2)
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let start = range.start + offset;
+    start..next_character_boundary(text, start)
 }
 
 fn previous_character_boundary(text: &str, index: usize) -> usize {
@@ -1123,11 +1166,45 @@ mod tests {
     }
 
     #[test]
+    fn oversized_phrase_window_is_clipped_instead_of_dropped() {
+        let text = "prefix oversized phrase target afterword";
+        let clipped = clip_query_aware(
+            text,
+            "oversized phrase target",
+            10,
+            &ConservativeTokenCounter,
+        );
+        assert!(clipped.truncated);
+        assert!(!clipped.snippet.is_empty());
+        assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 10);
+        assert!(std::str::from_utf8(clipped.snippet.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn whitespace_phrase_matching_rejects_substrings_but_cjk_allows_them() {
+        assert!(phrase_match_range("partial", "art").is_none());
+        let cjk = "前綴目標片段後綴";
+        assert_eq!(
+            &cjk[phrase_match_range(cjk, "目標片段").unwrap()],
+            "目標片段"
+        );
+
+        let clipped = clip_query_aware(
+            "partial appears early. art appears later as a standalone term.",
+            "art",
+            30,
+            &ConservativeTokenCounter,
+        );
+        assert!(clipped.snippet.contains("art"));
+        assert!(!clipped.snippet.contains("partial"));
+    }
+
+    #[test]
     fn full_cjk_query_beats_an_earlier_shared_character() {
         let text = "目甲乙丙丁戊己庚辛壬癸目標片段後續說明";
-        let clipped = clip_query_aware(text, "目標片段", 6, &ConservativeTokenCounter);
+        let clipped = clip_query_aware(text, "目標片段", 18, &ConservativeTokenCounter);
         assert!(clipped.snippet.contains("目標片段"));
-        assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 6);
+        assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 18);
     }
 
     #[test]
@@ -1145,11 +1222,12 @@ mod tests {
 
     #[test]
     fn fallback_counts_non_ascii_per_character_and_respects_budget() {
-        assert_eq!(ConservativeTokenCounter.count("你好世界"), 4);
-        assert_eq!(ConservativeTokenCounter.count("café"), 4);
+        assert_eq!(ConservativeTokenCounter.count("你好世界"), 12);
+        assert_eq!(ConservativeTokenCounter.count("café"), 5);
+        assert_eq!(ConservativeTokenCounter.count("😀"), 4);
         let mut multilingual_options = options();
-        multilingual_options.max_total_tokens = 40;
-        multilingual_options.max_chunk_tokens = 6;
+        multilingual_options.max_total_tokens = 80;
+        multilingual_options.max_chunk_tokens = 18;
         let context = build_augment_context_from_hits(
             "搜尋目標".into(),
             SearchScope::Notes,
@@ -1162,10 +1240,28 @@ mod tests {
             multilingual_options,
             0,
         );
-        assert!(context.total_tokens <= 40);
+        assert!(context.total_tokens <= 80);
         assert_eq!(context.chunks.len(), 1);
         assert!(context.chunks[0].snippet.contains("搜尋目標"));
-        assert!(context.chunks[0].approx_tokens <= 6);
+        assert!(context.chunks[0].approx_tokens <= 18);
+        assert!(std::str::from_utf8(context.chunks[0].snippet.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn emoji_heavy_context_stays_within_the_hard_budget() {
+        let mut emoji_options = options();
+        emoji_options.max_total_tokens = 80;
+        emoji_options.max_chunk_tokens = 16;
+        let context = build_augment_context_from_hits(
+            "😀😀".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit("n:emoji", 0.9, "😀😀😀😀😀😀")],
+            emoji_options,
+            0,
+        );
+        assert_eq!(context.chunks.len(), 1);
+        assert!(context.total_tokens <= 80);
         assert!(std::str::from_utf8(context.chunks[0].snippet.as_bytes()).is_ok());
     }
 
