@@ -26,6 +26,19 @@ pub struct Repository {
     proposal_acceptance_lock: Arc<Mutex<()>>,
 }
 
+/// An audited cache entry. `cache_key` is computed by the inference layer;
+/// the remaining fields make collision and invalidation diagnostics stable.
+#[derive(Debug, Clone)]
+pub struct InferenceCacheEntry {
+    pub cache_key: String,
+    pub operation: String,
+    pub provider: String,
+    pub model: String,
+    pub version: String,
+    pub input_hash: String,
+    pub value: serde_json::Value,
+}
+
 // A source generation becomes visible only after promotion. Legacy/manual
 // notes have no generation and remain visible, while staged and superseded
 // file-import notes are excluded from every user-facing scan.
@@ -94,6 +107,38 @@ impl Repository {
         extraction: Option<&ExtractionIdentity>,
     ) -> Result<CompatibilityState> {
         record_embedding_metadata(&self.db, embedding, extraction).await
+    }
+
+    /// Read a durable local inference result by its fully semantic cache key.
+    pub async fn get_inference_cache(&self, cache_key: &str) -> Result<Option<serde_json::Value>> {
+        #[derive(Deserialize, SurrealValue)]
+        struct CacheValue {
+            cache_value: serde_json::Value,
+        }
+        let row: Option<CacheValue> = self
+            .db
+            .query("SELECT cache_value FROM inference_cache WHERE cache_key = $cache_key LIMIT 1")
+            .bind(("cache_key", cache_key.to_string()))
+            .await?
+            .take(0)?;
+        Ok(row.map(|row| row.cache_value))
+    }
+
+    /// Store a JSON result under its semantic key. The unique index makes
+    /// concurrent misses converge without changing the cached result.
+    pub async fn put_inference_cache(&self, entry: InferenceCacheEntry) -> Result<()> {
+        self.db
+            .query("UPSERT type::record('inference_cache', $cache_key) SET cache_key = $cache_key, operation = $operation, provider = $provider, model = $model, version = $version, input_hash = $input_hash, cache_value = $cache_value, updated_at = time::now(), created_at = IF created_at = NONE THEN time::now() ELSE created_at END")
+            .bind(("cache_key", entry.cache_key))
+            .bind(("operation", entry.operation))
+            .bind(("provider", entry.provider))
+            .bind(("model", entry.model))
+            .bind(("version", entry.version))
+            .bind(("input_hash", entry.input_hash))
+            .bind(("cache_value", entry.value))
+            .await?
+            .check()?;
+        Ok(())
     }
 
     // ==========================================

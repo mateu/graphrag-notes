@@ -33,6 +33,12 @@ pub trait Embedder: Send + Sync {
     async fn embed_batch(&self, texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>>;
     async fn health(&self) -> Result<bool>;
     fn capabilities(&self) -> InferenceCapabilities;
+    /// Maximum inputs accepted by one provider request, when the provider
+    /// supports batch embedding. The resilience layer uses this to put its
+    /// timeout and retry boundary around each actual HTTP request.
+    fn max_batch_size(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// A shareable entity-extraction provider used by agents.
@@ -53,6 +59,10 @@ pub struct InferenceCapabilities {
     pub model: String,
     pub endpoint: String,
     pub known_dimension: Option<usize>,
+    /// Canonical, non-secret settings that affect an inference result. This is
+    /// folded into durable cache keys so a model setting change cannot reuse a
+    /// semantically stale response.
+    pub cache_identity: String,
 }
 
 /// Production inference adapters selected from the environment in one place.
@@ -365,7 +375,17 @@ impl Embedder for TeiClient {
             model: self.model.clone(),
             endpoint: self.base_url.clone(),
             known_dimension: Some(EMBEDDING_DIMENSION),
+            cache_identity: format!(
+                "provider={};prompt_query={};prompt_passage={}",
+                self.provider_name(),
+                self.prompt_name_query.as_deref().unwrap_or(""),
+                self.prompt_name_passage.as_deref().unwrap_or(""),
+            ),
         }
+    }
+
+    fn max_batch_size(&self) -> Option<usize> {
+        matches!(self.provider, TeiProvider::Tei).then_some(self.max_batch)
     }
 }
 
@@ -651,6 +671,16 @@ impl EntityExtractor for TgiClient {
             model: self.model.clone(),
             endpoint: self.base_url.clone(),
             known_dimension: None,
+            cache_identity: format!(
+                "provider={};strict_json={};max_entities={};max_relationships={};ollama_timeout_secs={};ollama_options={};json_schema={}",
+                match self.provider { TgiProvider::Tgi => "tgi", TgiProvider::Ollama => "ollama" },
+                self.strict_entity_json,
+                self.max_entities,
+                self.max_relationships,
+                self.ollama_timeout_secs,
+                canonical_json_identity(self.ollama_options.as_ref()),
+                canonical_json_identity(self.json_schema.as_ref()),
+            ),
         }
     }
 }
@@ -794,6 +824,7 @@ impl Embedder for DeterministicEmbedder {
             model: self.model.clone(),
             endpoint: "offline://deterministic-embedder".to_string(),
             known_dimension: Some(self.default_embedding.len()),
+            cache_identity: "deterministic-embedding-v1".to_string(),
         }
     }
 }
@@ -806,6 +837,7 @@ pub struct FixtureEntityExtractor {
     health: bool,
     failures_remaining: Arc<Mutex<usize>>,
     failure_message: String,
+    cache_identity: String,
 }
 
 impl Default for FixtureEntityExtractor {
@@ -819,6 +851,7 @@ impl Default for FixtureEntityExtractor {
             health: true,
             failures_remaining: Arc::new(Mutex::new(0)),
             failure_message: "injected extraction failure".to_string(),
+            cache_identity: "fixture-extraction-v1".to_string(),
         }
     }
 }
@@ -865,6 +898,13 @@ impl FixtureEntityExtractor {
         this.failure_message = message.into();
         this
     }
+
+    /// Adjust only the semantic cache identity in tests, mirroring production
+    /// prompt/schema setting changes without an HTTP provider.
+    pub fn with_cache_identity(mut self, identity: impl Into<String>) -> Self {
+        self.cache_identity = identity.into();
+        self
+    }
 }
 
 #[async_trait]
@@ -905,7 +945,15 @@ impl EntityExtractor for FixtureEntityExtractor {
             model: "fixture".to_string(),
             endpoint: "offline://fixture-extractor".to_string(),
             known_dimension: None,
+            cache_identity: self.cache_identity.clone(),
         }
+    }
+}
+
+fn canonical_json_identity(value: Option<&Value>) -> String {
+    match value {
+        Some(value) => serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".into()),
+        None => String::new(),
     }
 }
 
@@ -929,20 +977,20 @@ enum TgiProvider {
     Ollama,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityExtraction {
     pub entities: Vec<ExtractedEntity>,
     pub relationships: Vec<ExtractedRelationship>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedEntity {
     pub name: String,
     #[serde(alias = "type", alias = "entity_type")]
     pub entity_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedRelationship {
     pub source: String,
     pub target: String,

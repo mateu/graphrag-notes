@@ -307,6 +307,18 @@ object. `EXTRACT_MAX_CHARS=0` intentionally preserves its legacy meaning of no
 truncation. Invalid values are rejected by `config validate` rather than being
 silently ignored.
 
+### Resilient local inference
+
+Embedding and entity-extraction requests use bounded concurrency, request
+timeouts, and retryable-error backoff. Successful local results are cached by
+operation, provider, model, prompt/schema settings, and normalized content.
+Override the resolved settings for one invocation with:
+
+```bash
+graphrag --concurrency 2 --retry-attempts 4 extract-entities --limit 100
+graphrag --no-cache extract-entities --limit 100
+```
+
 ### 3. Add Some Notes
 
 ```bash
