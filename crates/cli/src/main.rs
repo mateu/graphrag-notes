@@ -15,19 +15,23 @@ use eval::{
 use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
     InferenceProviderConfig, InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig,
-    ProcessingConfig, ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType,
-    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    ProcessingConfig, ProcessingRunResult, ResilientEmbedder, ResilientEntityExtractor,
+    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
 use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
-    init_memory, init_persistent, migrations, parse_record_id, Repository, SourceDeleteSummary,
+    init_memory, init_persistent, migrations, parse_record_id, ProcessingJob, ProcessingJobType,
+    Repository, SourceDeleteSummary,
 };
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -274,6 +278,12 @@ enum Commands {
         command: GardenCommand,
     },
 
+    /// Inspect and control durable local inference jobs
+    Jobs {
+        #[command(subcommand)]
+        command: JobsCommand,
+    },
+
     /// Show database statistics
     Stats,
 
@@ -415,6 +425,31 @@ enum GardenCommand {
         #[command(subcommand)]
         command: ProposalCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum JobsCommand {
+    List {
+        #[arg(short, long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = JobOutputFormat::Human)]
+        format: JobOutputFormat,
+    },
+    Show {
+        id: String,
+        #[arg(long, value_enum, default_value_t = JobOutputFormat::Human)]
+        format: JobOutputFormat,
+    },
+    /// Resume a failed or cancelled job from its durable checkpoint.
+    Resume { id: String },
+    /// Request cancellation between atomic item mutations.
+    Cancel { id: String },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum JobOutputFormat {
+    Human,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -585,6 +620,29 @@ fn extraction_processing_config(
         processing.request_timeout = Duration::from_secs(config.inference.ollama_timeout_secs);
     }
     Ok(processing)
+}
+
+/// Record an interrupt and return whether graceful cancellation was already
+/// requested. A second interrupt is therefore an explicit force-exit signal.
+fn request_cancellation(requested: &AtomicBool) -> bool {
+    requested.swap(true, Ordering::AcqRel)
+}
+
+fn install_cancellation_handler() -> Arc<AtomicBool> {
+    let requested = Arc::new(AtomicBool::new(false));
+    let listener = requested.clone();
+    tokio::spawn(async move {
+        while tokio::signal::ctrl_c().await.is_ok() {
+            if request_cancellation(&listener) {
+                eprintln!("Second Ctrl-C received; exiting immediately.");
+                std::process::exit(130);
+            }
+            eprintln!(
+                "Cancellation requested; finishing the current item and saving its checkpoint. Press Ctrl-C again to exit immediately."
+            );
+        }
+    });
+    requested
 }
 
 fn configured_search_agent(
@@ -811,7 +869,7 @@ async fn main() -> Result<()> {
     let tei: SharedEmbedder = Arc::new(ResilientEmbedder::new(
         providers.embedder,
         Some(repo.clone()),
-        processing,
+        processing.clone(),
     ));
     let tgi: SharedEntityExtractor = Arc::new(ResilientEntityExtractor::new(
         providers.extractor,
@@ -870,6 +928,19 @@ async fn main() -> Result<()> {
             anyhow::bail!("Extraction service unavailable");
         }
     }
+
+    // A persistent RocksDB database is exclusively owned by this process, so
+    // a second `graphrag jobs cancel` process cannot reliably attach while work
+    // is active. Ctrl-C is the in-process control plane: it requests a safe
+    // stop and the Librarian observes it between atomic item mutations.
+    let cancellation_requested = matches!(
+        &cli.command,
+        Commands::ExtractEntities { .. }
+            | Commands::Jobs {
+                command: JobsCommand::Resume { .. }
+            }
+    )
+    .then(install_cancellation_handler);
 
     // Execute command
     match cli.command {
@@ -1001,6 +1072,19 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Commands::Jobs { command } => {
+            cmd_jobs(
+                repo,
+                tei,
+                tgi,
+                librarian_config,
+                cancellation_requested
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+                command,
+            )
+            .await?;
+        }
         Commands::Stats => {
             cmd_stats(repo).await?;
         }
@@ -1033,6 +1117,9 @@ async fn main() -> Result<()> {
                 tei,
                 tgi,
                 librarian_config,
+                cancellation_requested
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
                 limit,
                 all,
                 note_ids,
@@ -1065,6 +1152,149 @@ async fn main() -> Result<()> {
         Commands::Doctor { .. } => unreachable!("doctor returns before database initialization"),
     }
 
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct JobOutput {
+    id: String,
+    job_type: String,
+    source_generation: Option<String>,
+    scope: Option<String>,
+    item_count: usize,
+    status: String,
+    total_count: i64,
+    completed_count: i64,
+    failed_count: i64,
+    checkpoint: Option<String>,
+    last_error: Option<String>,
+    created_at: String,
+    updated_at: String,
+    finished_at: Option<String>,
+}
+
+impl From<&graphrag_db::ProcessingJob> for JobOutput {
+    fn from(job: &graphrag_db::ProcessingJob) -> Self {
+        Self {
+            id: job.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+            job_type: job.job_type.clone(),
+            source_generation: job.source_generation.clone(),
+            scope: job.scope.clone(),
+            item_count: job.item_ids.len(),
+            status: job.status.clone(),
+            total_count: job.total_count,
+            completed_count: job.completed_count,
+            failed_count: job.failed_count,
+            checkpoint: job.checkpoint.clone(),
+            last_error: job.last_error.clone(),
+            created_at: job.created_at.to_rfc3339(),
+            updated_at: job.updated_at.to_rfc3339(),
+            finished_at: job.finished_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+fn print_job(job: &graphrag_db::ProcessingJob, format: JobOutputFormat) -> Result<()> {
+    match format {
+        JobOutputFormat::Json => println!("{}", serde_json::to_string(&JobOutput::from(job))?),
+        JobOutputFormat::Human => println!(
+            "{} {} status={} scope={} items={} completed={}/{} failed={} checkpoint={}{}",
+            job.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+            job.job_type,
+            job.status,
+            job.scope.as_deref().unwrap_or("-"),
+            job.item_ids.len(),
+            job.completed_count,
+            job.total_count,
+            job.failed_count,
+            job.checkpoint.as_deref().unwrap_or("-"),
+            job.last_error
+                .as_deref()
+                .map(|error| format!(" error={error}"))
+                .unwrap_or_default(),
+        ),
+    }
+    Ok(())
+}
+
+async fn cmd_jobs(
+    repo: Repository,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
+    cancellation_requested: Arc<AtomicBool>,
+    command: JobsCommand,
+) -> Result<()> {
+    match command {
+        JobsCommand::List { limit, format } => {
+            let jobs = repo.list_processing_jobs(limit).await?;
+            if format == JobOutputFormat::Json {
+                let rows = jobs.iter().map(JobOutput::from).collect::<Vec<_>>();
+                println!("{}", serde_json::to_string(&rows)?);
+            } else if jobs.is_empty() {
+                println!("No processing jobs.");
+            } else {
+                for job in &jobs {
+                    print_job(job, format)?;
+                }
+            }
+        }
+        JobsCommand::Show { id, format } => {
+            let job = repo
+                .get_processing_job(&id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Processing job not found: {id}"))?;
+            print_job(&job, format)?;
+        }
+        JobsCommand::Cancel { id } => {
+            let record = parse_record_id(&id, Some("processing_job"))?;
+            let job = repo.cancel_processing_job(&record).await?;
+            print_job(&job, JobOutputFormat::Human)?;
+        }
+        JobsCommand::Resume { id } => {
+            let job = repo
+                .get_processing_job(&id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Processing job not found: {id}"))?;
+            ensure_resume_provider_health(&job, &tei, &tgi).await?;
+            let librarian = LibrarianAgent::new(repo, tei, tgi)
+                .with_runtime_config(librarian_config)
+                .with_cancellation_flag(cancellation_requested);
+            let result = librarian.resume_processing_job(&id).await?;
+            println!(
+                "job={} completed={} failed={} cancelled={}",
+                result.job_id, result.completed, result.failed, result.cancelled
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validate only the provider required by the persisted job before changing
+/// its state to running. Embedding jobs do not need extraction service health,
+/// and entity jobs do not need embeddings service health.
+async fn ensure_resume_provider_health(
+    job: &ProcessingJob,
+    tei: &SharedEmbedder,
+    tgi: &SharedEntityExtractor,
+) -> Result<()> {
+    match job.job_type_enum() {
+        Some(ProcessingJobType::Embedding) => {
+            if !tei.health().await.unwrap_or(false) {
+                eprintln!("Error: embeddings service is not reachable.");
+                eprintln!("  TEI (embeddings): {}", tei.capabilities().endpoint);
+                anyhow::bail!("Embeddings service unavailable")
+            }
+        }
+        Some(ProcessingJobType::EntityExtraction) => {
+            if !tgi.health().await.unwrap_or(false) {
+                eprintln!("Error: extraction service is not reachable.");
+                eprintln!("  TGI (extraction): {}", tgi.capabilities().endpoint);
+                anyhow::bail!("Extraction service unavailable")
+            }
+        }
+        None => anyhow::bail!("Unsupported processing job type: {}", job.job_type),
+    }
     Ok(())
 }
 
@@ -1551,6 +1781,7 @@ async fn cmd_extract_entities(
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
     librarian_config: LibrarianRuntimeConfig,
+    cancellation_requested: Arc<AtomicBool>,
     limit: usize,
     all: bool,
     note_ids: Vec<String>,
@@ -1562,21 +1793,41 @@ async fn cmd_extract_entities(
     if force && !all && note_ids.is_empty() {
         anyhow::bail!("--force requires --all or at least one --note-id");
     }
-    let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
-    let processed = if !note_ids.is_empty() {
+    let librarian = LibrarianAgent::new(repo, tei, tgi)
+        .with_runtime_config(librarian_config)
+        .with_cancellation_flag(cancellation_requested);
+    let result = if !note_ids.is_empty() {
         librarian
-            .extract_entities_for_note_ids(&note_ids, force)
+            .extract_entities_for_note_ids_result(&note_ids, force)
             .await?
     } else if all {
-        let processed = librarian
-            .extract_entities_for_all_notes(limit, force)
-            .await?;
-        processed
+        librarian
+            .extract_entities_for_all_notes_result(limit, force)
+            .await?
     } else {
-        let processed = librarian.extract_entities_for_notes(limit).await?;
-        processed
+        librarian.extract_entities_for_notes_result(limit).await?
     };
-    println!("✓ Extracted entities for {} notes", processed);
+    report_entity_extraction_result(&result)
+}
+
+/// Render entity extraction only as a success after its durable run reached a
+/// terminal non-cancelled state. A Ctrl-C is resumable work, not a successful
+/// zero-item invocation.
+fn report_entity_extraction_result(result: &ProcessingRunResult) -> Result<()> {
+    if result.cancelled {
+        if result.job_id.is_empty() {
+            eprintln!(
+                "Entity extraction cancelled before durable work was created; no job needs resuming."
+            );
+            anyhow::bail!("Entity extraction cancelled")
+        }
+        eprintln!(
+            "Entity extraction cancelled: job={} completed={} failed={}. Resume with `graphrag jobs resume {}`.",
+            result.job_id, result.completed, result.failed, result.job_id
+        );
+        anyhow::bail!("Entity extraction cancelled")
+    }
+    println!("✓ Extracted entities for {} notes", result.completed);
     Ok(())
 }
 
@@ -2516,6 +2767,145 @@ mod tests {
     }
 
     #[test]
+    fn second_cancellation_request_is_a_force_exit_signal() {
+        let requested = AtomicBool::new(false);
+        assert!(!request_cancellation(&requested));
+        assert!(requested.load(Ordering::Acquire));
+        assert!(request_cancellation(&requested));
+    }
+
+    #[test]
+    fn cancelled_entity_extraction_is_not_reported_as_success() {
+        let cancelled = ProcessingRunResult {
+            job_id: "processing_job:resume-me".into(),
+            completed: 3,
+            failed: 0,
+            cancelled: true,
+        };
+        assert!(report_entity_extraction_result(&cancelled)
+            .unwrap_err()
+            .to_string()
+            .contains("Entity extraction cancelled"));
+
+        let completed = ProcessingRunResult {
+            cancelled: false,
+            ..cancelled
+        };
+        assert!(report_entity_extraction_result(&completed).is_ok());
+    }
+
+    #[tokio::test]
+    async fn resume_health_check_uses_only_the_job_required_provider() {
+        use graphrag_agents::{DeterministicEmbedder, FixtureEntityExtractor};
+
+        let repo = Repository::new(init_memory().await.unwrap());
+        let embedding_job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::Embedding,
+                None,
+                1,
+                Some("test".into()),
+                vec!["note:embedding".into()],
+            )
+            .await
+            .unwrap();
+        let entity_job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::EntityExtraction,
+                None,
+                1,
+                Some("test".into()),
+                vec!["note:entity".into()],
+            )
+            .await
+            .unwrap();
+        let healthy_embedder: SharedEmbedder = Arc::new(DeterministicEmbedder::default());
+        let unhealthy_embedder: SharedEmbedder =
+            Arc::new(DeterministicEmbedder::default().unhealthy());
+        let healthy_extractor: SharedEntityExtractor = Arc::new(FixtureEntityExtractor::default());
+        let unhealthy_extractor: SharedEntityExtractor =
+            Arc::new(FixtureEntityExtractor::default().unhealthy());
+
+        assert!(ensure_resume_provider_health(
+            &embedding_job,
+            &healthy_embedder,
+            &unhealthy_extractor,
+        )
+        .await
+        .is_ok());
+        assert!(ensure_resume_provider_health(
+            &embedding_job,
+            &unhealthy_embedder,
+            &healthy_extractor,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("Embeddings service unavailable"));
+        assert!(ensure_resume_provider_health(
+            &entity_job,
+            &unhealthy_embedder,
+            &healthy_extractor,
+        )
+        .await
+        .is_ok());
+        assert!(ensure_resume_provider_health(
+            &entity_job,
+            &healthy_embedder,
+            &unhealthy_extractor,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("Extraction service unavailable"));
+    }
+
+    #[tokio::test]
+    async fn resume_entity_failure_returns_non_success_after_persisting_diagnostic() {
+        use graphrag_agents::{DeterministicEmbedder, FixtureEntityExtractor};
+
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(graphrag_core::Note::new("entity extraction that will fail"))
+            .await
+            .unwrap();
+        let job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::EntityExtraction,
+                None,
+                1,
+                Some("note_ids:force=false".into()),
+                vec![record_id_to_string(note.id.as_ref().unwrap())],
+            )
+            .await
+            .unwrap();
+        let job_id = record_id_to_string(job.id.as_ref().unwrap());
+        repo.cancel_processing_job(job.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        let error = cmd_jobs(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().fail_next_requests(1, "timeout")),
+            LibrarianRuntimeConfig::default(),
+            Arc::new(AtomicBool::new(false)),
+            JobsCommand::Resume { id: job_id.clone() },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("timeout"));
+
+        let job = repo.get_processing_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(job.status, "failed");
+        assert_eq!(job.failed_count, 1);
+        assert!(job
+            .last_error
+            .as_deref()
+            .is_some_and(|diagnostic| diagnostic.contains("timeout")));
+    }
+
+    #[test]
     fn edge_dry_run_reports_actual_existence() {
         assert_eq!(
             edge_dry_run_message("related_to:example", true),
@@ -2578,5 +2968,26 @@ mod tests {
         let config = RuntimeConfig::default();
         assert!(processing_config(&config, Some(0), None, false).is_err());
         assert!(processing_config(&config, None, Some(0), false).is_err());
+    }
+
+    #[test]
+    fn ollama_extraction_wrapper_keeps_the_provider_timeout() {
+        let mut config = RuntimeConfig::default();
+        config.inference.timeout_secs = 30;
+        config.inference.ollama_timeout_secs = 120;
+        config.inference.extraction_provider = "ollama".into();
+        assert_eq!(
+            extraction_processing_config(&config, None, None, false)
+                .unwrap()
+                .request_timeout,
+            Duration::from_secs(120)
+        );
+        config.inference.extraction_provider = "tgi".into();
+        assert_eq!(
+            extraction_processing_config(&config, None, None, false)
+                .unwrap()
+                .request_timeout,
+            Duration::from_secs(30)
+        );
     }
 }

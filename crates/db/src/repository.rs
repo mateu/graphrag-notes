@@ -8,6 +8,7 @@ use crate::{
     fusion::{self, FusionConfig, FusionEvidence, FusionRecord},
     DbConnection, DbError, Result,
 };
+use chrono::{DateTime, Utc};
 use graphrag_core::{
     record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, Note, ProposedEdge,
     ProposedEdgeStatus, Source, SourceIngestionStatus, SourceType,
@@ -26,19 +27,6 @@ pub struct Repository {
     proposal_acceptance_lock: Arc<Mutex<()>>,
 }
 
-/// An audited cache entry. `cache_key` is computed by the inference layer;
-/// the remaining fields make collision and invalidation diagnostics stable.
-#[derive(Debug, Clone)]
-pub struct InferenceCacheEntry {
-    pub cache_key: String,
-    pub operation: String,
-    pub provider: String,
-    pub model: String,
-    pub version: String,
-    pub input_hash: String,
-    pub value: serde_json::Value,
-}
-
 // A source generation becomes visible only after promotion. Legacy/manual
 // notes have no generation and remain visible, while staged and superseded
 // file-import notes are excluded from every user-facing scan.
@@ -49,6 +37,111 @@ const VISIBLE_NOTE_CONDITION: &str = "(source_id IS NONE OR source_generation IS
 // interrupted import cannot expose relationships owned by a staged or
 // superseded generation.
 const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)) AND out IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation))";
+
+fn count_to_i64(count: u64) -> Result<i64> {
+    i64::try_from(count)
+        .map_err(|_| DbError::QueryFailed("processing count exceeds database integer range".into()))
+}
+
+/// The coarse operation of a durable local processing job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessingJobType {
+    Embedding,
+    EntityExtraction,
+}
+
+impl ProcessingJobType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Embedding => "embedding",
+            Self::EntityExtraction => "entity_extraction",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "embedding" => Some(Self::Embedding),
+            "entity_extraction" => Some(Self::EntityExtraction),
+            _ => None,
+        }
+    }
+}
+
+/// State transitions are intentionally small: workers own `running`, while
+/// command handlers can request cancellation between atomic item mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessingJobStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl ProcessingJobStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// Persisted checkpoint and aggregate counts for a local processing run.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+pub struct ProcessingJob {
+    pub id: Option<RecordId>,
+    pub job_type: String,
+    pub source_generation: Option<String>,
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub item_ids: Vec<String>,
+    pub status: String,
+    pub total_count: i64,
+    pub completed_count: i64,
+    pub failed_count: i64,
+    pub checkpoint: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+impl ProcessingJob {
+    pub fn job_type_enum(&self) -> Option<ProcessingJobType> {
+        ProcessingJobType::parse(&self.job_type)
+    }
+}
+
+/// Partial update with explicit nested options for nullable fields: `None`
+/// leaves a field unchanged; `Some(None)` clears it.
+#[derive(Debug, Clone, Default)]
+pub struct ProcessingJobUpdate {
+    pub status: Option<ProcessingJobStatus>,
+    pub completed_count: Option<u64>,
+    pub failed_count: Option<u64>,
+    pub checkpoint: Option<Option<String>>,
+    pub last_error: Option<Option<String>>,
+    pub finish: bool,
+}
+
+/// An audited cache entry. `cache_key` is computed by the processing layer;
+/// remaining fields make collision/debug inspection deterministic.
+#[derive(Debug, Clone)]
+pub struct InferenceCacheEntry {
+    pub cache_key: String,
+    pub operation: String,
+    pub provider: String,
+    pub model: String,
+    pub version: String,
+    pub input_hash: String,
+    pub value: serde_json::Value,
+}
 
 fn source_content_value(source: &Source) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(source)
@@ -109,6 +202,147 @@ impl Repository {
         record_embedding_metadata(&self.db, embedding, extraction).await
     }
 
+    // ==========================================
+    // DURABLE INFERENCE PROCESSING
+    // ==========================================
+
+    /// Create a legacy/unscoped inference record. `source_generation` is an
+    /// opaque durable identifier so jobs remain valid even when their source
+    /// record is later reloaded by another process.
+    ///
+    /// This helper has no persisted item set and therefore cannot be resumed
+    /// by a durable worker. New callers must use
+    /// [`Self::create_processing_job_with_scope`] so retries have an exact,
+    /// resumable scope.
+    pub async fn create_processing_job(
+        &self,
+        job_type: ProcessingJobType,
+        source_generation: Option<String>,
+        total_count: u64,
+    ) -> Result<ProcessingJob> {
+        self.create_processing_job_with_scope(
+            job_type,
+            source_generation,
+            total_count,
+            None,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Persist the exact item set selected for a bounded job. Resume uses this
+    /// durable scope instead of silently substituting a new page of notes.
+    pub async fn create_processing_job_with_scope(
+        &self,
+        job_type: ProcessingJobType,
+        source_generation: Option<String>,
+        total_count: u64,
+        scope: Option<String>,
+        item_ids: Vec<String>,
+    ) -> Result<ProcessingJob> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "CREATE processing_job SET job_type = $job_type, source_generation = $source_generation, scope = $scope, item_ids = $item_ids, \
+                 status = 'running', total_count = $total_count, completed_count = 0, failed_count = 0, \
+                 checkpoint = NONE, last_error = NONE, created_at = time::now(), updated_at = time::now(), \
+                 finished_at = NONE RETURN AFTER",
+            )
+            .bind(("job_type", job_type.as_str()))
+            .bind(("source_generation", source_generation))
+            .bind(("scope", scope))
+            .bind(("item_ids", item_ids))
+            .bind(("total_count", count_to_i64(total_count)?))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| DbError::QueryFailed("create_processing_job".into()))
+    }
+
+    /// Update progress only after an item's atomic database mutation has
+    /// completed.  A crash can therefore repeat at most the checkpoint item;
+    /// the processing callers use idempotent upserts/reconciliation.
+    pub async fn update_processing_job(
+        &self,
+        id: &RecordId,
+        update: ProcessingJobUpdate,
+    ) -> Result<ProcessingJob> {
+        let status = update.status.map(ProcessingJobStatus::as_str);
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET status = IF $status = NONE THEN status ELSE $status END, \
+                 completed_count = IF $completed_count = NONE THEN completed_count ELSE $completed_count END, \
+                 failed_count = IF $failed_count = NONE THEN failed_count ELSE $failed_count END, \
+                 checkpoint = IF $checkpoint_set THEN $checkpoint ELSE checkpoint END, \
+                 last_error = IF $last_error_set THEN $last_error ELSE last_error END, \
+                 finished_at = IF $finish THEN time::now() ELSE finished_at END, updated_at = time::now() \
+                 RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("status", status))
+            .bind((
+                "completed_count",
+                update.completed_count.map(count_to_i64).transpose()?,
+            ))
+            .bind(("failed_count", update.failed_count.map(count_to_i64).transpose()?))
+            .bind(("checkpoint_set", update.checkpoint.is_some()))
+            .bind(("checkpoint", update.checkpoint.flatten()))
+            .bind(("last_error_set", update.last_error.is_some()))
+            .bind(("last_error", update.last_error.flatten()))
+            .bind(("finish", update.finish))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| DbError::NotFound("processing_job".into(), record_id_to_string(id)))
+    }
+
+    pub async fn get_processing_job(&self, id: &str) -> Result<Option<ProcessingJob>> {
+        let raw = id.strip_prefix("processing_job:").unwrap_or(id);
+        Ok(self.db.select(("processing_job", raw)).await?)
+    }
+
+    pub async fn list_processing_jobs(&self, limit: usize) -> Result<Vec<ProcessingJob>> {
+        let limit = i64::try_from(limit)
+            .map_err(|_| DbError::QueryFailed("job limit exceeds database integer range".into()))?;
+        Ok(self
+            .db
+            .query("SELECT * FROM processing_job ORDER BY updated_at DESC LIMIT $limit")
+            .bind(("limit", limit))
+            .await?
+            .take(0)?)
+    }
+
+    /// A cancelled job is never silently restarted. `resume` must explicitly
+    /// move it back to running after the caller has reconstructed the work.
+    pub async fn cancel_processing_job(&self, id: &RecordId) -> Result<ProcessingJob> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET status = 'cancelled', updated_at = time::now(), finished_at = time::now() \
+                 WHERE status = 'running' OR status = 'queued' RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| {
+            DbError::NotFound("runnable processing_job".into(), record_id_to_string(id))
+        })
+    }
+
+    pub async fn resume_processing_job(&self, id: &RecordId) -> Result<ProcessingJob> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET status = 'running', last_error = NONE, finished_at = NONE, updated_at = time::now() \
+                 WHERE status = 'cancelled' OR status = 'failed' RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| {
+            DbError::NotFound("resumable processing_job".into(), record_id_to_string(id))
+        })
+    }
+
     /// Read a durable local inference result by its fully semantic cache key.
     pub async fn get_inference_cache(&self, cache_key: &str) -> Result<Option<serde_json::Value>> {
         #[derive(Deserialize, SurrealValue)]
@@ -128,7 +362,11 @@ impl Repository {
     /// concurrent misses converge without changing the cached result.
     pub async fn put_inference_cache(&self, entry: InferenceCacheEntry) -> Result<()> {
         self.db
-            .query("UPSERT type::record('inference_cache', $cache_key) SET cache_key = $cache_key, operation = $operation, provider = $provider, model = $model, version = $version, input_hash = $input_hash, cache_value = $cache_value, updated_at = time::now(), created_at = IF created_at = NONE THEN time::now() ELSE created_at END")
+            .query(
+                "UPSERT type::record('inference_cache', $cache_key) SET cache_key = $cache_key, operation = $operation, \
+                 provider = $provider, model = $model, version = $version, input_hash = $input_hash, \
+                 cache_value = $cache_value, updated_at = time::now(), created_at = IF created_at = NONE THEN time::now() ELSE created_at END",
+            )
             .bind(("cache_key", entry.cache_key))
             .bind(("operation", entry.operation))
             .bind(("provider", entry.provider))
@@ -272,6 +510,65 @@ impl Repository {
             .take(0)?;
 
         Ok(notes)
+    }
+
+    /// Read one stable page while building a durable pending-embedding
+    /// snapshot. Callers persist only the page's record IDs, keeping initial
+    /// job selection bounded before any inference work begins.
+    pub async fn get_notes_without_embeddings_page(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Note>> {
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("embedding page limit exceeds database integer range".into())
+        })?;
+        let offset = i64::try_from(offset).map_err(|_| {
+            DbError::QueryFailed("embedding page offset exceeds database integer range".into())
+        })?;
+        Ok(self
+            .db
+            .query(format!(
+                "SELECT * FROM note WHERE ({VISIBLE_NOTE_CONDITION}) AND (embedding IS NONE OR array::len(embedding) = 0) ORDER BY created_at ASC, id ASC LIMIT $limit START $offset"
+            ))
+            .bind(("limit", limit))
+            .bind(("offset", offset))
+            .await?
+            .take(0)?)
+    }
+
+    /// Fetch one bounded work window. Repeating this query is safe because a
+    /// successful item no longer matches it, avoiding an unbounded in-memory
+    /// import queue and making interruption reconciliation natural.
+    pub async fn get_notes_without_embeddings_limit(&self, limit: usize) -> Result<Vec<Note>> {
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("embedding page limit exceeds database integer range".into())
+        })?;
+        Ok(self
+            .db
+            .query(format!(
+                "SELECT * FROM note WHERE ({VISIBLE_NOTE_CONDITION}) AND (embedding IS NONE OR array::len(embedding) = 0) ORDER BY id LIMIT $limit"
+            ))
+            .bind(("limit", limit))
+            .await?
+            .take(0)?)
+    }
+
+    pub async fn count_notes_without_embeddings(&self) -> Result<u64> {
+        #[derive(Deserialize, SurrealValue)]
+        struct CountRow {
+            count: i64,
+        }
+        let row: Option<CountRow> = self
+            .db
+            .query(format!(
+                "SELECT count() AS count FROM note WHERE ({VISIBLE_NOTE_CONDITION}) AND (embedding IS NONE OR array::len(embedding) = 0) GROUP ALL"
+            ))
+            .await?
+            .take(0)?;
+        let count = row.map(|row| row.count).unwrap_or(0);
+        u64::try_from(count)
+            .map_err(|_| DbError::QueryFailed("negative pending embedding count".into()))
     }
 
     /// Get notes without entity links (for extraction)
@@ -4836,5 +5133,41 @@ mod tests {
 
         assert_eq!(record_id_to_string(&vector[0].id), "note:alpha");
         assert_eq!(record_id_to_string(&fulltext[0].id), "note:alpha");
+    }
+
+    #[tokio::test]
+    async fn processing_job_checkpoint_cancel_and_resume_are_durable() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::Embedding,
+                Some("source:7/2".into()),
+                3,
+                Some("missing_embeddings".into()),
+                vec!["note:one".into(), "note:two".into(), "note:three".into()],
+            )
+            .await
+            .unwrap();
+        let id = job.id.clone().unwrap();
+        assert_eq!(job.scope.as_deref(), Some("missing_embeddings"));
+        assert_eq!(job.item_ids.len(), 3);
+        let updated = repo
+            .update_processing_job(
+                &id,
+                ProcessingJobUpdate {
+                    completed_count: Some(1),
+                    checkpoint: Some(Some("note:one".into())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.completed_count, 1);
+        assert_eq!(updated.checkpoint.as_deref(), Some("note:one"));
+        let cancelled = repo.cancel_processing_job(&id).await.unwrap();
+        assert_eq!(cancelled.status, ProcessingJobStatus::Cancelled.as_str());
+        let resumed = repo.resume_processing_job(&id).await.unwrap();
+        assert_eq!(resumed.status, ProcessingJobStatus::Running.as_str());
+        assert_eq!(repo.list_processing_jobs(10).await.unwrap().len(), 1);
     }
 }

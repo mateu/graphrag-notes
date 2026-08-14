@@ -235,8 +235,9 @@ async fn test_librarian_and_search_agents_with_offline_inference() {
 }
 
 #[tokio::test]
-async fn test_librarian_rejects_offline_batch_length_mismatch() {
+async fn test_librarian_falls_back_after_offline_batch_length_mismatch() {
     use graphrag_agents::{DeterministicEmbedder, FixtureEntityExtractor, LibrarianAgent};
+    use graphrag_db::ProcessingJobStatus;
 
     let db = init_memory().await.expect("Failed to init db");
     let repo = Repository::new(db);
@@ -246,13 +247,28 @@ async fn test_librarian_rejects_offline_batch_length_mismatch() {
         .unwrap();
     assert!(note.embedding.is_empty());
     let librarian = LibrarianAgent::new(
-        repo,
+        repo.clone(),
         Arc::new(DeterministicEmbedder::default().with_batch_length_mismatch()),
         Arc::new(FixtureEntityExtractor::default()),
     );
 
-    let error = librarian.process_pending_embeddings().await.unwrap_err();
-    assert!(error.to_string().contains("embeddings for 1 inputs"));
+    // The malformed batch response is rejected, then the durable worker
+    // retries the one note individually. A valid single-item response must
+    // still complete the job instead of treating a batch-only fault as a
+    // permanent failure of the note.
+    assert_eq!(librarian.process_pending_embeddings().await.unwrap(), 1);
+    let note = repo
+        .get_note(&graphrag_core::record_id_to_string(
+            note.id.as_ref().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!note.embedding.is_empty());
+    let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
+    assert_eq!(job.status, ProcessingJobStatus::Completed.as_str());
+    assert_eq!(job.completed_count, 1);
+    assert_eq!(job.failed_count, 0);
 }
 
 #[tokio::test]
