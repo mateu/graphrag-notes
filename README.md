@@ -64,10 +64,12 @@ byte span, overlap predecessor, and content hash. Without configured overlap,
 its source span reproduces the displayed source substring exactly; copied
 overlap text is identified separately. Refreshes are copy-on-write: the previous successful
 generation remains searchable until a complete pending generation promotes.
-Exact chunks retain their deterministic key, embedding, and original creation
-time, but receive a new note record ID in the promoted generation; changed/new
-chunks are re-embedded and removed chunks are deleted through the source
-lifecycle cascade. Tune these settings in `config.toml` or with
+Unchanged chunks are aligned by content and heading context in document order,
+so inserting or removing earlier chunks does not redirect their relationships.
+They retain embeddings and original creation time, but receive a new note
+record ID in the promoted generation. Changed/new chunks are re-embedded and
+are eligible for fresh entity extraction; removed or ambiguous chunks are
+deleted through the source lifecycle cascade. Tune these settings in `config.toml` or with
 `GRAPHRAG_LIBRARIAN_{MIN,TARGET,MAX}_CHUNK_SIZE` and
 `GRAPHRAG_LIBRARIAN_CHUNK_OVERLAP`.
 

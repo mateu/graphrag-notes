@@ -2245,32 +2245,44 @@ impl Repository {
     /// old generation remains authoritative until promotion/cleanup; should a
     /// copy fail, removing the staged generation leaves its dependents intact.
     ///
-    /// The mapping may contain only chunks that reconciled successfully. A
-    /// removed chunk deliberately has no successor, so its dependents follow
-    /// the normal source-lifecycle cascade instead of being attached to an
-    /// unrelated chunk.
+    /// The mapping may contain only chunks that reconciled successfully. Its
+    /// third value records whether the successor's displayed content is
+    /// byte-for-byte unchanged. A removed or ambiguous chunk deliberately has
+    /// no successor, so its dependents follow the normal source-lifecycle
+    /// cascade instead of being attached to unrelated content.
     #[instrument(skip(self, successors))]
     pub async fn copy_note_dependents_to_successors(
         &self,
-        successors: &[(RecordId, RecordId)],
+        successors: &[(RecordId, RecordId, bool)],
     ) -> Result<()> {
         if successors.is_empty() {
             return Ok(());
         }
-        let successors = successors.iter().cloned().collect::<HashMap<_, _>>();
+        let exact_content_successors = successors
+            .iter()
+            .filter_map(|(old_id, _, exact_content)| exact_content.then_some(old_id.clone()))
+            .collect::<HashSet<_>>();
+        let successors = successors
+            .iter()
+            .map(|(old_id, new_id, _)| (old_id.clone(), new_id.clone()))
+            .collect::<HashMap<_, _>>();
 
-        // Mentions and chat provenance are note-owned records. Recreate them
-        // through their idempotent link helpers so a retry cannot duplicate a
-        // relationship already copied to a staged successor.
+        // Entity mentions describe extracted source text, so only carry them
+        // across when that displayed text is exactly unchanged. A changed
+        // successor remains mention-free and is therefore eligible for a new
+        // entity-extraction pass. Chat provenance identifies origin rather
+        // than extracted content, so it follows every safely reconciled chunk.
         for (old_id, new_id) in &successors {
-            let entity_ids: Vec<RecordId> = self
-                .db
-                .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
-                .bind(("note_id", old_id.clone()))
-                .await?
-                .take(0)?;
-            for entity_id in entity_ids {
-                self.link_note_to_entity(new_id, &entity_id).await?;
+            if exact_content_successors.contains(old_id) {
+                let entity_ids: Vec<RecordId> = self
+                    .db
+                    .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+                    .bind(("note_id", old_id.clone()))
+                    .await?
+                    .take(0)?;
+                for entity_id in entity_ids {
+                    self.link_note_to_entity(new_id, &entity_id).await?;
+                }
             }
 
             let conversation_ids: Vec<RecordId> = self
