@@ -630,6 +630,10 @@ impl LibrarianAgent {
                 .await?;
         }
         let mut item_ids = VecDeque::from(job.item_ids);
+        // Keep the first per-item failure for the terminal job diagnostic
+        // while allowing later windows to process their independently valid
+        // items.
+        let mut first_error = None;
 
         loop {
             if self.processing_job_cancelled(&job_id).await? {
@@ -687,15 +691,24 @@ impl LibrarianAgent {
                     .update_processing_job(
                         &job_id,
                         ProcessingJobUpdate {
-                            status: Some(ProcessingJobStatus::Completed),
+                            status: Some(if failed == 0 {
+                                ProcessingJobStatus::Completed
+                            } else {
+                                ProcessingJobStatus::Failed
+                            }),
                             completed_count: Some(completed),
                             failed_count: Some(failed),
-                            last_error: Some(None),
+                            last_error: Some(first_error.clone()),
                             finish: true,
                             ..Default::default()
                         },
                     )
                     .await?;
+                if failed > 0 {
+                    return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
+                        || "one or more embedding items failed".to_string(),
+                    )));
+                }
                 return Ok(ProcessingRunResult {
                     job_id: record_id_to_string(&job_id),
                     completed,
@@ -708,7 +721,6 @@ impl LibrarianAgent {
                 .iter()
                 .map(|note| note.content.clone())
                 .collect::<Vec<_>>();
-            let mut first_error = None;
             match self.embed_batch(&texts).await {
                 Ok(embeddings) => {
                     for (note, embedding) in notes.iter().zip(embeddings) {
@@ -779,23 +791,6 @@ impl LibrarianAgent {
                         }
                     }
                 }
-            }
-            if failed > 0 {
-                self.repo
-                    .update_processing_job(
-                        &job_id,
-                        ProcessingJobUpdate {
-                            status: Some(ProcessingJobStatus::Failed),
-                            completed_count: Some(completed),
-                            failed_count: Some(failed),
-                            finish: true,
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-                return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
-                    || "one or more embedding items failed".to_string(),
-                )));
             }
         }
     }
@@ -3071,6 +3066,73 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(invalid.embedding.is_empty());
+    }
+
+    #[tokio::test]
+    async fn embedding_failure_does_not_stop_later_durable_windows() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let invalid = repo
+            .create_note(Note::new("permanently invalid embedding input"))
+            .await
+            .unwrap();
+        let mut item_ids = vec![graphrag_core::record_id_to_string(
+            invalid.id.as_ref().unwrap(),
+        )];
+        let mut later_note_id = None;
+        for index in 0..33 {
+            let note = repo
+                .create_note(Note::new(format!("valid embedding input {index}")))
+                .await
+                .unwrap();
+            item_ids.push(graphrag_core::record_id_to_string(
+                note.id.as_ref().unwrap(),
+            ));
+            if index == 32 {
+                later_note_id = note.id.as_ref().map(graphrag_core::record_id_to_string);
+            }
+        }
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(PermanentBatchFailureEmbedder),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        let job = repo
+            .create_processing_job_with_scope(
+                ProcessingJobType::Embedding,
+                None,
+                item_ids.len() as u64,
+                Some("durable-window-regression".into()),
+                item_ids,
+            )
+            .await
+            .unwrap();
+
+        assert!(librarian
+            .process_pending_embeddings_job(Some(job))
+            .await
+            .is_err());
+        let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
+        assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
+        assert_eq!(job.completed_count, 33);
+        assert_eq!(job.failed_count, 1);
+        assert!(job
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("invalid embedding input")));
+        let invalid = repo
+            .get_note(&graphrag_core::record_id_to_string(
+                invalid.id.as_ref().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(invalid.embedding.is_empty());
+        let later = repo
+            .get_note(&later_note_id.expect("last note id"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!later.embedding.is_empty());
     }
 
     #[tokio::test]
