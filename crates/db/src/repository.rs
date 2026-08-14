@@ -2550,8 +2550,15 @@ impl Repository {
         note_ids: &[RecordId],
         edge_types: &[String],
         per_table_limit: usize,
+        allow_outbound: bool,
+        allow_inbound: bool,
+        min_confidence: f32,
     ) -> Result<Vec<NoteEdgeRow>> {
-        if note_ids.is_empty() || edge_types.is_empty() || per_table_limit == 0 {
+        if note_ids.is_empty()
+            || edge_types.is_empty()
+            || per_table_limit == 0
+            || (!allow_outbound && !allow_inbound)
+        {
             return Ok(Vec::new());
         }
         let mut rows = HashMap::<String, NoteEdgeRow>::new();
@@ -2569,14 +2576,24 @@ impl Repository {
             // per-source budget exact and deterministic.
             let query = (0..note_ids.len())
                 .map(|index| {
+                    let direction = match (allow_outbound, allow_inbound) {
+                        (true, true) => format!("(in = $note_{index} OR out = $note_{index})"),
+                        (true, false) => format!("in = $note_{index}"),
+                        (false, true) => format!("out = $note_{index}"),
+                        (false, false) => "false".to_string(),
+                    };
                     format!(
                         "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
-                         FROM {table} WHERE (in = $note_{index} OR out = $note_{index}) AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} \
+                         FROM {table} WHERE {direction} AND (confidence = NONE OR confidence >= $min_confidence) AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} \
                          ORDER BY id ASC LIMIT $limit;"
                     )
                 })
                 .collect::<String>();
-            let mut query = self.db.query(query).bind(("limit", limit));
+            let mut query = self
+                .db
+                .query(query)
+                .bind(("limit", limit))
+                .bind(("min_confidence", min_confidence));
             for (index, note_id) in note_ids.iter().enumerate() {
                 query = query.bind((format!("note_{index}"), note_id.clone()));
             }

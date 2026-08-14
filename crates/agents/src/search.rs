@@ -578,11 +578,16 @@ impl SearchAgent {
                 existing.query_entities.extend(entity_name);
                 existing.query_entities.sort();
                 existing.query_entities.dedup();
-            } else {
+            } else if frontier.len() < self.graph.max_seed_notes {
                 frontier.insert(
                     id.clone(),
                     GraphFrontier::seed(seed.note_id, id, entity_name, self.graph.seed_score),
                 );
+            } else {
+                // The relation query intentionally includes enough rows to
+                // preserve associations for retained notes. Ignore only a
+                // new note after the unique seed bound is reached.
+                continue;
             }
         }
         if !require_entity_seed {
@@ -633,6 +638,9 @@ impl SearchAgent {
                     &ids,
                     &self.graph.allowed_edge_types,
                     self.graph.per_node_fanout,
+                    self.graph.allow_outbound,
+                    self.graph.allow_inbound,
+                    self.graph.min_confidence,
                 )
                 .await?;
             let mut next = BTreeMap::<String, GraphFrontier>::new();
@@ -1339,6 +1347,119 @@ mod tests {
             .expect("the second seed must retain its own per-node fanout");
         assert_eq!(second_graph.hops, 1);
         assert_eq!(second_graph.query_entities, vec!["Beta"]);
+    }
+
+    #[tokio::test]
+    async fn graph_edge_query_filters_direction_and_confidence_before_fanout_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo.create_note(Note::new("filter seed")).await.unwrap();
+        let low_confidence = repo
+            .create_note(Note::new("low confidence first row"))
+            .await
+            .unwrap();
+        let inbound = repo
+            .create_note(Note::new("inbound first row"))
+            .await
+            .unwrap();
+        let valid = repo
+            .create_note(Note::new("valid outbound high confidence"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Filter", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        // These earlier rows must be eliminated by the DB predicate before
+        // the source's one-edge fanout LIMIT is evaluated.
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            low_confidence.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.1),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            inbound.id.as_ref().unwrap(),
+            seed.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            valid.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 2;
+        config.allow_inbound = false;
+        config.min_confidence = 0.8;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph("Filter", 10, SearchScope::Notes, None, None, GraphMode::On)
+            .await
+            .unwrap();
+        let valid_id = record_id_to_string(valid.id.as_ref().unwrap());
+        assert!(results
+            .hits
+            .iter()
+            .find(|hit| hit.id == valid_id)
+            .is_some_and(|hit| hit.graph.as_ref().is_some_and(|graph| graph.hops == 1)));
+    }
+
+    #[tokio::test]
+    async fn graph_seed_cap_limits_distinct_notes_but_keeps_retained_entity_associations() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        for name in ["Alpha", "Beta", "Gamma"] {
+            let note = repo
+                .create_note(Note::new(format!("{name} disjoint seed")))
+                .await
+                .unwrap();
+            let mut entity = Entity::new(name, EntityType::Project);
+            entity.metadata = serde_json::json!({});
+            let entity = repo.upsert_entity(entity).await.unwrap();
+            repo.link_note_to_entity(note.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_entities = 3;
+        config.max_seed_notes = 2;
+        config.candidate_cap = 8;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Alpha Beta Gamma",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let graph_seeds = results
+            .hits
+            .iter()
+            .filter_map(|hit| hit.graph.as_ref())
+            .filter(|graph| graph.hops == 0)
+            .collect::<Vec<_>>();
+        assert_eq!(graph_seeds.len(), 2);
+        assert!(graph_seeds.iter().all(|graph| {
+            graph.query_entities.len() == 1
+                && matches!(graph.query_entities[0].as_str(), "Alpha" | "Beta" | "Gamma")
+        }));
     }
 
     #[tokio::test]
