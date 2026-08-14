@@ -190,14 +190,18 @@ pub(crate) fn build_augment_context_from_hits(
             dropped_duplicates += 1;
             continue;
         }
-        if hit.score < options.min_relevance {
-            dropped_for_relevance += 1;
-            continue;
-        }
         let mut candidate = Candidate::from_hit(hit);
         candidate.rank = rank;
         candidates.push(candidate);
     }
+    normalize_candidate_relevance(&mut candidates);
+    candidates.retain(|candidate| {
+        let keep = candidate.relevance >= options.min_relevance;
+        if !keep {
+            dropped_for_relevance += 1;
+        }
+        keep
+    });
 
     let mut selected = Vec::new();
     let mut dropped_near_duplicates = 0usize;
@@ -315,6 +319,9 @@ struct Candidate {
     hit: ScopedSearchResult,
     content_start: usize,
     rank: usize,
+    /// Relative retrieval relevance normalized across the eligible candidate
+    /// pool before MMR combines it with novelty.
+    relevance: f32,
 }
 
 #[derive(Debug)]
@@ -332,6 +339,7 @@ impl Candidate {
             hit,
             content_start,
             rank: 0,
+            relevance: 0.0,
         }
     }
 
@@ -345,14 +353,38 @@ fn selection_score(
     selected: &[HashSet<String>],
     novelty_weight: f32,
 ) -> f32 {
-    let relevance = candidate.hit.score.clamp(0.0, 1.0);
     let candidate_tokens = normalized_tokens(candidate.content());
     let novelty = selected
         .iter()
         .map(|chosen| 1.0 - jaccard_similarity(&candidate_tokens, chosen))
         .fold(1.0_f32, f32::min);
     let novelty_weight = novelty_weight.clamp(0.0, 1.0);
-    relevance * (1.0 - novelty_weight) + novelty * novelty_weight
+    candidate.relevance * (1.0 - novelty_weight) + novelty * novelty_weight
+}
+
+fn normalize_candidate_relevance(candidates: &mut [Candidate]) {
+    let Some(min_score) = candidates
+        .iter()
+        .map(|candidate| candidate.hit.score)
+        .min_by(|left, right| left.total_cmp(right))
+    else {
+        return;
+    };
+    let max_score = candidates
+        .iter()
+        .map(|candidate| candidate.hit.score)
+        .max_by(|left, right| left.total_cmp(right))
+        .expect("candidate pool is non-empty");
+    let span = max_score - min_score;
+    for candidate in candidates {
+        candidate.relevance = if span.is_finite() && span > f32::EPSILON {
+            ((candidate.hit.score - min_score) / span).clamp(0.0, 1.0)
+        } else {
+            // Equal scores are equivalent retrieval evidence; preserve their
+            // deterministic rank ordering rather than inventing relevance.
+            1.0
+        };
+    }
 }
 
 fn fit_candidate(
@@ -525,7 +557,7 @@ fn sentence_spans(text: &str) -> Vec<Range<usize>> {
     let mut fence_start = None;
     for line in text.split_inclusive('\n') {
         let line_end = line_start + line.len();
-        if line.trim_start().starts_with("```") {
+        if is_standalone_fence_line(line) {
             if let Some(start) = fence_start.take() {
                 spans.push(start..line_end);
             } else {
@@ -748,9 +780,28 @@ fn remove_unmatched_fence_markers(value: &str) -> String {
     }
     value
         .lines()
-        .filter(|line| !line.contains("```"))
+        .filter_map(|line| {
+            if is_standalone_fence_line(line) {
+                None
+            } else {
+                // An inline marker cannot delimit a whole block. Keep the
+                // prose/code line and remove only the unmatched marker.
+                Some(line.replace("```", ""))
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn is_standalone_fence_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(info) = trimmed.strip_prefix("```") else {
+        return false;
+    };
+    // A regular fence is just the delimiter plus an optional compact info
+    // string (for example `rust` or `rust,ignore`). Lines with prose or code
+    // after an inline marker must remain visible in a clipped snippet.
+    !info.contains("```") && !info.chars().any(char::is_whitespace)
 }
 
 fn lexical_anchor(text: &str, terms: &HashSet<String>) -> Option<usize> {
@@ -760,8 +811,19 @@ fn lexical_anchor(text: &str, terms: &HashSet<String>) -> Option<usize> {
 fn lexical_match_range(text: &str, terms: &HashSet<String>) -> Option<Range<usize>> {
     terms
         .iter()
-        .filter_map(|term| phrase_match_range(text, term))
+        .filter_map(|term| {
+            source_searchable_term(term).and_then(|term| phrase_match_range(text, &term))
+        })
         .min_by_key(|range| range.start)
+}
+
+fn source_searchable_term(term: &str) -> Option<String> {
+    if term.contains('\u{1f}') {
+        let contiguous = term.replace('\u{1f}', "");
+        (!contiguous.is_empty()).then_some(contiguous)
+    } else {
+        Some(term.to_string())
+    }
 }
 
 /// Find a Unicode case-insensitive phrase without deriving offsets from a
@@ -807,9 +869,14 @@ fn casefolded_prefix_end(text: &str, wanted: &[char]) -> Option<usize> {
                 return None;
             }
             matched += 1;
-        }
-        if matched == wanted.len() {
-            return Some(offset + ch.len_utf8());
+            // A source scalar may lowercase into multiple scalars (notably
+            // `İ` -> `i` plus a combining dot). Once the query is complete,
+            // the remaining expansion must not turn that valid match into a
+            // false negative; the returned offset still covers the complete
+            // original scalar.
+            if matched == wanted.len() {
+                return Some(offset + ch.len_utf8());
+            }
         }
     }
     None
@@ -1163,6 +1230,14 @@ mod tests {
     }
 
     #[test]
+    fn casefolded_match_accepts_a_query_ending_inside_a_scalar_expansion() {
+        let text = "İ marker";
+        let range = phrase_match_range(text, "i").unwrap();
+        assert_eq!(&text[range.clone()], "İ");
+        assert_eq!(range.end, "İ".len());
+    }
+
+    #[test]
     fn oversized_phrase_window_is_clipped_instead_of_dropped() {
         let text = "prefix oversized phrase target afterword";
         let clipped = clip_query_aware(
@@ -1202,6 +1277,26 @@ mod tests {
         let clipped = clip_query_aware(text, "目標片段", 20, &ConservativeTokenCounter);
         assert!(clipped.snippet.contains("目標片段"));
         assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 20);
+    }
+
+    #[test]
+    fn partial_cjk_overlap_anchors_on_a_source_searchable_bigram() {
+        let clipped = clip_query_aware(
+            "前置說明甲乙後置內容",
+            "甲乙丙",
+            20,
+            &ConservativeTokenCounter,
+        );
+        assert!(clipped.snippet.contains("甲乙"));
+        assert!(ConservativeTokenCounter.count(&clipped.snippet) <= 20);
+    }
+
+    #[test]
+    fn unmatched_fence_cleanup_preserves_lines_with_inline_markers() {
+        let cleaned = remove_unmatched_fence_markers("intro ``` marker\n```rust\nlet x = 1;\n```");
+        assert!(cleaned.contains("intro  marker"));
+        assert!(cleaned.contains("let x = 1;"));
+        assert!(!cleaned.contains("```"));
     }
 
     #[test]
@@ -1308,5 +1403,35 @@ mod tests {
         assert_eq!(context.total_tokens, 0);
         assert_eq!(context.render_prompt_block(), "");
         assert_eq!(context.diagnostics.dropped_for_relevance, 1);
+    }
+
+    #[test]
+    fn normalized_relevance_prevents_low_score_novelty_from_overtaking_retrieval() {
+        let mut selection_options = options();
+        selection_options.max_chunks = 3;
+        selection_options.max_total_tokens = 300;
+        selection_options.max_chunk_tokens = 80;
+        selection_options.novelty_weight = 0.25;
+        selection_options.near_duplicate_threshold = 1.0;
+        let context = build_augment_context_from_hits(
+            "rust".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("n:best", 0.9, "rust ownership borrowing lifetimes"),
+                hit("n:relevant", 0.8, "rust ownership borrowing patterns"),
+                hit("n:novel", 0.01, "unrelated gardening and recipes"),
+            ],
+            selection_options,
+            0,
+        );
+        assert_eq!(
+            context
+                .chunks
+                .iter()
+                .map(|chunk| chunk.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["n:best", "n:relevant", "n:novel"]
+        );
     }
 }

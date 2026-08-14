@@ -9,15 +9,15 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use eval::{
     build_baseline_comparison, evaluate_ranked_results, load_baseline, load_eval_cases,
-    parse_regression_thresholds, EvalCaseReport, EvalMetadata, EvalOutputFormat, EvalRunReport,
-    EvalScope, RankedResult, EVAL_SCHEMA_VERSION,
+    parse_regression_thresholds, AugmentationDiagnosticsReport, EvalCaseReport, EvalMetadata,
+    EvalOutputFormat, EvalRunReport, EvalScope, RankedResult, EVAL_SCHEMA_VERSION,
 };
 use graphrag_agents::{
     AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent, InferenceProviderConfig,
     InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, SearchAgent, SearchHitType,
-    SearchScope, SharedEmbedder, SharedEntityExtractor,
+    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
-use graphrag_config::{CliOverrides, RuntimeConfig, SearchConfig};
+use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, Source};
 use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
@@ -454,6 +454,23 @@ fn configured_search_agent(
     )
 }
 
+fn augment_options(
+    max_chunks: usize,
+    max_total_tokens: usize,
+    max_chunk_tokens: usize,
+    config: &AugmentConfig,
+) -> AugmentOptions {
+    AugmentOptions {
+        max_chunks,
+        max_total_tokens,
+        max_chunk_tokens,
+        novelty_weight: config.novelty_weight,
+        min_relevance: config.min_relevance,
+        near_duplicate_threshold: config.near_duplicate_threshold,
+        ..Default::default()
+    }
+}
+
 fn librarian_runtime_config(
     config: &RuntimeConfig,
     cli_skip_extraction: bool,
@@ -744,6 +761,7 @@ async fn main() -> Result<()> {
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
                 config.search.clone(),
+                config.augment.clone(),
                 fail_on_miss,
                 format,
                 baseline,
@@ -773,6 +791,7 @@ async fn main() -> Result<()> {
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
                 config.search.clone(),
+                config.augment.clone(),
             )
             .await?;
         }
@@ -1623,6 +1642,7 @@ async fn cmd_augment(
     max_tokens: usize,
     max_chunk_tokens: usize,
     search_config: SearchConfig,
+    augment_config: AugmentConfig,
 ) -> Result<()> {
     if entity.is_some() && scope != SearchScopeArg::Notes {
         anyhow::bail!("--entity currently requires --scope notes");
@@ -1642,11 +1662,7 @@ async fn cmd_augment(
             since_days,
             source_uri,
             entity.clone(),
-            AugmentOptions {
-                max_chunks: limit,
-                max_total_tokens: max_tokens,
-                max_chunk_tokens,
-            },
+            augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
         )
         .await?;
 
@@ -1712,6 +1728,7 @@ async fn cmd_eval_augment(
     default_max_tokens: usize,
     default_max_chunk_tokens: usize,
     search_config: SearchConfig,
+    augment_config: AugmentConfig,
     fail_on_miss: bool,
     format: EvalOutputFormat,
     baseline_path: Option<PathBuf>,
@@ -1760,11 +1777,7 @@ async fn cmd_eval_augment(
                 since_days,
                 source_uri,
                 case.entity.clone(),
-                AugmentOptions {
-                    max_chunks: limit,
-                    max_total_tokens: max_tokens,
-                    max_chunk_tokens,
-                },
+                augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
             )
             .await?;
         let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
@@ -1806,6 +1819,19 @@ async fn cmd_eval_augment(
             name: case.display_name().to_string(),
             query: case.query.clone(),
             metrics,
+            augmentation: Some(AugmentationDiagnosticsReport {
+                token_count_mode: match ctx.diagnostics.token_count_mode {
+                    TokenCountMode::Exact => "exact",
+                    TokenCountMode::Estimated => "estimated",
+                }
+                .to_string(),
+                header_tokens: ctx.diagnostics.header_tokens,
+                dropped_duplicates: ctx.diagnostics.dropped_duplicates,
+                dropped_near_duplicates: ctx.diagnostics.dropped_near_duplicates,
+                dropped_for_relevance: ctx.diagnostics.dropped_for_relevance,
+                dropped_for_budget: ctx.diagnostics.dropped_for_budget,
+                dropped_for_entity_filter: ctx.diagnostics.dropped_for_entity_filter,
+            }),
         });
     }
 
@@ -2125,4 +2151,26 @@ async fn cmd_interactive(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn augment_commands_forward_runtime_tuning_to_packing_options() {
+        let config = AugmentConfig {
+            novelty_weight: 0.4,
+            min_relevance: 0.2,
+            near_duplicate_threshold: 0.7,
+            ..Default::default()
+        };
+        let options = augment_options(3, 90, 30, &config);
+        assert_eq!(options.max_chunks, 3);
+        assert_eq!(options.max_total_tokens, 90);
+        assert_eq!(options.max_chunk_tokens, 30);
+        assert_eq!(options.novelty_weight, 0.4);
+        assert_eq!(options.min_relevance, 0.2);
+        assert_eq!(options.near_duplicate_threshold, 0.7);
+    }
 }

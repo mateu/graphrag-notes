@@ -924,6 +924,24 @@ mod tests {
     }
 
     #[test]
+    fn environment_overrides_all_augment_tuning_fields() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[
+                ("GRAPHRAG_AUGMENT_NOVELTY_WEIGHT", "0.4"),
+                ("GRAPHRAG_AUGMENT_MIN_RELEVANCE", "0.2"),
+                ("GRAPHRAG_AUGMENT_NEAR_DUPLICATE_THRESHOLD", "0.7"),
+            ]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.augment.novelty_weight, 0.4);
+        assert_eq!(config.augment.min_relevance, 0.2);
+        assert_eq!(config.augment.near_duplicate_threshold, 0.7);
+    }
+
+    #[test]
     fn explicit_file_then_environment_then_cli_define_precedence() {
         let directory = tempfile::tempdir().unwrap();
         let config_path = directory.path().join("graphrag.toml");
