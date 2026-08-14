@@ -1005,7 +1005,11 @@ impl LibrarianAgent {
                 .update_processing_job(
                     &job_id,
                     ProcessingJobUpdate {
-                        completed_count: Some(0),
+                        // A checkpoint resume carries forward the durable
+                        // completed prefix. Persist it before looking for a
+                        // new cancellation so a second Ctrl-C cannot erase
+                        // work that is intentionally skipped on retry.
+                        completed_count: Some(completed),
                         failed_count: Some(failed),
                         last_error: Some(None),
                         ..Default::default()
@@ -2822,7 +2826,7 @@ mod tests {
             job.id.as_ref().unwrap(),
             ProcessingJobUpdate {
                 completed_count: Some(1),
-                checkpoint: Some(Some(first_id)),
+                checkpoint: Some(Some(first_id.clone())),
                 ..Default::default()
             },
         )
@@ -2832,6 +2836,25 @@ mod tests {
             .await
             .unwrap();
         repo.delete_note(&deleted_id).await.unwrap();
+
+        // A second cancellation immediately after resume must retain the
+        // restored completed prefix before the worker can inspect another
+        // item. A later resume then reconciles from that same checkpoint.
+        let immediately_cancelled = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(Arc::new(AtomicBool::new(true)))
+        .resume_processing_job(&job_id)
+        .await
+        .unwrap();
+        assert!(immediately_cancelled.cancelled);
+        assert_eq!(immediately_cancelled.completed, 1);
+        let checkpointed = repo.get_processing_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(checkpointed.status, ProcessingJobStatus::Cancelled.as_str());
+        assert_eq!(checkpointed.completed_count, 1);
+        assert_eq!(checkpointed.checkpoint.as_deref(), Some(first_id.as_str()));
 
         let result = LibrarianAgent::new(
             repo.clone(),
