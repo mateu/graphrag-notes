@@ -70,9 +70,10 @@ fn source_content_value(source: &Source) -> Result<serde_json::Value> {
 impl Repository {
     /// Create a new repository
     pub fn new(db: DbConnection) -> Self {
+        let proposal_acceptance_lock = db.proposal_lifecycle_lock();
         Self {
             db,
-            proposal_acceptance_lock: Arc::new(Mutex::new(())),
+            proposal_acceptance_lock,
         }
     }
 
@@ -1045,12 +1046,13 @@ impl Repository {
         proposal: ProposedEdge,
         is_manual: bool,
     ) -> Result<ProposedEdge> {
-        if !self.note_exists(&proposal.from_id).await? || !self.note_exists(&proposal.to_id).await?
+        if !self.note_is_visible(&proposal.from_id).await?
+            || !self.note_is_visible(&proposal.to_id).await?
         {
-            self.mark_claimed_proposal_stale(id, "proposal endpoint no longer exists")
+            self.mark_claimed_proposal_stale(id, "proposal endpoint is no longer visible")
                 .await?;
             return Err(DbError::QueryFailed(format!(
-                "proposal {} is stale: an endpoint no longer exists",
+                "proposal {} is stale: an endpoint is no longer visible",
                 record_id_to_string(id)
             )));
         }
@@ -1489,8 +1491,19 @@ impl Repository {
             .transpose()
     }
 
-    async fn note_exists(&self, id: &RecordId) -> Result<bool> {
-        let existing: Option<Note> = self.db.select(id.clone()).await?;
+    /// Proposal acceptance may only materialize relationships between notes
+    /// that are currently visible to the corpus. This also makes a retry safe
+    /// if a different process is interrupted after source promotion changes
+    /// visibility but before it retires old-generation proposals.
+    async fn note_is_visible(&self, id: &RecordId) -> Result<bool> {
+        let existing: Option<Note> = self
+            .db
+            .query(format!(
+                "SELECT * FROM note WHERE id = $id AND {VISIBLE_NOTE_CONDITION} LIMIT 1"
+            ))
+            .bind(("id", id.clone()))
+            .await?
+            .take(0)?;
         Ok(existing.is_some())
     }
 
@@ -3567,10 +3580,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interrupted_promotion_cannot_resume_an_acceptance_for_hidden_notes() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old_left = repo
+            .create_note(
+                Note::new("first generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let old_right = repo
+            .create_note(
+                Note::new("first generation right")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                old_left.id.as_ref().unwrap(),
+                old_right.id.as_ref().unwrap(),
+                0.9,
+                "interrupted promotion race".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        // Persist an acceptance claim, then simulate a different process
+        // being interrupted after promotion updates source visibility but
+        // before it can retire old-generation proposals.
+        assert!(repo
+            .claim_pending_proposal(
+                &proposal_id,
+                ProposedEdgeStatus::Accepting,
+                Some("reviewer".into()),
+                Some("approved before interruption".into()),
+                Some(true),
+            )
+            .await
+            .unwrap());
+        let mut second = begin_markdown(&repo, "second", false).await;
+        second.source.successful_generation = second.source.generation;
+        second.source.status = SourceIngestionStatus::Ready;
+        second.source.last_error = None;
+        second.source.updated_at = chrono::Utc::now();
+        second.source.last_ingested_at = Some(second.source.updated_at);
+        repo.replace_source(&second.source).await.unwrap();
+
+        // Resuming must treat now-hidden endpoints as stale, rather than
+        // materializing an edge during the interruption window.
+        assert!(repo
+            .accept_edge_proposal(&proposal_id, Some("retry".into()), None, true)
+            .await
+            .is_err());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(
+            proposal.supersession_reason.as_deref(),
+            Some("proposal endpoint is no longer visible")
+        );
+        assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+
+        // The normal unchanged import recovery then deletes the hidden old
+        // generation without finding a dangling accepted edge/proposal.
+        let recovery = begin_markdown(&repo, "second", false).await;
+        assert_eq!(recovery.action, SourceImportAction::Unchanged);
+        assert_eq!(recovery.cleanup.notes, 2);
+        assert!(repo
+            .get_note(&record_id_to_string(old_left.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
     async fn source_delete_preview_matches_confirmed_derived_cascade() {
         let repo = Repository::new(init_memory().await.unwrap());
         let mut plan = begin_markdown(&repo, "content", false).await;
         let source_id = plan.source.id.as_ref().unwrap().clone();
+        // Garden acceptance only operates on notes in the active source
+        // generation, so promote this source before creating its fixture
+        // relationships.
+        repo.complete_file_import(&mut plan.source).await.unwrap();
         let derived = repo
             .create_note(
                 Note::new("derived")
@@ -3647,7 +3746,6 @@ mod tests {
         repo.link_note_to_entity(derived.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
             .await
             .unwrap();
-        repo.complete_file_import(&mut plan.source).await.unwrap();
 
         let preview = repo.preview_source_delete(&plan.source).await.unwrap();
         assert_eq!(preview.notes, 2);
@@ -4249,6 +4347,86 @@ mod tests {
         let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
         assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
         assert_eq!(proposal.resulting_edge_id, None);
+    }
+
+    #[tokio::test]
+    async fn independently_constructed_repositories_share_lifecycle_serialization() {
+        let db = init_memory().await.unwrap();
+        let accepting_repo = Repository::new(db.clone());
+        let undoing_repo = Repository::new(db);
+        assert!(Arc::ptr_eq(
+            &accepting_repo.proposal_acceptance_lock,
+            &undoing_repo.proposal_acceptance_lock
+        ));
+        let (first, second) = two_notes(&accepting_repo).await;
+        let proposal_id = accepting_repo
+            .upsert_gardener_proposal(
+                &first,
+                &second,
+                0.9,
+                "independent repository race".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let edge_id = accepting_repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
+
+        // Queue the competing operations through separate Repository values.
+        // Undo wins the shared lifecycle lock, so a later acceptance retry
+        // must see a superseded proposal rather than recreate/finalize it.
+        let guard = accepting_repo.proposal_acceptance_lock.lock().await;
+        let undo_repo = undoing_repo.clone();
+        let undo_id = edge_id.clone();
+        let undo = tokio::spawn(async move { undo_repo.undo_edge(&undo_id, None).await });
+        tokio::task::yield_now().await;
+        let retry_repo = accepting_repo.clone();
+        let retry_id = proposal_id.clone();
+        let retry = tokio::spawn(async move {
+            retry_repo
+                .accept_edge_proposal(&retry_id, Some("retry".into()), None, true)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        assert!(undo.await.unwrap().unwrap());
+        assert!(retry.await.unwrap().is_err());
+        assert!(!undoing_repo.note_edge_exists(&edge_id).await.unwrap());
+        let proposal = undoing_repo
+            .get_edge_proposal(&proposal_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(proposal.resulting_edge_id, None);
+    }
+
+    #[tokio::test]
+    async fn independent_memory_stores_do_not_share_lifecycle_serialization() {
+        let first_repo = Repository::new(init_memory().await.unwrap());
+        let second_repo = Repository::new(init_memory().await.unwrap());
+        assert!(!Arc::ptr_eq(
+            &first_repo.proposal_acceptance_lock,
+            &second_repo.proposal_acceptance_lock
+        ));
+
+        // Holding a lifecycle transition for one logical store must not block
+        // a repository backed by a separately initialized in-memory store.
+        let first_guard = first_repo.proposal_acceptance_lock.lock().await;
+        let second_guard = second_repo
+            .proposal_acceptance_lock
+            .try_lock()
+            .expect("independent store lifecycle lock is not held");
+        drop(second_guard);
+        drop(first_guard);
     }
 
     #[tokio::test]

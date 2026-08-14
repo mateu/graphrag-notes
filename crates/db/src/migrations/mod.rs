@@ -411,7 +411,7 @@ mod tests {
     async fn raw_memory_db() -> DbConnection {
         let db = Surreal::new::<Mem>(()).await.unwrap();
         db.use_ns("graphrag").use_db("notes").await.unwrap();
-        db
+        DbConnection::new(db)
     }
 
     #[tokio::test]
