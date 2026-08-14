@@ -18,13 +18,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Cargo check
-        run: cargo check --workspace
+        run: cargo check --workspace --locked
 
       - name: Cargo test
-        run: cargo test --workspace --quiet -- --test-threads=1
+        run: cargo test --workspace --locked --quiet -- --test-threads=1
