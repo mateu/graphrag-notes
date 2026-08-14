@@ -1011,6 +1011,11 @@ impl LibrarianAgent {
                         // work that is intentionally skipped on retry.
                         completed_count: Some(completed),
                         failed_count: Some(failed),
+                        // A failed job retries its complete item set. Clear
+                        // the old checkpoint before checking cancellation so
+                        // an immediate second stop cannot later mistake that
+                        // stale cursor for a completed prefix.
+                        checkpoint: (!resume_from_checkpoint).then_some(None),
                         last_error: Some(None),
                         ..Default::default()
                     },
@@ -2689,6 +2694,29 @@ mod tests {
             .item_ids
             .iter()
             .any(|id| id == &graphrag_core::record_id_to_string(second.id.as_ref().unwrap())));
+
+        // A failed job retries its entire durable scope. If that retry is
+        // immediately cancelled, its stale terminal checkpoint must already
+        // be cleared so the next resume cannot skip the failed prior scope.
+        let cancelled_retry = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_cancellation_flag(Arc::new(AtomicBool::new(true)))
+        .resume_processing_job(&job_id)
+        .await
+        .unwrap();
+        assert!(cancelled_retry.cancelled);
+        assert_eq!(cancelled_retry.completed, 0);
+        let cancelled_job = repo.get_processing_job(&job_id).await.unwrap().unwrap();
+        assert_eq!(
+            cancelled_job.status,
+            ProcessingJobStatus::Cancelled.as_str()
+        );
+        assert_eq!(cancelled_job.completed_count, 0);
+        assert_eq!(cancelled_job.failed_count, 0);
+        assert!(cancelled_job.checkpoint.is_none());
 
         let resumed = LibrarianAgent::new(
             repo.clone(),
