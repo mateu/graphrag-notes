@@ -719,7 +719,9 @@ fn librarian_runtime_config(
 ) -> LibrarianRuntimeConfig {
     LibrarianRuntimeConfig {
         min_chunk_size: config.librarian.min_chunk_size,
+        target_chunk_size: config.librarian.target_chunk_size,
         max_chunk_size: config.librarian.max_chunk_size,
+        chunk_overlap: config.librarian.chunk_overlap,
         skip_entity_extraction: cli_skip_extraction || config.librarian.skip_entity_extraction,
         extract_log_each: config.librarian.extract_log_each,
         extract_max_chars: config.librarian.extract_max_chars,

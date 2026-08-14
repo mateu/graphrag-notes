@@ -83,8 +83,11 @@ max_suggestions = 50
 [librarian]
 # Minimum chunk size (characters) when splitting documents
 min_chunk_size = 50
-# Maximum chunk size
+# Target and hard maximum chunk sizes, measured in Unicode characters.
+target_chunk_size = 700
 max_chunk_size = 1000
+# Tail characters copied into the next chunk when it fits the hard maximum.
+chunk_overlap = 100
 # Entity extraction/import controls. `extract_max_chars = 0` means no truncation.
 skip_entity_extraction = false
 extract_log_each = false
