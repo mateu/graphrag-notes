@@ -628,12 +628,6 @@ fn request_cancellation(requested: &AtomicBool) -> bool {
     requested.swap(true, Ordering::AcqRel)
 }
 
-/// Record an interrupt and return whether graceful cancellation was already
-/// requested. A second interrupt is therefore an explicit force-exit signal.
-fn request_cancellation(requested: &AtomicBool) -> bool {
-    requested.swap(true, Ordering::AcqRel)
-}
-
 fn install_cancellation_handler() -> Arc<AtomicBool> {
     let requested = Arc::new(AtomicBool::new(false));
     let listener = requested.clone();
