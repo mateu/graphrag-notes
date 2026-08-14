@@ -1248,8 +1248,9 @@ async fn cmd_eval_augment(
         anyhow::bail!("--max-regression requires --baseline");
     }
 
-    let provider = tei.provider_name().to_string();
-    let model = tei.model().to_string();
+    let capabilities = tei.capabilities();
+    let provider = capabilities.provider;
+    let model = capabilities.model;
     let search = SearchAgent::new(repo, tei);
     let mut reports = Vec::with_capacity(cases.len());
 
