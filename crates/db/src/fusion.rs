@@ -87,6 +87,23 @@ where
     T: FusionRecord,
     F: FnMut(&mut T, T),
 {
+    // Database engines do not promise an order for equal KNN distances or
+    // BM25 scores. Normalize each component list before assigning its rank so
+    // an otherwise identical query cannot receive different RRF scores due to
+    // backend iteration order.
+    let mut vector = vector;
+    vector.sort_by(|left, right| {
+        component_vector_score(right)
+            .total_cmp(&component_vector_score(left))
+            .then_with(|| left.fusion_id().cmp(&right.fusion_id()))
+    });
+    let mut fulltext = fulltext;
+    fulltext.sort_by(|left, right| {
+        component_fulltext_score(right)
+            .total_cmp(&component_fulltext_score(left))
+            .then_with(|| left.fusion_id().cmp(&right.fusion_id()))
+    });
+
     let mut candidates: BTreeMap<String, Candidate<T>> = BTreeMap::new();
 
     for (index, result) in vector.into_iter().enumerate() {
@@ -163,6 +180,17 @@ where
         .collect()
 }
 
+fn component_vector_score<T: FusionRecord>(result: &T) -> f32 {
+    result
+        .vector_distance()
+        .map(|distance| 1.0 / (1.0 + distance.max(0.0)))
+        .unwrap_or(f32::NEG_INFINITY)
+}
+
+fn component_fulltext_score<T: FusionRecord>(result: &T) -> f32 {
+    result.fulltext_score().unwrap_or(f32::NEG_INFINITY)
+}
+
 pub fn fused_score(
     vector_rank: Option<usize>,
     vector_distance: Option<f32>,
@@ -232,7 +260,7 @@ mod tests {
 
     #[derive(Clone)]
     struct Result {
-        id: &'static str,
+        id: String,
         vector: Option<f32>,
         fulltext: Option<f32>,
         evidence: FusionEvidence,
@@ -240,7 +268,7 @@ mod tests {
 
     impl FusionRecord for Result {
         fn fusion_id(&self) -> String {
-            self.id.into()
+            self.id.clone()
         }
         fn vector_distance(&self) -> Option<f32> {
             self.vector
@@ -253,9 +281,9 @@ mod tests {
         }
     }
 
-    fn result(id: &'static str, vector: Option<f32>, fulltext: Option<f32>) -> Result {
+    fn result(id: impl Into<String>, vector: Option<f32>, fulltext: Option<f32>) -> Result {
         Result {
-            id,
+            id: id.into(),
             vector,
             fulltext,
             evidence: FusionEvidence::default(),
@@ -360,5 +388,181 @@ mod tests {
             ),
             Ordering::Less
         );
+    }
+
+    #[test]
+    fn component_ties_receive_deterministic_ranks_before_rrf() {
+        let config = FusionConfig::default();
+        let first = fuse(
+            vec![
+                result("note:z", Some(0.2), None),
+                result("note:a", Some(0.2), None),
+            ],
+            vec![
+                result("note:z", None, Some(1.0)),
+                result("note:a", None, Some(1.0)),
+            ],
+            &config,
+            |existing, incoming| existing.fulltext = incoming.fulltext,
+        );
+        let second = fuse(
+            vec![
+                result("note:a", Some(0.2), None),
+                result("note:z", Some(0.2), None),
+            ],
+            vec![
+                result("note:a", None, Some(1.0)),
+                result("note:z", None, Some(1.0)),
+            ],
+            &config,
+            |existing, incoming| existing.fulltext = incoming.fulltext,
+        );
+
+        let summarize = |results: Vec<Result>| {
+            results
+                .into_iter()
+                .map(|result| {
+                    (
+                        result.id,
+                        result.evidence.vector_rank,
+                        result.evidence.fulltext_rank,
+                        result.evidence.fused_score,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(summarize(first), summarize(second));
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureInput {
+        name: String,
+        k: usize,
+        vector: Vec<FixtureComponent>,
+        fulltext: Vec<FixtureComponent>,
+        relevance: std::collections::BTreeMap<String, u32>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureComponent {
+        id: String,
+        #[serde(default)]
+        distance: Option<f32>,
+        #[serde(default)]
+        score: Option<f32>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureOutput {
+        strategy: String,
+        rrf_k: usize,
+        vector_weight: f32,
+        fulltext_weight: f32,
+        cases: Vec<FixtureCaseOutput>,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureCaseOutput {
+        name: String,
+        ranked_ids: Vec<String>,
+        metrics: FixtureMetrics,
+    }
+
+    #[derive(Deserialize)]
+    struct FixtureMetrics {
+        recall_at_k: f32,
+        mrr: f32,
+        ndcg_at_k: f32,
+    }
+
+    fn parse_fixture<T: for<'a> Deserialize<'a>>(contents: &str) -> T {
+        serde_json::from_str(contents).unwrap()
+    }
+
+    fn fixture_metrics(ranked_ids: &[String], input: &FixtureInput) -> (f32, f32, f32) {
+        let ranked = &ranked_ids[..input.k.min(ranked_ids.len())];
+        let relevant_count = input.relevance.len() as f32;
+        let recall = ranked
+            .iter()
+            .filter(|id| input.relevance.contains_key(*id))
+            .count() as f32
+            / relevant_count;
+        let mrr = ranked
+            .iter()
+            .position(|id| input.relevance.contains_key(id))
+            .map(|index| 1.0 / (index + 1) as f32)
+            .unwrap_or_default();
+        let dcg = ranked.iter().enumerate().fold(0.0, |sum, (index, id)| {
+            let grade = input.relevance.get(id).copied().unwrap_or_default() as f32;
+            sum + (2.0f32.powf(grade) - 1.0) / ((index + 2) as f32).log2()
+        });
+        let mut ideal: Vec<u32> = input.relevance.values().copied().collect();
+        ideal.sort_unstable_by(|left, right| right.cmp(left));
+        let idcg = ideal
+            .into_iter()
+            .take(input.k)
+            .enumerate()
+            .fold(0.0, |sum, (index, grade)| {
+                sum + (2.0f32.powf(grade as f32) - 1.0) / ((index + 2) as f32).log2()
+            });
+        (recall, mrr, dcg / idcg)
+    }
+
+    #[test]
+    fn committed_weighted_and_rrf_outputs_are_reproducible_from_the_same_input() {
+        let input: FixtureInput = parse_fixture(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/eval/retrieval-fusion-input.json"
+        )));
+        for contents in [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/eval/retrieval-fusion-weighted.json"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/eval/retrieval-fusion-rrf.json"
+            )),
+        ] {
+            let output: FixtureOutput = parse_fixture(contents);
+            let strategy = match output.strategy.as_str() {
+                "weighted" => FusionStrategy::Weighted,
+                "rrf" => FusionStrategy::ReciprocalRank,
+                other => panic!("unexpected fixture strategy {other}"),
+            };
+            let config = FusionConfig {
+                strategy,
+                rrf_k: output.rrf_k,
+                vector_weight: output.vector_weight,
+                fulltext_weight: output.fulltext_weight,
+                ..FusionConfig::default()
+            };
+            let fused = fuse(
+                input
+                    .vector
+                    .iter()
+                    .map(|candidate| result(candidate.id.clone(), candidate.distance, None))
+                    .collect(),
+                input
+                    .fulltext
+                    .iter()
+                    .map(|candidate| result(candidate.id.clone(), None, candidate.score))
+                    .collect(),
+                &config,
+                |existing, incoming| existing.fulltext = incoming.fulltext,
+            );
+            let generated_ids: Vec<String> = fused
+                .into_iter()
+                .take(input.k)
+                .map(|candidate| candidate.id)
+                .collect();
+            let expected = output.cases.first().unwrap();
+            assert_eq!(expected.name, input.name);
+            assert_eq!(generated_ids, expected.ranked_ids);
+            let (recall, mrr, ndcg) = fixture_metrics(&generated_ids, &input);
+            assert!((recall - expected.metrics.recall_at_k).abs() < 0.000_01);
+            assert!((mrr - expected.metrics.mrr).abs() < 0.000_01);
+            assert!((ndcg - expected.metrics.ndcg_at_k).abs() < 0.000_01);
+        }
     }
 }

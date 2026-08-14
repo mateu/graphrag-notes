@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "name": "agreement-beats-an-isolated-rank",
+  "k": 3,
+  "vector": [
+    {"id": "note:vector-only", "distance": 0.0},
+    {"id": "note:shared", "distance": 0.2},
+    {"id": "note:keyword-only", "distance": 0.9},
+    {"id": "note:filler-1", "distance": 0.91},
+    {"id": "note:filler-2", "distance": 0.92},
+    {"id": "note:filler-3", "distance": 0.93},
+    {"id": "note:filler-4", "distance": 0.94},
+    {"id": "note:filler-5", "distance": 0.95},
+    {"id": "note:filler-6", "distance": 0.96},
+    {"id": "note:filler-7", "distance": 0.97}
+  ],
+  "fulltext": [
+    {"id": "note:keyword-only", "score": 10.0},
+    {"id": "note:shared", "score": 2.0},
+    {"id": "note:filler-7", "score": 1.0},
+    {"id": "note:filler-6", "score": 0.9},
+    {"id": "note:filler-5", "score": 0.8},
+    {"id": "note:filler-4", "score": 0.7},
+    {"id": "note:filler-3", "score": 0.6},
+    {"id": "note:filler-2", "score": 0.5},
+    {"id": "note:filler-1", "score": 0.4},
+    {"id": "note:vector-only", "score": 0.1}
+  ],
+  "relevance": {"note:shared": 3, "note:keyword-only": 1}
+}
