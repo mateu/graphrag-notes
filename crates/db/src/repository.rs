@@ -2186,6 +2186,68 @@ impl Repository {
         Ok(linked)
     }
 
+    /// Replace a note's extracted entity mention set after inference has
+    /// completed. The complete replacement is applied under the same source
+    /// lifecycle lock as reconciliation, so a source refresh can snapshot
+    /// either the old complete set or the new complete set, never the old
+    /// delete/infer/insert gap.
+    #[instrument(skip(self, entities))]
+    pub async fn replace_note_entities(
+        &self,
+        note_id: &RecordId,
+        entities: Vec<Entity>,
+    ) -> Result<usize> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        if !self.note_is_writable(note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "an entity-replacement endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
+
+        // Complete all fallible inference-result persistence before replacing
+        // mentions. A malformed entity therefore leaves the prior extraction
+        // intact instead of clearing it first.
+        let mut entity_ids = Vec::with_capacity(entities.len());
+        let mut seen = HashSet::new();
+        for entity in entities {
+            let entity = self.upsert_entity(entity).await?;
+            let entity_id = entity.id.ok_or_else(|| {
+                DbError::CreateFailed("upserted entity did not receive an id".into())
+            })?;
+            if seen.insert(entity_id.clone()) {
+                entity_ids.push(entity_id);
+            }
+        }
+
+        let previous_ids: Vec<RecordId> = self
+            .db
+            .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+            .bind(("note_id", note_id.clone()))
+            .await?
+            .take(0)?;
+        self.delete_mentions_for_note_locked(note_id).await?;
+
+        let result: Result<()> = async {
+            for entity_id in &entity_ids {
+                self.link_note_to_entity_locked(note_id, entity_id).await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            // Restore the pre-replacement set if a database failure occurs
+            // after deletion. The lock prevents source reconciliation from
+            // observing the transient empty set.
+            self.delete_mentions_for_note_locked(note_id).await?;
+            for entity_id in previous_ids {
+                self.link_note_to_entity_locked(note_id, &entity_id).await?;
+            }
+            return Err(error);
+        }
+        Ok(entity_ids.len())
+    }
+
     async fn link_note_to_entity_locked(
         &self,
         note_id: &surrealdb::types::RecordId,
@@ -4735,6 +4797,114 @@ mod tests {
             .unwrap();
         assert_eq!(linked.len(), 1);
         assert_eq!(linked[0].name, "Preexisting link survives");
+    }
+
+    #[tokio::test]
+    async fn failed_entity_replacement_preserves_the_prior_complete_mention_set() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("entity replacement rollback target"))
+            .await
+            .unwrap();
+        let mut existing = Entity::new("Prior extraction survives", EntityType::Concept);
+        existing.metadata = serde_json::json!({});
+        let existing = repo.upsert_entity(existing).await.unwrap();
+        repo.link_note_to_entity(note.id.as_ref().unwrap(), existing.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let mut invalid = Entity::new("Malformed replacement", EntityType::Concept);
+        invalid.metadata = serde_json::json!("not an object");
+
+        assert!(repo
+            .replace_note_entities(note.id.as_ref().unwrap(), vec![invalid])
+            .await
+            .is_err());
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(note.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "Prior extraction survives");
+    }
+
+    #[tokio::test]
+    async fn reconciliation_snapshots_a_complete_replaced_entity_set() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old = repo
+            .create_note(
+                Note::new("first generation chunk")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let mut stale = Entity::new("Stale extraction", EntityType::Concept);
+        stale.metadata = serde_json::json!({});
+        let stale = repo.upsert_entity(stale).await.unwrap();
+        repo.link_note_to_entity(old.id.as_ref().unwrap(), stale.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+
+        let mut second = begin_markdown(&repo, "second", false).await;
+        let replacement = repo
+            .create_note(
+                Note::new("second generation chunk")
+                    .with_source(source_id)
+                    .with_source_generation(second.source.generation),
+            )
+            .await
+            .unwrap();
+        let entities = ["Fresh extraction one", "Fresh extraction two"]
+            .into_iter()
+            .map(|name| {
+                let mut entity = Entity::new(name, EntityType::Concept);
+                entity.metadata = serde_json::json!({});
+                entity
+            })
+            .collect();
+
+        // Inference has completed before this point. Queue the atomic mention
+        // replacement ahead of reconciliation to prove the source transition
+        // copies the full fresh set, never a transient cleared set.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let replacement_repo = repo.clone();
+        let old_id = old.id.as_ref().unwrap().clone();
+        let refresh = tokio::spawn(async move {
+            replacement_repo
+                .replace_note_entities(&old_id, entities)
+                .await
+        });
+        tokio::task::yield_now().await;
+        let reconciliation_repo = repo.clone();
+        let reconcile_old_id = old.id.as_ref().unwrap().clone();
+        let replacement_id = replacement.id.as_ref().unwrap().clone();
+        let reconciliation = tokio::spawn(async move {
+            reconciliation_repo
+                .reconcile_file_import(
+                    &mut second.source,
+                    &[(reconcile_old_id, replacement_id, true)],
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        assert_eq!(refresh.await.unwrap().unwrap(), 2);
+        reconciliation.await.unwrap().unwrap();
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(replacement.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 2);
+        assert!(linked
+            .iter()
+            .any(|entity| entity.name == "Fresh extraction one"));
+        assert!(linked
+            .iter()
+            .any(|entity| entity.name == "Fresh extraction two"));
     }
 
     #[tokio::test]

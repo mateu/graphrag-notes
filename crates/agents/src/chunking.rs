@@ -524,11 +524,16 @@ fn heading(line: &str) -> Option<(usize, &str)> {
     }
     let trimmed = &line[leading_spaces..];
     let count = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if !(1..=6).contains(&count)
-        || !trimmed
-            .as_bytes()
-            .get(count)
-            .is_some_and(u8::is_ascii_whitespace)
+    if !(1..=6).contains(&count) {
+        return None;
+    }
+    // The whitespace after an opening ATX sequence is optional only at EOF:
+    // bare `#` through `######` are valid empty headings. Any non-whitespace
+    // following character still makes the line ordinary content.
+    if trimmed
+        .as_bytes()
+        .get(count)
+        .is_some_and(|byte| !byte.is_ascii_whitespace())
     {
         return None;
     }
@@ -786,6 +791,10 @@ mod tests {
 
     #[test]
     fn atx_headings_allow_empty_titles_and_only_strip_spaced_closing_hashes() {
+        for level in 1..=6 {
+            let hashes = "#".repeat(level);
+            assert_eq!(heading(&hashes), Some((level, "")));
+        }
         assert_eq!(heading("# "), Some((1, "")));
         assert_eq!(heading("# C#"), Some((1, "C#")));
         assert_eq!(heading("# C ###"), Some((1, "C")));
