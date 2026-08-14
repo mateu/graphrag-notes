@@ -210,7 +210,7 @@ pub fn evaluate_ranked_results(
     let expected_text = normalized_strings(&case.expected_contains);
     let substring_expectation_matched = (!expected_text.is_empty()).then(|| {
         expected_text.iter().any(|needle| {
-            ranked
+            results
                 .iter()
                 .any(|result| result_prompt_text(result).contains(needle))
         })
@@ -750,6 +750,20 @@ mod tests {
         assert!(metrics.forbidden_result_found);
         assert_eq!(metrics.provenance_accuracy, Some(0.5));
         assert_eq!(metrics.checks_passed, Some(false));
+    }
+
+    #[test]
+    fn positive_substring_checks_cover_the_full_augmentation_context() {
+        let case = case(serde_json::json!({
+            "query": "q",
+            "expected_contains": ["expected prompt text"]
+        }));
+        let mut after_k = result("note:later");
+        after_k.text = "expected prompt text".into();
+
+        let metrics = evaluate_ranked_results(&case, &[result("note:first"), after_k], 1, 0);
+        assert_eq!(metrics.substring_expectation_matched, Some(true));
+        assert_eq!(metrics.checks_passed, Some(true));
     }
 
     #[test]

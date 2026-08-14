@@ -1249,6 +1249,8 @@ async fn cmd_eval_augment(
         anyhow::bail!("--max-regression requires --baseline");
     }
 
+    let provider = tei.provider_name().to_string();
+    let model = tei.model().to_string();
     let search = SearchAgent::new(repo, tei);
     let mut reports = Vec::with_capacity(cases.len());
 
@@ -1295,7 +1297,7 @@ async fn cmd_eval_augment(
                 id: chunk.id.clone(),
                 text: format!(
                     "{}\n{}",
-                    chunk.title.as_deref().unwrap_or_default(),
+                    chunk.title.as_deref().unwrap_or("(untitled)"),
                     chunk.snippet
                 ),
                 source_uri: chunk.source_uri.clone(),
@@ -1331,8 +1333,8 @@ async fn cmd_eval_augment(
 
     let metadata = EvalMetadata {
         schema_version: EVAL_SCHEMA_VERSION,
-        provider: std::env::var("TEI_PROVIDER").unwrap_or_else(|_| "tei".to_string()),
-        model: std::env::var("TEI_MODEL").unwrap_or_else(|_| "provider-default".to_string()),
+        provider,
+        model,
     };
     let mut report = EvalRunReport::from_cases(metadata, reports);
     if let Some(baseline_path) = baseline_path {

@@ -342,6 +342,19 @@ impl TeiClient {
         &self.base_url
     }
 
+    /// Name of the concrete embedding provider selected for this client.
+    pub fn provider_name(&self) -> &'static str {
+        match self.provider {
+            TeiProvider::Tei => "tei",
+            TeiProvider::Ollama => "ollama",
+        }
+    }
+
+    /// Model identifier used by the selected provider.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     async fn ollama_embed(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/api/embeddings", self.base_url);
         let request = OllamaEmbedRequest {
