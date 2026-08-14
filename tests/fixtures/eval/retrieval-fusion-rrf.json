@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "strategy": "rrf",
+  "rrf_k": 60,
+  "vector_weight": 0.7,
+  "fulltext_weight": 0.3,
+  "cases": [
+    {
+      "name": "agreement-beats-an-isolated-rank",
+      "ranked_ids": ["note:shared", "note:keyword-only", "note:vector-only"],
+      "metrics": {"recall_at_k": 1.0, "mrr": 1.0, "ndcg_at_k": 1.0}
+    }
+  ]
+}

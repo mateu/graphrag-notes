@@ -128,15 +128,33 @@ impl Default for InferenceConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SearchConfig {
     pub default_limit: usize,
+    /// `rrf` is scale-independent for vector and BM25 results. `weighted`
+    /// remains available only for controlled legacy comparisons.
+    pub fusion_strategy: String,
+    pub rrf_k: usize,
     pub vector_weight: f32,
     pub fulltext_weight: f32,
+    pub candidate_pool_multiplier: usize,
+    pub candidate_pool_min: usize,
+    pub candidate_pool_max: usize,
+    pub note_weight: f32,
+    pub message_weight: f32,
+    pub conversation_summary_weight: f32,
 }
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             default_limit: 10,
+            fusion_strategy: "rrf".into(),
+            rrf_k: 60,
             vector_weight: 0.7,
             fulltext_weight: 0.3,
+            candidate_pool_multiplier: 4,
+            candidate_pool_min: 50,
+            candidate_pool_max: 200,
+            note_weight: 1.0,
+            message_weight: 1.0,
+            conversation_summary_weight: 1.0,
         }
     }
 }
@@ -390,6 +408,12 @@ impl RuntimeConfig {
             "GRAPHRAG_SEARCH_DEFAULT_LIMIT",
             &mut self.search.default_limit,
         )?;
+        set_string(
+            env,
+            "GRAPHRAG_SEARCH_FUSION_STRATEGY",
+            &mut self.search.fusion_strategy,
+        );
+        set_usize(env, "GRAPHRAG_SEARCH_RRF_K", &mut self.search.rrf_k)?;
         set_f32(
             env,
             "GRAPHRAG_SEARCH_VECTOR_WEIGHT",
@@ -399,6 +423,36 @@ impl RuntimeConfig {
             env,
             "GRAPHRAG_SEARCH_FULLTEXT_WEIGHT",
             &mut self.search.fulltext_weight,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_CANDIDATE_POOL_MULTIPLIER",
+            &mut self.search.candidate_pool_multiplier,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_CANDIDATE_POOL_MIN",
+            &mut self.search.candidate_pool_min,
+        )?;
+        set_usize(
+            env,
+            "GRAPHRAG_SEARCH_CANDIDATE_POOL_MAX",
+            &mut self.search.candidate_pool_max,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_SEARCH_NOTE_WEIGHT",
+            &mut self.search.note_weight,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_SEARCH_MESSAGE_WEIGHT",
+            &mut self.search.message_weight,
+        )?;
+        set_f32(
+            env,
+            "GRAPHRAG_SEARCH_CONVERSATION_SUMMARY_WEIGHT",
+            &mut self.search.conversation_summary_weight,
         )?;
         set_usize(
             env,
@@ -554,6 +608,10 @@ impl RuntimeConfig {
             || self.inference.max_relationships == 0
             || self.inference.ollama_timeout_secs == 0
             || self.search.default_limit == 0
+            || self.search.rrf_k == 0
+            || self.search.candidate_pool_multiplier == 0
+            || self.search.candidate_pool_min == 0
+            || self.search.candidate_pool_max < self.search.candidate_pool_min
             || self.augment.default_limit == 0
             || self.augment.max_tokens == 0
             || self.augment.max_chunk_tokens == 0
@@ -576,6 +634,32 @@ impl RuntimeConfig {
             return Err(ConfigError::Validation(
                 "search weights must be in [0, 1] and sum to 1".into(),
             ));
+        }
+        if !matches!(
+            self.search
+                .fusion_strategy
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "rrf" | "weighted"
+        ) {
+            return Err(ConfigError::Validation(
+                "search.fusion_strategy must be rrf or weighted".into(),
+            ));
+        }
+        for (name, weight) in [
+            ("search.note_weight", self.search.note_weight),
+            ("search.message_weight", self.search.message_weight),
+            (
+                "search.conversation_summary_weight",
+                self.search.conversation_summary_weight,
+            ),
+        ] {
+            if !weight.is_finite() || weight < 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "{name} must be finite and non-negative"
+                )));
+            }
         }
         if !(0.0..=1.0).contains(&self.gardener.similarity_threshold)
             || !(0.0..=1.0).contains(&self.gardener.auto_apply_threshold)
@@ -1184,5 +1268,37 @@ mod tests {
         .unwrap();
         assert_eq!(config.inference.embedding_url, "http://localhost:8081");
         assert_eq!(config.inference.extraction_url, "http://localhost:8082");
+    }
+
+    #[test]
+    fn search_fusion_controls_are_typed_and_validated() {
+        let config = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[
+                ("GRAPHRAG_SEARCH_FUSION_STRATEGY", "weighted"),
+                ("GRAPHRAG_SEARCH_RRF_K", "42"),
+                ("GRAPHRAG_SEARCH_CANDIDATE_POOL_MULTIPLIER", "3"),
+                ("GRAPHRAG_SEARCH_CANDIDATE_POOL_MIN", "12"),
+                ("GRAPHRAG_SEARCH_CANDIDATE_POOL_MAX", "60"),
+                ("GRAPHRAG_SEARCH_NOTE_WEIGHT", "1.2"),
+                ("GRAPHRAG_SEARCH_MESSAGE_WEIGHT", "0.8"),
+                ("GRAPHRAG_SEARCH_CONVERSATION_SUMMARY_WEIGHT", "0.5"),
+            ]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.search.fusion_strategy, "weighted");
+        assert_eq!(config.search.rrf_k, 42);
+        assert_eq!(config.search.candidate_pool_max, 60);
+
+        let error = RuntimeConfig::load_with_env_and_default_path(
+            None,
+            &CliOverrides::default(),
+            &env(&[("GRAPHRAG_SEARCH_FUSION_STRATEGY", "learned")]),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fusion_strategy"));
     }
 }

@@ -261,6 +261,15 @@ values fail before application startup. `config show` emits the resolved TOML.
 The current local-provider configuration has no secret-valued fields; avoid
 putting credentials in a checked-in TOML file.
 
+Hybrid retrieval defaults to reciprocal-rank fusion (RRF):
+`vector_weight / (rrf_k + vector_rank) + fulltext_weight / (rrf_k + fulltext_rank)`.
+This uses ranks because vector distance and BM25 are not calibrated to a common
+scale. `[search]` also controls the bounded per-retriever candidate pool and
+the relative weights used when `--scope all` merges notes, messages, and
+conversation summaries. Ordering ties are stable: fused score, strongest
+component rank, hit type, then canonical record ID. `weighted` is retained as
+a configuration option only to compare with the pre-RRF behavior.
+
 Environment compatibility is preserved: `TEI_PROVIDER`, `TEI_URL`,
 `TEI_MODEL`, `TGI_PROVIDER`, `TGI_URL`, `TGI_MODEL`, `OLLAMA_URL`, and
 `TEI_MAX_BATCH` map to `[inference]`; `GRAPHRAG_DB_PATH` maps to

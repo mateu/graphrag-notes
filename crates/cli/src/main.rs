@@ -17,9 +17,12 @@ use graphrag_agents::{
     InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, SearchAgent, SearchHitType,
     SearchScope, SharedEmbedder, SharedEntityExtractor,
 };
-use graphrag_config::{CliOverrides, RuntimeConfig};
+use graphrag_config::{CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport};
-use graphrag_db::{init_memory, init_persistent, migrations, Repository};
+use graphrag_db::{
+    fusion::{FusionConfig, FusionStrategy},
+    init_memory, init_persistent, migrations, Repository,
+};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -370,6 +373,35 @@ fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig 
     }
 }
 
+fn configured_search_agent(
+    repo: Repository,
+    embedder: SharedEmbedder,
+    search: &SearchConfig,
+) -> SearchAgent {
+    let strategy = match search.fusion_strategy.trim().to_ascii_lowercase().as_str() {
+        "rrf" => FusionStrategy::ReciprocalRank,
+        // `RuntimeConfig::validate` rejects every other value before this
+        // function is reached. Keep this fallback defensive for embedders that
+        // construct SearchConfig directly.
+        "weighted" => FusionStrategy::Weighted,
+        _ => FusionStrategy::ReciprocalRank,
+    };
+    SearchAgent::new(repo, embedder).with_fusion_config(
+        FusionConfig {
+            strategy,
+            rrf_k: search.rrf_k,
+            vector_weight: search.vector_weight,
+            fulltext_weight: search.fulltext_weight,
+            candidate_pool_multiplier: search.candidate_pool_multiplier,
+            candidate_pool_min: search.candidate_pool_min,
+            candidate_pool_max: search.candidate_pool_max,
+        },
+        search.note_weight,
+        search.message_weight,
+        search.conversation_summary_weight,
+    )
+}
+
 fn librarian_runtime_config(
     config: &RuntimeConfig,
     cli_skip_extraction: bool,
@@ -623,8 +655,7 @@ async fn main() -> Result<()> {
                 since_days,
                 source_uri,
                 context,
-                config.search.vector_weight,
-                config.search.fulltext_weight,
+                config.search.clone(),
             )
             .await?;
         }
@@ -651,8 +682,7 @@ async fn main() -> Result<()> {
                 source_uri,
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
-                config.search.vector_weight,
-                config.search.fulltext_weight,
+                config.search.clone(),
                 fail_on_miss,
                 format,
                 baseline,
@@ -681,8 +711,7 @@ async fn main() -> Result<()> {
                 entity,
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
-                config.search.vector_weight,
-                config.search.fulltext_weight,
+                config.search.clone(),
             )
             .await?;
         }
@@ -712,8 +741,7 @@ async fn main() -> Result<()> {
                 tgi,
                 librarian_config,
                 config.search.default_limit,
-                config.search.vector_weight,
-                config.search.fulltext_weight,
+                config.search.clone(),
                 config.gardener.similarity_threshold,
                 config.gardener.auto_apply_threshold,
                 config.gardener.max_suggestions,
@@ -1200,10 +1228,9 @@ async fn cmd_search(
     since_days: Option<u32>,
     source_uri: Option<String>,
     context: bool,
-    vector_weight: f32,
-    fulltext_weight: f32,
+    search_config: SearchConfig,
 ) -> Result<()> {
-    let search = SearchAgent::new(repo, tei).with_hybrid_weights(vector_weight, fulltext_weight);
+    let search = configured_search_agent(repo, tei, &search_config);
     let scope = match scope {
         SearchScopeArg::Notes => SearchScope::Notes,
         SearchScopeArg::Messages => SearchScope::Messages,
@@ -1314,8 +1341,7 @@ async fn cmd_augment(
     entity: Option<String>,
     max_tokens: usize,
     max_chunk_tokens: usize,
-    vector_weight: f32,
-    fulltext_weight: f32,
+    search_config: SearchConfig,
 ) -> Result<()> {
     if entity.is_some() && scope != SearchScopeArg::Notes {
         anyhow::bail!("--entity currently requires --scope notes");
@@ -1327,7 +1353,7 @@ async fn cmd_augment(
         SearchScopeArg::All => SearchScope::All,
     };
 
-    let search = SearchAgent::new(repo, tei).with_hybrid_weights(vector_weight, fulltext_weight);
+    let search = configured_search_agent(repo, tei, &search_config);
     let ctx = search
         .build_augmented_context(
             &query,
@@ -1404,8 +1430,7 @@ async fn cmd_eval_augment(
     default_source_uri: Option<String>,
     default_max_tokens: usize,
     default_max_chunk_tokens: usize,
-    vector_weight: f32,
-    fulltext_weight: f32,
+    search_config: SearchConfig,
     fail_on_miss: bool,
     format: EvalOutputFormat,
     baseline_path: Option<PathBuf>,
@@ -1423,7 +1448,7 @@ async fn cmd_eval_augment(
     let capabilities = tei.capabilities();
     let provider = capabilities.provider;
     let model = capabilities.model;
-    let search = SearchAgent::new(repo, tei).with_hybrid_weights(vector_weight, fulltext_weight);
+    let search = configured_search_agent(repo, tei, &search_config);
     let mut reports = Vec::with_capacity(cases.len());
 
     if matches!(format, EvalOutputFormat::Human) {
@@ -1675,16 +1700,14 @@ async fn cmd_interactive(
     tgi: SharedEntityExtractor,
     librarian_config: LibrarianRuntimeConfig,
     default_search_limit: usize,
-    vector_weight: f32,
-    fulltext_weight: f32,
+    search_config: SearchConfig,
     similarity_threshold: f32,
     auto_apply_threshold: f32,
     max_suggestions: usize,
 ) -> Result<()> {
     let librarian = LibrarianAgent::new(repo.clone(), tei.clone(), tgi.clone())
         .with_runtime_config(librarian_config);
-    let search = SearchAgent::new(repo.clone(), tei.clone())
-        .with_hybrid_weights(vector_weight, fulltext_weight);
+    let search = configured_search_agent(repo.clone(), tei.clone(), &search_config);
     let gardener = GardenerAgent::new(repo.clone())
         .with_threshold(similarity_threshold)
         .with_auto_apply_threshold(auto_apply_threshold)
