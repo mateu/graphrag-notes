@@ -548,16 +548,23 @@ fn processing_config(
     concurrency: Option<usize>,
     retry_attempts: Option<usize>,
     no_cache: bool,
-) -> ProcessingConfig {
-    ProcessingConfig {
-        concurrency: concurrency.unwrap_or(config.inference.processing_concurrency),
+) -> Result<ProcessingConfig> {
+    let concurrency = concurrency.unwrap_or(config.inference.processing_concurrency);
+    let retry_attempts = retry_attempts.unwrap_or(config.inference.retry_attempts);
+    if concurrency == 0 {
+        anyhow::bail!("--concurrency must be at least 1");
+    }
+    if retry_attempts == 0 {
+        anyhow::bail!("--retry-attempts must be at least 1");
+    }
+    Ok(ProcessingConfig {
+        concurrency,
         request_timeout: Duration::from_secs(config.inference.timeout_secs),
-        retry_attempts: retry_attempts.unwrap_or(config.inference.retry_attempts),
+        retry_attempts,
         initial_backoff: Duration::from_millis(config.inference.retry_initial_backoff_ms),
         max_backoff: Duration::from_millis(config.inference.retry_max_backoff_ms),
         use_cache: config.inference.cache_enabled && !no_cache,
-    }
-    .normalized()
+    })
 }
 
 /// Ollama extraction has its own typed request timeout because structured
@@ -568,8 +575,8 @@ fn extraction_processing_config(
     concurrency: Option<usize>,
     retry_attempts: Option<usize>,
     no_cache: bool,
-) -> ProcessingConfig {
-    let mut processing = processing_config(config, concurrency, retry_attempts, no_cache);
+) -> Result<ProcessingConfig> {
+    let mut processing = processing_config(config, concurrency, retry_attempts, no_cache)?;
     if config
         .inference
         .extraction_provider
@@ -577,7 +584,7 @@ fn extraction_processing_config(
     {
         processing.request_timeout = Duration::from_secs(config.inference.ollama_timeout_secs);
     }
-    processing
+    Ok(processing)
 }
 
 fn configured_search_agent(
@@ -795,9 +802,9 @@ async fn main() -> Result<()> {
 
     let repo = Repository::new(db);
     let providers = InferenceProviders::from_config(&inference_config);
-    let processing = processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache);
+    let processing = processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache)?;
     let extraction_processing =
-        extraction_processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache);
+        extraction_processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache)?;
     // The wrappers share their semaphores and counters across every clone in
     // this invocation, so imports, extraction, and search cannot overload a
     // local provider merely by arriving through different commands.
@@ -2564,5 +2571,12 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["graphrag", "garden", "apply"]).is_err());
+    }
+
+    #[test]
+    fn inference_cli_overrides_reject_zero() {
+        let config = RuntimeConfig::default();
+        assert!(processing_config(&config, Some(0), None, false).is_err());
+        assert!(processing_config(&config, None, Some(0), false).is_err());
     }
 }
