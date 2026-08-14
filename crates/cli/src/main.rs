@@ -27,7 +27,10 @@ use graphrag_db::{
 use serde::Serialize;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -274,6 +277,12 @@ enum Commands {
         command: GardenCommand,
     },
 
+    /// Inspect and control durable local inference jobs
+    Jobs {
+        #[command(subcommand)]
+        command: JobsCommand,
+    },
+
     /// Show database statistics
     Stats,
 
@@ -415,6 +424,31 @@ enum GardenCommand {
         #[command(subcommand)]
         command: ProposalCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum JobsCommand {
+    List {
+        #[arg(short, long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long, value_enum, default_value_t = JobOutputFormat::Human)]
+        format: JobOutputFormat,
+    },
+    Show {
+        id: String,
+        #[arg(long, value_enum, default_value_t = JobOutputFormat::Human)]
+        format: JobOutputFormat,
+    },
+    /// Resume a failed or cancelled job from its durable checkpoint.
+    Resume { id: String },
+    /// Request cancellation between atomic item mutations.
+    Cancel { id: String },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum JobOutputFormat {
+    Human,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -578,6 +612,20 @@ fn extraction_processing_config(
         processing.request_timeout = Duration::from_secs(config.inference.ollama_timeout_secs);
     }
     processing
+}
+
+fn install_cancellation_handler() -> Arc<AtomicBool> {
+    let requested = Arc::new(AtomicBool::new(false));
+    let listener = requested.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            listener.store(true, Ordering::Release);
+            eprintln!(
+                "Cancellation requested; finishing the current item and saving its checkpoint..."
+            );
+        }
+    });
+    requested
 }
 
 fn configured_search_agent(
@@ -804,7 +852,7 @@ async fn main() -> Result<()> {
     let tei: SharedEmbedder = Arc::new(ResilientEmbedder::new(
         providers.embedder,
         Some(repo.clone()),
-        processing,
+        processing.clone(),
     ));
     let tgi: SharedEntityExtractor = Arc::new(ResilientEntityExtractor::new(
         providers.extractor,
@@ -863,6 +911,19 @@ async fn main() -> Result<()> {
             anyhow::bail!("Extraction service unavailable");
         }
     }
+
+    // A persistent RocksDB database is exclusively owned by this process, so
+    // a second `graphrag jobs cancel` process cannot reliably attach while work
+    // is active. Ctrl-C is the in-process control plane: it requests a safe
+    // stop and the Librarian observes it between atomic item mutations.
+    let cancellation_requested = matches!(
+        &cli.command,
+        Commands::ExtractEntities { .. }
+            | Commands::Jobs {
+                command: JobsCommand::Resume { .. }
+            }
+    )
+    .then(install_cancellation_handler);
 
     // Execute command
     match cli.command {
@@ -994,6 +1055,19 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Commands::Jobs { command } => {
+            cmd_jobs(
+                repo,
+                tei,
+                tgi,
+                librarian_config,
+                cancellation_requested
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+                command,
+            )
+            .await?;
+        }
         Commands::Stats => {
             cmd_stats(repo).await?;
         }
@@ -1026,6 +1100,9 @@ async fn main() -> Result<()> {
                 tei,
                 tgi,
                 librarian_config,
+                cancellation_requested
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
                 limit,
                 all,
                 note_ids,
@@ -1058,6 +1135,116 @@ async fn main() -> Result<()> {
         Commands::Doctor { .. } => unreachable!("doctor returns before database initialization"),
     }
 
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct JobOutput {
+    id: String,
+    job_type: String,
+    source_generation: Option<String>,
+    scope: Option<String>,
+    item_count: usize,
+    status: String,
+    total_count: i64,
+    completed_count: i64,
+    failed_count: i64,
+    checkpoint: Option<String>,
+    last_error: Option<String>,
+    created_at: String,
+    updated_at: String,
+    finished_at: Option<String>,
+}
+
+impl From<&graphrag_db::ProcessingJob> for JobOutput {
+    fn from(job: &graphrag_db::ProcessingJob) -> Self {
+        Self {
+            id: job.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+            job_type: job.job_type.clone(),
+            source_generation: job.source_generation.clone(),
+            scope: job.scope.clone(),
+            item_count: job.item_ids.len(),
+            status: job.status.clone(),
+            total_count: job.total_count,
+            completed_count: job.completed_count,
+            failed_count: job.failed_count,
+            checkpoint: job.checkpoint.clone(),
+            last_error: job.last_error.clone(),
+            created_at: job.created_at.to_rfc3339(),
+            updated_at: job.updated_at.to_rfc3339(),
+            finished_at: job.finished_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+fn print_job(job: &graphrag_db::ProcessingJob, format: JobOutputFormat) -> Result<()> {
+    match format {
+        JobOutputFormat::Json => println!("{}", serde_json::to_string(&JobOutput::from(job))?),
+        JobOutputFormat::Human => println!(
+            "{} {} status={} scope={} items={} completed={}/{} failed={} checkpoint={}{}",
+            job.id.as_ref().map(record_id_to_string).unwrap_or_default(),
+            job.job_type,
+            job.status,
+            job.scope.as_deref().unwrap_or("-"),
+            job.item_ids.len(),
+            job.completed_count,
+            job.total_count,
+            job.failed_count,
+            job.checkpoint.as_deref().unwrap_or("-"),
+            job.last_error
+                .as_deref()
+                .map(|error| format!(" error={error}"))
+                .unwrap_or_default(),
+        ),
+    }
+    Ok(())
+}
+
+async fn cmd_jobs(
+    repo: Repository,
+    tei: SharedEmbedder,
+    tgi: SharedEntityExtractor,
+    librarian_config: LibrarianRuntimeConfig,
+    cancellation_requested: Arc<AtomicBool>,
+    command: JobsCommand,
+) -> Result<()> {
+    match command {
+        JobsCommand::List { limit, format } => {
+            let jobs = repo.list_processing_jobs(limit).await?;
+            if format == JobOutputFormat::Json {
+                let rows = jobs.iter().map(JobOutput::from).collect::<Vec<_>>();
+                println!("{}", serde_json::to_string(&rows)?);
+            } else if jobs.is_empty() {
+                println!("No processing jobs.");
+            } else {
+                for job in &jobs {
+                    print_job(job, format)?;
+                }
+            }
+        }
+        JobsCommand::Show { id, format } => {
+            let job = repo
+                .get_processing_job(&id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Processing job not found: {id}"))?;
+            print_job(&job, format)?;
+        }
+        JobsCommand::Cancel { id } => {
+            let record = parse_record_id(&id, Some("processing_job"))?;
+            let job = repo.cancel_processing_job(&record).await?;
+            print_job(&job, JobOutputFormat::Human)?;
+        }
+        JobsCommand::Resume { id } => {
+            let librarian = LibrarianAgent::new(repo, tei, tgi)
+                .with_runtime_config(librarian_config)
+                .with_cancellation_flag(cancellation_requested);
+            let result = librarian.resume_processing_job(&id).await?;
+            println!(
+                "job={} completed={} failed={} cancelled={}",
+                result.job_id, result.completed, result.failed, result.cancelled
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1544,6 +1731,7 @@ async fn cmd_extract_entities(
     tei: SharedEmbedder,
     tgi: SharedEntityExtractor,
     librarian_config: LibrarianRuntimeConfig,
+    cancellation_requested: Arc<AtomicBool>,
     limit: usize,
     all: bool,
     note_ids: Vec<String>,
@@ -1555,7 +1743,9 @@ async fn cmd_extract_entities(
     if force && !all && note_ids.is_empty() {
         anyhow::bail!("--force requires --all or at least one --note-id");
     }
-    let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
+    let librarian = LibrarianAgent::new(repo, tei, tgi)
+        .with_runtime_config(librarian_config)
+        .with_cancellation_flag(cancellation_requested);
     let processed = if !note_ids.is_empty() {
         librarian
             .extract_entities_for_note_ids(&note_ids, force)
@@ -2564,5 +2754,22 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["graphrag", "garden", "apply"]).is_err());
+    }
+
+    #[test]
+    fn ollama_extraction_wrapper_keeps_the_provider_timeout() {
+        let mut config = RuntimeConfig::default();
+        config.inference.timeout_secs = 30;
+        config.inference.ollama_timeout_secs = 120;
+        config.inference.extraction_provider = "ollama".into();
+        assert_eq!(
+            extraction_processing_config(&config, None, None, false).request_timeout,
+            Duration::from_secs(120)
+        );
+        config.inference.extraction_provider = "tgi".into();
+        assert_eq!(
+            extraction_processing_config(&config, None, None, false).request_timeout,
+            Duration::from_secs(30)
+        );
     }
 }
