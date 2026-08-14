@@ -28,6 +28,12 @@ pub struct Repository {
 // file-import notes are excluded from every user-facing scan.
 const VISIBLE_NOTE_CONDITION: &str = "(source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)";
 
+// Edge rows contain record references in `in` and `out`. Resolve both note
+// endpoints through the note table before showing graph topology so an
+// interrupted import cannot expose relationships owned by a staged or
+// superseded generation.
+const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)) AND out IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation))";
+
 fn source_content_value(source: &Source) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(source)
         .map_err(|error| DbError::QueryFailed(format!("source serialization failed: {error}")))?;
@@ -1783,18 +1789,15 @@ pub struct NoteEdgeRow {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-fn normalize_note_id(note_id: &str) -> String {
-    if note_id.starts_with("note:") {
-        note_id.to_string()
-    } else {
-        format!("note:{}", note_id)
-    }
+fn normalize_note_id(note_id: &str) -> RecordId {
+    RecordId::new("note", note_id.strip_prefix("note:").unwrap_or(note_id))
 }
 
 impl Repository {
     async fn query_edges_table(&self, table: &str, limit: usize) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
-            "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at FROM {table} LIMIT $limit"
+            "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at \
+             FROM {table} WHERE {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} LIMIT $limit"
         );
         let edges: Vec<NoteEdgeRow> = self
             .db
@@ -1805,16 +1808,20 @@ impl Repository {
         Ok(edges)
     }
 
-    async fn query_edges_for_note(&self, table: &str, note_id: &str) -> Result<Vec<NoteEdgeRow>> {
-        let note_id = note_id.to_string();
+    async fn query_edges_for_note(
+        &self,
+        table: &str,
+        note_id: &RecordId,
+    ) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
             "SELECT '{table}' AS edge_type, in AS in_id, out AS out_id, confidence, reason, created_at \
-             FROM {table} WHERE in = $note_id OR out = $note_id"
+             FROM {table} WHERE (in = $note_id OR out = $note_id) \
+             AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION}"
         );
         let edges: Vec<NoteEdgeRow> = self
             .db
             .query(&query)
-            .bind(("note_id", note_id))
+            .bind(("note_id", note_id.clone()))
             .await?
             .take(0)?;
         Ok(edges)
@@ -2264,6 +2271,53 @@ mod tests {
         let orphans = repo.find_orphan_notes().await.unwrap();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].id.as_ref(), anchor.id.as_ref());
+    }
+
+    #[tokio::test]
+    async fn note_edge_lists_hide_edges_with_hidden_source_generation_endpoints() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let manual_left = repo.create_note(Note::new("manual left")).await.unwrap();
+        let manual_right = repo.create_note(Note::new("manual right")).await.unwrap();
+        let plan = begin_markdown(&repo, "staged", false).await;
+        let staged = repo
+            .create_note(
+                Note::new("staged source note")
+                    .with_source(plan.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+
+        repo.create_edge(
+            manual_left.id.as_ref().unwrap(),
+            manual_right.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            None,
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            manual_left.id.as_ref().unwrap(),
+            staged.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(repo.list_note_edges(10).await.unwrap().len(), 1);
+        assert_eq!(
+            repo.get_note_edges(&record_id_to_string(manual_left.id.as_ref().unwrap()))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(repo
+            .get_note_edges(&record_id_to_string(staged.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
