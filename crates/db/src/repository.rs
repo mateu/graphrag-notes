@@ -1393,6 +1393,12 @@ impl Repository {
         edge_id: &RecordId,
         action_reason: Option<String>,
     ) -> Result<bool> {
+        // Keep physical edge deletion and proposal audit retirement in the
+        // same in-process lifecycle critical section as acceptance completion.
+        // Otherwise an acceptance could finalize after this method deletes its
+        // edge but before it supersedes the proposal, restoring a dangling
+        // accepted state.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let table = edge_id.table.as_str();
         if !matches!(
             table,
@@ -1991,6 +1997,10 @@ impl Repository {
     }
 
     async fn promote_file_import(&self, source: &mut Source) -> Result<()> {
+        // Promotion changes which source generation is visible. Keep that
+        // transition and retirement of proposals for the newly hidden notes
+        // atomic with respect to proposal acceptance in this repository.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let source_id = source
             .id
             .as_ref()
@@ -3492,6 +3502,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn promotion_serializes_hidden_generation_retirement_with_acceptance() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut first = begin_markdown(&repo, "first", false).await;
+        let source_id = first.source.id.as_ref().unwrap().clone();
+        let old_left = repo
+            .create_note(
+                Note::new("first generation left")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        let old_right = repo
+            .create_note(
+                Note::new("first generation right")
+                    .with_source(source_id.clone())
+                    .with_source_generation(first.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut first.source).await.unwrap();
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                old_left.id.as_ref().unwrap(),
+                old_right.id.as_ref().unwrap(),
+                0.9,
+                "old generation race".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+
+        let second = begin_markdown(&repo, "second", false).await;
+        // Queue promotion ahead of acceptance while the shared lock is held.
+        // Tokio's mutex queues waiters fairly, so acceptance must observe the
+        // proposal retirement performed at the visibility boundary.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let promotion_repo = repo.clone();
+        let mut second_source = second.source;
+        let promotion =
+            tokio::spawn(
+                async move { promotion_repo.promote_file_import(&mut second_source).await },
+            );
+        tokio::task::yield_now().await;
+        let acceptance_repo = repo.clone();
+        let accepting_id = proposal_id.clone();
+        let acceptance = tokio::spawn(async move {
+            acceptance_repo
+                .accept_edge_proposal(&accepting_id, Some("reviewer".into()), None, true)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        promotion.await.unwrap().unwrap();
+        assert!(acceptance.await.unwrap().is_err());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert!(repo.list_note_edges(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn source_delete_preview_matches_confirmed_derived_cascade() {
         let repo = Repository::new(init_memory().await.unwrap());
         let mut plan = begin_markdown(&repo, "content", false).await;
@@ -4124,6 +4199,56 @@ mod tests {
             Some("recovered undo")
         );
         assert!(!repo.undo_edge(&edge_id, None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn undo_serializes_with_acceptance_completion() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (first, second) = two_notes(&repo).await;
+        let proposal_id = repo
+            .upsert_gardener_proposal(
+                &first,
+                &second,
+                0.9,
+                "undo and retry race".into(),
+                Some("test".into()),
+                None,
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        let edge_id = repo
+            .accept_edge_proposal(&proposal_id, Some("reviewer".into()), None, true)
+            .await
+            .unwrap()
+            .resulting_edge_id
+            .unwrap();
+
+        // Queue undo before a concurrent acceptance retry. Without the shared
+        // lock, the retry can read `accepted` before undo retires its audit
+        // record and race finalization against edge deletion.
+        let guard = repo.proposal_acceptance_lock.lock().await;
+        let undo_repo = repo.clone();
+        let undo_id = edge_id.clone();
+        let undo = tokio::spawn(async move { undo_repo.undo_edge(&undo_id, None).await });
+        tokio::task::yield_now().await;
+        let acceptance_repo = repo.clone();
+        let accepting_id = proposal_id.clone();
+        let acceptance = tokio::spawn(async move {
+            acceptance_repo
+                .accept_edge_proposal(&accepting_id, Some("retry".into()), None, true)
+                .await
+        });
+        tokio::task::yield_now().await;
+        drop(guard);
+
+        assert!(undo.await.unwrap().unwrap());
+        assert!(acceptance.await.unwrap().is_err());
+        assert!(!repo.note_edge_exists(&edge_id).await.unwrap());
+        let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Superseded);
+        assert_eq!(proposal.resulting_edge_id, None);
     }
 
     #[tokio::test]
