@@ -19,7 +19,6 @@ use std::sync::{
 };
 use std::time::Duration;
 use tokio::sync::Semaphore;
-use unicode_normalization::UnicodeNormalization;
 
 const EMBEDDING_CACHE_VERSION: &str = "embedding-v1";
 const EXTRACTION_CACHE_VERSION: &str = "entity-extraction-v1";
@@ -220,14 +219,10 @@ impl CacheKey {
         version: String,
         input: &str,
     ) -> Self {
-        // NFC plus newline normalization makes canonically equivalent content
-        // share an entry without conflating meaningful internal whitespace.
-        let normalized = input
-            .replace("\r\n", "\n")
-            .replace('\r', "\n")
-            .nfc()
-            .collect::<String>();
-        let input_hash = hash(&normalized);
+        // Hash exactly what the provider receives. Normalizing only the cache
+        // key would let a CRLF or Unicode-composition variant reuse a result
+        // for different provider input.
+        let input_hash = hash(input);
         let semantic = format!(
             "operation={operation}\0provider={}\0endpoint={}\0model={}\0provider_settings={}\0version={version}\0input={input_hash}",
             capability.provider, capability.endpoint, capability.model, capability.cache_identity
@@ -643,14 +638,16 @@ mod tests {
             },
         );
         let first = adapter.embed("café", false).await.unwrap();
-        let equivalent = adapter.embed("cafe\u{301}", false).await.unwrap();
-        assert_eq!(first, equivalent);
-        assert_eq!(adapter.stats().cache_hits, 1);
+        let composed_variant = adapter.embed("cafe\u{301}", false).await.unwrap();
+        let crlf_variant = adapter.embed("caf\u{e9}\r\n", false).await.unwrap();
+        assert_ne!(first, composed_variant);
+        assert_ne!(first, crlf_variant);
+        assert_eq!(adapter.stats().cache_hits, 0);
         let query = adapter.embed("café", true).await.unwrap();
         assert_ne!(query, first);
         assert_eq!(
             adapter.stats().cache_hits,
-            1,
+            0,
             "query and passage cache namespaces differ"
         );
     }
