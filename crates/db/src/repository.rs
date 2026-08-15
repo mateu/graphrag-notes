@@ -110,6 +110,16 @@ fn is_graph_prefix_stop_word(term: &str) -> bool {
     )
 }
 
+/// Match tiers for local graph-entity seeding. Keeping exact equality ahead
+/// of contained phrases means a specific entity query cannot be crowded out
+/// by a shorter entity name when the caller supplies a small seed cap.
+#[derive(Clone, Copy)]
+enum GraphEntityMatchTier {
+    Exact,
+    ContainedPhrase,
+    Prefix,
+}
+
 fn count_to_i64(count: u64) -> Result<i64> {
     i64::try_from(count)
         .map_err(|_| DbError::QueryFailed("processing count exceeds database integer range".into()))
@@ -2559,14 +2569,28 @@ impl Repository {
             DbError::QueryFailed("graph entity limit exceeds database integer range".into())
         })?;
 
-        // Exact canonical/alias phrase matches are always preferred. Only
-        // when they produce no local entity do we consider typo-style prefix
-        // seeds, preventing ordinary sentence words from crowding the cap.
+        // Whole-query canonical/alias equality is always preferred over a
+        // shorter entity phrase contained in the query. Only when neither
+        // lexical tier produces a local entity do we consider typo-style
+        // prefix seeds, preventing ordinary sentence words from crowding the
+        // cap.
         let exact = self
-            .query_graph_entities(&normalized_query, &[], limit)
+            .query_graph_entities(&normalized_query, GraphEntityMatchTier::Exact, &[], limit)
             .await?;
         if !exact.is_empty() {
             return Ok(exact);
+        }
+
+        let phrases = self
+            .query_graph_entities(
+                &normalized_query,
+                GraphEntityMatchTier::ContainedPhrase,
+                &[],
+                limit,
+            )
+            .await?;
+        if !phrases.is_empty() {
+            return Ok(phrases);
         }
 
         // Prefixes are a narrow recovery path for partial entity terms such
@@ -2577,13 +2601,19 @@ impl Repository {
         if prefixes.is_empty() {
             return Ok(Vec::new());
         }
-        self.query_graph_entities(&normalized_query, &prefixes, limit)
-            .await
+        self.query_graph_entities(
+            &normalized_query,
+            GraphEntityMatchTier::Prefix,
+            &prefixes,
+            limit,
+        )
+        .await
     }
 
     async fn query_graph_entities(
         &self,
         normalized_query: &str,
+        tier: GraphEntityMatchTier,
         prefixes: &[String],
         limit: i64,
     ) -> Result<Vec<GraphEntityMatch>> {
@@ -2593,22 +2623,27 @@ impl Repository {
         // be found from either a punctuated or a sentence query.
         let canonical_lexical = r#"string::trim(string::replace(string::lowercase(canonical_name), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
         let alias_lexical = r#"string::trim(string::replace(string::lowercase($alias), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
-        let prefix_conditions = prefixes
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                format!(" OR string::starts_with({canonical_lexical}, $prefix_{index})")
-            })
-            .collect::<String>();
+        let match_condition = match tier {
+            GraphEntityMatchTier::Exact => format!(
+                "{canonical_lexical} = $query OR array::any(metadata.aliases ?? [], |$alias| {alias_lexical} = $query)"
+            ),
+            GraphEntityMatchTier::ContainedPhrase => format!(
+                "string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' ')) OR array::any(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))"
+            ),
+            GraphEntityMatchTier::Prefix => prefixes
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    format!("string::starts_with({canonical_lexical}, $prefix_{index})")
+                })
+                .collect::<Vec<_>>()
+                .join(" OR "),
+        };
         let query = format!(
             r#"
                 SELECT id, name, canonical_name, metadata
                 FROM entity
-                WHERE {canonical_lexical} = $query
-                   OR string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' '))
-                   {prefix_conditions}
-                   OR array::any(metadata.aliases ?? [], |$alias| {alias_lexical} = $query)
-                   OR array::any(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))
+                WHERE {match_condition}
                 ORDER BY canonical_name ASC, id ASC
                 LIMIT $limit
                 "#,
@@ -4421,6 +4456,32 @@ mod tests {
         assert!(matches
             .iter()
             .any(|entity| entity.id == *aliased.id.as_ref().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn graph_entity_lookup_prioritizes_whole_query_names_and_aliases_over_phrases() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut short_name = Entity::new("New", EntityType::Project);
+        short_name.metadata = serde_json::json!({});
+        repo.upsert_entity(short_name).await.unwrap();
+        let mut exact_name = Entity::new("New York", EntityType::Project);
+        exact_name.metadata = serde_json::json!({});
+        let exact_name = repo.upsert_entity(exact_name).await.unwrap();
+
+        let matches = repo.find_graph_entities("New York", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *exact_name.id.as_ref().unwrap());
+
+        let mut short_alias = Entity::new("Big", EntityType::Project);
+        short_alias.metadata = serde_json::json!({});
+        repo.upsert_entity(short_alias).await.unwrap();
+        let mut exact_alias = Entity::new("New York City", EntityType::Project);
+        exact_alias.metadata = serde_json::json!({"aliases": ["Big Apple"]});
+        let exact_alias = repo.upsert_entity(exact_alias).await.unwrap();
+
+        let matches = repo.find_graph_entities("Big Apple", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *exact_alias.id.as_ref().unwrap());
     }
 
     #[tokio::test]

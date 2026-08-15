@@ -623,12 +623,8 @@ impl SearchAgent {
         }
 
         let mut candidates = BTreeMap::<String, GraphEvidence>::new();
-        for state in frontier.values().take(self.graph.candidate_cap) {
-            if !state.query_entities.is_empty() {
-                candidates.insert(state.id.clone(), state.evidence(None));
-            }
-        }
-        let mut current = frontier;
+        let mut current =
+            admit_initial_graph_frontier(frontier, &mut candidates, self.graph.candidate_cap);
         for hop in 1..=self.graph.max_hops.min(2) {
             if current.is_empty() {
                 break;
@@ -915,6 +911,27 @@ fn admit_graph_frontier(
         let evidence = state.evidence(Some(hop));
         if existing.is_none_or(|existing| graph_evidence_priority(&evidence, existing).is_lt()) {
             candidates.insert(state.id.clone(), evidence);
+        }
+        admitted.insert(state.id.clone(), state.clone());
+    }
+    admitted
+}
+
+/// Initial entity/hybrid seeds receive the same ranked cap as later hops
+/// before any graph edge query. Entity-associated states populate initial
+/// graph evidence; hybrid-only seeds still act only as traversal anchors.
+fn admit_initial_graph_frontier(
+    frontier: BTreeMap<String, GraphFrontier>,
+    candidates: &mut BTreeMap<String, GraphEvidence>,
+    candidate_cap: usize,
+) -> BTreeMap<String, GraphFrontier> {
+    let mut admitted = BTreeMap::new();
+    for state in ranked_frontier_states(&frontier)
+        .into_iter()
+        .take(candidate_cap)
+    {
+        if !state.query_entities.is_empty() {
+            candidates.insert(state.id.clone(), state.evidence(None));
         }
         admitted.insert(state.id.clone(), state.clone());
     }
@@ -1448,6 +1465,40 @@ mod tests {
             .map(|state| state.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(retained, vec!["note:zzz-high-score"]);
+    }
+
+    #[test]
+    fn initial_frontier_candidate_cap_admits_only_ranked_seeds_for_traversal() {
+        let mut frontier = BTreeMap::new();
+        for (id, score) in [
+            ("note:aaa-low-score", 0.1),
+            ("note:mmm-middle-score", 0.5),
+            ("note:zzz-high-score", 0.9),
+        ] {
+            frontier.insert(
+                id.into(),
+                GraphFrontier::seed(
+                    RecordId::new("note", id.strip_prefix("note:").unwrap()),
+                    id.into(),
+                    vec!["Seed".into()],
+                    score,
+                ),
+            );
+        }
+
+        let mut candidates = BTreeMap::new();
+        let current = admit_initial_graph_frontier(frontier, &mut candidates, 2);
+
+        // `current` is passed directly to graph_note_edges, so the rejected
+        // low-ranked seed cannot consume first-hop traversal work.
+        assert_eq!(
+            current.keys().cloned().collect::<Vec<_>>(),
+            vec!["note:mmm-middle-score", "note:zzz-high-score"]
+        );
+        assert_eq!(
+            candidates.keys().cloned().collect::<Vec<_>>(),
+            vec!["note:mmm-middle-score", "note:zzz-high-score"]
+        );
     }
 
     #[test]
@@ -2128,6 +2179,60 @@ mod tests {
         assert!(punctuated_model_matches
             .iter()
             .any(|entity| entity.id == *gpt_alias.id.as_ref().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn graph_entity_seed_prefers_whole_query_match_over_contained_phrase_at_cap() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let short_seed = repo
+            .create_note(Note::new("short entity seed"))
+            .await
+            .unwrap();
+        let exact_seed = repo
+            .create_note(Note::new("exact entity seed"))
+            .await
+            .unwrap();
+
+        let mut short = Entity::new("New", EntityType::Project);
+        short.metadata = serde_json::json!({});
+        let short = repo.upsert_entity(short).await.unwrap();
+        let mut exact = Entity::new("New York", EntityType::Project);
+        exact.metadata = serde_json::json!({});
+        let exact = repo.upsert_entity(exact).await.unwrap();
+        repo.link_note_to_entity(short_seed.id.as_ref().unwrap(), short.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.link_note_to_entity(exact_seed.id.as_ref().unwrap(), exact.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_entities = 1;
+        config.max_seed_notes = 2;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "New York",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results.summary.entities_matched, 1);
+        let exact_seed_id = record_id_to_string(exact_seed.id.as_ref().unwrap());
+        let exact_evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == exact_seed_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the exact entity seed should survive the one-entity cap");
+        assert_eq!(exact_evidence.query_entities, vec!["New York"]);
+        let short_seed_id = record_id_to_string(short_seed.id.as_ref().unwrap());
+        assert!(results.hits.iter().all(|hit| hit.id != short_seed_id));
     }
 
     #[tokio::test]
