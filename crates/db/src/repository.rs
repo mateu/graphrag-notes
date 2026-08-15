@@ -22,6 +22,7 @@ use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::instrument;
+use uuid::Uuid;
 
 /// Repository for all database operations
 #[derive(Clone)]
@@ -1380,6 +1381,79 @@ impl Repository {
             .await?
             .take(0)?;
         created.ok_or_else(|| DbError::QueryFailed("create_note".into()))
+    }
+
+    /// Atomically create a manual note and its complete mention set. A
+    /// detached copy is never visible without its extraction result; if a
+    /// mention write fails, the note creation rolls back as well, so retrying
+    /// cannot leave duplicate manual copies behind.
+    #[instrument(skip(self, note, entities))]
+    pub async fn create_note_and_replace_entities(
+        &self,
+        note: Note,
+        entities: Vec<Entity>,
+    ) -> Result<Note> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        let entity_ids = self.replacement_entity_ids(entities).await?;
+        let note_id = RecordId::new("note", Uuid::new_v4().to_string());
+        let mut response = self
+            .db
+            .query(
+                "BEGIN TRANSACTION; \
+                 CREATE $id SET \
+                    note_type = $note_type, title = $title, content = $content, \
+                    embedding = $embedding, source_id = $source_id, \
+                    source_generation = $source_generation, chunk_key = $chunk_key, \
+                    chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
+                    source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
+                    source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
+                    chunk_overlap_chars = $chunk_overlap_chars, split_fenced_code = $split_fenced_code, \
+                    content_hash = $content_hash, \
+                    search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
+                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
+                 FOR $entity_id IN $entity_ids { CREATE mentions SET in = $id, out = $entity_id; }; \
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("id", note_id.clone()))
+            .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
+            .bind(("title", note.title.clone()))
+            .bind(("content", note.content.clone()))
+            .bind(("embedding", (!note.embedding.is_empty()).then_some(note.embedding.clone())))
+            .bind(("source_id", note.source_id.clone()))
+            .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
+            .bind(("chunk_key", note.chunk_key.clone()))
+            .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
+            .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
+            .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
+            .bind(("source_end_line", note.source_end_line.map(|value| value as i64)))
+            .bind(("source_start_byte", note.source_start_byte.map(|value| value as i64)))
+            .bind(("source_end_byte", note.source_end_byte.map(|value| value as i64)))
+            .bind(("chunk_overlap_from", note.chunk_overlap_from.clone()))
+            .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
+            .bind(("split_fenced_code", note.split_fenced_code))
+            .bind(("content_hash", note.content_hash.clone()))
+            .bind(("search_content", note.search_content.clone()))
+            .bind(("tags", note.tags.clone()))
+            .bind(("created_at", note.created_at.to_rfc3339()))
+            .bind(("updated_at", note.updated_at.to_rfc3339()))
+            .bind(("entity_ids", entity_ids))
+            .await?;
+        let errors = response.take_errors();
+        if !errors.is_empty() {
+            return Err(DbError::QueryFailed(format!(
+                "atomic note-and-mention create failed: {}",
+                errors
+                    .into_iter()
+                    .map(|(statement, error)| format!("statement {statement}: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
+        self.get_note(&record_id_to_string(&note_id))
+            .await?
+            .ok_or_else(|| DbError::CreateFailed("atomic note-and-mention create".into()))
     }
 
     /// Get a note by ID
@@ -6168,6 +6242,32 @@ mod tests {
         let linked = repo.get_entities_for_note(&note_id).await.unwrap();
         assert_eq!(linked.len(), 1);
         assert_eq!(linked[0].name, "Prior Entity");
+    }
+
+    #[tokio::test]
+    async fn atomic_note_create_with_mentions_rolls_back_and_retries_without_duplicates() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut malformed = Entity::new("Malformed Entity", EntityType::Concept);
+        malformed.metadata = serde_json::json!("not an object");
+        assert!(repo
+            .create_note_and_replace_entities(Note::new("detached copy"), vec![malformed])
+            .await
+            .is_err());
+        assert!(repo.list_notes(10).await.unwrap().is_empty());
+
+        let mut entity = Entity::new("Copied Entity", EntityType::Concept);
+        entity.metadata = serde_json::json!({});
+        let created = repo
+            .create_note_and_replace_entities(Note::new("detached copy"), vec![entity])
+            .await
+            .unwrap();
+        assert_eq!(repo.list_notes(10).await.unwrap().len(), 1);
+        let linked = repo
+            .get_entities_for_note(&record_id_to_string(created.id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "Copied Entity");
     }
 
     #[tokio::test]

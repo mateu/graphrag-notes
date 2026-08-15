@@ -1184,6 +1184,12 @@ async fn run() -> Result<()> {
     }
 
     let repo = Repository::new(db);
+    // Resolve local notes-edit validation before provider health checks so an
+    // offline service cannot mask a deterministic validation/not-found error.
+    let prepared_notes_edit = match &cli.command {
+        Commands::Notes { command } => commands::notes::prepare_edit(&repo, command).await?,
+        _ => None,
+    };
     let providers = InferenceProviders::from_config(&inference_config);
     let processing = processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache)?;
     let extraction_processing =
@@ -1313,7 +1319,7 @@ async fn run() -> Result<()> {
         Commands::Notes { command } => {
             let librarian =
                 LibrarianAgent::new(repo.clone(), tei, tgi).with_runtime_config(librarian_config);
-            commands::notes::run(repo, librarian, command).await?;
+            commands::notes::run(repo, librarian, command, prepared_notes_edit).await?;
         }
         Commands::Import { path, force } => {
             cmd_import(repo, tei, tgi, librarian_config, path, force).await?;

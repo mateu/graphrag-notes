@@ -77,7 +77,51 @@ struct NoteDeleteOutput<'a> {
     cascade: &'a SourceDeleteSummary,
 }
 
-pub async fn run(repo: Repository, librarian: LibrarianAgent, command: NotesCommand) -> Result<()> {
+/// Content consumed before provider health checks. Reusing it in execution
+/// prevents `--stdin` from being read twice.
+#[derive(Debug)]
+pub struct PreparedEdit {
+    content: Option<String>,
+}
+
+/// Validate an edit's local inputs before any embedding/extraction preflight.
+/// This makes missing-note, source-ownership, unreadable-file, and empty-body
+/// errors deterministic even when providers are offline.
+pub async fn prepare_edit(
+    repo: &Repository,
+    command: &NotesCommand,
+) -> Result<Option<PreparedEdit>> {
+    let NotesCommand::Edit {
+        id,
+        title,
+        content_file,
+        stdin,
+        tags,
+        detach,
+        ..
+    } = command
+    else {
+        return Ok(None);
+    };
+    let existing = get_visible_note(repo, id).await?;
+    let content = read_edit_content(content_file.clone(), *stdin)?;
+    validate_edit_request(
+        &existing,
+        id,
+        title.as_deref(),
+        tags.as_deref(),
+        content.as_deref(),
+        *detach,
+    )?;
+    Ok(Some(PreparedEdit { content }))
+}
+
+pub async fn run(
+    repo: Repository,
+    librarian: LibrarianAgent,
+    command: NotesCommand,
+    prepared_edit: Option<PreparedEdit>,
+) -> Result<()> {
     match command {
         NotesCommand::List {
             limit,
@@ -105,6 +149,7 @@ pub async fn run(repo: Repository, librarian: LibrarianAgent, command: NotesComm
                 tags,
                 detach,
                 format,
+                prepared_edit,
             )
             .await
         }
@@ -156,30 +201,20 @@ async fn edit(
     tags: Option<Vec<String>>,
     detach: bool,
     format: OutputFormat,
+    prepared_edit: Option<PreparedEdit>,
 ) -> Result<()> {
     let existing = get_visible_note(&repo, &id).await?;
-    let content = read_edit_content(content_file, stdin)?;
-    if !has_edit_action(
+    let content = prepared_edit
+        .map(|prepared| prepared.content)
+        .unwrap_or(read_edit_content(content_file, stdin)?);
+    validate_edit_request(
+        &existing,
+        &id,
         title.as_deref(),
         tags.as_deref(),
         content.as_deref(),
         detach,
-    ) {
-        bail!("notes edit requires --title, --tags, --content-file, --stdin, or --detach");
-    }
-    if content
-        .as_deref()
-        .is_some_and(|content| content.trim().is_empty())
-    {
-        bail!("note content cannot be empty");
-    }
-
-    let source_generated = existing.source_generation.is_some();
-    if source_generated && !detach {
-        bail!(
-            "refusing to edit source-generated note {id} in place; use --detach to create a manual note that retains source provenance"
-        );
-    }
+    )?;
 
     let updated = if detach {
         librarian
@@ -226,6 +261,28 @@ async fn edit(
             )
         },
     )
+}
+
+fn validate_edit_request(
+    existing: &Note,
+    id: &str,
+    title: Option<&str>,
+    tags: Option<&[String]>,
+    content: Option<&str>,
+    detach: bool,
+) -> Result<()> {
+    if !has_edit_action(title, tags, content, detach) {
+        bail!("notes edit requires --title, --tags, --content-file, --stdin, or --detach");
+    }
+    if content.is_some_and(|content| content.trim().is_empty()) {
+        bail!("note content cannot be empty");
+    }
+    if existing.source_generation.is_some() && !detach {
+        bail!(
+            "refusing to edit source-generated note {id} in place; use --detach to create a manual note that retains source provenance"
+        );
+    }
+    Ok(())
 }
 
 fn has_edit_action(
@@ -327,11 +384,37 @@ fn print_delete_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::has_edit_action;
+    use super::{has_edit_action, validate_edit_request};
+    use graphrag_core::Note;
 
     #[test]
     fn detach_alone_is_an_edit_action() {
         assert!(has_edit_action(None, None, None, true));
         assert!(!has_edit_action(None, None, None, false));
+    }
+
+    #[test]
+    fn edit_validation_rejects_empty_content_and_source_owned_in_place_before_inference() {
+        let manual = Note::new("manual");
+        assert!(
+            validate_edit_request(&manual, "note:one", None, None, Some("  "), false)
+                .unwrap_err()
+                .to_string()
+                .contains("content cannot be empty")
+        );
+
+        let mut source_generated = Note::new("source chunk");
+        source_generated.source_generation = Some(1);
+        assert!(validate_edit_request(
+            &source_generated,
+            "note:source",
+            Some("replacement"),
+            None,
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("use --detach"));
     }
 }

@@ -758,12 +758,10 @@ impl LibrarianAgent {
         if let Some(source_id) = existing.source_id.clone() {
             detached = detached.with_source(source_id);
         }
-        let detached = self.repo.create_note(detached).await?;
-        let id = detached.id.as_ref().ok_or_else(|| {
-            crate::AgentError::Processing("detached note did not receive an id".into())
-        })?;
-        self.repo.replace_note_entities(id, entities).await?;
-        Ok(detached)
+        Ok(self
+            .repo
+            .create_note_and_replace_entities(detached, entities)
+            .await?)
     }
 
     /// Ingest from a markdown file
