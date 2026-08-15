@@ -22,10 +22,11 @@ the only job allowed to install or query an advisory tool over the network.
 ## Retrieval baseline policy
 
 `tests/baselines/retrieval-v1.json` is an ordinary, versioned JSON file. The
-offline fixture pairs `retrieval-regression-cases-v1.jsonl` with precomputed
-ranked results, so it cannot download a model or depend on a local database.
-The test prints every baseline/current metric delta and uses these strict v1
-thresholds:
+offline test seeds `retrieval-regression-cases-v1.jsonl` into an in-memory
+database, uses deterministic embeddings, then runs the real `SearchAgent`
+fusion/filtering and context-packing path. It cannot download a model or
+depend on a local database. The test prints every baseline/current metric delta
+and uses these strict v1 thresholds:
 
 | Metric | Maximum allowed drop |
 | --- | ---: |
@@ -35,8 +36,9 @@ thresholds:
 | nDCG@k | 0.00 |
 | Provenance accuracy | 0.00 |
 
-To propose a replacement baseline from a deliberate `eval-augment --format
-json` run, review it first:
+To propose a replacement, first generate a report from the deterministic
+fixture harness (it must carry `provider: fixture` and
+`model: deterministic-stack-v1`), then review it:
 
 ```bash
 make update-baseline CANDIDATE=/path/to/eval-report.json

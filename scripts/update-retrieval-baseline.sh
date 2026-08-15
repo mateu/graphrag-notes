@@ -31,6 +31,13 @@ if version != 2:
     )
 if not isinstance(report.get("cases"), list) or not isinstance(report.get("summary"), dict):
     raise SystemExit(f"candidate is not an EvalRunReport: {path}")
+metadata = report["metadata"]
+if metadata.get("provider") != "fixture" or metadata.get("model") != "deterministic-stack-v1":
+    raise SystemExit(
+        "candidate must be produced by the deterministic retrieval fixture "
+        "(metadata.provider='fixture', metadata.model='deterministic-stack-v1'); "
+        "the CI gate cannot accept a live eval-augment report as its offline baseline"
+    )
 PY
 
 echo "Reviewable baseline diff (no file has been changed):"

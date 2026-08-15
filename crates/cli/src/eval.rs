@@ -830,13 +830,12 @@ fn result_prompt_text(result: &RankedResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-
-    #[derive(Deserialize)]
-    struct RankedFixtureCase {
-        name: String,
-        results: Vec<RankedResult>,
-    }
+    use graphrag_agents::{AugmentOptions, DeterministicEmbedder, SearchAgent, SearchScope};
+    use graphrag_core::{
+        record_id_to_string, ChatConversation, ChatMessage, MessageRole, Note, Source,
+    };
+    use graphrag_db::{compatibility::EmbeddingIdentity, init_memory, Repository};
+    use std::sync::Arc;
 
     fn case(value: serde_json::Value) -> EvalAugmentCase {
         serde_json::from_value(value).unwrap()
@@ -852,48 +851,174 @@ mod tests {
         }
     }
 
-    fn retrieval_fixture_report() -> EvalRunReport {
-        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/eval");
-        let cases = load_eval_cases(&fixture_dir.join("retrieval-regression-cases-v1.jsonl"))
-            .expect("retrieval regression case fixture must parse");
-        let ranked: Vec<RankedFixtureCase> = serde_json::from_str(
-            &std::fs::read_to_string(
-                fixture_dir.join("retrieval-regression-ranked-results-v1.json"),
-            )
-            .expect("retrieval regression ranked-results fixture must be readable"),
-        )
-        .expect("retrieval regression ranked-results fixture must parse");
-        let mut results_by_name: BTreeMap<String, Vec<RankedResult>> = ranked
-            .into_iter()
-            .map(|fixture| (fixture.name, fixture.results))
-            .collect();
+    fn fixture_embedding(index: usize) -> Vec<f32> {
+        let mut embedding = vec![0.0; 1024];
+        embedding[index] = 1.0;
+        embedding
+    }
 
-        let reports = cases
-            .into_iter()
-            .map(|case| {
-                let name = case.display_name().to_string();
-                let results = results_by_name.remove(&name).unwrap_or_else(|| {
-                    panic!("ranked-results fixture is missing deterministic case `{name}`")
-                });
-                EvalCaseReport {
-                    query: case.query.clone(),
-                    name,
-                    metrics: evaluate_ranked_results(&case, &results, case.resolved_k(10), 0),
-                    augmentation: None,
-                }
-            })
-            .collect();
-        assert!(
-            results_by_name.is_empty(),
-            "ranked-results fixture has cases not present in the regression corpus: {:?}",
-            results_by_name.keys().collect::<Vec<_>>()
+    fn search_scope(scope: EvalScope) -> SearchScope {
+        match scope {
+            EvalScope::Notes => SearchScope::Notes,
+            EvalScope::Messages => SearchScope::Messages,
+            EvalScope::All => SearchScope::All,
+        }
+    }
+
+    async fn retrieval_fixture_report() -> EvalRunReport {
+        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/eval");
+        let mut cases = load_eval_cases(&fixture_dir.join("retrieval-regression-cases-v1.jsonl"))
+            .expect("retrieval regression case fixture must parse");
+        let repo = Repository::new(
+            init_memory()
+                .await
+                .expect("fixture database must initialize"),
         );
+        repo.record_embedding_metadata(
+            &EmbeddingIdentity::new("fixture", "deterministic-stack-v1", 1024),
+            None,
+        )
+        .await
+        .expect("fixture embedding identity must persist before vector records");
+        let music_embedding = fixture_embedding(0);
+        let adapter_embedding = fixture_embedding(1);
+        let decision_embedding = fixture_embedding(2);
+
+        let mut source = Source::manual().with_title("fixture homelab notes");
+        source.uri = Some("fixture://notes/homelab.md".into());
+        let source = repo
+            .create_source(source)
+            .await
+            .expect("fixture source must persist");
+        let source_id = source.id.expect("fixture source must receive an id");
+        let music = repo
+            .create_note(
+                Note::new("A local music service on the media host")
+                    .with_embedding(music_embedding.clone())
+                    .with_source(source_id.clone()),
+            )
+            .await
+            .expect("fixture music note must persist");
+        let network = repo
+            .create_note(
+                Note::new("Network settings for the media host")
+                    .with_embedding(music_embedding.clone())
+                    .with_source(source_id),
+            )
+            .await
+            .expect("fixture network note must persist");
+
+        let conversation = ChatConversation {
+            uuid: "fixture-conversation-support".into(),
+            name: "Fixture support discussion".into(),
+            summary: "The migration decision is to retain stable identifiers.".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            account: None,
+            messages: Vec::new(),
+        };
+        let conversation_id = repo
+            .upsert_conversation(
+                &conversation,
+                None,
+                serde_json::json!({}),
+                Some(decision_embedding.clone()),
+            )
+            .await
+            .expect("fixture conversation must persist");
+        let message_id = repo
+            .upsert_message(
+                &conversation_id,
+                &conversation.uuid,
+                0,
+                &ChatMessage {
+                    uuid: Some("fixture-message-adapter-1".into()),
+                    role: MessageRole::Human,
+                    content: "Pair the adapter before connecting".into(),
+                    content_blocks: serde_json::json!([]),
+                    created_at: None,
+                    updated_at: None,
+                    attachments: Vec::new(),
+                    files: Vec::new(),
+                },
+                Some(adapter_embedding.clone()),
+            )
+            .await
+            .expect("fixture message must persist");
+
+        let search = SearchAgent::new(
+            repo,
+            Arc::new(
+                DeterministicEmbedder::default()
+                    .with_identity("fixture", "deterministic-stack-v1")
+                    .with_embedding("local music service", true, music_embedding)
+                    .with_embedding("adapter pairing", true, adapter_embedding)
+                    .with_embedding("what was decided", true, decision_embedding),
+            ),
+        );
+
+        for case in &mut cases {
+            match case.display_name() {
+                "note-with-source-filter" => {
+                    case.relevance[0].id = record_id_to_string(music.id.as_ref().unwrap());
+                    case.relevance[1].id = record_id_to_string(network.id.as_ref().unwrap());
+                }
+                "message-provenance" => {
+                    case.relevance[0].id = record_id_to_string(&message_id);
+                }
+                "conversation-summary" => {
+                    case.expected_ids = vec![record_id_to_string(&conversation_id)];
+                }
+                name => panic!("unknown retrieval regression fixture case `{name}`"),
+            }
+        }
+
+        let mut reports = Vec::with_capacity(cases.len());
+        for case in cases {
+            let name = case.display_name().to_string();
+            let context = search
+                .build_augmented_context(
+                    &case.query,
+                    search_scope(case.scope.expect("fixture cases declare a scope")),
+                    case.since_days,
+                    case.source_uri.clone(),
+                    case.entity.clone(),
+                    AugmentOptions {
+                        max_chunks: case.resolved_k(10),
+                        max_total_tokens: 4_096,
+                        max_chunk_tokens: 1_024,
+                        novelty_weight: 0.0,
+                        ..AugmentOptions::default()
+                    },
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("deterministic retrieval fixture `{name}` failed: {error}")
+                });
+            let results = context
+                .chunks
+                .iter()
+                .map(|chunk| RankedResult {
+                    id: chunk.id.clone(),
+                    text: chunk.snippet.clone(),
+                    source_uri: chunk.source_uri.clone(),
+                    conversation_uuid: chunk.conversation_uuid.clone(),
+                    approx_tokens: chunk.approx_tokens,
+                })
+                .collect::<Vec<_>>();
+            reports.push(EvalCaseReport {
+                query: case.query.clone(),
+                name,
+                metrics: evaluate_ranked_results(&case, &results, case.resolved_k(10), 0),
+                augmentation: None,
+            });
+        }
 
         EvalRunReport::from_cases(
             EvalMetadata {
                 schema_version: EVAL_SCHEMA_VERSION,
                 provider: "fixture".into(),
-                model: "ranked-results-v1".into(),
+                model: "deterministic-stack-v1".into(),
             },
             reports,
         )
@@ -1286,13 +1411,13 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn committed_retrieval_fixture_matches_versioned_baseline() {
+    #[tokio::test]
+    async fn committed_retrieval_fixture_matches_versioned_baseline() {
         let baseline_path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/baselines/retrieval-v1.json");
         let baseline =
             load_baseline(&baseline_path).expect("committed retrieval baseline must parse");
-        let mut current = retrieval_fixture_report();
+        let mut current = retrieval_fixture_report().await;
         let thresholds = parse_regression_thresholds(&[
             "recall_at_k=0.00".into(),
             "precision_at_k=0.00".into(),
@@ -1307,7 +1432,7 @@ mod tests {
 
         assert_eq!(baseline.metadata.schema_version, EVAL_SCHEMA_VERSION);
         assert_eq!(baseline.metadata.provider, "fixture");
-        assert_eq!(baseline.metadata.model, "ranked-results-v1");
+        assert_eq!(baseline.metadata.model, "deterministic-stack-v1");
         assert!(
             current
                 .baseline

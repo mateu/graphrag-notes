@@ -2,7 +2,7 @@
   "metadata": {
     "schema_version": 2,
     "provider": "fixture",
-    "model": "ranked-results-v1"
+    "model": "deterministic-stack-v1"
   },
   "cases": [
     {
@@ -21,7 +21,7 @@
         "forbidden_result_found": false,
         "checks_passed": true,
         "chunks": 2,
-        "tokens": 18,
+        "tokens": 74,
         "latency_ms": 0
       }
     },
@@ -41,7 +41,7 @@
         "forbidden_result_found": false,
         "checks_passed": true,
         "chunks": 1,
-        "tokens": 7,
+        "tokens": 34,
         "latency_ms": 0
       }
     },
@@ -50,16 +50,16 @@
       "query": "what was decided",
       "metrics": {
         "k": 3,
-        "retrieved": 1,
+        "retrieved": 3,
         "relevant_total": 1,
         "recall_at_k": 1.0,
         "precision_at_k": 0.3333333333333333,
-        "reciprocal_rank": 1.0,
+        "reciprocal_rank": 0.3333333333333333,
         "substring_expectation_matched": true,
         "forbidden_result_found": false,
         "checks_passed": true,
-        "chunks": 1,
-        "tokens": 9,
+        "chunks": 3,
+        "tokens": 128,
         "latency_ms": 0
       }
     }
@@ -72,11 +72,11 @@
     "cases_unscored": 0,
     "recall_at_k": 1.0,
     "precision_at_k": 0.49999999999999994,
-    "mrr": 1.0,
+    "mrr": 0.7777777777777778,
     "ndcg_at_k": 1.0,
     "provenance_accuracy": 1.0,
-    "avg_chunks_per_case": 1.3333333333333333,
-    "avg_tokens_per_case": 11.333333333333334,
+    "avg_chunks_per_case": 2.0,
+    "avg_tokens_per_case": 78.66666666666667,
     "avg_latency_ms": 0.0,
     "total_latency_ms": 0
   }
