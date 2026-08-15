@@ -2639,12 +2639,37 @@ impl Repository {
                 .collect::<Vec<_>>()
                 .join(" OR "),
         };
+        let phrase_specificity = match tier {
+            GraphEntityMatchTier::ContainedPhrase => {
+                // A sentence can contain both `New` and `New York`. Rank by
+                // the lexical phrase that actually matched (canonical or
+                // alias), rather than the stored canonical name, so aliases
+                // receive the same specificity treatment before the cap.
+                let matching_alias_lengths = format!(
+                    "array::map(array::filter(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' '))), |$alias| string::len({alias_lexical}))"
+                );
+                let phrase_specificity = format!(
+                    "array::max([IF string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' ')) THEN string::len({canonical_lexical}) ELSE 0 END, array::max({matching_alias_lengths})])"
+                );
+                Some(phrase_specificity)
+            }
+            GraphEntityMatchTier::Exact | GraphEntityMatchTier::Prefix => None,
+        };
+        let select_specificity = phrase_specificity
+            .as_ref()
+            .map(|specificity| format!(", {specificity} AS graph_match_specificity"))
+            .unwrap_or_default();
+        let ordering = if phrase_specificity.is_some() {
+            "graph_match_specificity DESC, canonical_name ASC, id ASC"
+        } else {
+            "canonical_name ASC, id ASC"
+        };
         let query = format!(
             r#"
-                SELECT id, name, canonical_name, metadata
+                SELECT id, name, canonical_name, metadata{select_specificity}
                 FROM entity
                 WHERE {match_condition}
-                ORDER BY canonical_name ASC, id ASC
+                ORDER BY {ordering}
                 LIMIT $limit
                 "#,
         );
@@ -4472,6 +4497,13 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].id, *exact_name.id.as_ref().unwrap());
 
+        let matches = repo
+            .find_graph_entities("status New York today", 1)
+            .await
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *exact_name.id.as_ref().unwrap());
+
         let mut short_alias = Entity::new("Big", EntityType::Project);
         short_alias.metadata = serde_json::json!({});
         repo.upsert_entity(short_alias).await.unwrap();
@@ -4480,6 +4512,13 @@ mod tests {
         let exact_alias = repo.upsert_entity(exact_alias).await.unwrap();
 
         let matches = repo.find_graph_entities("Big Apple", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *exact_alias.id.as_ref().unwrap());
+
+        let matches = repo
+            .find_graph_entities("status Big Apple today", 1)
+            .await
+            .unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].id, *exact_alias.id.as_ref().unwrap());
     }

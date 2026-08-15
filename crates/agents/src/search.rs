@@ -2182,7 +2182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn graph_entity_seed_prefers_whole_query_match_over_contained_phrase_at_cap() {
+    async fn graph_entity_seed_prefers_more_specific_contained_phrase_at_cap() {
         let repo = Repository::new(init_memory().await.unwrap());
         let short_seed = repo
             .create_note(Note::new("short entity seed"))
@@ -2212,7 +2212,7 @@ mod tests {
         let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
             .with_graph_config(config)
             .search_with_scope_graph(
-                "New York",
+                "status New York today",
                 10,
                 SearchScope::Notes,
                 None,
