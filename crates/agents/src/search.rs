@@ -116,6 +116,7 @@ pub struct GraphSearchResults {
 pub struct EnrichedSearchResult {
     pub result: SearchResult,
     pub related: Option<RelatedNotes>,
+    score_kind: crate::ScoreKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +145,7 @@ pub struct ScopedSearchResult {
     /// Retrieval evidence is intentionally retained for a later `--explain`
     /// surface while current CLI output remains unchanged.
     pub fusion: FusionEvidence,
+    pub score_kind: crate::ScoreKind,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
@@ -159,13 +161,25 @@ impl ScopedSearchResult {
     pub fn explanation(&self) -> crate::RetrievalExplanation {
         retrieval_explanation(
             self.hit_type,
+            self.id.clone(),
+            self.title.clone(),
             &self.fusion,
+            self.score_kind,
             self.graph.clone(),
             self.source_uri.clone(),
             self.conversation_uuid.clone(),
             self.message_index,
             self.role.clone(),
         )
+    }
+
+    pub fn explanation_with_inclusion(
+        &self,
+        inclusion: crate::InclusionReason,
+    ) -> crate::RetrievalExplanation {
+        let mut explanation = self.explanation();
+        explanation.inclusion = inclusion;
+        explanation
     }
 }
 
@@ -176,7 +190,10 @@ impl EnrichedSearchResult {
     pub fn explanation(&self) -> crate::RetrievalExplanation {
         retrieval_explanation(
             SearchHitType::Note,
+            record_id_to_string(&self.result.id),
+            self.result.title.clone(),
             &self.result.fusion,
+            self.score_kind,
             None,
             self.result.source_uri.clone(),
             None,
@@ -188,16 +205,21 @@ impl EnrichedSearchResult {
 
 fn retrieval_explanation(
     hit_type: SearchHitType,
+    result_id: String,
+    title: Option<String>,
     fusion: &FusionEvidence,
+    score_kind: crate::ScoreKind,
     graph: Option<GraphEvidence>,
     source_uri: Option<String>,
     conversation_uuid: Option<String>,
     message_index: Option<i64>,
     role: Option<String>,
 ) -> crate::RetrievalExplanation {
-    let (fused, vector, full_text) = crate::fusion_scores(fusion);
+    let (fused, vector, full_text) = crate::fusion_scores(fusion, score_kind);
     crate::RetrievalExplanation {
         schema_version: crate::EXPLANATION_SCHEMA_VERSION,
+        result_id,
+        title,
         rank: fusion.final_rank,
         context_rank: None,
         hit_type: hit_type.into(),
@@ -367,7 +389,11 @@ impl SearchAgent {
             // Try to get related notes (best effort) using the full RecordId
             let related = self.repo.get_related_notes(&result.id).await.ok();
 
-            enriched.push(EnrichedSearchResult { result, related });
+            enriched.push(EnrichedSearchResult {
+                result,
+                related,
+                score_kind: self.fusion.strategy.into(),
+            });
         }
 
         Ok(enriched)
@@ -879,6 +905,7 @@ impl SearchAgent {
             fused_score: graph.score,
             ..Default::default()
         };
+        hit.score_kind = crate::ScoreKind::GraphTraversal;
         hit.graph = Some(graph);
         hit
     }
@@ -894,6 +921,7 @@ impl SearchAgent {
             source_uri: result.source_uri,
             score: fusion::apply_hit_type_weight(&result.fusion, self.note_weight),
             fusion: result.fusion,
+            score_kind: self.fusion.strategy.into(),
             conversation_uuid: None,
             message_index: None,
             role: None,
@@ -916,6 +944,7 @@ impl SearchAgent {
             source_uri: result.source_uri,
             score: fusion::apply_hit_type_weight(&result.fusion, self.message_weight),
             fusion: result.fusion,
+            score_kind: self.fusion.strategy.into(),
             conversation_uuid: Some(result.conversation_uuid),
             message_index: Some(result.message_index),
             role: Some(result.role),
@@ -939,6 +968,7 @@ impl SearchAgent {
             source_uri: result.source_uri,
             score: fusion::apply_hit_type_weight(&result.fusion, self.conversation_summary_weight),
             fusion: result.fusion,
+            score_kind: self.fusion.strategy.into(),
             conversation_uuid: Some(result.uuid),
             message_index: None,
             role: None,
@@ -1546,6 +1576,7 @@ mod tests {
                     fused_score: 0.01,
                     ..Default::default()
                 },
+                score_kind: crate::ScoreKind::ReciprocalRankFusion,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,
@@ -2826,6 +2857,7 @@ mod tests {
                 fused_score: score,
                 ..FusionEvidence::default()
             },
+            score_kind: crate::ScoreKind::ReciprocalRankFusion,
             conversation_uuid: None,
             message_index: None,
             role: None,

@@ -4,7 +4,7 @@
 //! it never participates in ranking or context selection.
 
 use crate::{GraphEvidence, SearchHitType};
-use graphrag_db::fusion::FusionEvidence;
+use graphrag_db::fusion::{FusionEvidence, FusionStrategy};
 use serde::Serialize;
 
 pub const EXPLANATION_SCHEMA_VERSION: u32 = 1;
@@ -21,9 +21,32 @@ pub enum InclusionReason {
     DiagnosticLimit,
 }
 
+/// The concrete algorithm behind a score. Consumers must not infer this from
+/// score magnitude because RRF, weighted fusion, graph traversal, distance,
+/// and BM25 live on different scales.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScoreKind {
+    ReciprocalRankFusion,
+    WeightedFusion,
+    GraphTraversal,
+    VectorDistance,
+    Bm25,
+}
+
+impl From<FusionStrategy> for ScoreKind {
+    fn from(value: FusionStrategy) -> Self {
+        match value {
+            FusionStrategy::ReciprocalRank => Self::ReciprocalRankFusion,
+            FusionStrategy::Weighted => Self::WeightedFusion,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ScoreEvidence {
     pub value: f32,
+    pub kind: ScoreKind,
     /// Stable description of the score scale, never an unexplained float.
     pub meaning: &'static str,
     /// Position in the corresponding retrieval channel, when that channel
@@ -51,6 +74,10 @@ pub struct ProvenanceEvidence {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RetrievalExplanation {
     pub schema_version: u32,
+    /// Stable record/chunk identity that correlates evidence with result data
+    /// without requiring consumers to match rank or score floats.
+    pub result_id: String,
+    pub title: Option<String>,
     /// Final position after hybrid/graph retrieval fusion.
     pub rank: usize,
     /// Position after augmentation packing, when this result was selected for
@@ -102,22 +129,33 @@ impl From<SearchHitType> for SearchHitTypeEvidence {
 
 pub fn fusion_scores(
     fusion: &FusionEvidence,
+    fusion_kind: ScoreKind,
 ) -> (ScoreEvidence, Option<ScoreEvidence>, Option<ScoreEvidence>) {
     (
         ScoreEvidence {
             value: fusion.fused_score,
-            meaning: "weighted reciprocal-rank fusion score",
+            kind: fusion_kind,
+            meaning: match fusion_kind {
+                ScoreKind::ReciprocalRankFusion => "reciprocal-rank fusion score",
+                ScoreKind::WeightedFusion => "weighted vector-distance and BM25 fusion score",
+                ScoreKind::GraphTraversal => "accepted-edge graph traversal score",
+                ScoreKind::VectorDistance | ScoreKind::Bm25 => {
+                    unreachable!("only fusion score kinds are valid for fused evidence")
+                }
+            },
             rank: None,
             raw_value: None,
         },
         fusion.vector_rank.map(|rank| ScoreEvidence {
             value: rank as f32,
+            kind: ScoreKind::VectorDistance,
             meaning: "vector retrieval rank; lower is better; raw_value is distance",
             rank: Some(rank),
             raw_value: fusion.vector_distance,
         }),
         fusion.fulltext_rank.map(|rank| ScoreEvidence {
             value: rank as f32,
+            kind: ScoreKind::Bm25,
             meaning: "full-text retrieval rank; lower is better; raw_value is BM25 score",
             rank: Some(rank),
             raw_value: fusion.fulltext_score,
@@ -139,9 +177,13 @@ mod tests {
             fused_score: 0.42,
             ..Default::default()
         };
-        let (fused, vector, full_text) = fusion_scores(&fusion);
+        let (fused, vector, full_text) = fusion_scores(&fusion, ScoreKind::WeightedFusion);
         assert_eq!(fused.value, 0.42);
-        assert_eq!(fused.meaning, "weighted reciprocal-rank fusion score");
+        assert_eq!(fused.kind, ScoreKind::WeightedFusion);
+        assert_eq!(
+            fused.meaning,
+            "weighted vector-distance and BM25 fusion score"
+        );
         let vector = vector.unwrap();
         assert_eq!(
             vector.meaning,
@@ -157,5 +199,26 @@ mod tests {
         assert_eq!(full_text.rank, Some(3));
         assert_eq!(full_text.raw_value, Some(8.5));
         assert_eq!(EXPLANATION_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn score_kind_distinguishes_rrf_weighted_and_graph_scores() {
+        assert_eq!(
+            ScoreKind::from(FusionStrategy::ReciprocalRank),
+            ScoreKind::ReciprocalRankFusion
+        );
+        assert_eq!(
+            ScoreKind::from(FusionStrategy::Weighted),
+            ScoreKind::WeightedFusion
+        );
+        let (graph, _, _) = fusion_scores(
+            &FusionEvidence {
+                fused_score: 0.7,
+                ..Default::default()
+            },
+            ScoreKind::GraphTraversal,
+        );
+        assert_eq!(graph.kind, ScoreKind::GraphTraversal);
+        assert_eq!(graph.meaning, "accepted-edge graph traversal score");
     }
 }

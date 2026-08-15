@@ -67,17 +67,21 @@ mod tests {
     fn sample() -> RetrievalExplanation {
         RetrievalExplanation {
             schema_version: 1,
+            result_id: "note:fixture".into(),
+            title: Some("Fixture".into()),
             rank: 1,
             context_rank: Some(1),
             hit_type: SearchHitTypeEvidence::Note,
             fused: ScoreEvidence {
                 value: 0.5,
+                kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
                 meaning: "fusion",
                 rank: None,
                 raw_value: None,
             },
             vector: Some(ScoreEvidence {
                 value: 1.0,
+                kind: graphrag_agents::ScoreKind::VectorDistance,
                 meaning: "rank",
                 rank: Some(1),
                 raw_value: Some(0.1),
@@ -105,6 +109,11 @@ mod tests {
         assert!(human(&evidence).contains("channels=vector"));
         let json = json(&[evidence]);
         assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["results"][0]["result_id"], "note:fixture");
+        assert_eq!(
+            json["results"][0]["fused"]["kind"],
+            "reciprocal_rank_fusion"
+        );
         assert_eq!(json["results"][0]["vector"]["rank"], 1);
         assert!((json["results"][0]["vector"]["raw_value"].as_f64().unwrap() - 0.1).abs() < 1e-6);
     }

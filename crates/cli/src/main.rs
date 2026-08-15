@@ -2873,7 +2873,7 @@ async fn cmd_augment(
         )
         .await?;
 
-    let explanations = ctx
+    let mut explanations = ctx
         .chunks
         .iter()
         .enumerate()
@@ -2883,6 +2883,9 @@ async fn cmd_augment(
                 .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
         })
         .collect::<Vec<_>>();
+    explanations.extend(ctx.exclusions.iter().cloned().map(|explanation| {
+        explanation.with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+    }));
     if format != output::OutputFormat::Human {
         return match format {
             output::OutputFormat::Json => output::print(
@@ -4128,6 +4131,7 @@ mod tests {
                 source_uri: None,
                 score: 1.0,
                 fusion: Default::default(),
+                score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,
@@ -4142,6 +4146,7 @@ mod tests {
                 source_uri: None,
                 score: 0.9,
                 fusion: Default::default(),
+                score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,

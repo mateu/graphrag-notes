@@ -20,7 +20,7 @@ pub use chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker};
 pub use error::{AgentError, Result};
 pub use evidence::{
     fusion_scores, InclusionReason, ProvenanceEvidence, RetrievalExplanation, ScoreEvidence,
-    SearchHitTypeEvidence, EXPLANATION_SCHEMA_VERSION,
+    ScoreKind, SearchHitTypeEvidence, EXPLANATION_SCHEMA_VERSION,
 };
 pub use gardener::GardenerAgent;
 pub use inference::{
