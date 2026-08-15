@@ -6,6 +6,7 @@
 use super::*;
 
 impl Repository {
+    #[instrument(skip(self, note))]
     pub async fn create_note(&self, note: Note) -> Result<Note> {
         // Source ownership is written in the same CREATE statement as the
         // note. Splitting this into a later UPDATE leaves an interruption

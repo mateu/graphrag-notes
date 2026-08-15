@@ -9,6 +9,7 @@ use super::chats::{
 use super::*;
 
 impl Repository {
+    #[instrument(skip(self))]
     pub async fn create_edge(
         &self,
         from_id: &surrealdb::types::RecordId,

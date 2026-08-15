@@ -9,6 +9,7 @@ use super::graph::{
 use super::*;
 
 impl Repository {
+    #[instrument(skip(self, successors))]
     pub async fn copy_note_dependents_to_successors(
         &self,
         successors: &[(RecordId, RecordId, bool)],

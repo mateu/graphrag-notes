@@ -5,6 +5,7 @@
 use super::*;
 
 impl Repository {
+    #[instrument(skip(self, conversation, metadata))]
     pub async fn upsert_conversation(
         &self,
         conversation: &ChatConversation,
