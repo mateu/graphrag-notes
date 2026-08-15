@@ -860,6 +860,66 @@ fn augment_options(
     }
 }
 
+/// Zero budgets normally return an empty context without contacting the
+/// embedder. Explain mode deliberately samples a bounded candidate set so it
+/// can report identified exclusion decisions; ordinary output must retain the
+/// established no-inference fast path.
+fn should_sample_augment_candidates(explain: bool, options: &AugmentOptions) -> bool {
+    explain
+        || (options.max_chunks != 0
+            && options.max_total_tokens != 0
+            && options.max_chunk_tokens != 0)
+}
+
+fn augment_needs_tei(
+    explain: bool,
+    limit: Option<usize>,
+    max_tokens: Option<usize>,
+    max_chunk_tokens: Option<usize>,
+    config: &AugmentConfig,
+) -> bool {
+    should_sample_augment_candidates(
+        explain,
+        &augment_options(
+            limit.unwrap_or(config.default_limit),
+            max_tokens.unwrap_or(config.max_tokens),
+            max_chunk_tokens.unwrap_or(config.max_chunk_tokens),
+            config,
+        ),
+    )
+}
+
+fn zero_budget_augment_context(
+    query: String,
+    scope: SearchScope,
+    entity_filter: Option<String>,
+) -> graphrag_agents::AugmentContext {
+    let diagnostics = AugmentDiagnostics {
+        token_count_mode: TokenCountMode::Estimated,
+        header_tokens: 0,
+        dropped_duplicates: 0,
+        dropped_near_duplicates: 0,
+        dropped_for_relevance: 0,
+        dropped_for_budget: 0,
+        dropped_for_entity_filter: 0,
+        graph_candidates_considered: 0,
+        graph_candidates_selected: 0,
+        graph_candidates_dropped: 0,
+    };
+    graphrag_agents::AugmentContext {
+        query,
+        scope,
+        entity_filter,
+        chunks: Vec::new(),
+        exclusions: Vec::new(),
+        total_tokens: 0,
+        diagnostics,
+        dropped_duplicates: 0,
+        dropped_for_budget: 0,
+        dropped_for_entity_filter: 0,
+    }
+}
+
 fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> String {
     let token_count_mode = match diagnostics.token_count_mode {
         TokenCountMode::Exact => "exact",
@@ -1247,7 +1307,23 @@ async fn run() -> Result<()> {
         &cli.command,
         Commands::Notes { command } if notes_edit_requires_inference(command)
     );
-    let needs_tei = notes_edit_reprocesses
+    let augment_needs_embeddings = match &cli.command {
+        Commands::Augment {
+            limit,
+            max_tokens,
+            max_chunk_tokens,
+            ..
+        } => augment_needs_tei(
+            cli.explain,
+            *limit,
+            *max_tokens,
+            *max_chunk_tokens,
+            &config.augment,
+        ),
+        _ => false,
+    };
+    let needs_tei = augment_needs_embeddings
+        || notes_edit_reprocesses
         || matches!(
             cli.command,
             Commands::Add { .. }
@@ -1258,7 +1334,6 @@ async fn run() -> Result<()> {
                 | Commands::ImportChats { .. }
                 | Commands::MigrateChats { .. }
                 | Commands::Search { .. }
-                | Commands::Augment { .. }
                 | Commands::EvalAugment { .. }
                 | Commands::Reindex { .. }
                 | Commands::Interactive
@@ -3055,19 +3130,28 @@ async fn cmd_augment(
         SearchScopeArg::All => SearchScope::All,
     };
 
-    let search = configured_search_agent(repo, tei, &search_config);
-    let embedding_identity = search.embedding_identity();
-    let ctx = search
-        .build_augmented_context_with_graph(
-            &query,
-            scope,
-            since_days,
-            source_uri.clone(),
-            entity.clone(),
-            augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
-            graph.into(),
+    let options = augment_options(limit, max_tokens, max_chunk_tokens, &augment_config);
+    let (ctx, embedding_identity) = if should_sample_augment_candidates(explain, &options) {
+        let search = configured_search_agent(repo, tei, &search_config);
+        let embedding_identity = search.embedding_identity();
+        let ctx = search
+            .build_augmented_context_with_graph(
+                &query,
+                scope,
+                since_days,
+                source_uri.clone(),
+                entity.clone(),
+                options,
+                graph.into(),
+            )
+            .await?;
+        (ctx, Some(embedding_identity))
+    } else {
+        (
+            zero_budget_augment_context(query.clone(), scope, entity.clone()),
+            None,
         )
-        .await?;
+    };
 
     if format != output::OutputFormat::Human {
         if !explain {
@@ -3078,6 +3162,9 @@ async fn cmd_augment(
                 output::OutputFormat::Human => unreachable!("handled above"),
             };
         }
+        let embedding_identity = embedding_identity
+            .as_ref()
+            .expect("explain mode always samples augmentation candidates");
         let mut explanations = ctx
             .chunks
             .iter()
@@ -4033,6 +4120,36 @@ mod tests {
         assert_eq!(options.novelty_weight, 0.4);
         assert_eq!(options.min_relevance, 0.2);
         assert_eq!(options.near_duplicate_threshold, 0.7);
+    }
+
+    #[test]
+    fn zero_budget_augmentation_samples_candidates_only_for_explain() {
+        let zero_total = augment_options(1, 0, 32, &AugmentConfig::default());
+        assert!(!should_sample_augment_candidates(false, &zero_total));
+        assert!(should_sample_augment_candidates(true, &zero_total));
+
+        let zero_chunk = augment_options(1, 32, 0, &AugmentConfig::default());
+        assert!(!should_sample_augment_candidates(false, &zero_chunk));
+
+        assert!(!augment_needs_tei(
+            false,
+            Some(1),
+            Some(0),
+            Some(32),
+            &AugmentConfig::default(),
+        ));
+        assert!(augment_needs_tei(
+            true,
+            Some(1),
+            Some(0),
+            Some(32),
+            &AugmentConfig::default(),
+        ));
+
+        let context = zero_budget_augment_context("query".into(), SearchScope::Notes, None);
+        assert!(context.chunks.is_empty());
+        assert!(context.exclusions.is_empty());
+        assert_eq!(context.total_tokens, 0);
     }
 
     #[test]
