@@ -17,9 +17,8 @@ use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
     GraphEvidence, GraphMode, GraphPathStep, GraphRetrievalConfig, InferenceProviderConfig,
     InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, ProcessingConfig,
-    ProcessingConfig, ProcessingRunResult, ReindexAgent, ReindexScope, ResilientEmbedder,
-    ResilientEntityExtractor, SearchAgent, SearchHitType, SearchScope, SharedEmbedder,
-    SharedEntityExtractor, TokenCountMode,
+    ProcessingRunResult, ReindexAgent, ReindexScope, ResilientEmbedder, ResilientEntityExtractor,
+    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
