@@ -364,6 +364,14 @@ pub struct ProcessingJob {
     pub job_type: String,
     pub source_generation: Option<String>,
     pub scope: Option<String>,
+    /// Reindex jobs pin this identity so a later resume cannot apply a
+    /// different provider/model's staged vectors to the same generation.
+    #[serde(default)]
+    pub target_embedding_provider: Option<String>,
+    #[serde(default)]
+    pub target_embedding_model: Option<String>,
+    #[serde(default)]
+    pub target_embedding_dimension: Option<i64>,
     #[serde(default)]
     pub item_ids: Vec<String>,
     pub status: String,
@@ -632,6 +640,40 @@ impl Repository {
             .await?
             .take(0)?;
         job.ok_or_else(|| DbError::QueryFailed("create_processing_job".into()))
+    }
+
+    /// Persist a reindex job together with the exact embedding identity it is
+    /// allowed to stage and promote. This is intentionally separate from the
+    /// generic inference-job constructor: regular jobs have no corpus-wide
+    /// model cutover contract.
+    pub async fn create_reindex_processing_job(
+        &self,
+        total_count: u64,
+        scope: String,
+        item_ids: Vec<String>,
+        embedding: &EmbeddingIdentity,
+    ) -> Result<ProcessingJob> {
+        let dimension = i64::try_from(embedding.dimension).map_err(|_| {
+            DbError::QueryFailed("embedding dimension exceeds database integer range".into())
+        })?;
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "CREATE processing_job SET job_type = 'reindex', scope = $scope, item_ids = $item_ids, \
+                 target_embedding_provider = $provider, target_embedding_model = $model, target_embedding_dimension = $dimension, \
+                 status = 'running', total_count = $total_count, completed_count = 0, failed_count = 0, \
+                 checkpoint = NONE, last_error = NONE, created_at = time::now(), updated_at = time::now(), \
+                 finished_at = NONE RETURN AFTER",
+            )
+            .bind(("scope", scope))
+            .bind(("item_ids", item_ids))
+            .bind(("provider", embedding.provider.clone()))
+            .bind(("model", embedding.model.clone()))
+            .bind(("dimension", dimension))
+            .bind(("total_count", count_to_i64(total_count)?))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| DbError::QueryFailed("create reindex processing_job".into()))
     }
 
     /// Update progress only after an item's atomic database mutation has

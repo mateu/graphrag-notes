@@ -36,6 +36,10 @@ impl ReindexScope {
         !self.notes && !self.messages && !self.summaries
     }
 
+    pub const fn is_all(self) -> bool {
+        self.notes && self.messages && self.summaries
+    }
+
     pub fn label(self) -> String {
         let mut parts = Vec::new();
         if self.notes {
@@ -117,14 +121,20 @@ impl ReindexAgent {
         preview: ReindexPreview,
         identity: EmbeddingIdentity,
     ) -> Result<ReindexResult> {
+        if let Some(metadata) = self.repo.portable_embedding_metadata().await? {
+            if metadata.embedding != identity && !preview.scope.is_all() {
+                return Err(AgentError::Processing(
+                    "changing the active embedding model requires `reindex --all`; partial scopes would leave a mixed-model corpus".into(),
+                ));
+            }
+        }
         let job = self
             .repo
-            .create_processing_job_with_scope(
-                ProcessingJobType::Reindex,
-                None,
+            .create_reindex_processing_job(
                 preview.item_ids.len() as u64,
-                Some(format!("reindex:{}", preview.scope.label())),
+                format!("reindex:{}", preview.scope.label()),
                 preview.item_ids,
+                &identity,
             )
             .await?;
         self.run_job(job, identity).await
@@ -142,6 +152,14 @@ impl ReindexAgent {
         if job.item_ids.is_empty() && job.total_count != 0 {
             return Err(AgentError::Processing(
                 "reindex job has no durable item set".into(),
+            ));
+        }
+        if job.target_embedding_provider.as_deref() != Some(identity.provider.as_str())
+            || job.target_embedding_model.as_deref() != Some(identity.model.as_str())
+            || job.target_embedding_dimension != Some(identity.dimension as i64)
+        {
+            return Err(AgentError::Processing(
+                "reindex job target identity does not match the active provider/model/dimension; start a new reindex job instead of resuming mixed staging".into(),
             ));
         }
         let id = job
@@ -367,14 +385,7 @@ mod tests {
                 .fail_next_requests(1, "offline"),
         );
         let agent = ReindexAgent::new(repo.clone(), failing);
-        let preview = agent
-            .preview(ReindexScope {
-                notes: true,
-                messages: false,
-                summaries: false,
-            })
-            .await
-            .unwrap();
+        let preview = agent.preview(ReindexScope::all()).await.unwrap();
         let result = agent
             .start(preview, EmbeddingIdentity::new("new", "new-model", 1024))
             .await;
@@ -396,6 +407,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn partial_reindex_cannot_change_corpus_model_identity() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
+            .await
+            .unwrap();
+        repo.create_note(Note::new("partial").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let embedder: SharedEmbedder =
+            Arc::new(DeterministicEmbedder::default().with_identity("new", "new-model"));
+        let agent = ReindexAgent::new(repo.clone(), embedder);
+        let preview = agent
+            .preview(ReindexScope {
+                notes: true,
+                messages: false,
+                summaries: false,
+            })
+            .await
+            .unwrap();
+        let error = agent
+            .start(preview, EmbeddingIdentity::new("new", "new-model", 1024))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("reindex --all"));
+        assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
+        assert_eq!(
+            repo.portable_embedding_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding
+                .model,
+            "old-model"
+        );
+    }
+
+    #[tokio::test]
     async fn cancelled_reindex_can_resume_and_cut_over_once_complete() {
         let repo = Repository::new(init_memory().await.unwrap());
         repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
@@ -409,19 +457,23 @@ mod tests {
             Arc::new(DeterministicEmbedder::default().with_identity("new", "new-model"));
         let cancelled =
             ReindexAgent::new(repo.clone(), embedder.clone()).with_cancellation_flag(flag);
-        let preview = cancelled
-            .preview(ReindexScope {
-                notes: true,
-                messages: false,
-                summaries: false,
-            })
-            .await
-            .unwrap();
+        let preview = cancelled.preview(ReindexScope::all()).await.unwrap();
         let result = cancelled
             .start(preview, EmbeddingIdentity::new("new", "new-model", 1024))
             .await
             .unwrap();
         assert!(result.cancelled);
+        let persisted = repo
+            .get_processing_job(&result.job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.target_embedding_provider.as_deref(), Some("new"));
+        assert_eq!(
+            persisted.target_embedding_model.as_deref(),
+            Some("new-model")
+        );
+        assert_eq!(persisted.target_embedding_dimension, Some(1024));
         assert_eq!(
             repo.portable_embedding_metadata()
                 .await
@@ -451,6 +503,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_rejects_a_different_persisted_embedding_identity() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
+            .await
+            .unwrap();
+        repo.create_note(Note::new("pinned").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let target: SharedEmbedder =
+            Arc::new(DeterministicEmbedder::default().with_identity("target", "target-model"));
+        let agent = ReindexAgent::new(repo.clone(), target).with_cancellation_flag(cancelled);
+        let job = agent
+            .start(
+                agent.preview(ReindexScope::all()).await.unwrap(),
+                EmbeddingIdentity::new("target", "target-model", 1024),
+            )
+            .await
+            .unwrap();
+        let different: SharedEmbedder =
+            Arc::new(DeterministicEmbedder::default().with_identity("other", "other-model"));
+        let error = ReindexAgent::new(repo.clone(), different)
+            .resume(
+                &job.job_id,
+                EmbeddingIdentity::new("other", "other-model", 1024),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("target identity"));
+        assert_eq!(
+            repo.get_processing_job(&job.job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProcessingJobStatus::Cancelled.as_str()
+        );
+    }
+
+    #[tokio::test]
     async fn legacy_vectors_without_metadata_gain_identity_only_after_reindex() {
         let repo = Repository::new(init_memory().await.unwrap());
         repo.create_note(Note::new("legacy").with_embedding(vector(0.2)))
@@ -461,14 +553,7 @@ mod tests {
             DeterministicEmbedder::default().with_identity("replacement", "replacement-model"),
         );
         let agent = ReindexAgent::new(repo.clone(), embedder);
-        let preview = agent
-            .preview(ReindexScope {
-                notes: true,
-                messages: false,
-                summaries: false,
-            })
-            .await
-            .unwrap();
+        let preview = agent.preview(ReindexScope::all()).await.unwrap();
         agent
             .start(
                 preview,
@@ -502,14 +587,7 @@ mod tests {
                 .with_default_embedding(vec![0.0; 8]),
         );
         let agent = ReindexAgent::new(repo.clone(), embedder);
-        let preview = agent
-            .preview(ReindexScope {
-                notes: true,
-                messages: false,
-                summaries: false,
-            })
-            .await
-            .unwrap();
+        let preview = agent.preview(ReindexScope::all()).await.unwrap();
         assert!(agent
             .start(preview, EmbeddingIdentity::new("small", "small-model", 8))
             .await
@@ -543,14 +621,7 @@ mod tests {
             calls: calls.clone(),
         });
         let agent = ReindexAgent::new(repo.clone(), stopping).with_cancellation_flag(cancelled);
-        let preview = agent
-            .preview(ReindexScope {
-                notes: true,
-                messages: false,
-                summaries: false,
-            })
-            .await
-            .unwrap();
+        let preview = agent.preview(ReindexScope::all()).await.unwrap();
         let cancelled_run = agent
             .start(preview, EmbeddingIdentity::new("new", "new", 1024))
             .await
