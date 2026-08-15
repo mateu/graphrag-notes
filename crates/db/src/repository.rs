@@ -1052,6 +1052,19 @@ impl Repository {
         Ok(ids)
     }
 
+    /// Check whether a corpus-wide reindex snapshot has been widened by newly
+    /// eligible records. The cutover transaction repeats this check atomically;
+    /// this preflight gives the worker an actionable restart error instead of
+    /// leaving a failed job with an opaque database transaction message.
+    pub async fn full_reindex_scope_widened(&self, item_ids: &[String]) -> Result<bool> {
+        let expected = item_ids.iter().collect::<HashSet<_>>();
+        Ok(self
+            .snapshot_reindex_item_ids(true, true, true)
+            .await?
+            .iter()
+            .any(|id| !expected.contains(id)))
+    }
+
     async fn reindex_ids_for_query(&self, query: &str) -> Result<Vec<String>> {
         let ids: Vec<RecordId> = self.db.query(query).await?.take(0)?;
         Ok(ids.iter().map(record_id_to_string).collect())
@@ -1197,6 +1210,7 @@ impl Repository {
         item_ids: &[String],
         embedding: &EmbeddingIdentity,
         clear_entity_embeddings: bool,
+        validate_full_scope_membership: bool,
         completed_count: u64,
     ) -> Result<()> {
         let mut notes = Vec::new();
@@ -1226,10 +1240,14 @@ impl Repository {
                  LET $notes_expected = (SELECT VALUE count() FROM note WHERE id IN $notes GROUP ALL)[0]; \
                  LET $messages_expected = (SELECT VALUE count() FROM message WHERE id IN $messages GROUP ALL)[0]; \
                  LET $conversations_expected = (SELECT VALUE count() FROM conversation WHERE id IN $conversations GROUP ALL)[0]; \
+                 LET $notes_widened = (SELECT VALUE count() FROM note WHERE id NOT IN $notes GROUP ALL)[0] != 0; \
+                 LET $messages_widened = (SELECT VALUE count() FROM message WHERE id NOT IN $messages GROUP ALL)[0] != 0; \
+                 LET $conversations_widened = (SELECT VALUE count() FROM conversation WHERE summary IS NOT NONE AND summary != '' AND id NOT IN $conversations GROUP ALL)[0] != 0; \
                  LET $notes_valid = (SELECT VALUE count() FROM note WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.search_content = search_content AND reindex_source_snapshot.chunk_heading_path = chunk_heading_path AND reindex_staging_owner = $owner GROUP ALL)[0] = $notes_expected; \
                  LET $messages_valid = (SELECT VALUE count() FROM message WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.content_blocks = content_blocks AND reindex_staging_owner = $owner GROUP ALL)[0] = $messages_expected; \
                  LET $conversations_valid = (SELECT VALUE count() FROM conversation WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_snapshot.title = title AND reindex_source_snapshot.summary = summary AND reindex_staging_owner = $owner GROUP ALL)[0] = $conversations_expected; \
                  IF !$job_valid OR !$notes_valid OR !$messages_valid OR !$conversations_valid THEN THROW 'reindex staging is stale, incomplete, or no longer owned' END; \
+                 IF $validate_full_scope_membership AND ($notes_widened OR $messages_widened OR $conversations_widened) THEN THROW 'full reindex scope widened after snapshot; start a new reindex job' END; \
                  UPDATE note SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $notes; \
                  UPDATE message SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $messages; \
                  UPDATE conversation SET summary_embedding = reindex_summary_embedding, reindex_summary_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $conversations; \
@@ -1253,6 +1271,10 @@ impl Repository {
             .bind(("model", embedding.model.clone()))
             .bind(("dimension", dimension))
             .bind(("clear_entity_embeddings", clear_entity_embeddings))
+            .bind((
+                "validate_full_scope_membership",
+                validate_full_scope_membership,
+            ))
             .bind(("completed_count", completed_count))
             .await?
             .check()?;

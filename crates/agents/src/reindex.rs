@@ -432,6 +432,17 @@ impl ReindexAgent {
             });
         }
         self.renew_lease(&job_id, &owner).await?;
+        let full_scope = job.scope.as_deref() == Some("reindex:notes,messages,summaries");
+        if full_scope && self.repo.full_reindex_scope_widened(&job.item_ids).await? {
+            return self
+                .fail(
+                    &job_id,
+                    &owner,
+                    completed,
+                    "full reindex scope widened after snapshot; start a new reindex job".into(),
+                )
+                .await;
+        }
         if let Err(error) = self
             .repo
             .commit_reindex(
@@ -439,7 +450,8 @@ impl ReindexAgent {
                 &owner,
                 &job.item_ids,
                 &identity,
-                job.scope.as_deref() == Some("reindex:notes,messages,summaries"),
+                full_scope,
+                full_scope,
                 completed,
             )
             .await
@@ -1225,7 +1237,7 @@ mod tests {
         repo.stage_reindex_embedding(&item, vector(0.8), owner)
             .await
             .unwrap();
-        repo.commit_reindex(&job_id, owner, &[note_id], &target, false, 1)
+        repo.commit_reindex(&job_id, owner, &[note_id], &target, false, false, 1)
             .await
             .unwrap();
 
@@ -1243,6 +1255,64 @@ mod tests {
                 .unwrap()
                 .embedding,
             target
+        );
+    }
+
+    #[tokio::test]
+    async fn full_cutover_rejects_records_added_after_its_snapshot() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
+            .await
+            .unwrap();
+        let initial = repo
+            .create_note(Note::new("snapshotted").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let initial_id = graphrag_core::record_id_to_string(initial.id.as_ref().unwrap());
+        let target = EmbeddingIdentity::new("new", "new-model", 1024);
+        let mut fingerprints = BTreeMap::new();
+        fingerprints.insert(initial_id.clone(), reindex_fingerprint("snapshotted"));
+        let job = repo
+            .create_reindex_processing_job(
+                1,
+                "reindex:notes,messages,summaries".into(),
+                vec![initial_id.clone()],
+                &target,
+                fingerprints,
+            )
+            .await
+            .unwrap();
+        let job_id = job.id.as_ref().unwrap().clone();
+        let owner = "widened-corpus";
+        repo.claim_reindex_processing_job(&job_id, owner, Utc::now() + Duration::minutes(1))
+            .await
+            .unwrap();
+        let item = repo.get_reindex_item(&initial_id).await.unwrap().unwrap();
+        repo.stage_reindex_embedding(&item, vector(0.8), owner)
+            .await
+            .unwrap();
+        // This record would retain an old-model vector if full cutover did
+        // not compare the live corpus against its durable item snapshot.
+        repo.create_note(Note::new("arrived after snapshot").with_embedding(vector(0.2)))
+            .await
+            .unwrap();
+        assert!(repo
+            .full_reindex_scope_widened(&[initial_id.clone()])
+            .await
+            .unwrap());
+
+        let _error = repo
+            .commit_reindex(&job_id, owner, &[initial_id], &target, true, true, 1)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            repo.portable_embedding_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding
+                .model,
+            "old-model"
         );
     }
 
@@ -1341,7 +1411,7 @@ mod tests {
         repo.update_note(&note_id, edited).await.unwrap();
 
         assert!(repo
-            .commit_reindex(&job_id, owner, &[note_id.clone()], &target, false, 1)
+            .commit_reindex(&job_id, owner, &[note_id.clone()], &target, false, false, 1)
             .await
             .is_err());
         assert_eq!(
