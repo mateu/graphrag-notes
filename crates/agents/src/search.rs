@@ -5,8 +5,8 @@ use chrono::{Duration, Utc};
 use graphrag_core::{record_id_to_string, Entity};
 use graphrag_db::compatibility::EmbeddingIdentity;
 use graphrag_db::repository::{
-    ConversationSearchResult, MessageSearchResult, NoteEdgeRow, RelatedNotes, SearchResult,
-    SimilarNote,
+    ConversationSearchResult, GraphEntityNoteSeed, MessageSearchResult, NoteEdgeRow, RelatedNotes,
+    SearchResult, SimilarNote,
 };
 use graphrag_db::{
     fusion::{self, FusionConfig, FusionEvidence},
@@ -572,7 +572,12 @@ impl SearchAgent {
         // local entity match provides useful graph evidence. Explicit `on`
         // may additionally use ordinary hybrid notes as bounded seeds.
         let mut frontier = BTreeMap::<String, GraphFrontier>::new();
-        for seed in entity_seed_ids {
+        let selected_seed_note_ids =
+            select_graph_seed_note_ids(&entity_ids, &entity_seed_ids, self.graph.max_seed_notes);
+        for seed in entity_seed_ids
+            .into_iter()
+            .filter(|seed| selected_seed_note_ids.contains(&record_id_to_string(&seed.note_id)))
+        {
             let id = record_id_to_string(&seed.note_id);
             let entity_name = entity_names
                 .get(&record_id_to_string(&seed.entity_id))
@@ -583,16 +588,11 @@ impl SearchAgent {
                 existing.query_entities.extend(entity_name);
                 existing.query_entities.sort();
                 existing.query_entities.dedup();
-            } else if frontier.len() < self.graph.max_seed_notes {
+            } else {
                 frontier.insert(
                     id.clone(),
                     GraphFrontier::seed(seed.note_id, id, entity_name, self.graph.seed_score),
                 );
-            } else {
-                // The relation query intentionally includes enough rows to
-                // preserve associations for retained notes. Ignore only a
-                // new note after the unique seed bound is reached.
-                continue;
             }
         }
         if !require_entity_seed {
@@ -936,6 +936,59 @@ fn admit_initial_graph_frontier(
         admitted.insert(state.id.clone(), state.clone());
     }
     admitted
+}
+
+/// Choose bounded entity-derived seed notes without letting a high-degree
+/// entity consume every slot before later ranked entity matches are seen.
+/// The first pass reserves one distinct note per ranked entity when capacity
+/// permits; the second pass fills remaining slots in the same rank order.
+/// Callers then merge every retained note's entity associations into evidence.
+fn select_graph_seed_note_ids(
+    entity_ids: &[RecordId],
+    seeds: &[GraphEntityNoteSeed],
+    max_seed_notes: usize,
+) -> HashSet<String> {
+    if max_seed_notes == 0 {
+        return HashSet::new();
+    }
+
+    let mut seeds_by_entity = HashMap::<String, Vec<&GraphEntityNoteSeed>>::new();
+    for seed in seeds {
+        seeds_by_entity
+            .entry(record_id_to_string(&seed.entity_id))
+            .or_default()
+            .push(seed);
+    }
+
+    let mut selected = HashSet::new();
+    for entity_id in entity_ids {
+        if selected.len() >= max_seed_notes {
+            break;
+        }
+        if let Some(entity_seeds) = seeds_by_entity.get(&record_id_to_string(entity_id)) {
+            if let Some(seed) = entity_seeds
+                .iter()
+                .find(|seed| !selected.contains(&record_id_to_string(&seed.note_id)))
+            {
+                selected.insert(record_id_to_string(&seed.note_id));
+            }
+        }
+    }
+
+    for entity_id in entity_ids {
+        if selected.len() >= max_seed_notes {
+            break;
+        }
+        if let Some(entity_seeds) = seeds_by_entity.get(&record_id_to_string(entity_id)) {
+            for seed in entity_seeds {
+                if selected.len() >= max_seed_notes {
+                    break;
+                }
+                selected.insert(record_id_to_string(&seed.note_id));
+            }
+        }
+    }
+    selected
 }
 
 fn graph_transition_priority(left: &GraphFrontier, right: &GraphFrontier) -> std::cmp::Ordering {
@@ -1498,6 +1551,35 @@ mod tests {
         assert_eq!(
             candidates.keys().cloned().collect::<Vec<_>>(),
             vec!["note:mmm-middle-score", "note:zzz-high-score"]
+        );
+    }
+
+    #[test]
+    fn graph_seed_selection_preserves_ranked_atlas_beacon_coverage_at_cap() {
+        let atlas = RecordId::new("entity", "atlas");
+        let beacon = RecordId::new("entity", "beacon");
+        let seeds = vec![
+            GraphEntityNoteSeed {
+                note_id: RecordId::new("note", "atlas-a"),
+                entity_id: atlas.clone(),
+            },
+            GraphEntityNoteSeed {
+                note_id: RecordId::new("note", "atlas-b"),
+                entity_id: atlas.clone(),
+            },
+            GraphEntityNoteSeed {
+                note_id: RecordId::new("note", "beacon-a"),
+                entity_id: beacon.clone(),
+            },
+        ];
+
+        let selected = select_graph_seed_note_ids(&[atlas, beacon], &seeds, 2);
+
+        // The old global-note-order path admitted both Atlas notes and lost
+        // Beacon. One slot per ranked entity is reserved before filling more.
+        assert_eq!(
+            selected,
+            HashSet::from(["note:atlas-a".to_string(), "note:beacon-a".to_string()])
         );
     }
 

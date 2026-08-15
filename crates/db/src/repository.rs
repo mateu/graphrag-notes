@@ -2698,26 +2698,31 @@ impl Repository {
         if entity_ids.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        // A note can be mentioned by each selected entity at most once. Fetch
-        // enough relation rows to retain `limit` unique notes even when every
-        // seed shares all bounded entity matches; the caller then applies the
-        // unique-note cap while preserving the exact entity association.
-        let relation_limit = limit.saturating_mul(entity_ids.len());
-        let limit = i64::try_from(relation_limit).map_err(|_| {
+        // Query a bounded page for every ranked entity. A single global
+        // relation `LIMIT` ordered by note ID lets a high-degree, lower-priority
+        // entity starve later matches before the caller can allocate the
+        // unique-note cap across them. `entity_ids` is itself bounded by graph
+        // configuration, so this remains bounded while preserving coverage.
+        let limit = i64::try_from(limit).map_err(|_| {
             DbError::QueryFailed("graph note limit exceeds database integer range".into())
         })?;
         let since = since.map(|timestamp| timestamp.to_rfc3339());
-        self.db
-            .query(format!(
-                "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out IN $entity_ids AND in IN (SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC, out ASC LIMIT $limit"
-            ))
-            .bind(("entity_ids", entity_ids.to_vec()))
-            .bind(("limit", limit))
-            .bind(("since", since))
-            .bind(("source_uri", source_uri))
-            .await?
-            .take(0)
-            .map_err(Into::into)
+        let mut seeds = Vec::new();
+        for entity_id in entity_ids {
+            let mut entity_seeds: Vec<GraphEntityNoteSeed> = self
+                .db
+                .query(format!(
+                    "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_id AND in IN (SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC LIMIT $limit"
+                ))
+                .bind(("entity_id", entity_id.clone()))
+                .bind(("limit", limit))
+                .bind(("since", since.clone()))
+                .bind(("source_uri", source_uri.clone()))
+                .await?
+                .take(0)?;
+            seeds.append(&mut entity_seeds);
+        }
+        Ok(seeds)
     }
 
     /// Fetch accepted persisted note-edge rows for many frontier notes.
@@ -4521,6 +4526,56 @@ mod tests {
             .unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].id, *exact_alias.id.as_ref().unwrap());
+    }
+
+    #[tokio::test]
+    async fn graph_note_seed_query_preserves_ranked_entity_coverage_under_cap() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut atlas = Entity::new("Atlas", EntityType::Project);
+        atlas.metadata = serde_json::json!({});
+        let atlas = repo.upsert_entity(atlas).await.unwrap();
+        let mut beacon = Entity::new("Beacon", EntityType::Project);
+        beacon.metadata = serde_json::json!({});
+        let beacon = repo.upsert_entity(beacon).await.unwrap();
+
+        for id in ["atlas_a", "atlas_b", "beacon_a"] {
+            repo.db
+                .query(format!(
+                    "CREATE note:{id} SET note_type = 'raw', content = $content, embedding = NONE, tags = [], created_at = time::now(), updated_at = time::now()"
+                ))
+                .bind(("content", id.to_string()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        for id in ["atlas_a", "atlas_b"] {
+            repo.link_note_to_entity(&RecordId::new("note", id), atlas.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        repo.link_note_to_entity(
+            &RecordId::new("note", "beacon_a"),
+            beacon.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let seeds = repo
+            .graph_notes_for_entities(
+                &[
+                    atlas.id.as_ref().unwrap().clone(),
+                    beacon.id.as_ref().unwrap().clone(),
+                ],
+                1,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0].entity_id, *atlas.id.as_ref().unwrap());
+        assert_eq!(seeds[1].entity_id, *beacon.id.as_ref().unwrap());
     }
 
     #[tokio::test]
