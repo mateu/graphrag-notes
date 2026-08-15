@@ -6,6 +6,7 @@ mod backup;
 mod commands;
 mod doctor;
 mod eval;
+mod explain;
 mod output;
 
 use anyhow::{Context, Result};
