@@ -685,6 +685,18 @@ fn to_import_mode(mode: ImportModeArg) -> ChatImportMode {
     }
 }
 
+/// Metadata-only note edits are local repository updates. Content replacement
+/// is the only edit mode that needs the embedding and extraction providers.
+fn notes_edit_requires_inference(command: &NotesCommand) -> bool {
+    matches!(
+        command,
+        NotesCommand::Edit {
+            content_file: Some(_),
+            ..
+        } | NotesCommand::Edit { stdin: true, .. }
+    )
+}
+
 fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig {
     InferenceProviderConfig {
         embedding_provider: config.inference.embedding_provider.clone(),
@@ -927,8 +939,76 @@ async fn run_archive_only_command(cli: &Cli) -> Result<bool> {
     Ok(false)
 }
 
+/// Convert expected command failures into the documented automation contract.
+/// Typed errors take precedence; message fallbacks cover validation failures
+/// produced by Clap-adjacent handlers that intentionally use `anyhow::bail!`.
+fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
+    for cause in error.chain() {
+        if let Some(error) = cause.downcast_ref::<graphrag_db::DbError>() {
+            return match error {
+                graphrag_db::DbError::NotFound(_, _) => output::ExitCode::NotFound,
+                graphrag_db::DbError::EmbeddingCompatibility { .. }
+                | graphrag_db::DbError::LegacyEmbeddingMetadata { .. } => {
+                    output::ExitCode::Compatibility
+                }
+                _ => output::ExitCode::Internal,
+            };
+        }
+        if let Some(error) = cause.downcast_ref::<graphrag_agents::AgentError>() {
+            return match error {
+                graphrag_agents::AgentError::NotFound(_) => output::ExitCode::NotFound,
+                graphrag_agents::AgentError::Database(graphrag_db::DbError::NotFound(_, _)) => {
+                    output::ExitCode::NotFound
+                }
+                graphrag_agents::AgentError::Database(
+                    graphrag_db::DbError::EmbeddingCompatibility { .. }
+                    | graphrag_db::DbError::LegacyEmbeddingMetadata { .. },
+                ) => output::ExitCode::Compatibility,
+                graphrag_agents::AgentError::Processing(message)
+                    if message.contains("partial") || message.contains("failed") =>
+                {
+                    output::ExitCode::PartialFailure
+                }
+                _ => output::ExitCode::Internal,
+            };
+        }
+    }
+
+    let message = error.to_string().to_lowercase();
+    if message.contains("not found") {
+        output::ExitCode::NotFound
+    } else if message.contains("compatibility") || message.contains("legacy vector") {
+        output::ExitCode::Compatibility
+    } else if message.contains("partial") {
+        output::ExitCode::PartialFailure
+    } else if [
+        "requires",
+        "required",
+        "refusing",
+        "cannot",
+        "invalid",
+        "must ",
+        "without --yes",
+        "empty",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+    {
+        output::ExitCode::Validation
+    } else {
+        output::ExitCode::Internal
+    }
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("Error: {error:#}");
+        std::process::exit(exit_code_for(&error) as i32);
+    }
+}
+
+async fn run() -> Result<()> {
     // Load environment variables from .env if present.
     dotenvy::dotenv().ok();
 
@@ -1126,43 +1206,43 @@ async fn main() -> Result<()> {
     ));
 
     // Check inference services only when needed
-    let needs_tei = matches!(
-        cli.command,
-        Commands::Add { .. }
-            | Commands::Notes {
-                command: NotesCommand::Edit { .. },
-            }
-            | Commands::Import { .. }
-            | Commands::Sources {
-                command: SourcesCommand::Reimport { .. },
-            }
-            | Commands::ImportChats { .. }
-            | Commands::MigrateChats { .. }
-            | Commands::Search { .. }
-            | Commands::Augment { .. }
-            | Commands::EvalAugment { .. }
-            | Commands::Reindex { .. }
-            | Commands::Interactive
-    );
-    let needs_tgi = matches!(
+    let notes_edit_reprocesses = matches!(
         &cli.command,
-        Commands::Add { .. }
-            | Commands::Notes {
-                command: NotesCommand::Edit { .. },
-            }
-            | Commands::Import { .. }
-            | Commands::Sources {
-                command: SourcesCommand::Reimport { .. },
-            }
-            | Commands::ImportChats { .. }
-            | Commands::Interactive
-            | Commands::ExtractEntities { .. }
-            | Commands::MigrateChats {
-                with_notes: true,
-                ..
-            }
-    ) && (!skip_extraction
-        || matches!(&cli.command, Commands::ExtractEntities { .. }));
+        Commands::Notes { command } if notes_edit_requires_inference(command)
+    );
+    let needs_tei = notes_edit_reprocesses
+        || matches!(
+            cli.command,
+            Commands::Add { .. }
+                | Commands::Import { .. }
+                | Commands::Sources {
+                    command: SourcesCommand::Reimport { .. },
+                }
+                | Commands::ImportChats { .. }
+                | Commands::MigrateChats { .. }
+                | Commands::Search { .. }
+                | Commands::Augment { .. }
+                | Commands::EvalAugment { .. }
+                | Commands::Reindex { .. }
+                | Commands::Interactive
+        );
+    let needs_tgi = (notes_edit_reprocesses
+        || matches!(
+            &cli.command,
+            Commands::Add { .. }
+                | Commands::Import { .. }
+                | Commands::Sources {
+                    command: SourcesCommand::Reimport { .. },
+                }
+                | Commands::ImportChats { .. }
+                | Commands::Interactive
+                | Commands::ExtractEntities { .. }
+                | Commands::MigrateChats {
+                    with_notes: true,
+                    ..
+                }
+        ))
+        && (!skip_extraction || matches!(&cli.command, Commands::ExtractEntities { .. }));
 
     if needs_tei {
         let tei_ok = tei.health().await.unwrap_or(false);
@@ -3674,6 +3754,31 @@ mod tests {
     }
 
     #[test]
+    fn metadata_only_notes_edit_skips_provider_preflight() {
+        let metadata_only = NotesCommand::Edit {
+            id: "note:one".into(),
+            title: Some("Retitled".into()),
+            content_file: None,
+            stdin: false,
+            tags: None,
+            detach: false,
+            format: output::OutputFormat::Human,
+        };
+        assert!(!notes_edit_requires_inference(&metadata_only));
+
+        let content_edit = NotesCommand::Edit {
+            id: "note:one".into(),
+            title: None,
+            content_file: Some(PathBuf::from("replacement.md")),
+            stdin: false,
+            tags: None,
+            detach: false,
+            format: output::OutputFormat::Human,
+        };
+        assert!(notes_edit_requires_inference(&content_edit));
+    }
+
+    #[test]
     fn output_envelope_has_stable_required_machine_fields() {
         let envelope =
             output::OutputEnvelope::success("notes.show", serde_json::json!({"id": "note:one"}));
@@ -3688,6 +3793,25 @@ mod tests {
         ] {
             assert!(json.get(key).is_some(), "missing output key {key}");
         }
+    }
+
+    #[test]
+    fn documented_exit_codes_classify_typed_and_validation_errors() {
+        let not_found = anyhow::Error::new(graphrag_db::DbError::NotFound(
+            "note".into(),
+            "note:missing".into(),
+        ));
+        assert_eq!(exit_code_for(&not_found), output::ExitCode::NotFound);
+
+        let compatibility =
+            anyhow::Error::new(graphrag_db::DbError::LegacyEmbeddingMetadata { vector_records: 1 });
+        assert_eq!(
+            exit_code_for(&compatibility),
+            output::ExitCode::Compatibility
+        );
+
+        let validation = anyhow::anyhow!("refusing to delete without --yes");
+        assert_eq!(exit_code_for(&validation), output::ExitCode::Validation);
     }
 
     #[test]

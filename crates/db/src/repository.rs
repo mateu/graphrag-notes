@@ -1520,7 +1520,9 @@ impl Repository {
     ) -> Result<Vec<SearchResult>> {
         let mut notes: Vec<SearchResult> = self
             .db
-            .query(format!("SELECT * FROM note WHERE {VISIBLE_NOTE_CONDITION}"))
+            .query(format!(
+                "SELECT *, source_id.uri AS source_uri FROM note WHERE {VISIBLE_NOTE_CONDITION}"
+            ))
             .await?
             .take(0)?;
 
@@ -5411,6 +5413,35 @@ mod tests {
             .take(0)
             .unwrap();
         (conversation_id, message.unwrap().id)
+    }
+
+    #[tokio::test]
+    async fn note_list_source_uri_filter_projects_linked_source_uri() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first_source = repo
+            .create_source(Source::from_file("first.md", SourceType::Markdown).unwrap())
+            .await
+            .unwrap();
+        let second_source = repo
+            .create_source(Source::from_file("second.md", SourceType::Markdown).unwrap())
+            .await
+            .unwrap();
+        let first = repo
+            .create_note(Note::new("first").with_source(first_source.id.clone().unwrap()))
+            .await
+            .unwrap();
+        repo.create_note(Note::new("second").with_source(second_source.id.clone().unwrap()))
+            .await
+            .unwrap();
+
+        let first_uri = first_source.uri.as_deref().unwrap();
+        let notes = repo
+            .list_notes_filtered(10, &[], Some(first_uri))
+            .await
+            .unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, first.id.unwrap());
+        assert_eq!(notes[0].source_uri.as_deref(), Some(first_uri));
     }
 
     #[test]
