@@ -17,6 +17,7 @@ mod v010_reindex_staging;
 mod v011_reindex_job_identity;
 mod v012_reindex_item_fingerprints;
 mod v013_reindex_ownership;
+mod v014_reindex_input_snapshots;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -29,7 +30,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 13;
+pub const LATEST_SCHEMA_VERSION: u32 = 14;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -58,6 +59,7 @@ const MIGRATIONS: &[Migration] = &[
     v011_reindex_job_identity::MIGRATION,
     v012_reindex_item_fingerprints::MIGRATION,
     v013_reindex_ownership::MIGRATION,
+    v014_reindex_input_snapshots::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is

@@ -15,10 +15,12 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::Duration as StdDuration;
 use uuid::Uuid;
 
 const REINDEX_BATCH_SIZE: usize = 32;
 const REINDEX_LEASE: Duration = Duration::minutes(2);
+const REINDEX_HEARTBEAT: StdDuration = StdDuration::from_secs(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReindexScope {
@@ -85,6 +87,8 @@ pub struct ReindexAgent {
     repo: Repository,
     embedder: SharedEmbedder,
     cancellation_requested: Arc<AtomicBool>,
+    lease_duration: Duration,
+    lease_heartbeat: StdDuration,
 }
 
 impl ReindexAgent {
@@ -93,11 +97,24 @@ impl ReindexAgent {
             repo,
             embedder,
             cancellation_requested: Arc::new(AtomicBool::new(false)),
+            lease_duration: REINDEX_LEASE,
+            lease_heartbeat: REINDEX_HEARTBEAT,
         }
     }
 
     pub fn with_cancellation_flag(mut self, requested: Arc<AtomicBool>) -> Self {
         self.cancellation_requested = requested;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_lease_timing_for_test(
+        mut self,
+        lease_duration: Duration,
+        lease_heartbeat: StdDuration,
+    ) -> Self {
+        self.lease_duration = lease_duration;
+        self.lease_heartbeat = lease_heartbeat;
         self
     }
 
@@ -161,7 +178,7 @@ impl ReindexAgent {
         let owner = Uuid::new_v4().to_string();
         let claimed = self
             .repo
-            .claim_reindex_processing_job(job_id, &owner, Utc::now() + REINDEX_LEASE)
+            .claim_reindex_processing_job(job_id, &owner, Utc::now() + self.lease_duration)
             .await?;
         self.run_job(claimed, identity, owner).await
     }
@@ -195,7 +212,7 @@ impl ReindexAgent {
         let owner = Uuid::new_v4().to_string();
         let job = self
             .repo
-            .claim_reindex_processing_job(&id, &owner, Utc::now() + REINDEX_LEASE)
+            .claim_reindex_processing_job(&id, &owner, Utc::now() + self.lease_duration)
             .await
             .map_err(|_| {
                 AgentError::Processing(
@@ -311,7 +328,7 @@ impl ReindexAgent {
                     .iter()
                     .map(|item| item.text.clone())
                     .collect::<Vec<_>>();
-                let embeddings = match self.embedder.embed_batch(&texts, false).await {
+                let embeddings = match self.embed_batch_with_lease(&job_id, &owner, &texts).await {
                     Ok(values) if values.len() == present.len() => values,
                     Ok(values) => {
                         return self
@@ -341,7 +358,7 @@ impl ReindexAgent {
                     }
                     if let Err(error) = self
                         .repo
-                        .stage_reindex_embedding(&item.id, vector, &item.text, &owner)
+                        .stage_reindex_embedding(item, vector, &owner)
                         .await
                     {
                         return self
@@ -437,7 +454,7 @@ impl ReindexAgent {
     async fn renew_lease(&self, id: &surrealdb::types::RecordId, owner: &str) -> Result<()> {
         if self
             .repo
-            .renew_reindex_processing_job_lease(id, owner, Utc::now() + REINDEX_LEASE)
+            .renew_reindex_processing_job_lease(id, owner, Utc::now() + self.lease_duration)
             .await?
         {
             Ok(())
@@ -448,6 +465,49 @@ impl ReindexAgent {
             ))
         }
     }
+
+    async fn embed_batch_with_lease(
+        &self,
+        id: &surrealdb::types::RecordId,
+        owner: &str,
+        texts: &[String],
+    ) -> Result<Vec<Vec<f32>>> {
+        let repo = self.repo.clone();
+        let id = id.clone();
+        let owner = owner.to_string();
+        let heartbeat_id = id.clone();
+        let heartbeat_owner = owner.clone();
+        let lease_duration = self.lease_duration;
+        let heartbeat = self.lease_heartbeat;
+        let heartbeat_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(heartbeat);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if !repo
+                    .renew_reindex_processing_job_lease(
+                        &heartbeat_id,
+                        &heartbeat_owner,
+                        Utc::now() + lease_duration,
+                    )
+                    .await?
+                {
+                    return Err(AgentError::Processing(
+                        "reindex job lease was lost during embedding; refusing stale batch".into(),
+                    ));
+                }
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), AgentError>(())
+        });
+        let result = self.embedder.embed_batch(texts, false).await;
+        heartbeat_task.abort();
+        let _ = heartbeat_task.await;
+        // A final owner-checked renewal turns a failed heartbeat or a delayed
+        // provider response into a safe retry rather than stale staging.
+        self.renew_lease(&id, &owner).await?;
+        result
+    }
 }
 
 #[cfg(test)]
@@ -455,7 +515,9 @@ mod tests {
     use super::*;
     use crate::{DeterministicEmbedder, Embedder, InferenceCapabilities};
     use async_trait::async_trait;
-    use graphrag_core::{Entity, EntityType, Note, SourceType};
+    use graphrag_core::{
+        ChatConversation, ChatMessage, Entity, EntityType, MessageRole, Note, SourceType,
+    };
     use graphrag_db::{init_memory, ProcessingJobStatus};
 
     fn vector(value: f32) -> Vec<f32> {
@@ -465,6 +527,37 @@ mod tests {
     struct CancellingEmbedder {
         cancelled: Arc<AtomicBool>,
         calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct SlowEmbedder {
+        delay: StdDuration,
+    }
+
+    #[async_trait]
+    impl Embedder for SlowEmbedder {
+        async fn embed(&self, _text: &str, _is_query: bool) -> Result<Vec<f32>> {
+            tokio::time::sleep(self.delay).await;
+            Ok(vector(0.7))
+        }
+
+        async fn embed_batch(&self, texts: &[String], _is_query: bool) -> Result<Vec<Vec<f32>>> {
+            tokio::time::sleep(self.delay).await;
+            Ok(texts.iter().map(|_| vector(0.7)).collect())
+        }
+
+        async fn health(&self) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn capabilities(&self) -> InferenceCapabilities {
+            InferenceCapabilities {
+                provider: "test".into(),
+                model: "slow".into(),
+                endpoint: "offline://test".into(),
+                known_dimension: Some(1024),
+                cache_identity: "slow".into(),
+            }
+        }
     }
 
     #[async_trait]
@@ -529,6 +622,40 @@ mod tests {
         assert_eq!(metadata.embedding.model, "old-model");
         let job = repo.list_processing_jobs(1).await.unwrap().pop().unwrap();
         assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
+    }
+
+    #[tokio::test]
+    async fn heartbeat_keeps_reindex_lease_alive_during_a_slow_embedding_batch() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("slow batch").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let target = EmbeddingIdentity::new("test", "slow", 1024);
+        let result = ReindexAgent::new(
+            repo.clone(),
+            Arc::new(SlowEmbedder {
+                delay: StdDuration::from_millis(180),
+            }),
+        )
+        .with_lease_timing_for_test(Duration::milliseconds(60), StdDuration::from_millis(10))
+        .start(
+            ReindexAgent::new(repo.clone(), Arc::new(DeterministicEmbedder::default()))
+                .preview(ReindexScope::all())
+                .await
+                .unwrap(),
+            target.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(!result.cancelled);
+        assert_eq!(
+            repo.portable_embedding_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding,
+            target
+        );
     }
 
     #[tokio::test]
@@ -831,6 +958,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reindex_uses_the_same_canonical_inputs_as_ingestion() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut note = Note::new("displayed body").with_embedding(vector(0.1));
+        note.search_content = Some("Top > Child\n\ndisplayed body".into());
+        note.chunk_heading_path = vec!["Top".into(), "Child".into()];
+        let note = repo.create_note(note).await.unwrap();
+        let note_item = repo
+            .get_reindex_item(&graphrag_core::record_id_to_string(
+                note.id.as_ref().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(note_item.text, "Top > Child\n\ndisplayed body");
+
+        let conversation = ChatConversation {
+            uuid: "canonical-inputs".into(),
+            name: "Canonical chat".into(),
+            summary: "A durable summary".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            account: None,
+            messages: Vec::new(),
+        };
+        let conversation_id = repo
+            .upsert_conversation(
+                &conversation,
+                None,
+                serde_json::json!({}),
+                Some(vector(0.1)),
+            )
+            .await
+            .unwrap();
+        let message = ChatMessage {
+            uuid: Some("blocks-only".into()),
+            role: MessageRole::Assistant,
+            content: "   ".into(),
+            content_blocks: serde_json::json!([
+                {"type": "text", "text": "first block"},
+                {"type": "text", "text": "second block"}
+            ]),
+            created_at: None,
+            updated_at: None,
+            attachments: Vec::new(),
+            files: Vec::new(),
+        };
+        let message_id = repo
+            .upsert_message(
+                &conversation_id,
+                &conversation.uuid,
+                0,
+                &message,
+                Some(vector(0.1)),
+            )
+            .await
+            .unwrap();
+        let message_item = repo
+            .get_reindex_item(&graphrag_core::record_id_to_string(&message_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message_item.text, "first block\n\nsecond block");
+        let conversation_item = repo
+            .get_reindex_item(&graphrag_core::record_id_to_string(&conversation_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            conversation_item.text,
+            "Canonical chat\n\nA durable summary"
+        );
+
+        // Exercise the complete stage/cutover path too: the raw source
+        // snapshots must validate all three canonical input forms.
+        let target = EmbeddingIdentity::new("canonical", "canonical-model", 1024);
+        let agent = ReindexAgent::new(
+            repo.clone(),
+            Arc::new(
+                DeterministicEmbedder::default().with_identity("canonical", "canonical-model"),
+            ),
+        );
+        agent
+            .start(
+                agent.preview(ReindexScope::all()).await.unwrap(),
+                target.clone(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.portable_embedding_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding,
+            target
+        );
+    }
+
+    #[tokio::test]
     async fn full_reindex_snapshots_pending_file_generation_notes() {
         let repo = Repository::new(init_memory().await.unwrap());
         repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
@@ -895,7 +1121,8 @@ mod tests {
         repo.claim_reindex_processing_job(&job_id, owner, Utc::now() + Duration::minutes(1))
             .await
             .unwrap();
-        repo.stage_reindex_embedding(&note_id, vector(0.8), "atomic completion", owner)
+        let item = repo.get_reindex_item(&note_id).await.unwrap().unwrap();
+        repo.stage_reindex_embedding(&item, vector(0.8), owner)
             .await
             .unwrap();
         repo.commit_reindex(&job_id, owner, &[note_id], &target, false, 1)
@@ -1004,7 +1231,8 @@ mod tests {
         repo.claim_reindex_processing_job(&job_id, owner, Utc::now() + Duration::minutes(1))
             .await
             .unwrap();
-        repo.stage_reindex_embedding(&note_id, vector(0.9), "before staging", owner)
+        let item = repo.get_reindex_item(&note_id).await.unwrap().unwrap();
+        repo.stage_reindex_embedding(&item, vector(0.9), owner)
             .await
             .unwrap();
 

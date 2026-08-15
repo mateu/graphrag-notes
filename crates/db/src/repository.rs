@@ -431,7 +431,60 @@ pub struct InferenceCacheEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReindexItem {
     pub id: String,
+    /// Exact canonical input submitted to the embedding provider.
     pub text: String,
+    /// Source fields from which `text` was derived. Commit validates this
+    /// snapshot transactionally before making the staged vector visible.
+    pub source_snapshot: serde_json::Value,
+}
+
+fn canonical_note_reindex_text(
+    content: &str,
+    search_content: Option<&str>,
+    chunk_heading_path: &[String],
+) -> String {
+    search_content.map_or_else(
+        || {
+            let headings = chunk_heading_path
+                .iter()
+                .filter(|heading| !heading.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" > ");
+            if headings.is_empty() {
+                content.to_string()
+            } else {
+                format!("{headings}\n\n{content}")
+            }
+        },
+        str::to_string,
+    )
+}
+
+fn canonical_message_reindex_text(content: &str, content_blocks: &serde_json::Value) -> String {
+    if !content.trim().is_empty() {
+        return content.to_string();
+    }
+    let parts = content_blocks
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "[empty message]".to_string()
+    } else {
+        parts.join("\n\n")
+    }
+}
+
+fn canonical_conversation_reindex_text(title: Option<&str>, summary: &str) -> String {
+    let title = title
+        .filter(|title| !title.is_empty())
+        .unwrap_or("Untitled Conversation");
+    format!("{title}\n\n{summary}")
 }
 
 fn source_content_value(source: &Source) -> Result<serde_json::Value> {
@@ -819,9 +872,9 @@ impl Repository {
         self.db
             .query(
                 "BEGIN TRANSACTION; \
-                 UPDATE note SET reindex_staging_owner = $owner WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_text = content; \
-                 UPDATE message SET reindex_staging_owner = $owner WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_text = content; \
-                 UPDATE conversation SET reindex_staging_owner = $owner WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_text = summary; \
+                 UPDATE note SET reindex_staging_owner = $owner WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.search_content = search_content AND reindex_source_snapshot.chunk_heading_path = chunk_heading_path; \
+                 UPDATE message SET reindex_staging_owner = $owner WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.content_blocks = content_blocks; \
+                 UPDATE conversation SET reindex_staging_owner = $owner WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_snapshot.title = title AND reindex_source_snapshot.summary = summary; \
                  COMMIT TRANSACTION;",
             )
             .bind(("owner", owner.to_string()))
@@ -1009,28 +1062,87 @@ impl Repository {
     /// the worker without widening its durable scope.
     pub async fn get_reindex_item(&self, id: &str) -> Result<Option<ReindexItem>> {
         let record = parse_record_id(id, None)?;
-        #[derive(Deserialize, SurrealValue)]
-        struct TextRow {
-            id: RecordId,
-            text: String,
-        }
-        let query = match record.table.as_str() {
-            "note" => "SELECT id, content AS text FROM $id",
-            "message" => "SELECT id, content AS text FROM $id",
+        match record.table.as_str() {
+            "note" => {
+                #[derive(Deserialize, SurrealValue)]
+                struct NoteRow {
+                    id: RecordId,
+                    content: String,
+                    #[serde(default)]
+                    search_content: Option<String>,
+                    #[serde(default)]
+                    chunk_heading_path: Vec<String>,
+                }
+                let row: Option<NoteRow> = self
+                    .db
+                    .query("SELECT id, content, search_content, chunk_heading_path FROM $id")
+                    .bind(("id", record))
+                    .await?
+                    .take(0)?;
+                Ok(row.map(|row| ReindexItem {
+                    id: record_id_to_string(&row.id),
+                    text: canonical_note_reindex_text(
+                        &row.content,
+                        row.search_content.as_deref(),
+                        &row.chunk_heading_path,
+                    ),
+                    source_snapshot: serde_json::json!({
+                        "content": row.content,
+                        "search_content": row.search_content,
+                        "chunk_heading_path": row.chunk_heading_path,
+                    }),
+                }))
+            }
+            "message" => {
+                #[derive(Deserialize, SurrealValue)]
+                struct MessageRow {
+                    id: RecordId,
+                    content: String,
+                    #[serde(default)]
+                    content_blocks: serde_json::Value,
+                }
+                let row: Option<MessageRow> = self
+                    .db
+                    .query("SELECT id, content, content_blocks FROM $id")
+                    .bind(("id", record))
+                    .await?
+                    .take(0)?;
+                Ok(row.map(|row| ReindexItem {
+                    id: record_id_to_string(&row.id),
+                    text: canonical_message_reindex_text(&row.content, &row.content_blocks),
+                    source_snapshot: serde_json::json!({
+                        "content": row.content,
+                        "content_blocks": row.content_blocks,
+                    }),
+                }))
+            }
             "conversation" => {
-                "SELECT id, summary AS text FROM $id WHERE summary IS NOT NONE AND summary != ''"
+                #[derive(Deserialize, SurrealValue)]
+                struct ConversationRow {
+                    id: RecordId,
+                    #[serde(default)]
+                    title: Option<String>,
+                    summary: String,
+                }
+                let row: Option<ConversationRow> = self
+                    .db
+                    .query("SELECT id, title, summary FROM $id WHERE summary IS NOT NONE AND summary != ''")
+                    .bind(("id", record))
+                    .await?
+                    .take(0)?;
+                Ok(row.map(|row| ReindexItem {
+                    id: record_id_to_string(&row.id),
+                    text: canonical_conversation_reindex_text(row.title.as_deref(), &row.summary),
+                    source_snapshot: serde_json::json!({
+                        "title": row.title,
+                        "summary": row.summary,
+                    }),
+                }))
             }
-            table => {
-                return Err(DbError::QueryFailed(format!(
-                    "{table} is not a supported reindex record table"
-                )))
-            }
-        };
-        let row: Option<TextRow> = self.db.query(query).bind(("id", record)).await?.take(0)?;
-        Ok(row.map(|row| ReindexItem {
-            id: record_id_to_string(&row.id),
-            text: row.text,
-        }))
+            table => Err(DbError::QueryFailed(format!(
+                "{table} is not a supported reindex record table"
+            ))),
+        }
     }
 
     /// Persist a newly computed vector in the inactive reindex field. Search
@@ -1038,15 +1150,15 @@ impl Repository {
     /// validates and swaps the full selected generation.
     pub async fn stage_reindex_embedding(
         &self,
-        id: &str,
+        item: &ReindexItem,
         embedding: Vec<f32>,
-        expected_text: &str,
         owner: &str,
     ) -> Result<()> {
-        let record = parse_record_id(id, None)?;
-        let (field, text_field) = match record.table.as_str() {
-            "note" | "message" => ("reindex_embedding", "content"),
-            "conversation" => ("reindex_summary_embedding", "summary"),
+        let record = parse_record_id(&item.id, None)?;
+        let query = match record.table.as_str() {
+            "note" => "UPDATE $id SET reindex_embedding = $embedding, reindex_source_text = $text, reindex_source_snapshot = $snapshot, reindex_staging_owner = $owner WHERE content = $snapshot.content AND search_content = $snapshot.search_content AND chunk_heading_path = $snapshot.chunk_heading_path RETURN AFTER",
+            "message" => "UPDATE $id SET reindex_embedding = $embedding, reindex_source_text = $text, reindex_source_snapshot = $snapshot, reindex_staging_owner = $owner WHERE content = $snapshot.content AND content_blocks = $snapshot.content_blocks RETURN AFTER",
+            "conversation" => "UPDATE $id SET reindex_summary_embedding = $embedding, reindex_source_text = $text, reindex_source_snapshot = $snapshot, reindex_staging_owner = $owner WHERE title = $snapshot.title AND summary = $snapshot.summary RETURN AFTER",
             table => {
                 return Err(DbError::QueryFailed(format!(
                     "{table} is not a supported reindex record table"
@@ -1059,13 +1171,11 @@ impl Repository {
         }
         let staged: Option<StagedRow> = self
             .db
-            .query(format!(
-                "UPDATE $id SET {field} = $embedding, reindex_source_text = $expected_text, \
-                 reindex_staging_owner = $owner WHERE {text_field} = $expected_text RETURN AFTER"
-            ))
+            .query(query)
             .bind(("id", record))
             .bind(("embedding", embedding))
-            .bind(("expected_text", expected_text.to_string()))
+            .bind(("text", item.text.clone()))
+            .bind(("snapshot", item.source_snapshot.clone()))
             .bind(("owner", owner.to_string()))
             .await?
             .take(0)?;
@@ -1116,9 +1226,9 @@ impl Repository {
                  LET $notes_expected = (SELECT VALUE count() FROM note WHERE id IN $notes GROUP ALL)[0]; \
                  LET $messages_expected = (SELECT VALUE count() FROM message WHERE id IN $messages GROUP ALL)[0]; \
                  LET $conversations_expected = (SELECT VALUE count() FROM conversation WHERE id IN $conversations GROUP ALL)[0]; \
-                 LET $notes_valid = (SELECT VALUE count() FROM note WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_text = content AND reindex_staging_owner = $owner GROUP ALL)[0] = $notes_expected; \
-                 LET $messages_valid = (SELECT VALUE count() FROM message WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_text = content AND reindex_staging_owner = $owner GROUP ALL)[0] = $messages_expected; \
-                 LET $conversations_valid = (SELECT VALUE count() FROM conversation WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_text = summary AND reindex_staging_owner = $owner GROUP ALL)[0] = $conversations_expected; \
+                 LET $notes_valid = (SELECT VALUE count() FROM note WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.search_content = search_content AND reindex_source_snapshot.chunk_heading_path = chunk_heading_path AND reindex_staging_owner = $owner GROUP ALL)[0] = $notes_expected; \
+                 LET $messages_valid = (SELECT VALUE count() FROM message WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.content_blocks = content_blocks AND reindex_staging_owner = $owner GROUP ALL)[0] = $messages_expected; \
+                 LET $conversations_valid = (SELECT VALUE count() FROM conversation WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_snapshot.title = title AND reindex_source_snapshot.summary = summary AND reindex_staging_owner = $owner GROUP ALL)[0] = $conversations_expected; \
                  IF !$job_valid OR !$notes_valid OR !$messages_valid OR !$conversations_valid THEN THROW 'reindex staging is stale, incomplete, or no longer owned' END; \
                  UPDATE note SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $notes; \
                  UPDATE message SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $messages; \
