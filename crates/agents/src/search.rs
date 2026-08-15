@@ -701,7 +701,11 @@ impl SearchAgent {
                     }
                 }
             }
-            for state in next.values() {
+            // A `BTreeMap` gives deterministic storage, but its record-ID
+            // order is not retrieval relevance. Consume the remaining graph
+            // candidate budget by score first, with the canonical ID only as
+            // a deterministic tie-breaker.
+            for state in ranked_frontier_states(&next) {
                 if candidates.len() >= self.graph.candidate_cap {
                     break;
                 }
@@ -887,6 +891,17 @@ impl GraphFrontier {
             provenance_ids: Vec::new(),
         }
     }
+}
+
+fn ranked_frontier_states(frontier: &BTreeMap<String, GraphFrontier>) -> Vec<&GraphFrontier> {
+    let mut states = frontier.values().collect::<Vec<_>>();
+    states.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    states
 }
 
 fn graph_edge_transitions<'a>(
@@ -1350,6 +1365,36 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn expanded_frontier_candidate_cap_prefers_score_before_record_id() {
+        let mut frontier = BTreeMap::new();
+        frontier.insert(
+            "note:aaa-low-score".into(),
+            GraphFrontier::seed(
+                RecordId::new("note", "aaa-low-score"),
+                "note:aaa-low-score".into(),
+                Vec::new(),
+                0.1,
+            ),
+        );
+        frontier.insert(
+            "note:zzz-high-score".into(),
+            GraphFrontier::seed(
+                RecordId::new("note", "zzz-high-score"),
+                "note:zzz-high-score".into(),
+                Vec::new(),
+                0.9,
+            ),
+        );
+
+        let retained = ranked_frontier_states(&frontier)
+            .into_iter()
+            .take(1)
+            .map(|state| state.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(retained, vec!["note:zzz-high-score"]);
     }
 
     #[tokio::test]

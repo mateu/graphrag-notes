@@ -14,10 +14,10 @@ use eval::{
 };
 use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
-    GraphMode, GraphPathStep, GraphRetrievalConfig, InferenceProviderConfig, InferenceProviders,
-    LibrarianAgent, LibrarianRuntimeConfig, ProcessingConfig, ProcessingRunResult,
-    ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType, SearchScope,
-    SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    GraphEvidence, GraphMode, GraphPathStep, GraphRetrievalConfig, InferenceProviderConfig,
+    InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, ProcessingConfig,
+    ProcessingRunResult, ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType,
+    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
@@ -2110,12 +2110,9 @@ async fn cmd_search(
             println!("   Score: {:.3}", r.score);
             if let Some(graph) = r.graph.as_ref() {
                 println!(
-                    "   Graph path: seed={} hops={} entities=[{}] path={} provenance=[{}]",
-                    graph.seed_note_id,
-                    graph.hops,
+                    "   Graph path: entities=[{}] {}",
                     graph.query_entities.join(", "),
-                    render_graph_path(&graph.path, " -> "),
-                    graph.provenance_ids.join(", "),
+                    render_graph_citation(graph, " -> "),
                 );
             }
             if let Some(related) = related_by_note.get(&r.id) {
@@ -2232,13 +2229,7 @@ async fn cmd_augment(
             provenance.push_str(&format!(", created_at={}", created_at.to_rfc3339()));
         }
         if let Some(graph) = chunk.graph.as_ref() {
-            provenance.push_str(&format!(
-                ", graph_seed={}, graph_hops={}, graph_path={}, graph_provenance={}",
-                graph.seed_note_id,
-                graph.hops,
-                render_graph_path(&graph.path, " | "),
-                graph.provenance_ids.join(" | "),
-            ));
+            provenance.push_str(&format!(", {}", render_graph_citation(graph, " | ")));
         }
         println!(
             "  [C{}] {} | score={:.3} | tokens={} | {}",
@@ -2268,6 +2259,17 @@ fn render_graph_path(path: &[GraphPathStep], separator: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(separator)
+}
+
+fn render_graph_citation(graph: &GraphEvidence, path_separator: &str) -> String {
+    format!(
+        "graph_seed={}, graph_hops={}, graph_source_uri={}, graph_path={}, graph_provenance={}",
+        graph.seed_note_id,
+        graph.hops,
+        graph.source_uri.as_deref().unwrap_or_default(),
+        render_graph_path(&graph.path, path_separator),
+        graph.provenance_ids.join(" | "),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3158,6 +3160,32 @@ mod tests {
         assert_eq!(
             render_graph_path(&path, " -> "),
             "outbound:supports edge=note_edge:one endpoints=note:seed→note:middle confidence=0.90 -> inbound:contradicts edge=note_edge:two endpoints=note:target→note:middle confidence=0.75"
+        );
+    }
+
+    #[test]
+    fn graph_citation_rendering_retains_source_uri_and_reconstructable_path() {
+        let graph = GraphEvidence {
+            query_entities: vec!["Atlas".into()],
+            seed_note_id: "note:seed".into(),
+            path: vec![GraphPathStep {
+                edge_id: "note_edge:one".into(),
+                edge_type: "supports".into(),
+                direction: "outbound".into(),
+                confidence: 0.9,
+                from_id: "note:seed".into(),
+                to_id: "note:target".into(),
+            }],
+            hops: 1,
+            decay: 0.8,
+            score: 0.72,
+            source_uri: Some("file:///notes/atlas.md".into()),
+            provenance_ids: vec!["message:provenance".into()],
+        };
+
+        assert_eq!(
+            render_graph_citation(&graph, " | "),
+            "graph_seed=note:seed, graph_hops=1, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
         );
     }
 
