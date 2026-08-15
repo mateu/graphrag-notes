@@ -9,6 +9,31 @@ use graphrag_core::{EdgeType, Note, NoteType};
 use graphrag_db::{init_memory, Repository};
 use std::sync::Arc;
 
+/// Compile-time compatibility fixture for the v0.2 module decomposition.
+/// Root re-exports and the historical module paths remain usable while the
+/// focused responsibility lanes are available for new internal callers.
+#[test]
+fn public_agent_api_survives_module_decomposition() {
+    use graphrag_agents as agents;
+
+    let _: Option<agents::LibrarianAgent> = None;
+    let _: Option<agents::librarian::LibrarianAgent> = None;
+    let _: Option<agents::ingestion::librarian::LibrarianAgent> = None;
+    let _: Option<agents::SearchAgent> = None;
+    let _: Option<agents::search::SearchAgent> = None;
+    let _: Option<agents::search::service::SearchAgent> = None;
+    let _: Option<agents::GardenerAgent> = None;
+    let _: Option<agents::gardener::GardenerAgent> = None;
+    let _: Option<agents::gardener::service::GardenerAgent> = None;
+    let _: Option<agents::InferenceProviderConfig> = None;
+    let _: Option<agents::inference::InferenceProviderConfig> = None;
+    let _: Option<agents::inference::factory::InferenceProviderConfig> = None;
+    let _: Option<agents::inference::traits::SharedEmbedder> = None;
+    let _: Option<agents::search::packing::AugmentOptions> = None;
+    let _: Option<agents::search::evidence::RetrievalExplanation> = None;
+    let _: Option<agents::search::graph::GraphRetrievalConfig> = None;
+}
+
 /// Test database initialization and basic CRUD
 #[tokio::test]
 async fn test_database_crud() {

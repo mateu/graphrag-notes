@@ -1,19 +1,35 @@
 //! AI Agents for GraphRAG Notes
 //!
-//! This crate contains the agent implementations:
-//! - Librarian: Ingests content and creates notes
-//! - Search: Handles user queries with hybrid search
-//! - Gardener: Maintains graph connections
+//! ## Module ownership and call flow
+//!
+//! - [`inference`] owns provider contracts, configuration, and HTTP
+//!   compatibility; it does not depend on repository orchestration.
+//! - [`ingestion`] owns librarian orchestration from chunking through durable
+//!   processing and reconciliation.
+//! - [`search`] owns repository-backed retrieval, then delegates pure context
+//!   selection to [`context_packing`] and explanation serialization to
+//!   [`evidence`].
+//! - [`gardener`] owns graph-maintenance orchestration and proposal policy.
+//!
+//! The end-to-end ingest path is: caller → `ingestion::librarian` → chunking
+//! → inference traits → repository. The search path is: caller →
+//! `search::service` → repository/fusion/graph → `context_packing` →
+//! `evidence`. Public root re-exports below preserve the v0.2 API while these
+//! private implementations are mechanically decomposed.
 
 pub mod chunking;
 pub mod context_packing;
 pub mod error;
 pub mod evidence;
+#[path = "gardener/mod.rs"]
 pub mod gardener;
+#[path = "inference/mod.rs"]
 pub mod inference;
-pub mod librarian;
+pub mod ingestion;
+pub use ingestion::librarian;
 pub mod processing;
 pub mod reindex;
+#[path = "search/mod.rs"]
 pub mod search;
 
 pub use chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker};
