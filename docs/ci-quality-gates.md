@@ -41,13 +41,16 @@ fixture harness (it must carry `provider: fixture` and
 `model: deterministic-stack-v1`), then review it:
 
 ```bash
+make retrieval-fixture-report OUT=/path/to/eval-report.json
 make update-baseline CANDIDATE=/path/to/eval-report.json
 # After reviewing the printed diff in an interactive terminal:
 make update-baseline CANDIDATE=/path/to/eval-report.json APPLY=1
 ```
 
-The command never changes a baseline by default; `APPLY=1` requires typing
-`UPDATE`. CI never blesses or updates baselines.
+The fixture-report command refuses to overwrite an existing file. The baseline
+command never changes a baseline by default; `APPLY=1` requires typing
+`UPDATE`. It also rejects reports not produced by that fixture. CI never
+blesses or updates baselines.
 
 ## Test concurrency and live services
 

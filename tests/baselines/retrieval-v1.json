@@ -21,7 +21,7 @@
         "forbidden_result_found": false,
         "checks_passed": true,
         "chunks": 2,
-        "tokens": 74,
+        "tokens": 78,
         "latency_ms": 0
       }
     },
@@ -76,7 +76,7 @@
     "ndcg_at_k": 1.0,
     "provenance_accuracy": 1.0,
     "avg_chunks_per_case": 2.0,
-    "avg_tokens_per_case": 78.66666666666667,
+    "avg_tokens_per_case": 80.0,
     "avg_latency_ms": 0.0,
     "total_latency_ms": 0
   }

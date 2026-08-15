@@ -901,7 +901,11 @@ mod tests {
             .expect("fixture music note must persist");
         let network = repo
             .create_note(
-                Note::new("Network settings for the media host")
+                // The two note candidates intentionally tie on relevance in
+                // the all-scope case. Keep their rendered byte lengths equal
+                // so their generated record-ID tie-break cannot make the
+                // fixture's context-token metric vary between fresh runs.
+                Note::new("Network settings for the media host LAN")
                     .with_embedding(music_embedding.clone())
                     .with_source(source_id),
             )
@@ -1022,6 +1026,72 @@ mod tests {
             },
             reports,
         )
+    }
+
+    /// The committed fixture is a quality gate, not merely a metric trend
+    /// report: every case intentionally declares at least one expectation.
+    /// Keep both the per-case signal and the aggregate summary checked so an
+    /// accidental change to either reporting path cannot turn a missed
+    /// expectation into a green baseline comparison.
+    fn require_passing_retrieval_fixture_cases(report: &EvalRunReport) -> Result<()> {
+        let failed_cases = report
+            .cases
+            .iter()
+            .filter(|case| case.metrics.checks_passed != Some(true))
+            .map(|case| case.name.as_str())
+            .collect::<Vec<_>>();
+        if !failed_cases.is_empty() {
+            bail!(
+                "retrieval fixture cases did not satisfy their expectations: {}",
+                failed_cases.join(", ")
+            );
+        }
+        if report.summary.cases_missed != 0 {
+            bail!(
+                "retrieval fixture summary reports {} missed case(s)",
+                report.summary.cases_missed
+            );
+        }
+        if report.summary.cases_unscored != 0 {
+            bail!(
+                "retrieval fixture summary reports {} unscored case(s)",
+                report.summary.cases_unscored
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn writes_retrieval_fixture_report_when_requested() {
+        let Some(path) = std::env::var_os("GRAPHRAG_RETRIEVAL_FIXTURE_REPORT") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        assert!(
+            !path.exists(),
+            "refusing to overwrite fixture report candidate: {}",
+            path.display()
+        );
+        let report = retrieval_fixture_report().await;
+        require_passing_retrieval_fixture_cases(&report)
+            .expect("fixture report producer must not emit a missed case");
+        let report = serde_json::to_vec_pretty(&report)
+            .expect("fixture report must serialize as JSON")
+            .into_iter()
+            .chain(std::iter::once(b'\n'))
+            .collect::<Vec<_>>();
+        std::fs::write(&path, report).unwrap_or_else(|error| {
+            panic!("failed to write fixture report {}: {error}", path.display())
+        });
+    }
+
+    #[tokio::test]
+    async fn retrieval_fixture_report_is_stable_across_fresh_repositories() {
+        assert_eq!(
+            retrieval_fixture_report().await,
+            retrieval_fixture_report().await,
+            "fixture reports must not depend on generated record-ID ordering"
+        );
     }
 
     #[test]
@@ -1418,6 +1488,8 @@ mod tests {
         let baseline =
             load_baseline(&baseline_path).expect("committed retrieval baseline must parse");
         let mut current = retrieval_fixture_report().await;
+        require_passing_retrieval_fixture_cases(&current)
+            .expect("retrieval fixture case expectations must all pass");
         let thresholds = parse_regression_thresholds(&[
             "recall_at_k=0.00".into(),
             "precision_at_k=0.00".into(),
@@ -1444,6 +1516,37 @@ mod tests {
             baseline_path.display(),
             current.human_report()
         );
+    }
+
+    #[test]
+    fn retrieval_fixture_gate_rejects_missed_or_unscored_case_expectations() {
+        let fixture_case = case(serde_json::json!({
+            "name": "missed fixture expectation",
+            "query": "q",
+            "expected_contains": ["expected"]
+        }));
+        let mut report = EvalRunReport::from_cases(
+            EvalMetadata {
+                schema_version: EVAL_SCHEMA_VERSION,
+                provider: "fixture".into(),
+                model: "deterministic-stack-v1".into(),
+            },
+            vec![EvalCaseReport {
+                name: fixture_case.display_name().into(),
+                query: fixture_case.query.clone(),
+                metrics: evaluate_ranked_results(&fixture_case, &[], 1, 0),
+                augmentation: None,
+            }],
+        );
+        assert_eq!(report.summary.cases_missed, 1);
+        assert!(require_passing_retrieval_fixture_cases(&report).is_err());
+
+        // Independently guard the aggregate and per-case reporting paths.
+        report.cases[0].metrics.checks_passed = Some(true);
+        assert!(require_passing_retrieval_fixture_cases(&report).is_err());
+        report.summary.cases_missed = 0;
+        report.cases[0].metrics.checks_passed = Some(false);
+        assert!(require_passing_retrieval_fixture_cases(&report).is_err());
     }
 
     #[test]
