@@ -159,18 +159,18 @@ impl ScopedSearchResult {
     /// Build observational evidence for a ranked retrieval result. This has no
     /// effect on fusion, ordering, or graph expansion.
     pub fn explanation(&self) -> crate::RetrievalExplanation {
-        retrieval_explanation(
-            self.hit_type,
-            self.id.clone(),
-            self.title.clone(),
-            &self.fusion,
-            self.score_kind,
-            self.graph.clone(),
-            self.source_uri.clone(),
-            self.conversation_uuid.clone(),
-            self.message_index,
-            self.role.clone(),
-        )
+        retrieval_explanation(ExplanationInput {
+            hit_type: self.hit_type,
+            result_id: self.id.clone(),
+            title: self.title.clone(),
+            fusion: &self.fusion,
+            score_kind: self.score_kind,
+            graph: self.graph.clone(),
+            source_uri: self.source_uri.clone(),
+            conversation_uuid: self.conversation_uuid.clone(),
+            message_index: self.message_index,
+            role: self.role.clone(),
+        })
     }
 
     pub fn explanation_with_inclusion(
@@ -188,54 +188,56 @@ impl EnrichedSearchResult {
     /// adapter keeps `--context --graph=off --explain` observational rather
     /// than sending the query through a different retrieval route.
     pub fn explanation(&self) -> crate::RetrievalExplanation {
-        retrieval_explanation(
-            SearchHitType::Note,
-            record_id_to_string(&self.result.id),
-            self.result.title.clone(),
-            &self.result.fusion,
-            self.score_kind,
-            None,
-            self.result.source_uri.clone(),
-            None,
-            None,
-            None,
-        )
+        retrieval_explanation(ExplanationInput {
+            hit_type: SearchHitType::Note,
+            result_id: record_id_to_string(&self.result.id),
+            title: self.result.title.clone(),
+            fusion: &self.result.fusion,
+            score_kind: self.score_kind,
+            graph: None,
+            source_uri: self.result.source_uri.clone(),
+            conversation_uuid: None,
+            message_index: None,
+            role: None,
+        })
     }
 }
 
-fn retrieval_explanation(
+struct ExplanationInput<'a> {
     hit_type: SearchHitType,
     result_id: String,
     title: Option<String>,
-    fusion: &FusionEvidence,
+    fusion: &'a FusionEvidence,
     score_kind: crate::ScoreKind,
     graph: Option<GraphEvidence>,
     source_uri: Option<String>,
     conversation_uuid: Option<String>,
     message_index: Option<i64>,
     role: Option<String>,
-) -> crate::RetrievalExplanation {
-    let (fused, vector, full_text) = crate::fusion_scores(fusion, score_kind);
+}
+
+fn retrieval_explanation(input: ExplanationInput<'_>) -> crate::RetrievalExplanation {
+    let (fused, vector, full_text) = crate::fusion_scores(input.fusion, input.score_kind);
     crate::RetrievalExplanation {
         schema_version: crate::EXPLANATION_SCHEMA_VERSION,
-        result_id,
-        title,
-        rank: fusion.final_rank,
+        result_id: input.result_id,
+        title: input.title,
+        rank: input.fusion.final_rank,
         context_rank: None,
-        hit_type: hit_type.into(),
+        hit_type: input.hit_type.into(),
         fused,
         vector,
         full_text,
-        graph,
+        graph: input.graph,
         inclusion: crate::InclusionReason::Selected,
         token_count: None,
         embedding_provider: None,
         embedding_model: None,
         provenance: crate::ProvenanceEvidence {
-            source_uri,
-            conversation_uuid,
-            message_index,
-            role,
+            source_uri: input.source_uri,
+            conversation_uuid: input.conversation_uuid,
+            message_index: input.message_index,
+            role: input.role,
             selected_span_start: None,
             selected_span_end: None,
         },
