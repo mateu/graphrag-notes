@@ -3462,7 +3462,7 @@ impl Repository {
             let entity_id = entity.id.ok_or_else(|| {
                 DbError::CreateFailed("upserted entity did not receive an id".into())
             })?;
-            if seen.insert(entity_id.clone()) {
+            if seen.insert(record_id_to_string(&entity_id)) {
                 entity_ids.push(entity_id);
             }
         }
@@ -4649,10 +4649,12 @@ impl Repository {
     /// cleanup removes. Shared source/note accounting keeps dry-run previews
     /// exact and makes confirmed single-note deletion report the same shape.
     async fn delete_summary_for_notes(&self, notes: &[RecordId]) -> Result<SourceDeleteSummary> {
-        let mut summary = SourceDeleteSummary::default();
-        summary.notes = notes.len() as u64;
-        summary.note_edges = self.count_note_edges_for_notes(&notes).await?;
-        summary.proposals = self.count_mutable_proposals_for_notes(&notes).await?;
+        let mut summary = SourceDeleteSummary {
+            notes: notes.len() as u64,
+            note_edges: self.count_note_edges_for_notes(notes).await?,
+            proposals: self.count_mutable_proposals_for_notes(notes).await?,
+            ..Default::default()
+        };
         for note_id in notes {
             let counts: Vec<SourceDeleteCount> = self
                 .db
