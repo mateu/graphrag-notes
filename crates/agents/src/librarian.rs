@@ -886,6 +886,9 @@ impl LibrarianAgent {
                 )
                 .await
             }
+            ProcessingJobType::Reindex => Err(crate::AgentError::Processing(
+                "reindex jobs must be resumed with the reindex worker".into(),
+            )),
         }
     }
 

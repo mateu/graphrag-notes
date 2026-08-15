@@ -8,6 +8,7 @@ pub mod edge;
 pub mod entity;
 pub mod error;
 pub mod note;
+pub mod portable;
 pub mod source;
 
 pub use chat_export::{ChatConversation, ChatExport, ChatMessage, MessageRole};
@@ -15,6 +16,10 @@ pub use edge::{Edge, EdgeType, ProposedEdge, ProposedEdgeStatus};
 pub use entity::{Entity, EntityType};
 pub use error::{CoreError, Result};
 pub use note::{AtomicNote, Note, NoteType};
+pub use portable::{
+    PortableBackupManifest, PortableEmbeddingIdentity, PortablePayload, PortableRecord,
+    PORTABLE_BACKUP_FORMAT, PORTABLE_BACKUP_FORMAT_VERSION,
+};
 pub use source::{
     normalize_file_uri, normalized_content_hash, Source, SourceIngestionStatus, SourceType,
 };

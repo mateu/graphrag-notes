@@ -153,7 +153,7 @@ pub async fn record_embedding_metadata(
         CompatibilityState::Empty => {}
     }
 
-    let legacy_vector_records = legacy_vector_record_count(db).await?;
+    let legacy_vector_records = vector_bearing_record_count(db).await?;
     if legacy_vector_records != 0 {
         return Err(DbError::LegacyEmbeddingMetadata {
             vector_records: legacy_vector_records,
@@ -226,7 +226,9 @@ fn metadata_from_record(record: MetadataRecord) -> Result<EmbeddingMetadata> {
     })
 }
 
-async fn legacy_vector_record_count(db: &DbConnection) -> Result<usize> {
+/// Count every persisted vector-bearing record, including records from
+/// databases created before compatibility metadata existed.
+pub async fn vector_bearing_record_count(db: &DbConnection) -> Result<usize> {
     let mut total = 0_usize;
     for query in [
         "SELECT count() AS count FROM note WHERE embedding IS NOT NONE AND array::len(embedding) > 0 GROUP ALL",

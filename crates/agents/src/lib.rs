@@ -12,6 +12,7 @@ pub mod gardener;
 pub mod inference;
 pub mod librarian;
 pub mod processing;
+pub mod reindex;
 pub mod search;
 
 pub use chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker};
@@ -30,6 +31,7 @@ pub use processing::{
     classify_retry, retry_delay, ProcessingConfig, ProcessingStatsSnapshot, ResilientEmbedder,
     ResilientEntityExtractor, RetryClassification,
 };
+pub use reindex::{ReindexAgent, ReindexPreview, ReindexResult, ReindexScope};
 pub use search::{
     AugmentContext, AugmentDiagnostics, AugmentOptions, ConservativeTokenCounter, GraphEvidence,
     GraphMode, GraphPathStep, GraphRetrievalConfig, GraphRetrievalSummary, GraphSearchResults,

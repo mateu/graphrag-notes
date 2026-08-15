@@ -6,7 +6,7 @@ use crate::{
         EmbeddingIdentity, ExtractionIdentity,
     },
     fusion::{self, FusionConfig, FusionEvidence, FusionRecord},
-    DbConnection, DbError, Result,
+    migrations, DbConnection, DbError, Result,
 };
 use chrono::{DateTime, Utc};
 use graphrag_core::{
@@ -120,6 +120,143 @@ enum GraphEntityMatchTier {
     Prefix,
 }
 
+/// Tables that form the portable, logical GraphRAG data model. Runtime caches,
+/// processing-job checkpoints, and migration history are intentionally absent:
+/// they are machine-local implementation state rather than recoverable user
+/// knowledge.
+pub const PORTABLE_TABLES: &[&str] = &[
+    "source",
+    "note",
+    "entity",
+    "conversation",
+    "message",
+    "supports",
+    "contradicts",
+    "derived_from",
+    "related_to",
+    "mentions",
+    "note_from_conversation",
+    "note_from_message",
+    "proposed_edge",
+    "graphrag_metadata",
+];
+
+fn validate_portable_table(table: &str) -> Result<()> {
+    if PORTABLE_TABLES.contains(&table) {
+        Ok(())
+    } else {
+        Err(DbError::QueryFailed(format!(
+            "{table} is not a portable backup table"
+        )))
+    }
+}
+
+fn validate_portable_field(field: &str) -> Result<()> {
+    let mut chars = field.bytes();
+    let Some(first) = chars.next() else {
+        return Err(DbError::QueryFailed(
+            "portable record has an empty field name".into(),
+        ));
+    };
+    if !(first.is_ascii_alphabetic() || first == b'_')
+        || !chars.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(DbError::QueryFailed(format!(
+            "portable record has unsafe field name {field:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// Remove serialized ISO-8601 timestamps from raw JSON content and return the
+/// values that must be restored through Surreal's explicit datetime cast.
+/// JSONL deliberately uses ordinary JSON strings; binding those strings into a
+/// schemafull datetime field would otherwise be rejected by SurrealDB.
+fn portable_timestamps(
+    table: &str,
+    record: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<(String, String)>> {
+    let fields: &[&str] = match table {
+        "source" => &["created_at", "updated_at", "last_ingested_at"],
+        "note" => &["created_at", "updated_at"],
+        "entity" => &["created_at"],
+        "conversation" => &["created_at", "updated_at", "ingested_at"],
+        "message" => &["created_at", "updated_at", "ingested_at"],
+        "supports"
+        | "contradicts"
+        | "derived_from"
+        | "related_to"
+        | "mentions"
+        | "note_from_conversation"
+        | "note_from_message" => &["created_at"],
+        "proposed_edge" => &["created_at", "updated_at", "reviewed_at", "superseded_at"],
+        "graphrag_metadata" => &["last_reindex_at", "updated_at"],
+        _ => &[],
+    };
+    let mut values = Vec::new();
+    for field in fields {
+        let Some(value) = record.remove(*field) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        let value = value.as_str().ok_or_else(|| {
+            DbError::QueryFailed(format!(
+                "portable {table}.{field} timestamp is not a string"
+            ))
+        })?;
+        values.push(((*field).to_string(), value.to_string()));
+    }
+    Ok(values)
+}
+
+/// Convert JSONL's canonical `table:key` references back into typed Surreal
+/// record IDs. Generic JSON content bindings would otherwise treat them as
+/// strings and schemafull record fields would reject the restored record.
+fn portable_record_ids(
+    table: &str,
+    record: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<(String, RecordId)>> {
+    let fields: &[(&str, Option<&str>)] = match table {
+        "note" => &[("source_id", Some("source"))],
+        "message" => &[("conversation_id", Some("conversation"))],
+        "supports" | "contradicts" | "derived_from" | "related_to" => &[
+            ("in", Some("note")),
+            ("out", Some("note")),
+            ("proposal_id", Some("proposed_edge")),
+        ],
+        "mentions" => &[("in", Some("note")), ("out", Some("entity"))],
+        "note_from_conversation" => &[("in", Some("note")), ("out", Some("conversation"))],
+        "note_from_message" => &[("in", Some("note")), ("out", Some("message"))],
+        "proposed_edge" => &[
+            ("in", Some("note")),
+            ("out", Some("note")),
+            ("resulting_edge_id", None),
+        ],
+        _ => &[],
+    };
+    let mut values = Vec::new();
+    for (field, expected_table) in fields {
+        let Some(value) = record.remove(*field) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        let value = value.as_str().ok_or_else(|| {
+            DbError::QueryFailed(format!(
+                "portable {table}.{field} reference is not a string"
+            ))
+        })?;
+        values.push((
+            (*field).to_string(),
+            parse_record_id(value, *expected_table)?,
+        ));
+    }
+    Ok(values)
+}
+
 fn count_to_i64(count: u64) -> Result<i64> {
     i64::try_from(count)
         .map_err(|_| DbError::QueryFailed("processing count exceeds database integer range".into()))
@@ -174,6 +311,7 @@ fn search_content_for_note_update(existing: &Note, replacement: &Note) -> String
 pub enum ProcessingJobType {
     Embedding,
     EntityExtraction,
+    Reindex,
 }
 
 impl ProcessingJobType {
@@ -181,6 +319,7 @@ impl ProcessingJobType {
         match self {
             Self::Embedding => "embedding",
             Self::EntityExtraction => "entity_extraction",
+            Self::Reindex => "reindex",
         }
     }
 
@@ -188,6 +327,7 @@ impl ProcessingJobType {
         match value {
             "embedding" => Some(Self::Embedding),
             "entity_extraction" => Some(Self::EntityExtraction),
+            "reindex" => Some(Self::Reindex),
             _ => None,
         }
     }
@@ -224,6 +364,24 @@ pub struct ProcessingJob {
     pub job_type: String,
     pub source_generation: Option<String>,
     pub scope: Option<String>,
+    /// Reindex jobs pin this identity so a later resume cannot apply a
+    /// different provider/model's staged vectors to the same generation.
+    #[serde(default)]
+    pub target_embedding_provider: Option<String>,
+    #[serde(default)]
+    pub target_embedding_model: Option<String>,
+    #[serde(default)]
+    pub target_embedding_dimension: Option<i64>,
+    /// Snapshot text fingerprints for reindex items. They make a checkpoint
+    /// safe to resume even when an item was edited after its vector staged.
+    #[serde(default)]
+    pub reindex_item_fingerprints: Option<std::collections::BTreeMap<String, String>>,
+    /// Renewable owner lease for a reindex worker. An expired owner may be
+    /// replaced after a crash, but a live owner cannot be resumed concurrently.
+    #[serde(default)]
+    pub reindex_lease_owner: Option<String>,
+    #[serde(default)]
+    pub reindex_lease_expires_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub item_ids: Vec<String>,
     pub status: String,
@@ -268,6 +426,67 @@ pub struct InferenceCacheEntry {
     pub value: serde_json::Value,
 }
 
+/// One durable reindex item. Its id determines whether `text` comes from a
+/// note, chat message, or conversation summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReindexItem {
+    pub id: String,
+    /// Exact canonical input submitted to the embedding provider.
+    pub text: String,
+    /// Source fields from which `text` was derived. Commit validates this
+    /// snapshot transactionally before making the staged vector visible.
+    pub source_snapshot: serde_json::Value,
+}
+
+fn canonical_note_reindex_text(
+    content: &str,
+    search_content: Option<&str>,
+    chunk_heading_path: &[String],
+) -> String {
+    search_content.map_or_else(
+        || {
+            let headings = chunk_heading_path
+                .iter()
+                .filter(|heading| !heading.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" > ");
+            if headings.is_empty() {
+                content.to_string()
+            } else {
+                format!("{headings}\n\n{content}")
+            }
+        },
+        str::to_string,
+    )
+}
+
+fn canonical_message_reindex_text(content: &str, content_blocks: &serde_json::Value) -> String {
+    if !content.trim().is_empty() {
+        return content.to_string();
+    }
+    let parts = content_blocks
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|block| block.get("text").and_then(serde_json::Value::as_str))
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "[empty message]".to_string()
+    } else {
+        parts.join("\n\n")
+    }
+}
+
+fn canonical_conversation_reindex_text(title: Option<&str>, summary: &str) -> String {
+    let title = title
+        .filter(|title| !title.is_empty())
+        .unwrap_or("Untitled Conversation");
+    format!("{title}\n\n{summary}")
+}
+
 fn source_content_value(source: &Source) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(source)
         .map_err(|error| DbError::QueryFailed(format!("source serialization failed: {error}")))?;
@@ -306,6 +525,116 @@ impl Repository {
             db,
             proposal_acceptance_lock,
         }
+    }
+
+    /// Read one bounded page of a portable logical table in deterministic
+    /// record-id order. Callers advance `offset` instead of materializing a
+    /// full database in memory while writing an archive.
+    #[instrument(skip(self))]
+    pub async fn portable_records_page(
+        &self,
+        table: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        validate_portable_table(table)?;
+        self.db
+            .query(format!(
+                "SELECT * FROM {table} ORDER BY id ASC LIMIT $limit START $offset"
+            ))
+            .bind(("limit", limit.max(1)))
+            .bind(("offset", offset))
+            .await?
+            .take(0)
+            .map_err(Into::into)
+    }
+
+    /// Insert one record from a validated portable archive while preserving
+    /// its logical Surreal record ID. References in the archive therefore do
+    /// not need a lossy best-effort remapping step.
+    #[instrument(skip(self, record))]
+    pub async fn restore_portable_record(
+        &self,
+        table: &str,
+        record: serde_json::Value,
+    ) -> Result<()> {
+        validate_portable_table(table)?;
+        let id = record.get("id").cloned().ok_or_else(|| {
+            DbError::QueryFailed(format!("portable {table} record is missing its id"))
+        })?;
+        let id = if let Some(id) = id.as_str() {
+            parse_record_id(id, Some(table))?
+        } else {
+            serde_json::from_value::<RecordId>(id).map_err(|error| {
+                DbError::QueryFailed(format!(
+                    "portable {table} record has an invalid id: {error}"
+                ))
+            })?
+        };
+        if id.table.as_str() != table {
+            return Err(DbError::QueryFailed(format!(
+                "portable record id {} does not belong to {table}",
+                record_id_to_string(&id)
+            )));
+        }
+        let mut content = record;
+        let object = content.as_object_mut().ok_or_else(|| {
+            DbError::QueryFailed(format!("portable {table} record is not an object"))
+        })?;
+        object.remove("id");
+        // Surreal represents NONE as JSON null, but a JSON null bound back
+        // through CONTENT is SQL NULL and is rejected by many option fields.
+        // Omission restores the same NONE/default state.
+        object.retain(|_, value| !value.is_null());
+        let timestamps = portable_timestamps(table, object)?;
+        let references = portable_record_ids(table, object)?;
+        let mut assignments = Vec::new();
+        for field in object.keys() {
+            validate_portable_field(field)?;
+            assignments.push(format!("{field} = ${field}"));
+        }
+        for (field, _) in &timestamps {
+            assignments.push(format!("{field} = <datetime>${field}"));
+        }
+        for (field, _) in &references {
+            assignments.push(format!("{field} = ${field}"));
+        }
+        if assignments.is_empty() {
+            return Err(DbError::QueryFailed(format!(
+                "portable {table} record has no restorable fields"
+            )));
+        }
+        let mut query = self
+            .db
+            .query(format!("CREATE $id SET {}", assignments.join(", ")))
+            .bind(("id", id));
+        for (field, value) in object {
+            query = query.bind((field.as_str(), value.clone()));
+        }
+        for (field, timestamp) in timestamps {
+            query = query.bind((field, timestamp));
+        }
+        for (field, reference) in references {
+            query = query.bind((field, reference));
+        }
+        query.await?.check()?;
+        Ok(())
+    }
+
+    /// Return persisted model metadata for a portable vector export. The
+    /// caller must refuse `--include-embeddings` when this is absent, because
+    /// an unlabelled vector payload is not safely portable.
+    pub async fn portable_embedding_metadata(
+        &self,
+    ) -> Result<Option<crate::compatibility::EmbeddingMetadata>> {
+        crate::compatibility::embedding_metadata(&self.db).await
+    }
+
+    /// Count active vector-bearing records independently of metadata. This is
+    /// used to keep a legacy, unlabelled corpus from accepting a partial model
+    /// cutover that would make the global identity dishonest.
+    pub async fn vector_bearing_record_count(&self) -> Result<usize> {
+        crate::compatibility::vector_bearing_record_count(&self.db).await
     }
 
     /// Check the active embedding identity before a vector read or write.
@@ -383,6 +712,180 @@ impl Repository {
         job.ok_or_else(|| DbError::QueryFailed("create_processing_job".into()))
     }
 
+    /// Persist a reindex job together with the exact embedding identity it is
+    /// allowed to stage and promote. This is intentionally separate from the
+    /// generic inference-job constructor: regular jobs have no corpus-wide
+    /// model cutover contract.
+    pub async fn create_reindex_processing_job(
+        &self,
+        total_count: u64,
+        scope: String,
+        item_ids: Vec<String>,
+        embedding: &EmbeddingIdentity,
+        item_fingerprints: std::collections::BTreeMap<String, String>,
+    ) -> Result<ProcessingJob> {
+        let dimension = i64::try_from(embedding.dimension).map_err(|_| {
+            DbError::QueryFailed("embedding dimension exceeds database integer range".into())
+        })?;
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "CREATE processing_job SET job_type = 'reindex', scope = $scope, item_ids = $item_ids, \
+                 target_embedding_provider = $provider, target_embedding_model = $model, target_embedding_dimension = $dimension, \
+                 reindex_item_fingerprints = $fingerprints, \
+                 status = 'queued', total_count = $total_count, completed_count = 0, failed_count = 0, \
+                 checkpoint = NONE, last_error = NONE, created_at = time::now(), updated_at = time::now(), \
+                 finished_at = NONE RETURN AFTER",
+            )
+            .bind(("scope", scope))
+            .bind(("item_ids", item_ids))
+            .bind(("provider", embedding.provider.clone()))
+            .bind(("model", embedding.model.clone()))
+            .bind(("dimension", dimension))
+            .bind(("fingerprints", item_fingerprints))
+            .bind(("total_count", count_to_i64(total_count)?))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| DbError::QueryFailed("create reindex processing_job".into()))
+    }
+
+    /// Replace the job's fingerprint snapshot only after the corresponding
+    /// staged vectors committed. A crash before this write repeats work; it
+    /// never treats a stale staged vector as current.
+    pub async fn update_reindex_item_fingerprints(
+        &self,
+        id: &RecordId,
+        fingerprints: std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        self.db
+            .query("UPDATE $id SET reindex_item_fingerprints = $fingerprints, updated_at = time::now()")
+            .bind(("id", id.clone()))
+            .bind(("fingerprints", fingerprints))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    /// Update a reindex checkpoint only while this worker still owns its
+    /// durable lease. A recovered worker must never advance another owner's
+    /// checkpoint.
+    pub async fn update_reindex_item_fingerprints_owned(
+        &self,
+        id: &RecordId,
+        owner: &str,
+        fingerprints: std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET reindex_item_fingerprints = $fingerprints, updated_at = time::now() \
+                 WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner \
+                 AND reindex_lease_expires_at >= time::now() RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("fingerprints", fingerprints))
+            .await?
+            .take(0)?;
+        if job.is_none() {
+            return Err(DbError::NotFound(
+                "owned running reindex processing_job".into(),
+                record_id_to_string(id),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Atomically acquire a reindex job. A live lease cannot be stolen; an
+    /// expired lease represents a worker killed between durable checkpoints.
+    pub async fn claim_reindex_processing_job(
+        &self,
+        id: &RecordId,
+        owner: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ProcessingJob> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET status = 'running', reindex_lease_owner = $owner, \
+                 reindex_lease_expires_at = $lease_expires_at, last_error = NONE, finished_at = NONE, \
+                 updated_at = time::now() WHERE job_type = 'reindex' AND (status = 'queued' OR \
+                 status = 'cancelled' OR status = 'failed' OR (status = 'running' AND \
+                 (reindex_lease_expires_at IS NONE OR reindex_lease_expires_at < time::now()))) RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("lease_expires_at", lease_expires_at))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| {
+            DbError::NotFound(
+                "claimable reindex processing_job".into(),
+                record_id_to_string(id),
+            )
+        })
+    }
+
+    /// Renew a running reindex lease. A false result means another worker has
+    /// recovered the job or the lease expired before this worker could renew.
+    pub async fn renew_reindex_processing_job_lease(
+        &self,
+        id: &RecordId,
+        owner: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET reindex_lease_expires_at = $lease_expires_at, updated_at = time::now() \
+                 WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner \
+                 AND reindex_lease_expires_at >= time::now() RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("lease_expires_at", lease_expires_at))
+            .await?
+            .take(0)?;
+        Ok(job.is_some())
+    }
+
+    /// Transfer still-valid staged rows to a recovered worker. The exact
+    /// source snapshot condition intentionally leaves edited rows for the new
+    /// worker to re-embed rather than adopting a stale vector.
+    pub async fn adopt_reindex_staging(&self, item_ids: &[String], owner: &str) -> Result<()> {
+        let mut notes = Vec::new();
+        let mut messages = Vec::new();
+        let mut conversations = Vec::new();
+        for id in item_ids {
+            let record = parse_record_id(id, None)?;
+            match record.table.as_str() {
+                "note" => notes.push(record),
+                "message" => messages.push(record),
+                "conversation" => conversations.push(record),
+                table => {
+                    return Err(DbError::QueryFailed(format!(
+                        "{table} is not a supported reindex record table"
+                    )))
+                }
+            }
+        }
+        self.db
+            .query(
+                "BEGIN TRANSACTION; \
+                 UPDATE note SET reindex_staging_owner = $owner WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.search_content = search_content AND reindex_source_snapshot.chunk_heading_path = chunk_heading_path; \
+                 UPDATE message SET reindex_staging_owner = $owner WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.content_blocks = content_blocks; \
+                 UPDATE conversation SET reindex_staging_owner = $owner WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_snapshot.title = title AND reindex_source_snapshot.summary = summary; \
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("owner", owner.to_string()))
+            .bind(("notes", notes))
+            .bind(("messages", messages))
+            .bind(("conversations", conversations))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
     /// Update progress only after an item's atomic database mutation has
     /// completed.  A crash can therefore repeat at most the checkpoint item;
     /// the processing callers use idempotent upserts/reconciliation.
@@ -418,6 +921,49 @@ impl Repository {
             .await?
             .take(0)?;
         job.ok_or_else(|| DbError::NotFound("processing_job".into(), record_id_to_string(id)))
+    }
+
+    /// Apply a reindex worker update only if its lease is still live.
+    pub async fn update_owned_reindex_processing_job(
+        &self,
+        id: &RecordId,
+        owner: &str,
+        update: ProcessingJobUpdate,
+    ) -> Result<ProcessingJob> {
+        let status = update.status.map(ProcessingJobStatus::as_str);
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET status = IF $status = NONE THEN status ELSE $status END, \
+                 completed_count = IF $completed_count = NONE THEN completed_count ELSE $completed_count END, \
+                 failed_count = IF $failed_count = NONE THEN failed_count ELSE $failed_count END, \
+                 checkpoint = IF $checkpoint_set THEN $checkpoint ELSE checkpoint END, \
+                 last_error = IF $last_error_set THEN $last_error ELSE last_error END, \
+                 finished_at = IF $finish THEN time::now() ELSE finished_at END, updated_at = time::now() \
+                 WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner \
+                 AND reindex_lease_expires_at >= time::now() RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("status", status))
+            .bind((
+                "completed_count",
+                update.completed_count.map(count_to_i64).transpose()?,
+            ))
+            .bind(("failed_count", update.failed_count.map(count_to_i64).transpose()?))
+            .bind(("checkpoint_set", update.checkpoint.is_some()))
+            .bind(("checkpoint", update.checkpoint.flatten()))
+            .bind(("last_error_set", update.last_error.is_some()))
+            .bind(("last_error", update.last_error.flatten()))
+            .bind(("finish", update.finish))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| {
+            DbError::NotFound(
+                "owned running reindex processing_job".into(),
+                record_id_to_string(id),
+            )
+        })
     }
 
     pub async fn get_processing_job(&self, id: &str) -> Result<Option<ProcessingJob>> {
@@ -466,6 +1012,273 @@ impl Repository {
         job.ok_or_else(|| {
             DbError::NotFound("resumable processing_job".into(), record_id_to_string(id))
         })
+    }
+
+    /// Snapshot the exact visible corpus selected for a reindex job. The
+    /// durable job stores these logical IDs so a resume never silently picks
+    /// up unrelated later records.
+    pub async fn snapshot_reindex_item_ids(
+        &self,
+        notes: bool,
+        messages: bool,
+        summaries: bool,
+    ) -> Result<Vec<String>> {
+        let mut ids = Vec::new();
+        if notes {
+            // A corpus-wide identity cutover must cover hidden/pending file
+            // generations too. Otherwise a later source promotion could make
+            // an old-model vector visible under freshly committed metadata.
+            let note_query = if messages && summaries {
+                "SELECT VALUE id FROM note ORDER BY id ASC".to_string()
+            } else {
+                format!("SELECT VALUE id FROM note WHERE {VISIBLE_NOTE_CONDITION} ORDER BY id ASC")
+            };
+            ids.extend(self.reindex_ids_for_query(&note_query).await?);
+        }
+        if messages {
+            ids.extend(
+                self.reindex_ids_for_query("SELECT VALUE id FROM message ORDER BY id ASC")
+                    .await?,
+            );
+        }
+        if summaries {
+            ids.extend(
+                self.reindex_ids_for_query(
+                    "SELECT VALUE id FROM conversation WHERE summary IS NOT NONE AND summary != '' ORDER BY id ASC",
+                )
+                .await?,
+            );
+        }
+        Ok(ids)
+    }
+
+    /// Check whether a corpus-wide reindex snapshot has been widened by newly
+    /// eligible records. The cutover transaction repeats this check atomically;
+    /// this preflight gives the worker an actionable restart error instead of
+    /// leaving a failed job with an opaque database transaction message.
+    pub async fn full_reindex_scope_widened(&self, item_ids: &[String]) -> Result<bool> {
+        let expected = item_ids.iter().collect::<HashSet<_>>();
+        Ok(self
+            .snapshot_reindex_item_ids(true, true, true)
+            .await?
+            .iter()
+            .any(|id| !expected.contains(id)))
+    }
+
+    async fn reindex_ids_for_query(&self, query: &str) -> Result<Vec<String>> {
+        let ids: Vec<RecordId> = self.db.query(query).await?.take(0)?;
+        Ok(ids.iter().map(record_id_to_string).collect())
+    }
+
+    /// Load one previously snapshotted reindex item. A record removed after
+    /// snapshot is reported as absent and can be reconciled as completed by
+    /// the worker without widening its durable scope.
+    pub async fn get_reindex_item(&self, id: &str) -> Result<Option<ReindexItem>> {
+        let record = parse_record_id(id, None)?;
+        match record.table.as_str() {
+            "note" => {
+                #[derive(Deserialize, SurrealValue)]
+                struct NoteRow {
+                    id: RecordId,
+                    content: String,
+                    #[serde(default)]
+                    search_content: Option<String>,
+                    #[serde(default)]
+                    chunk_heading_path: Vec<String>,
+                }
+                let row: Option<NoteRow> = self
+                    .db
+                    .query("SELECT id, content, search_content, chunk_heading_path FROM $id")
+                    .bind(("id", record))
+                    .await?
+                    .take(0)?;
+                Ok(row.map(|row| ReindexItem {
+                    id: record_id_to_string(&row.id),
+                    text: canonical_note_reindex_text(
+                        &row.content,
+                        row.search_content.as_deref(),
+                        &row.chunk_heading_path,
+                    ),
+                    source_snapshot: serde_json::json!({
+                        "content": row.content,
+                        "search_content": row.search_content,
+                        "chunk_heading_path": row.chunk_heading_path,
+                    }),
+                }))
+            }
+            "message" => {
+                #[derive(Deserialize, SurrealValue)]
+                struct MessageRow {
+                    id: RecordId,
+                    content: String,
+                    #[serde(default)]
+                    content_blocks: serde_json::Value,
+                }
+                let row: Option<MessageRow> = self
+                    .db
+                    .query("SELECT id, content, content_blocks FROM $id")
+                    .bind(("id", record))
+                    .await?
+                    .take(0)?;
+                Ok(row.map(|row| ReindexItem {
+                    id: record_id_to_string(&row.id),
+                    text: canonical_message_reindex_text(&row.content, &row.content_blocks),
+                    source_snapshot: serde_json::json!({
+                        "content": row.content,
+                        "content_blocks": row.content_blocks,
+                    }),
+                }))
+            }
+            "conversation" => {
+                #[derive(Deserialize, SurrealValue)]
+                struct ConversationRow {
+                    id: RecordId,
+                    #[serde(default)]
+                    title: Option<String>,
+                    summary: String,
+                }
+                let row: Option<ConversationRow> = self
+                    .db
+                    .query("SELECT id, title, summary FROM $id WHERE summary IS NOT NONE AND summary != ''")
+                    .bind(("id", record))
+                    .await?
+                    .take(0)?;
+                Ok(row.map(|row| ReindexItem {
+                    id: record_id_to_string(&row.id),
+                    text: canonical_conversation_reindex_text(row.title.as_deref(), &row.summary),
+                    source_snapshot: serde_json::json!({
+                        "title": row.title,
+                        "summary": row.summary,
+                    }),
+                }))
+            }
+            table => Err(DbError::QueryFailed(format!(
+                "{table} is not a supported reindex record table"
+            ))),
+        }
+    }
+
+    /// Persist a newly computed vector in the inactive reindex field. Search
+    /// continues to read the old active vector until [`Self::commit_reindex`]
+    /// validates and swaps the full selected generation.
+    pub async fn stage_reindex_embedding(
+        &self,
+        item: &ReindexItem,
+        embedding: Vec<f32>,
+        owner: &str,
+    ) -> Result<()> {
+        let record = parse_record_id(&item.id, None)?;
+        let query = match record.table.as_str() {
+            "note" => "UPDATE $id SET reindex_embedding = $embedding, reindex_source_text = $text, reindex_source_snapshot = $snapshot, reindex_staging_owner = $owner WHERE content = $snapshot.content AND search_content = $snapshot.search_content AND chunk_heading_path = $snapshot.chunk_heading_path RETURN AFTER",
+            "message" => "UPDATE $id SET reindex_embedding = $embedding, reindex_source_text = $text, reindex_source_snapshot = $snapshot, reindex_staging_owner = $owner WHERE content = $snapshot.content AND content_blocks = $snapshot.content_blocks RETURN AFTER",
+            "conversation" => "UPDATE $id SET reindex_summary_embedding = $embedding, reindex_source_text = $text, reindex_source_snapshot = $snapshot, reindex_staging_owner = $owner WHERE title = $snapshot.title AND summary = $snapshot.summary RETURN AFTER",
+            table => {
+                return Err(DbError::QueryFailed(format!(
+                    "{table} is not a supported reindex record table"
+                )))
+            }
+        };
+        #[derive(Deserialize, SurrealValue)]
+        struct StagedRow {
+            id: RecordId,
+        }
+        let staged: Option<StagedRow> = self
+            .db
+            .query(query)
+            .bind(("id", record))
+            .bind(("embedding", embedding))
+            .bind(("text", item.text.clone()))
+            .bind(("snapshot", item.source_snapshot.clone()))
+            .bind(("owner", owner.to_string()))
+            .await?
+            .take(0)?;
+        if staged.is_none() {
+            return Err(DbError::QueryFailed(
+                "reindex item changed or disappeared while its embedding was being staged".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Atomically publish all staged vectors and the corresponding model
+    /// identity. Any provider failure or cancellation before this method leaves
+    /// every active vector and metadata field on the last known-good model.
+    pub async fn commit_reindex(
+        &self,
+        job_id: &RecordId,
+        owner: &str,
+        item_ids: &[String],
+        embedding: &EmbeddingIdentity,
+        clear_entity_embeddings: bool,
+        validate_full_scope_membership: bool,
+        completed_count: u64,
+    ) -> Result<()> {
+        let mut notes = Vec::new();
+        let mut messages = Vec::new();
+        let mut conversations = Vec::new();
+        for id in item_ids {
+            let record = parse_record_id(id, None)?;
+            match record.table.as_str() {
+                "note" => notes.push(record),
+                "message" => messages.push(record),
+                "conversation" => conversations.push(record),
+                table => {
+                    return Err(DbError::QueryFailed(format!(
+                        "{table} is not a supported reindex record table"
+                    )))
+                }
+            }
+        }
+        let dimension = i64::try_from(embedding.dimension).map_err(|_| {
+            DbError::QueryFailed("embedding dimension exceeds database integer range".into())
+        })?;
+        let completed_count = count_to_i64(completed_count)?;
+        self.db
+            .query(
+                "BEGIN TRANSACTION; \
+                 LET $job_valid = (SELECT VALUE count() FROM processing_job WHERE id = $job_id AND job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner AND reindex_lease_expires_at >= time::now() GROUP ALL)[0] = 1; \
+                 LET $notes_expected = (SELECT VALUE count() FROM note WHERE id IN $notes GROUP ALL)[0]; \
+                 LET $messages_expected = (SELECT VALUE count() FROM message WHERE id IN $messages GROUP ALL)[0]; \
+                 LET $conversations_expected = (SELECT VALUE count() FROM conversation WHERE id IN $conversations GROUP ALL)[0]; \
+                 LET $notes_widened = (SELECT VALUE count() FROM note WHERE id NOT IN $notes GROUP ALL)[0] != 0; \
+                 LET $messages_widened = (SELECT VALUE count() FROM message WHERE id NOT IN $messages GROUP ALL)[0] != 0; \
+                 LET $conversations_widened = (SELECT VALUE count() FROM conversation WHERE summary IS NOT NONE AND summary != '' AND id NOT IN $conversations GROUP ALL)[0] != 0; \
+                 LET $notes_valid = (SELECT VALUE count() FROM note WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.search_content = search_content AND reindex_source_snapshot.chunk_heading_path = chunk_heading_path AND reindex_staging_owner = $owner GROUP ALL)[0] = $notes_expected; \
+                 LET $messages_valid = (SELECT VALUE count() FROM message WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.content_blocks = content_blocks AND reindex_staging_owner = $owner GROUP ALL)[0] = $messages_expected; \
+                 LET $conversations_valid = (SELECT VALUE count() FROM conversation WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_snapshot.title = title AND reindex_source_snapshot.summary = summary AND reindex_staging_owner = $owner GROUP ALL)[0] = $conversations_expected; \
+                 IF !$job_valid OR !$notes_valid OR !$messages_valid OR !$conversations_valid THEN THROW 'reindex staging is stale, incomplete, or no longer owned' END; \
+                 IF $validate_full_scope_membership AND ($notes_widened OR $messages_widened OR $conversations_widened) THEN THROW 'full reindex scope widened after snapshot; start a new reindex job' END; \
+                 UPDATE note SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $notes; \
+                 UPDATE message SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $messages; \
+                 UPDATE conversation SET summary_embedding = reindex_summary_embedding, reindex_summary_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $conversations; \
+                 UPDATE entity SET embedding = NONE WHERE $clear_entity_embeddings AND embedding IS NOT NONE; \
+                 UPSERT graphrag_metadata SET key = 'active_embedding', \
+                     application_schema_version = $schema_version, embedding_provider = $provider, \
+                     embedding_model = $model, embedding_dimension = $dimension, \
+                     generation = IF generation = NONE THEN 1 ELSE generation + 1 END, last_reindex_at = time::now(), \
+                     last_reindex_status = 'completed', updated_at = time::now() WHERE key = 'active_embedding'; \
+                 UPDATE $job_id SET status = 'completed', completed_count = $completed_count, checkpoint = NONE, last_error = NONE, finished_at = time::now(), updated_at = time::now() \
+                     WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner AND reindex_lease_expires_at >= time::now(); \
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("job_id", job_id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("notes", notes))
+            .bind(("messages", messages))
+            .bind(("conversations", conversations))
+            .bind(("schema_version", i64::from(migrations::latest_version())))
+            .bind(("provider", embedding.provider.clone()))
+            .bind(("model", embedding.model.clone()))
+            .bind(("dimension", dimension))
+            .bind(("clear_entity_embeddings", clear_entity_embeddings))
+            .bind((
+                "validate_full_scope_membership",
+                validate_full_scope_membership,
+            ))
+            .bind(("completed_count", completed_count))
+            .await?
+            .check()?;
+        Ok(())
     }
 
     /// Read a durable local inference result by its fully semantic cache key.

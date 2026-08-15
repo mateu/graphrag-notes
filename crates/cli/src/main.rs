@@ -2,6 +2,7 @@
 //!
 //! A command-line interface for the GraphRAG Notes system.
 
+mod backup;
 mod doctor;
 mod eval;
 
@@ -16,12 +17,13 @@ use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
     GraphEvidence, GraphMode, GraphPathStep, GraphRetrievalConfig, InferenceProviderConfig,
     InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, ProcessingConfig,
-    ProcessingRunResult, ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType,
-    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    ProcessingRunResult, ReindexAgent, ReindexScope, ResilientEmbedder, ResilientEntityExtractor,
+    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
 use graphrag_db::{
+    compatibility::EmbeddingIdentity,
     fusion::{FusionConfig, FusionStrategy},
     init_memory, init_persistent, migrations, parse_record_id,
     repository::RelatedNotes,
@@ -50,7 +52,7 @@ struct Cli {
     config: Option<PathBuf>,
 
     /// Database path (overrides the resolved configuration)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     db_path: Option<PathBuf>,
 
     /// Use in-memory database (for testing)
@@ -79,6 +81,31 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Create, verify, or restore a portable logical backup
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+
+    /// Export portable logical records as JSONL plus a checksum manifest sidecar
+    Export {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value_t = PortableDataFormat::Jsonl)]
+        format: PortableDataFormat,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        output: BackupOutputFormat,
+    },
+
+    /// Import a verified portable JSONL export into a fresh database path
+    ImportData {
+        path: PathBuf,
+        /// Validate all safety preconditions without writing the target
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        format: BackupOutputFormat,
+    },
+
     /// Diagnose configuration, database compatibility, and local providers without changing data
     Doctor {
         /// Output format for the diagnostic report
@@ -295,6 +322,30 @@ enum Commands {
         command: JobsCommand,
     },
 
+    /// Rebuild embeddings through a durable, all-or-nothing cutover job
+    Reindex {
+        /// Reindex visible notes
+        #[arg(long)]
+        notes: bool,
+        /// Reindex chat messages
+        #[arg(long)]
+        messages: bool,
+        /// Reindex conversation summaries
+        #[arg(long)]
+        summaries: bool,
+        /// Reindex notes, messages, and summaries
+        #[arg(long)]
+        all: bool,
+        /// Show the immutable job scope and provider preflight without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Resume a failed or cancelled reindex processing job
+        #[arg(long, value_name = "JOB_ID")]
+        resume: Option<String>,
+        #[arg(long, value_enum, default_value_t = JobOutputFormat::Human)]
+        format: JobOutputFormat,
+    },
+
     /// Show database statistics
     Stats,
 
@@ -374,6 +425,45 @@ enum ConfigCommand {
     Show,
     /// Validate configuration and exit without opening the database
     Validate,
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    /// Stream a versioned portable backup into a new directory
+    Create {
+        path: PathBuf,
+        /// Include vectors only when persisted model identity is available
+        #[arg(long)]
+        include_embeddings: bool,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        format: BackupOutputFormat,
+    },
+    /// Validate manifest, checksum, record counts, dimensions, and references
+    Verify {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        format: BackupOutputFormat,
+    },
+    /// Restore a verified archive into a fresh, nonexistent database path
+    Restore {
+        path: PathBuf,
+        /// Validate all safety preconditions without writing the target
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_enum, default_value_t = BackupOutputFormat::Human)]
+        format: BackupOutputFormat,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum BackupOutputFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum PortableDataFormat {
+    Jsonl,
 }
 
 #[derive(Subcommand)]
@@ -780,12 +870,63 @@ fn print_doctor_report(report: &doctor::DoctorReport, format: DoctorFormat) -> R
     Ok(())
 }
 
+/// Run archive-only operations before resolving runtime configuration. These
+/// commands never open the configured database or contact a provider, so an
+/// invalid config must not prevent an operator from inspecting or dry-running
+/// recovery data.
+async fn run_archive_only_command(cli: &Cli) -> Result<bool> {
+    if let Commands::Backup {
+        command: BackupCommand::Verify { path, format },
+    } = &cli.command
+    {
+        print_backup_summary(&backup::verify_backup(path)?, *format)?;
+        return Ok(true);
+    }
+    if let Commands::ImportData {
+        path,
+        dry_run: true,
+        format,
+    } = &cli.command
+    {
+        if cli.memory {
+            anyhow::bail!("import-data requires a fresh persistent --db-path, not --memory");
+        }
+        let target = cli.db_path.as_deref().context(
+            "import-data requires an explicit fresh --db-path; it never imports over the configured database",
+        )?;
+        print_backup_summary(&backup::import_jsonl(path, target, true).await?, *format)?;
+        return Ok(true);
+    }
+    if let Commands::Backup {
+        command:
+            BackupCommand::Restore {
+                path,
+                dry_run: true,
+                format,
+            },
+    } = &cli.command
+    {
+        if cli.memory {
+            anyhow::bail!("backup restore requires a fresh persistent --db-path, not --memory");
+        }
+        let target = cli.db_path.as_deref().context(
+            "backup restore requires an explicit fresh --db-path; it never restores over the configured database",
+        )?;
+        print_backup_summary(&backup::restore_backup(path, target, true).await?, *format)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables from .env if present.
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+    if run_archive_only_command(&cli).await? {
+        return Ok(());
+    }
     let doctor_format = match &cli.command {
         Commands::Doctor { format } => Some(*format),
         _ => None,
@@ -814,6 +955,56 @@ async fn main() -> Result<()> {
             ConfigCommand::Show => print!("{}", config.redacted_toml()?),
             ConfigCommand::Validate => println!("Configuration is valid."),
         }
+        return Ok(());
+    }
+
+    // Verification and restore intentionally run before normal database
+    // startup. Verification must not open a database at all, and restore must
+    // validate an archive before creating its staged fresh target.
+    if let Commands::Backup {
+        command: BackupCommand::Verify { path, format },
+    } = &cli.command
+    {
+        print_backup_summary(&backup::verify_backup(path)?, *format)?;
+        return Ok(());
+    }
+    if let Commands::ImportData {
+        path,
+        dry_run,
+        format,
+    } = &cli.command
+    {
+        if cli.memory {
+            anyhow::bail!("import-data requires a fresh persistent --db-path, not --memory");
+        }
+        let target = cli.db_path.as_deref().context(
+            "import-data requires an explicit fresh --db-path; it never imports over the configured database",
+        )?;
+        print_backup_summary(
+            &backup::import_jsonl(path, target, *dry_run).await?,
+            *format,
+        )?;
+        return Ok(());
+    }
+    if let Commands::Backup {
+        command:
+            BackupCommand::Restore {
+                path,
+                dry_run,
+                format,
+            },
+    } = &cli.command
+    {
+        if cli.memory {
+            anyhow::bail!("backup restore requires a fresh persistent --db-path, not --memory");
+        }
+        let target = cli.db_path.as_deref().context(
+            "backup restore requires an explicit fresh --db-path; it never restores over the configured database",
+        )?;
+        print_backup_summary(
+            &backup::restore_backup(path, target, *dry_run).await?,
+            *format,
+        )?;
         return Ok(());
     }
 
@@ -938,6 +1129,7 @@ async fn main() -> Result<()> {
             | Commands::Search { .. }
             | Commands::Augment { .. }
             | Commands::EvalAugment { .. }
+            | Commands::Reindex { .. }
             | Commands::Interactive
     );
     let needs_tgi = matches!(
@@ -984,6 +1176,7 @@ async fn main() -> Result<()> {
     let cancellation_requested = matches!(
         &cli.command,
         Commands::ExtractEntities { .. }
+            | Commands::Reindex { .. }
             | Commands::Jobs {
                 command: JobsCommand::Resume { .. }
             }
@@ -992,6 +1185,32 @@ async fn main() -> Result<()> {
 
     // Execute command
     match cli.command {
+        Commands::Export {
+            path,
+            format: PortableDataFormat::Jsonl,
+            output,
+        } => {
+            print_backup_summary(&backup::export_jsonl(&repo, &path).await?, output)?;
+        }
+        Commands::ImportData { .. } => {
+            unreachable!("import-data returns before database startup")
+        }
+        Commands::Backup {
+            command:
+                BackupCommand::Create {
+                    path,
+                    include_embeddings,
+                    format,
+                },
+        } => {
+            print_backup_summary(
+                &backup::create_backup(&repo, &path, include_embeddings).await?,
+                format,
+            )?;
+        }
+        Commands::Backup { .. } => {
+            unreachable!("verify and restore return before database startup")
+        }
         Commands::Add {
             content,
             title,
@@ -1137,6 +1356,31 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Commands::Reindex {
+            notes,
+            messages,
+            summaries,
+            all,
+            dry_run,
+            resume,
+            format,
+        } => {
+            cmd_reindex(
+                repo,
+                tei,
+                cancellation_requested
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+                notes,
+                messages,
+                summaries,
+                all,
+                dry_run,
+                resume,
+                format,
+            )
+            .await?;
+        }
         Commands::Stats => {
             cmd_stats(repo).await?;
         }
@@ -1204,6 +1448,27 @@ async fn main() -> Result<()> {
         Commands::Doctor { .. } => unreachable!("doctor returns before database initialization"),
     }
 
+    Ok(())
+}
+
+fn print_backup_summary(summary: &backup::BackupSummary, format: BackupOutputFormat) -> Result<()> {
+    match format {
+        BackupOutputFormat::Human => {
+            let operation = if summary.dry_run {
+                "Dry-run restore"
+            } else {
+                "Backup"
+            };
+            println!("{operation} verified: {}", summary.path.display());
+            println!("Schema version: {}", summary.schema_version);
+            println!("Records: {}", summary.records);
+            println!("Embeddings included: {}", summary.includes_embeddings);
+            for (table, count) in &summary.record_counts {
+                println!("  {table}: {count}");
+            }
+        }
+        BackupOutputFormat::Json => println!("{}", serde_json::to_string(summary)?),
+    }
     Ok(())
 }
 
@@ -1322,6 +1587,154 @@ async fn cmd_jobs(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct ReindexOutput {
+    dry_run: bool,
+    scope: String,
+    item_count: usize,
+    estimated_input_characters: u64,
+    provider: String,
+    model: String,
+    dimension: usize,
+    job_id: Option<String>,
+    completed: Option<u64>,
+    cancelled: bool,
+}
+
+fn print_reindex_output(output: &ReindexOutput, format: JobOutputFormat) -> Result<()> {
+    match format {
+        JobOutputFormat::Json => println!("{}", serde_json::to_string(output)?),
+        JobOutputFormat::Human => {
+            if output.dry_run {
+                println!(
+                    "Reindex dry run: scope={} items={} estimated_input_characters={}",
+                    output.scope, output.item_count, output.estimated_input_characters
+                );
+            } else {
+                println!(
+                    "Reindex job {}: completed={}/{}{}",
+                    output.job_id.as_deref().unwrap_or("-"),
+                    output.completed.unwrap_or(0),
+                    output.item_count,
+                    if output.cancelled { " (cancelled)" } else { "" }
+                );
+            }
+            println!(
+                "Embedding target: {}/{} ({} dimensions)",
+                output.provider, output.model, output.dimension
+            );
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_reindex(
+    repo: Repository,
+    tei: SharedEmbedder,
+    cancellation_requested: Arc<AtomicBool>,
+    notes: bool,
+    messages: bool,
+    summaries: bool,
+    all: bool,
+    dry_run: bool,
+    resume: Option<String>,
+    format: JobOutputFormat,
+) -> Result<()> {
+    if resume.is_some() && (notes || messages || summaries || all || dry_run) {
+        anyhow::bail!("--resume cannot be combined with scope selectors or --dry-run");
+    }
+    let capabilities = tei.capabilities();
+    // A real probe is deliberately performed before creating/resuming a job:
+    // provider configuration alone is not a proof of the indexed dimension.
+    let probe = tei.embed("graphrag reindex dimension probe", false).await?;
+    if probe.len() != graphrag_db::schema::EMBEDDING_DIMENSION {
+        anyhow::bail!(
+            "active embedding provider {}/{} returned {} dimensions; this database schema indexes {}. Choose a compatible model before reindexing",
+            capabilities.provider,
+            capabilities.model,
+            probe.len(),
+            graphrag_db::schema::EMBEDDING_DIMENSION,
+        );
+    }
+    let identity = EmbeddingIdentity::new(
+        capabilities.provider.clone(),
+        capabilities.model.clone(),
+        probe.len(),
+    );
+    let agent = ReindexAgent::new(repo.clone(), tei).with_cancellation_flag(cancellation_requested);
+    if let Some(job_id) = resume {
+        let result = agent.resume(&job_id, identity).await?;
+        let job = repo
+            .get_processing_job(&result.job_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("reindex job disappeared: {}", result.job_id))?;
+        print_reindex_output(
+            &ReindexOutput {
+                dry_run: false,
+                scope: job.scope.unwrap_or_else(|| "reindex".into()),
+                item_count: job.item_ids.len(),
+                estimated_input_characters: 0,
+                provider: capabilities.provider,
+                model: capabilities.model,
+                dimension: probe.len(),
+                job_id: Some(result.job_id),
+                completed: Some(result.completed),
+                cancelled: result.cancelled,
+            },
+            format,
+        )?;
+        return Ok(());
+    }
+    let scope = if all {
+        ReindexScope::all()
+    } else {
+        ReindexScope {
+            notes,
+            messages,
+            summaries,
+        }
+    };
+    let preview = agent.preview(scope).await?;
+    if dry_run {
+        print_reindex_output(
+            &ReindexOutput {
+                dry_run: true,
+                scope: preview.scope.label(),
+                item_count: preview.item_ids.len(),
+                estimated_input_characters: preview.estimated_input_characters,
+                provider: capabilities.provider,
+                model: capabilities.model,
+                dimension: probe.len(),
+                job_id: None,
+                completed: None,
+                cancelled: false,
+            },
+            format,
+        )?;
+        return Ok(());
+    }
+    let item_count = preview.item_ids.len();
+    let estimated_input_characters = preview.estimated_input_characters;
+    let scope = preview.scope.label();
+    let result = agent.start(preview, identity).await?;
+    print_reindex_output(
+        &ReindexOutput {
+            dry_run: false,
+            scope,
+            item_count,
+            estimated_input_characters,
+            provider: capabilities.provider,
+            model: capabilities.model,
+            dimension: probe.len(),
+            job_id: Some(result.job_id),
+            completed: Some(result.completed),
+            cancelled: result.cancelled,
+        },
+        format,
+    )
+}
+
 /// Validate only the provider required by the persisted job before changing
 /// its state to running. Embedding jobs do not need extraction service health,
 /// and entity jobs do not need embeddings service health.
@@ -1345,6 +1758,10 @@ async fn ensure_resume_provider_health(
                 anyhow::bail!("Extraction service unavailable")
             }
         }
+        Some(ProcessingJobType::Reindex) => anyhow::bail!(
+            "reindex jobs must be resumed with `graphrag reindex --resume {}`",
+            job.id.as_ref().map(record_id_to_string).unwrap_or_default()
+        ),
         None => anyhow::bail!("Unsupported processing job type: {}", job.job_type),
     }
     Ok(())
@@ -3336,5 +3753,91 @@ mod tests {
                 .request_timeout,
             Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn portable_and_reindex_json_summaries_have_stable_machine_fields() {
+        let backup = backup::BackupSummary {
+            path: PathBuf::from("/tmp/archive"),
+            schema_version: 9,
+            records: 4,
+            record_counts: std::collections::BTreeMap::from([("note".into(), 4)]),
+            includes_embeddings: false,
+            dry_run: true,
+        };
+        let backup_json = serde_json::to_value(&backup).unwrap();
+        for field in [
+            "path",
+            "schema_version",
+            "records",
+            "record_counts",
+            "includes_embeddings",
+            "dry_run",
+        ] {
+            assert!(
+                backup_json.get(field).is_some(),
+                "missing backup field {field}"
+            );
+        }
+        let reindex = ReindexOutput {
+            dry_run: true,
+            scope: "notes".into(),
+            item_count: 4,
+            estimated_input_characters: 123,
+            provider: "fixture".into(),
+            model: "model".into(),
+            dimension: 1024,
+            job_id: None,
+            completed: None,
+            cancelled: false,
+        };
+        let reindex_json = serde_json::to_value(reindex).unwrap();
+        for field in [
+            "dry_run",
+            "scope",
+            "item_count",
+            "estimated_input_characters",
+            "provider",
+            "model",
+            "dimension",
+            "job_id",
+            "completed",
+            "cancelled",
+        ] {
+            assert!(
+                reindex_json.get(field).is_some(),
+                "missing reindex field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn reindex_cli_requires_an_explicit_scope_unless_resuming() {
+        let cli = Cli::try_parse_from([
+            "graphrag",
+            "reindex",
+            "--all",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Reindex {
+                all: true,
+                dry_run: true,
+                ..
+            }
+        ));
+        let resume =
+            Cli::try_parse_from(["graphrag", "reindex", "--resume", "processing_job:one"]).unwrap();
+        assert!(matches!(
+            resume.command,
+            Commands::Reindex {
+                resume: Some(_),
+                ..
+            }
+        ));
     }
 }
