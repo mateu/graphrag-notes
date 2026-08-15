@@ -153,6 +153,33 @@ pub struct ScopedSearchResult {
     pub graph: Option<GraphEvidence>,
 }
 
+impl ScopedSearchResult {
+    /// Build observational evidence for a ranked retrieval result. This has no
+    /// effect on fusion, ordering, or graph expansion.
+    pub fn explanation(&self) -> crate::RetrievalExplanation {
+        let (fused, vector, full_text) = crate::fusion_scores(&self.fusion);
+        crate::RetrievalExplanation {
+            schema_version: crate::EXPLANATION_SCHEMA_VERSION,
+            rank: self.fusion.final_rank,
+            hit_type: self.hit_type.into(),
+            fused,
+            vector,
+            full_text,
+            graph: self.graph.clone(),
+            inclusion: crate::InclusionReason::Selected,
+            token_count: None,
+            provenance: crate::ProvenanceEvidence {
+                source_uri: self.source_uri.clone(),
+                conversation_uuid: self.conversation_uuid.clone(),
+                message_index: self.message_index,
+                role: self.role.clone(),
+                selected_span_start: None,
+                selected_span_end: None,
+            },
+        }
+    }
+}
+
 pub use crate::context_packing::{
     AugmentChunk, AugmentContext, AugmentDiagnostics, AugmentOptions, ConservativeTokenCounter,
     TokenCountMode, TokenCounter,

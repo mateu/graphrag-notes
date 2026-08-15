@@ -171,6 +171,35 @@ impl AugmentContext {
     }
 }
 
+impl AugmentChunk {
+    /// Evidence used by narrow renderers and citations; this is derived from
+    /// the selected chunk rather than a separate provenance assembly path.
+    pub fn explanation(&self, rank: usize) -> crate::RetrievalExplanation {
+        crate::RetrievalExplanation {
+            schema_version: crate::EXPLANATION_SCHEMA_VERSION,
+            rank,
+            hit_type: self.hit_type.into(),
+            fused: crate::ScoreEvidence {
+                value: self.score,
+                meaning: "retrieval score before context selection",
+            },
+            vector: None,
+            full_text: None,
+            graph: self.graph.clone(),
+            inclusion: crate::InclusionReason::Selected,
+            token_count: Some(self.rendered_tokens),
+            provenance: crate::ProvenanceEvidence {
+                source_uri: self.source_uri.clone(),
+                conversation_uuid: self.conversation_uuid.clone(),
+                message_index: self.message_index,
+                role: self.role.clone(),
+                selected_span_start: self.selected_span_start,
+                selected_span_end: self.selected_span_end,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn build_augment_context_from_hits(
     query: String,
