@@ -705,26 +705,7 @@ impl SearchAgent {
                     }
                 }
             }
-            // A `BTreeMap` gives deterministic storage, but its record-ID
-            // order is not retrieval relevance. Consume the remaining graph
-            // candidate budget by score first, with the canonical ID only as
-            // a deterministic tie-breaker.
-            for state in ranked_frontier_states(&next) {
-                let existing = candidates.get(&state.id);
-                if existing.is_none() && candidates.len() >= self.graph.candidate_cap {
-                    // The candidate cap excludes novel notes, but it must not
-                    // prevent a later path from replacing weaker evidence for
-                    // an already selected note.
-                    continue;
-                }
-                let evidence = state.evidence(Some(hop));
-                if existing
-                    .is_none_or(|existing| graph_evidence_priority(&evidence, existing).is_lt())
-                {
-                    candidates.insert(state.id.clone(), evidence);
-                }
-            }
-            current = next;
+            current = admit_graph_frontier(next, &mut candidates, self.graph.candidate_cap, hop);
         }
 
         summary.candidates_considered = candidates.len();
@@ -913,6 +894,31 @@ fn ranked_frontier_states(frontier: &BTreeMap<String, GraphFrontier>) -> Vec<&Gr
             .then_with(|| left.id.cmp(&right.id))
     });
     states
+}
+
+/// Admit only the ranked next-hop states that fit the candidate budget. A
+/// state for an already selected note remains eligible at the cap because it
+/// can replace weaker evidence; rejected novel states are never expanded on a
+/// later hop.
+fn admit_graph_frontier(
+    next: BTreeMap<String, GraphFrontier>,
+    candidates: &mut BTreeMap<String, GraphEvidence>,
+    candidate_cap: usize,
+    hop: usize,
+) -> BTreeMap<String, GraphFrontier> {
+    let mut admitted = BTreeMap::new();
+    for state in ranked_frontier_states(&next) {
+        let existing = candidates.get(&state.id);
+        if existing.is_none() && candidates.len() >= candidate_cap {
+            continue;
+        }
+        let evidence = state.evidence(Some(hop));
+        if existing.is_none_or(|existing| graph_evidence_priority(&evidence, existing).is_lt()) {
+            candidates.insert(state.id.clone(), evidence);
+        }
+        admitted.insert(state.id.clone(), state.clone());
+    }
+    admitted
 }
 
 fn graph_transition_priority(left: &GraphFrontier, right: &GraphFrontier) -> std::cmp::Ordering {
@@ -1442,6 +1448,71 @@ mod tests {
             .map(|state| state.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(retained, vec!["note:zzz-high-score"]);
+    }
+
+    #[test]
+    fn next_hop_expands_only_ranked_states_admitted_by_candidate_cap() {
+        let seed = GraphFrontier::seed(
+            RecordId::new("note", "seed"),
+            "note:seed".into(),
+            vec!["Seed".into()],
+            0.03,
+        );
+        let mut candidates = BTreeMap::from([("note:seed".into(), seed.evidence(None))]);
+        let mut next = BTreeMap::new();
+        for (id, score) in [("note:high", 0.9), ("note:middle", 0.8), ("note:low", 0.7)] {
+            next.insert(
+                id.into(),
+                GraphFrontier::seed(
+                    RecordId::new("note", id.strip_prefix("note:").unwrap()),
+                    id.into(),
+                    Vec::new(),
+                    score,
+                ),
+            );
+        }
+
+        let admitted = admit_graph_frontier(next, &mut candidates, 3, 1);
+        assert_eq!(
+            admitted.keys().cloned().collect::<Vec<_>>(),
+            vec!["note:high", "note:middle"]
+        );
+        assert_eq!(candidates.len(), 3);
+        assert!(!admitted.contains_key("note:low"));
+    }
+
+    #[test]
+    fn admitted_existing_candidate_can_replace_weaker_evidence_at_cap() {
+        let seed = GraphFrontier::seed(
+            RecordId::new("note", "seed"),
+            "note:seed".into(),
+            vec!["Seed".into()],
+            0.03,
+        );
+        let weak = GraphFrontier::seed(
+            RecordId::new("note", "target"),
+            "note:target".into(),
+            Vec::new(),
+            0.01,
+        )
+        .evidence(Some(1));
+        let mut candidates = BTreeMap::from([
+            ("note:seed".into(), seed.evidence(None)),
+            ("note:target".into(), weak),
+        ]);
+        let next = BTreeMap::from([(
+            "note:target".into(),
+            GraphFrontier::seed(
+                RecordId::new("note", "target"),
+                "note:target".into(),
+                Vec::new(),
+                0.02,
+            ),
+        )]);
+
+        let admitted = admit_graph_frontier(next, &mut candidates, 2, 2);
+        assert!(admitted.contains_key("note:target"));
+        assert_eq!(candidates["note:target"].score, 0.02);
     }
 
     #[tokio::test]
