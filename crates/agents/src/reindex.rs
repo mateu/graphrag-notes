@@ -266,6 +266,34 @@ impl ReindexAgent {
         } else {
             job
         };
+        // A batch can stage some rows and then fail before its fingerprint and
+        // checkpoint transaction. Those rows are intentionally retryable, so
+        // their transient completed count must not survive a resume. The
+        // durable checkpoint is the sole progress authority.
+        let checkpoint_completed = job
+            .checkpoint
+            .as_ref()
+            .and_then(|checkpoint| {
+                job.item_ids
+                    .iter()
+                    .position(|item_id| item_id == checkpoint)
+            })
+            .map_or(0, |index| (index + 1) as u64);
+        let job = if u64::try_from(job.completed_count.max(0)).unwrap_or(0) != checkpoint_completed
+        {
+            self.repo
+                .update_owned_reindex_processing_job(
+                    &id,
+                    &owner,
+                    ProcessingJobUpdate {
+                        completed_count: Some(checkpoint_completed),
+                        ..Default::default()
+                    },
+                )
+                .await?
+        } else {
+            job
+        };
         self.run_job(job, identity, owner).await
     }
 
@@ -792,6 +820,78 @@ mod tests {
                 .status,
             ProcessingJobStatus::Cancelled.as_str()
         );
+    }
+
+    #[tokio::test]
+    async fn resume_resets_partial_batch_progress_to_its_durable_checkpoint() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first = repo
+            .create_note(Note::new("first partial stage").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let _second = repo
+            .create_note(Note::new("second partial stage").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let target = EmbeddingIdentity::new("target", "target-model", 1024);
+        let seed = ReindexAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().with_identity("target", "target-model")),
+        );
+        let preview = seed.preview(ReindexScope::all()).await.unwrap();
+        let job = repo
+            .create_reindex_processing_job(
+                preview.item_ids.len() as u64,
+                format!("reindex:{}", preview.scope.label()),
+                preview.item_ids,
+                &target,
+                preview.item_fingerprints,
+            )
+            .await
+            .unwrap();
+        let job_id = job.id.as_ref().unwrap().clone();
+        let owner = "failed-partial-batch";
+        repo.claim_reindex_processing_job(&job_id, owner, Utc::now() + Duration::minutes(1))
+            .await
+            .unwrap();
+        let first_item = repo
+            .get_reindex_item(&graphrag_core::record_id_to_string(
+                first.id.as_ref().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        repo.stage_reindex_embedding(&first_item, vector(0.8), owner)
+            .await
+            .unwrap();
+        // Model a failure after the first write in a batch but before the
+        // batch fingerprint/checkpoint commit.
+        repo.update_owned_reindex_processing_job(
+            &job_id,
+            owner,
+            ProcessingJobUpdate {
+                status: Some(ProcessingJobStatus::Failed),
+                completed_count: Some(1),
+                failed_count: Some(1),
+                finish: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = seed
+            .resume(&graphrag_core::record_id_to_string(&job_id), target)
+            .await
+            .unwrap();
+        assert_eq!(result.completed, 2);
+        let persisted = repo
+            .get_processing_job(&graphrag_core::record_id_to_string(&job_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.status, ProcessingJobStatus::Completed.as_str());
+        assert_eq!(persisted.completed_count, 2);
     }
 
     #[tokio::test]
