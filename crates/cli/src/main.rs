@@ -1005,10 +1005,14 @@ fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("Error: {error:#}");
-        std::process::exit(exit_code_for(&error) as i32);
-    }
+    let exit_code = match run().await {
+        Ok(()) => output::ExitCode::Success,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            exit_code_for(&error)
+        }
+    };
+    std::process::exit(exit_code as i32);
 }
 
 async fn run() -> Result<()> {
