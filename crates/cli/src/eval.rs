@@ -891,6 +891,15 @@ mod tests {
             .await
             .expect("fixture source must persist");
         let source_id = source.id.expect("fixture source must receive an id");
+        let mut other_source = Source::manual().with_title("fixture unrelated notes");
+        other_source.uri = Some("fixture://notes/other.md".into());
+        let other_source = repo
+            .create_source(other_source)
+            .await
+            .expect("fixture other source must persist");
+        let other_source_id = other_source
+            .id
+            .expect("fixture other source must receive an id");
         let music = repo
             .create_note(
                 Note::new("A local music service on the media host")
@@ -911,6 +920,19 @@ mod tests {
             )
             .await
             .expect("fixture network note must persist");
+        // This intentionally resembles the filtered query and shares its
+        // embedding. If source filtering regresses, it is returned in the
+        // note context and the fixture's mapped forbidden ID fails the gate.
+        let other_source_music = repo
+            .create_note(
+                // Match the other tied note lengths so unrelated all-scope
+                // ID ordering cannot change rendered-token metrics.
+                Note::new("A local music service on the other host")
+                    .with_embedding(music_embedding.clone())
+                    .with_source(other_source_id),
+            )
+            .await
+            .expect("fixture other-source music note must persist");
 
         let conversation = ChatConversation {
             uuid: "fixture-conversation-support".into(),
@@ -966,6 +988,8 @@ mod tests {
                 "note-with-source-filter" => {
                     case.relevance[0].id = record_id_to_string(music.id.as_ref().unwrap());
                     case.relevance[1].id = record_id_to_string(network.id.as_ref().unwrap());
+                    case.forbidden_ids =
+                        vec![record_id_to_string(other_source_music.id.as_ref().unwrap())];
                 }
                 "message-provenance" => {
                     case.relevance[0].id = record_id_to_string(&message_id);
@@ -1013,7 +1037,16 @@ mod tests {
             reports.push(EvalCaseReport {
                 query: case.query.clone(),
                 name,
-                metrics: evaluate_ranked_results(&case, &results, case.resolved_k(10), 0),
+                // Metrics must reflect the complete prompt budget, including
+                // citations, titles, and context framing. Summing snippets
+                // would hide regressions in the rendered context path.
+                metrics: evaluate_ranked_results_with_tokens(
+                    &case,
+                    &results,
+                    case.resolved_k(10),
+                    0,
+                    context.total_tokens,
+                ),
                 augmentation: None,
             });
         }
@@ -1092,6 +1125,32 @@ mod tests {
             retrieval_fixture_report().await,
             "fixture reports must not depend on generated record-ID ordering"
         );
+    }
+
+    #[tokio::test]
+    async fn retrieval_fixture_source_filter_excludes_relevant_other_source_decoy() {
+        let report = retrieval_fixture_report().await;
+        let source_case = report
+            .cases
+            .iter()
+            .find(|case| case.name == "note-with-source-filter")
+            .expect("fixture must include its source-filter case");
+        assert_eq!(source_case.metrics.retrieved, 2);
+        assert!(!source_case.metrics.forbidden_result_found);
+        assert_eq!(source_case.metrics.provenance_accuracy, Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn retrieval_fixture_report_counts_rendered_context_budget() {
+        let report = retrieval_fixture_report().await;
+        let source_case = report
+            .cases
+            .iter()
+            .find(|case| case.name == "note-with-source-filter")
+            .expect("fixture must include its source-filter case");
+        // Its two fixed snippets occupy 78 bytes; rendered citations, labels,
+        // titles, and <context> framing must remain visible to the metric.
+        assert!(source_case.metrics.tokens > 78);
     }
 
     #[test]
