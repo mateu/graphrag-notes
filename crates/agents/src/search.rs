@@ -1579,6 +1579,14 @@ mod tests {
                 explanation.result_id == note_id
                     && explanation.inclusion == crate::InclusionReason::TokenBudget
             }));
+            let budget_exclusions = context
+                .exclusions
+                .iter()
+                .filter(|explanation| explanation.inclusion == crate::InclusionReason::TokenBudget)
+                .count();
+            assert!(budget_exclusions > 0);
+            assert_eq!(context.diagnostics.dropped_for_budget, budget_exclusions);
+            assert_eq!(context.dropped_for_budget, budget_exclusions);
         }
     }
 

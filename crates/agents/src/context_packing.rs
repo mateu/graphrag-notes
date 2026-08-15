@@ -259,6 +259,11 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             .iter()
             .map(|hit| hit.explanation_with_inclusion(reason))
             .collect::<Vec<_>>();
+        let dropped_for_budget = if reason == crate::InclusionReason::TokenBudget {
+            exclusions.len()
+        } else {
+            0
+        };
         let mut context = empty_context(
             query,
             scope,
@@ -268,6 +273,8 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         );
         context.exclusions = entity_exclusions;
         context.exclusions.extend(exclusions);
+        context.diagnostics.dropped_for_budget = dropped_for_budget;
+        context.dropped_for_budget = dropped_for_budget;
         return context;
     }
 
