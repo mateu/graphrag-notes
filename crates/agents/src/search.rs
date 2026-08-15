@@ -572,6 +572,11 @@ impl SearchAgent {
 
         let mut entity_filtered = Vec::new();
         if let Some(filter) = entity_filter {
+            // Excluded candidates still carry evidence, so assign the
+            // merged-ranking position before removing them. Survivors are
+            // ranked again below after filtering, while these explanations
+            // retain the truthful pre-filter rank that caused their review.
+            rank_scoped_results(&mut scoped_results);
             let mut filtered = Vec::with_capacity(scoped_results.len());
             for hit in scoped_results {
                 if hit.hit_type == SearchHitType::Note
@@ -643,18 +648,11 @@ impl SearchAgent {
         options: AugmentOptions,
         graph_mode: GraphMode,
     ) -> Result<AugmentContext> {
-        if options.max_chunks == 0 || options.max_total_tokens == 0 || options.max_chunk_tokens == 0
-        {
-            return Ok(crate::context_packing::empty_context(
-                query.to_string(),
-                scope,
-                entity_filter,
-                options.token_counter.mode(),
-                0,
-            ));
-        }
-
-        let fetch_limit = (options.max_chunks * 4).clamp(options.max_chunks, 200);
+        // Even an explicit zero context budget needs a bounded candidate
+        // sample: the packer turns it into identified `TokenBudget`
+        // exclusions for explain output instead of silently returning an
+        // unexplained empty context.
+        let fetch_limit = options.max_chunks.max(1).saturating_mul(4).clamp(4, 200);
         let (graph_results, entity_filtered) = self
             .search_with_scope_graph_filtered(
                 query,
@@ -1536,7 +1534,52 @@ mod tests {
         assert!(context.exclusions.iter().all(|explanation| {
             explanation.inclusion == crate::InclusionReason::Filtered
                 && explanation.result_id.starts_with("note:")
+                && explanation.rank > 0
         }));
+    }
+
+    #[tokio::test]
+    async fn zero_augmentation_budgets_emit_identified_token_budget_exclusions() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("zero budget retrieval candidate"))
+            .await
+            .unwrap();
+        let note_id = record_id_to_string(note.id.as_ref().unwrap());
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()));
+
+        for options in [
+            AugmentOptions {
+                max_chunks: 1,
+                max_total_tokens: 0,
+                max_chunk_tokens: 32,
+                ..Default::default()
+            },
+            AugmentOptions {
+                max_chunks: 1,
+                max_total_tokens: 32,
+                max_chunk_tokens: 0,
+                ..Default::default()
+            },
+        ] {
+            let context = search
+                .build_augmented_context_with_graph(
+                    "budget",
+                    SearchScope::Notes,
+                    None,
+                    None,
+                    None,
+                    options,
+                    GraphMode::Off,
+                )
+                .await
+                .unwrap();
+            assert!(context.chunks.is_empty());
+            assert!(context.exclusions.iter().any(|explanation| {
+                explanation.result_id == note_id
+                    && explanation.inclusion == crate::InclusionReason::TokenBudget
+            }));
+        }
     }
 
     #[tokio::test]
