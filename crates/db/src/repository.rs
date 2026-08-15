@@ -812,7 +812,8 @@ impl Repository {
                  reindex_lease_expires_at = $lease_expires_at, last_error = NONE, finished_at = NONE, \
                  updated_at = time::now() WHERE job_type = 'reindex' AND (status = 'queued' OR \
                  status = 'cancelled' OR status = 'failed' OR (status = 'running' AND \
-                 (reindex_lease_expires_at IS NONE OR reindex_lease_expires_at < time::now()))) RETURN AFTER",
+                 (reindex_lease_owner = $owner OR reindex_lease_expires_at IS NONE OR \
+                 reindex_lease_expires_at < time::now()))) RETURN AFTER",
             )
             .bind(("id", id.clone()))
             .bind(("owner", owner.to_string()))

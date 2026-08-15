@@ -92,6 +92,8 @@ pub struct ReindexAgent {
     lease_duration: Duration,
     lease_heartbeat: StdDuration,
     batch_size: usize,
+    #[cfg(test)]
+    fail_after_resume_claim: Arc<AtomicBool>,
 }
 
 impl ReindexAgent {
@@ -103,6 +105,8 @@ impl ReindexAgent {
             lease_duration: REINDEX_LEASE,
             lease_heartbeat: REINDEX_HEARTBEAT,
             batch_size: REINDEX_BATCH_SIZE,
+            #[cfg(test)]
+            fail_after_resume_claim: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -126,6 +130,12 @@ impl ReindexAgent {
     fn with_batch_size_for_test(mut self, batch_size: usize) -> Self {
         assert!(batch_size > 0, "reindex batch size must be positive");
         self.batch_size = batch_size;
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_once_after_resume_claim_for_test(self) -> Self {
+        self.fail_after_resume_claim.store(true, Ordering::Release);
         self
     }
 
@@ -199,8 +209,12 @@ impl ReindexAgent {
     /// aborted-transaction response is safe to retry once after the failed
     /// job state has been durably recorded.
     pub async fn resume(&self, job_id: &str, identity: EmbeddingIdentity) -> Result<ReindexResult> {
+        // Retain one owner identity for all bounded attempts. A failure before
+        // `run_job` can leave the job `running` with a live lease, and the
+        // same worker must be able to renew and continue that lease.
+        let owner = Uuid::new_v4().to_string();
         for attempt in 0..REINDEX_RESUME_TRANSIENT_ATTEMPTS {
-            match self.resume_once(job_id, identity.clone()).await {
+            match self.resume_once(job_id, identity.clone(), &owner).await {
                 Ok(result) => return Ok(result),
                 Err(error)
                     if is_failed_transaction(&error)
@@ -218,6 +232,7 @@ impl ReindexAgent {
         &self,
         job_id: &str,
         identity: EmbeddingIdentity,
+        owner: &str,
     ) -> Result<ReindexResult> {
         let job = self
             .repo
@@ -244,10 +259,9 @@ impl ReindexAgent {
             .id
             .clone()
             .ok_or_else(|| AgentError::Processing("reindex job has no id".into()))?;
-        let owner = Uuid::new_v4().to_string();
         let job = self
             .repo
-            .claim_reindex_processing_job(&id, &owner, Utc::now() + self.lease_duration)
+            .claim_reindex_processing_job(&id, owner, Utc::now() + self.lease_duration)
             .await
             .map_err(|_| {
                 AgentError::Processing(
@@ -255,13 +269,19 @@ impl ReindexAgent {
                         .into(),
                 )
             })?;
+        #[cfg(test)]
+        if self.fail_after_resume_claim.swap(false, Ordering::AcqRel) {
+            return Err(AgentError::Processing(format!(
+                "SurrealDB error: {FAILED_TRANSACTION_MESSAGE}"
+            )));
+        }
         let fingerprints = job.reindex_item_fingerprints.as_ref().ok_or_else(|| {
             AgentError::Processing(
                 "reindex job lacks content fingerprints; start a new reindex job instead of resuming unsafe staging".into(),
             )
         })?;
         self.repo
-            .adopt_reindex_staging(&job.item_ids, &owner)
+            .adopt_reindex_staging(&job.item_ids, owner)
             .await?;
         let checkpoint_index = job.checkpoint.as_ref().and_then(|checkpoint| {
             job.item_ids
@@ -283,7 +303,7 @@ impl ReindexAgent {
                 self.repo
                     .update_owned_reindex_processing_job(
                         &id,
-                        &owner,
+                        owner,
                         ProcessingJobUpdate {
                             completed_count: Some(rewind_to as u64),
                             checkpoint: Some(
@@ -319,7 +339,7 @@ impl ReindexAgent {
             self.repo
                 .update_owned_reindex_processing_job(
                     &id,
-                    &owner,
+                    owner,
                     ProcessingJobUpdate {
                         completed_count: Some(checkpoint_completed),
                         ..Default::default()
@@ -329,7 +349,7 @@ impl ReindexAgent {
         } else {
             job
         };
-        self.run_job(job, identity, owner).await
+        self.run_job(job, identity, owner.to_string()).await
     }
 
     async fn run_job(
@@ -625,6 +645,53 @@ mod tests {
         assert!(!is_failed_transaction(&AgentError::Processing(
             "SurrealDB error: staging is stale".into()
         )));
+    }
+
+    #[tokio::test]
+    async fn resume_reuses_its_owner_after_a_classified_post_claim_failure() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        for content in ["first checkpointed item", "second resumable item"] {
+            repo.create_note(Note::new(content).with_embedding(vector(0.1)))
+                .await
+                .unwrap();
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stopping: SharedEmbedder = Arc::new(CancellingEmbedder {
+            cancelled: cancelled.clone(),
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let initial = ReindexAgent::new(repo.clone(), stopping)
+            .with_cancellation_flag(cancelled)
+            .with_batch_size_for_test(1)
+            .start(
+                ReindexAgent::new(repo.clone(), Arc::new(DeterministicEmbedder::default()))
+                    .preview(ReindexScope::all())
+                    .await
+                    .unwrap(),
+                EmbeddingIdentity::new("test", "test", 1024),
+            )
+            .await
+            .unwrap();
+        assert!(initial.cancelled);
+
+        let result = ReindexAgent::new(repo.clone(), Arc::new(DeterministicEmbedder::default()))
+            .with_batch_size_for_test(1)
+            .fail_once_after_resume_claim_for_test()
+            .resume(
+                &initial.job_id,
+                EmbeddingIdentity::new("test", "test", 1024),
+            )
+            .await
+            .unwrap();
+        assert!(!result.cancelled);
+        assert_eq!(
+            repo.get_processing_job(&initial.job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProcessingJobStatus::Completed.as_str()
+        );
     }
 
     struct CancellingEmbedder {
