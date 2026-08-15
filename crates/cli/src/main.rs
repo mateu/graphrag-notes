@@ -951,6 +951,16 @@ fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
         {
             return output::ExitCode::Validation;
         }
+        if cause
+            .downcast_ref::<graphrag_config::ConfigError>()
+            .is_some()
+        {
+            // Configuration is supplied at invocation time through --config,
+            // environment, or the resolved local config path. A read, parse,
+            // or validation failure is therefore a recoverable user-input
+            // error, not an internal command failure.
+            return output::ExitCode::Validation;
+        }
         if let Some(error) = cause.downcast_ref::<graphrag_db::DbError>() {
             return match error {
                 graphrag_db::DbError::NotFound(_, _) => output::ExitCode::NotFound,
@@ -3845,6 +3855,26 @@ mod tests {
         );
         assert_eq!(
             exit_code_for(&unreadable_file),
+            output::ExitCode::Validation
+        );
+
+        let unreadable_config = anyhow::Error::new(graphrag_config::ConfigError::ReadFile {
+            path: PathBuf::from("missing-config.toml"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        });
+        assert_eq!(
+            exit_code_for(&unreadable_config),
+            output::ExitCode::Validation
+        );
+
+        let malformed_config_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(malformed_config_file.path(), "database = [").unwrap();
+        let malformed_config = anyhow::Error::new(
+            graphrag_config::RuntimeConfig::from_file(malformed_config_file.path())
+                .expect_err("fixture must not parse"),
+        );
+        assert_eq!(
+            exit_code_for(&malformed_config),
             output::ExitCode::Validation
         );
 
