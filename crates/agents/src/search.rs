@@ -157,26 +157,66 @@ impl ScopedSearchResult {
     /// Build observational evidence for a ranked retrieval result. This has no
     /// effect on fusion, ordering, or graph expansion.
     pub fn explanation(&self) -> crate::RetrievalExplanation {
-        let (fused, vector, full_text) = crate::fusion_scores(&self.fusion);
-        crate::RetrievalExplanation {
-            schema_version: crate::EXPLANATION_SCHEMA_VERSION,
-            rank: self.fusion.final_rank,
-            hit_type: self.hit_type.into(),
-            fused,
-            vector,
-            full_text,
-            graph: self.graph.clone(),
-            inclusion: crate::InclusionReason::Selected,
-            token_count: None,
-            provenance: crate::ProvenanceEvidence {
-                source_uri: self.source_uri.clone(),
-                conversation_uuid: self.conversation_uuid.clone(),
-                message_index: self.message_index,
-                role: self.role.clone(),
-                selected_span_start: None,
-                selected_span_end: None,
-            },
-        }
+        retrieval_explanation(
+            self.hit_type,
+            &self.fusion,
+            self.graph.clone(),
+            self.source_uri.clone(),
+            self.conversation_uuid.clone(),
+            self.message_index,
+            self.role.clone(),
+        )
+    }
+}
+
+impl EnrichedSearchResult {
+    /// The legacy related-notes path retains the same fused note result. This
+    /// adapter keeps `--context --graph=off --explain` observational rather
+    /// than sending the query through a different retrieval route.
+    pub fn explanation(&self) -> crate::RetrievalExplanation {
+        retrieval_explanation(
+            SearchHitType::Note,
+            &self.result.fusion,
+            None,
+            self.result.source_uri.clone(),
+            None,
+            None,
+            None,
+        )
+    }
+}
+
+fn retrieval_explanation(
+    hit_type: SearchHitType,
+    fusion: &FusionEvidence,
+    graph: Option<GraphEvidence>,
+    source_uri: Option<String>,
+    conversation_uuid: Option<String>,
+    message_index: Option<i64>,
+    role: Option<String>,
+) -> crate::RetrievalExplanation {
+    let (fused, vector, full_text) = crate::fusion_scores(fusion);
+    crate::RetrievalExplanation {
+        schema_version: crate::EXPLANATION_SCHEMA_VERSION,
+        rank: fusion.final_rank,
+        context_rank: None,
+        hit_type: hit_type.into(),
+        fused,
+        vector,
+        full_text,
+        graph,
+        inclusion: crate::InclusionReason::Selected,
+        token_count: None,
+        embedding_provider: None,
+        embedding_model: None,
+        provenance: crate::ProvenanceEvidence {
+            source_uri,
+            conversation_uuid,
+            message_index,
+            role,
+            selected_span_start: None,
+            selected_span_end: None,
+        },
     }
 }
 
@@ -208,6 +248,13 @@ impl SearchAgent {
             conversation_summary_weight: 1.0,
             graph: GraphRetrievalConfig::default(),
         }
+    }
+
+    /// Identifies the provider that embedded this query for explain renderers.
+    /// The identity is observational and does not participate in retrieval.
+    pub fn embedding_identity(&self) -> (String, String) {
+        let capabilities = self.embedder.capabilities();
+        (capabilities.provider, capabilities.model)
     }
 
     /// Set vector and full-text weights while retaining the RRF default.

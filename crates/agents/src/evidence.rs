@@ -26,6 +26,16 @@ pub struct ScoreEvidence {
     pub value: f32,
     /// Stable description of the score scale, never an unexplained float.
     pub meaning: &'static str,
+    /// Position in the corresponding retrieval channel, when that channel
+    /// contributed the result. The final fused position lives on the parent
+    /// explanation as `rank`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<usize>,
+    /// Vector distance or BM25 score, depending on `meaning`. Keeping the
+    /// channel-native value alongside its rank lets a consumer explain a
+    /// result without treating reciprocal rank as a similarity score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_value: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -41,7 +51,13 @@ pub struct ProvenanceEvidence {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RetrievalExplanation {
     pub schema_version: u32,
+    /// Final position after hybrid/graph retrieval fusion.
     pub rank: usize,
+    /// Position after augmentation packing, when this result was selected for
+    /// prompt context. This is distinct from the final retrieval rank because
+    /// diversity and token-budget decisions can reorder or omit candidates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_rank: Option<usize>,
     pub hit_type: SearchHitTypeEvidence,
     pub fused: ScoreEvidence,
     pub vector: Option<ScoreEvidence>,
@@ -49,7 +65,21 @@ pub struct RetrievalExplanation {
     pub graph: Option<GraphEvidence>,
     pub inclusion: InclusionReason,
     pub token_count: Option<usize>,
+    /// Query embedding deployment identity, if the caller has it. This is
+    /// metadata only and is deliberately not inferred from cache contents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
     pub provenance: ProvenanceEvidence,
+}
+
+impl RetrievalExplanation {
+    pub fn with_embedding_identity(mut self, provider: &str, model: &str) -> Self {
+        self.embedding_provider = Some(provider.to_owned());
+        self.embedding_model = Some(model.to_owned());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -77,14 +107,20 @@ pub fn fusion_scores(
         ScoreEvidence {
             value: fusion.fused_score,
             meaning: "weighted reciprocal-rank fusion score",
+            rank: None,
+            raw_value: None,
         },
         fusion.vector_rank.map(|rank| ScoreEvidence {
             value: rank as f32,
-            meaning: "vector retrieval rank; lower is better",
+            meaning: "vector retrieval rank; lower is better; raw_value is distance",
+            rank: Some(rank),
+            raw_value: fusion.vector_distance,
         }),
         fusion.fulltext_rank.map(|rank| ScoreEvidence {
             value: rank as f32,
-            meaning: "full-text retrieval rank; lower is better",
+            meaning: "full-text retrieval rank; lower is better; raw_value is BM25 score",
+            rank: Some(rank),
+            raw_value: fusion.fulltext_score,
         }),
     )
 }
@@ -97,21 +133,29 @@ mod tests {
     fn fusion_evidence_uses_stable_score_meanings_and_schema_version() {
         let fusion = FusionEvidence {
             vector_rank: Some(2),
+            vector_distance: Some(0.12),
             fulltext_rank: Some(3),
+            fulltext_score: Some(8.5),
             fused_score: 0.42,
             ..Default::default()
         };
         let (fused, vector, full_text) = fusion_scores(&fusion);
         assert_eq!(fused.value, 0.42);
         assert_eq!(fused.meaning, "weighted reciprocal-rank fusion score");
+        let vector = vector.unwrap();
         assert_eq!(
-            vector.unwrap().meaning,
-            "vector retrieval rank; lower is better"
+            vector.meaning,
+            "vector retrieval rank; lower is better; raw_value is distance"
         );
+        assert_eq!(vector.rank, Some(2));
+        assert_eq!(vector.raw_value, Some(0.12));
+        let full_text = full_text.unwrap();
         assert_eq!(
-            full_text.unwrap().meaning,
-            "full-text retrieval rank; lower is better"
+            full_text.meaning,
+            "full-text retrieval rank; lower is better; raw_value is BM25 score"
         );
+        assert_eq!(full_text.rank, Some(3));
+        assert_eq!(full_text.raw_value, Some(8.5));
         assert_eq!(EXPLANATION_SCHEMA_VERSION, 1);
     }
 }

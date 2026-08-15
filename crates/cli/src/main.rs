@@ -79,6 +79,11 @@ struct Cli {
     #[arg(long, global = true)]
     no_cache: bool,
 
+    /// Include versioned retrieval and context-selection evidence where the
+    /// selected command supports explainability.
+    #[arg(long, global = true)]
+    explain: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -223,6 +228,10 @@ enum Commands {
         /// Accepted-edge graph retrieval policy
         #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
         graph: GraphModeArg,
+
+        /// Render results for people, JSON consumers, or JSONL pipelines.
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
     },
 
     /// Build prompt-ready augmentation context with citations
@@ -261,6 +270,10 @@ enum Commands {
         /// Accepted-edge graph retrieval policy
         #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
         graph: GraphModeArg,
+
+        /// Render results for people, JSON consumers, or JSONL pipelines.
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
     },
 
     /// Evaluate augmentation retrieval quality from a JSON/JSONL test set
@@ -1303,6 +1316,7 @@ async fn run() -> Result<()> {
     .then(install_cancellation_handler);
 
     // Execute command
+    let explain = cli.explain;
     match cli.command {
         Commands::Export {
             path,
@@ -1378,6 +1392,7 @@ async fn run() -> Result<()> {
             source_uri,
             context,
             graph,
+            format,
         } => {
             cmd_search(
                 repo,
@@ -1389,6 +1404,8 @@ async fn run() -> Result<()> {
                 source_uri,
                 context,
                 graph,
+                explain,
+                format,
                 config.search.clone(),
             )
             .await?;
@@ -1435,6 +1452,7 @@ async fn run() -> Result<()> {
             max_tokens,
             max_chunk_tokens,
             graph,
+            format,
         } => {
             cmd_augment(
                 repo,
@@ -1450,6 +1468,8 @@ async fn run() -> Result<()> {
                 graph,
                 config.search.clone(),
                 config.augment.clone(),
+                explain,
+                format,
             )
             .await?;
         }
@@ -2555,9 +2575,19 @@ async fn cmd_search(
     source_uri: Option<String>,
     context: bool,
     graph: GraphModeArg,
+    explain: bool,
+    format: output::OutputFormat,
     search_config: SearchConfig,
 ) -> Result<()> {
     let search = configured_search_agent(repo.clone(), tei, &search_config);
+    let embedding_identity = search.embedding_identity();
+    let filters = serde_json::json!({
+        "scope": format!("{scope:?}"),
+        "since_days": since_days,
+        "source_uri": source_uri,
+        "context": context,
+        "graph": format!("{graph:?}"),
+    });
     let scope = match scope {
         SearchScopeArg::Notes => SearchScope::Notes,
         SearchScopeArg::Messages => SearchScope::Messages,
@@ -2566,8 +2596,33 @@ async fn cmd_search(
 
     if context && scope == SearchScope::Notes && graph == GraphModeArg::Off {
         let results = search
-            .search_with_context_filtered(&query, limit, since_days, source_uri)
+            .search_with_context_filtered(&query, limit, since_days, source_uri.clone())
             .await?;
+
+        let explanations = results
+            .iter()
+            .map(|result| {
+                result
+                    .explanation()
+                    .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+            })
+            .collect::<Vec<_>>();
+        if format != output::OutputFormat::Human {
+            return match format {
+                output::OutputFormat::Json => output::print(
+                    format,
+                    "search",
+                    explain::search_json(
+                        &explanations,
+                        &graphrag_agents::GraphRetrievalSummary::default(),
+                        filters,
+                    ),
+                    |_| Ok(()),
+                ),
+                output::OutputFormat::Jsonl => output::print_jsonl("search", explanations.iter()),
+                output::OutputFormat::Human => unreachable!("handled above"),
+            };
+        }
 
         if results.is_empty() {
             println!("No results found.");
@@ -2598,6 +2653,10 @@ async fn cmd_search(
                 }
             }
 
+            if explain {
+                println!("   Explain: {}", explain::human(&result.explanation()));
+            }
+
             println!();
         }
     } else {
@@ -2606,8 +2665,37 @@ async fn cmd_search(
         }
 
         let results = search
-            .search_with_scope_graph(&query, limit, scope, since_days, source_uri, graph.into())
+            .search_with_scope_graph(
+                &query,
+                limit,
+                scope,
+                since_days,
+                source_uri.clone(),
+                graph.into(),
+            )
             .await?;
+
+        let explanations = results
+            .hits
+            .iter()
+            .map(|result| {
+                result
+                    .explanation()
+                    .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+            })
+            .collect::<Vec<_>>();
+        if format != output::OutputFormat::Human {
+            return match format {
+                output::OutputFormat::Json => output::print(
+                    format,
+                    "search",
+                    explain::search_json(&explanations, &results.summary, filters),
+                    |_| Ok(()),
+                ),
+                output::OutputFormat::Jsonl => output::print_jsonl("search", explanations.iter()),
+                output::OutputFormat::Human => unreachable!("handled above"),
+            };
+        }
 
         if results.hits.is_empty() {
             println!("No results found.");
@@ -2686,6 +2774,9 @@ async fn cmd_search(
                 preview,
                 if r.content.len() > 200 { "..." } else { "" }
             );
+            if explain {
+                println!("   Explain: {}", explain::human(&r.explanation()));
+            }
             println!();
         }
     }
@@ -2748,11 +2839,20 @@ async fn cmd_augment(
     graph: GraphModeArg,
     search_config: SearchConfig,
     augment_config: AugmentConfig,
+    explain: bool,
+    format: output::OutputFormat,
 ) -> Result<()> {
     if entity.is_some() && scope != SearchScopeArg::Notes {
         anyhow::bail!("--entity currently requires --scope notes");
     }
 
+    let filters = serde_json::json!({
+        "scope": format!("{scope:?}"),
+        "since_days": since_days,
+        "source_uri": source_uri,
+        "entity": entity,
+        "graph": format!("{graph:?}"),
+    });
     let scope = match scope {
         SearchScopeArg::Notes => SearchScope::Notes,
         SearchScopeArg::Messages => SearchScope::Messages,
@@ -2760,17 +2860,46 @@ async fn cmd_augment(
     };
 
     let search = configured_search_agent(repo, tei, &search_config);
+    let embedding_identity = search.embedding_identity();
     let ctx = search
         .build_augmented_context_with_graph(
             &query,
             scope,
             since_days,
-            source_uri,
+            source_uri.clone(),
             entity.clone(),
             augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
             graph.into(),
         )
         .await?;
+
+    let explanations = ctx
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            chunk
+                .explanation(index + 1)
+                .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+        })
+        .collect::<Vec<_>>();
+    if format != output::OutputFormat::Human {
+        return match format {
+            output::OutputFormat::Json => output::print(
+                format,
+                "augment",
+                explain::augmentation_json(
+                    &explanations,
+                    &ctx.diagnostics,
+                    ctx.total_tokens,
+                    filters,
+                ),
+                |_| Ok(()),
+            ),
+            output::OutputFormat::Jsonl => output::print_jsonl("augment", explanations.iter()),
+            output::OutputFormat::Human => unreachable!("handled above"),
+        };
+    }
 
     println!("Augmentation context:");
     println!("  • Query: {}", ctx.query);
@@ -2820,6 +2949,12 @@ async fn cmd_augment(
             "  [C{}] {} | score={:.3} | tokens={} | {}",
             chunk.citation, hit_kind, chunk.score, chunk.approx_tokens, provenance
         );
+        if explain {
+            println!(
+                "      Explain: {}",
+                explain::human(&chunk.explanation(chunk.citation))
+            );
+        }
     }
 
     Ok(())
@@ -3734,6 +3869,30 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn explain_is_global_and_search_surfaces_use_the_shared_output_format() {
+        let search = Cli::try_parse_from([
+            "graphrag",
+            "search",
+            "atlas",
+            "--explain",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(search.explain);
+        assert!(matches!(
+            search.command,
+            Commands::Search {
+                format: output::OutputFormat::Json,
+                ..
+            }
+        ));
+
+        let augment = Cli::try_parse_from(["graphrag", "--explain", "augment", "atlas"]).unwrap();
+        assert!(augment.explain);
     }
 
     #[test]

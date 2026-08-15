@@ -8,6 +8,7 @@ use crate::search::{
     GraphEvidence, GraphRetrievalSummary, ScopedSearchResult, SearchHitType, SearchScope,
 };
 use chrono::{DateTime, Utc};
+use graphrag_db::fusion::FusionEvidence;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -119,6 +120,9 @@ pub struct AugmentChunk {
     pub source_uri: Option<String>,
     /// Original retrieval evidence score, before diversity selection.
     pub score: f32,
+    /// Channel and final-rank evidence is retained so explanation renderers
+    /// describe the actual retrieval result, not a reconstructed score.
+    pub fusion: FusionEvidence,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
@@ -175,19 +179,20 @@ impl AugmentChunk {
     /// Evidence used by narrow renderers and citations; this is derived from
     /// the selected chunk rather than a separate provenance assembly path.
     pub fn explanation(&self, rank: usize) -> crate::RetrievalExplanation {
+        let (fused, vector, full_text) = crate::fusion_scores(&self.fusion);
         crate::RetrievalExplanation {
             schema_version: crate::EXPLANATION_SCHEMA_VERSION,
-            rank,
+            rank: self.fusion.final_rank,
+            context_rank: Some(rank),
             hit_type: self.hit_type.into(),
-            fused: crate::ScoreEvidence {
-                value: self.score,
-                meaning: "retrieval score before context selection",
-            },
-            vector: None,
-            full_text: None,
+            fused,
+            vector,
+            full_text,
             graph: self.graph.clone(),
             inclusion: crate::InclusionReason::Selected,
             token_count: Some(self.rendered_tokens),
+            embedding_provider: None,
+            embedding_model: None,
             provenance: crate::ProvenanceEvidence {
                 source_uri: self.source_uri.clone(),
                 conversation_uuid: self.conversation_uuid.clone(),
@@ -476,6 +481,7 @@ fn fit_candidate(
         created_at: candidate.hit.created_at,
         source_uri: candidate.hit.source_uri.clone(),
         score: candidate.hit.score,
+        fusion: candidate.hit.fusion.clone(),
         conversation_uuid: candidate.hit.conversation_uuid.clone(),
         message_index: candidate.hit.message_index,
         role: candidate.hit.role.clone(),
@@ -532,6 +538,7 @@ fn fit_candidate(
             created_at: candidate.hit.created_at,
             source_uri: candidate.hit.source_uri.clone(),
             score: candidate.hit.score,
+            fusion: candidate.hit.fusion.clone(),
             conversation_uuid: candidate.hit.conversation_uuid.clone(),
             message_index: candidate.hit.message_index,
             role: candidate.hit.role.clone(),
