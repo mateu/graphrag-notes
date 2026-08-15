@@ -674,6 +674,88 @@ impl LibrarianAgent {
         Ok(note)
     }
 
+    /// Reprocess edited manual-note content before replacing the persisted
+    /// searchable record. Provider work happens first, so an embedding or
+    /// extraction failure leaves the existing note and its mentions intact.
+    #[instrument(skip(self, existing, content, title, tags))]
+    pub async fn update_manual_note_content(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        let id = existing.id.as_ref().ok_or_else(|| {
+            crate::AgentError::Processing("cannot edit a note without an id".into())
+        })?;
+        let embedding = self.embed_text(&content).await?;
+        let extraction = self
+            .extractor
+            .extract(&truncate_for_extraction(
+                &content,
+                self.runtime.extract_max_chars,
+            ))
+            .await?;
+        let entities = extracted_entities_to_domain(extraction.entities);
+
+        let mut replacement = existing.clone();
+        replacement.content = content;
+        replacement.embedding = embedding;
+        if let Some(title) = title {
+            replacement.title = Some(title);
+        }
+        if let Some(tags) = tags {
+            replacement.tags = tags;
+        }
+        replacement.updated_at = chrono::Utc::now();
+        let updated = self
+            .repo
+            .update_note(&record_id_to_string(id), replacement)
+            .await?;
+        self.repo.replace_note_entities(id, entities).await?;
+        Ok(updated)
+    }
+
+    /// Detach a source-generated note into a new manual note. The source id
+    /// remains as provenance while omitting `source_generation` ensures a
+    /// later source reimport or deletion cannot overwrite or remove the
+    /// detached user-owned note.
+    #[instrument(skip(self, existing, content, title, tags))]
+    pub async fn detach_note_to_manual(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        let embedding = self.embed_text(&content).await?;
+        let extraction = self
+            .extractor
+            .extract(&truncate_for_extraction(
+                &content,
+                self.runtime.extract_max_chars,
+            ))
+            .await?;
+        let entities = extracted_entities_to_domain(extraction.entities);
+
+        let mut detached = Note::new(content)
+            .with_type(NoteType::Raw)
+            .with_embedding(embedding)
+            .with_tags(tags.unwrap_or_else(|| existing.tags.clone()));
+        if let Some(title) = title.or_else(|| existing.title.clone()) {
+            detached = detached.with_title(title);
+        }
+        if let Some(source_id) = existing.source_id.clone() {
+            detached = detached.with_source(source_id);
+        }
+        let detached = self.repo.create_note(detached).await?;
+        let id = detached.id.as_ref().ok_or_else(|| {
+            crate::AgentError::Processing("detached note did not receive an id".into())
+        })?;
+        self.repo.replace_note_entities(id, entities).await?;
+        Ok(detached)
+    }
+
     /// Ingest from a markdown file
     #[instrument(skip(self))]
     pub async fn ingest_markdown<C>(&self, path: &str, content: C) -> Result<Vec<Note>>
@@ -1282,34 +1364,8 @@ impl LibrarianAgent {
 
         let text = truncate_for_extraction(&note.content, self.runtime.extract_max_chars);
         let extraction = self.extractor.extract(&text).await?;
-        let entities = extraction.entities;
-        let extracted_count = entities.len();
-        let entities = entities
-            .into_iter()
-            .map(|extracted| {
-                // Map string type to EntityType
-                let entity_type = match extracted
-                    .entity_type
-                    .as_deref()
-                    .unwrap_or("concept")
-                    .to_lowercase()
-                    .as_str()
-                {
-                    "person" | "per" => EntityType::Person,
-                    "organization" | "org" => EntityType::Organization,
-                    "location" | "loc" | "gpe" => EntityType::Location,
-                    "date" | "time" => EntityType::Date,
-                    _ => EntityType::Concept,
-                };
-
-                let mut entity = Entity::new(&extracted.name, entity_type);
-                // The persisted entity schema requires an object (or NONE) for
-                // metadata. Extraction supplies no metadata, so use an empty
-                // object instead of `Entity::new`'s JSON null default.
-                entity.metadata = serde_json::json!({});
-                entity
-            })
-            .collect::<Vec<_>>();
+        let extracted_count = extraction.entities.len();
+        let entities = extracted_entities_to_domain(extraction.entities);
         let linked_count = match &note.id {
             Some(note_id) => {
                 if replace_mentions {
@@ -2866,6 +2922,35 @@ impl LibrarianAgent {
     }
 }
 
+fn extracted_entities_to_domain(
+    extracted_entities: Vec<crate::inference::ExtractedEntity>,
+) -> Vec<Entity> {
+    extracted_entities
+        .into_iter()
+        .map(|extracted| {
+            let entity_type = match extracted
+                .entity_type
+                .as_deref()
+                .unwrap_or("concept")
+                .to_lowercase()
+                .as_str()
+            {
+                "person" | "per" => EntityType::Person,
+                "organization" | "org" => EntityType::Organization,
+                "location" | "loc" | "gpe" => EntityType::Location,
+                "date" | "time" => EntityType::Date,
+                _ => EntityType::Concept,
+            };
+            let mut entity = Entity::new(&extracted.name, entity_type);
+            // The persisted entity schema requires an object (or NONE) for
+            // metadata. Extraction supplies no metadata, so use an empty
+            // object instead of `Entity::new`'s JSON null default.
+            entity.metadata = serde_json::json!({});
+            entity
+        })
+        .collect()
+}
+
 fn file_uri_to_path(uri: &str) -> Result<PathBuf> {
     let path = decode_file_uri(uri, cfg!(windows))?;
     Ok(PathBuf::from(path))
@@ -2986,7 +3071,7 @@ mod tests {
     };
     use graphrag_core::{
         normalized_content_hash, record_id_to_string, EdgeType, Entity, EntityType, Note,
-        ProposedEdgeStatus,
+        ProposedEdgeStatus, Source,
     };
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
@@ -4933,5 +5018,124 @@ mod tests {
             .unwrap();
         assert!(!imported.notes.is_empty());
         assert!(imported.notes.iter().all(|note| note.split_fenced_code));
+    }
+
+    #[tokio::test]
+    async fn manual_content_edit_reprocesses_mentions_and_provider_failure_keeps_old_note() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let initial = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .ingest_text(
+            "old searchable content",
+            Some("Old".into()),
+            vec!["old".into()],
+        )
+        .await
+        .unwrap();
+        let id = record_id_to_string(initial.id.as_ref().unwrap());
+
+        let failing = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().fail_next_requests(1, "offline")),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        assert!(
+            failing
+                .update_manual_note_content(
+                    &initial,
+                    "new content must not persist".into(),
+                    None,
+                    None,
+                )
+                .await
+                .is_err()
+        );
+        let unchanged = repo.get_note(&id).await.unwrap().unwrap();
+        assert_eq!(unchanged.content, "old searchable content");
+        assert_eq!(unchanged.tags, vec!["old"]);
+
+        let extractor = FixtureEntityExtractor::default().with_fixture(
+            "new searchable content",
+            EntityExtraction {
+                entities: vec![ExtractedEntity {
+                    name: "New Entity".into(),
+                    entity_type: Some("project".into()),
+                }],
+                relationships: Vec::new(),
+            },
+        );
+        let updating = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(extractor),
+        );
+        let updated = updating
+            .update_manual_note_content(
+                &unchanged,
+                "new searchable content".into(),
+                Some("New".into()),
+                Some(vec!["new".into()]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.content, "new searchable content");
+        assert_eq!(updated.title.as_deref(), Some("New"));
+        assert_eq!(updated.tags, vec!["new"]);
+        let entities = repo.get_entities_for_note(&id).await.unwrap();
+        assert_eq!(
+            entities
+                .iter()
+                .map(|entity| entity.name.as_str())
+                .collect::<Vec<_>>(),
+            ["New Entity"]
+        );
+    }
+
+    #[tokio::test]
+    async fn detach_creates_manual_note_with_source_provenance() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = repo
+            .create_source(
+                Source::manual()
+                    .with_title("Imported fixture")
+                    .with_content("source"),
+            )
+            .await
+            .unwrap();
+        let imported = repo
+            .create_note(
+                Note::new("generated chunk")
+                    .with_source(source.id.clone().unwrap())
+                    .with_source_generation(1),
+            )
+            .await
+            .unwrap();
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+
+        let detached = librarian
+            .detach_note_to_manual(
+                &imported,
+                "manual replacement".into(),
+                Some("Detached".into()),
+                Some(vec!["manual".into()]),
+            )
+            .await
+            .unwrap();
+        assert_ne!(detached.id, imported.id);
+        assert_eq!(detached.source_id, imported.source_id);
+        assert_eq!(detached.source_generation, None);
+        assert_eq!(detached.content, "manual replacement");
+        assert!(repo
+            .get_note(&record_id_to_string(imported.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
     }
 }

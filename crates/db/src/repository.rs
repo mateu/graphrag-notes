@@ -1390,6 +1390,21 @@ impl Repository {
         Ok(note)
     }
 
+    /// Get a note only when its source generation is currently visible.
+    #[instrument(skip(self))]
+    pub async fn get_visible_note(&self, id: &str) -> Result<Option<Note>> {
+        let raw_id = id.strip_prefix("note:").unwrap_or(id);
+        let note: Option<Note> = self
+            .db
+            .query(format!(
+                "SELECT * FROM note WHERE id = $id AND {VISIBLE_NOTE_CONDITION} LIMIT 1"
+            ))
+            .bind(("id", RecordId::new("note", raw_id)))
+            .await?
+            .take(0)?;
+        Ok(note)
+    }
+
     /// Update a note
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
@@ -1449,22 +1464,60 @@ impl Repository {
     /// Delete a note
     #[instrument(skip(self))]
     pub async fn delete_note(&self, id: &str) -> Result<()> {
+        self.delete_note_with_summary(id).await.map(|_| ())
+    }
+
+    /// Return the exact cascade that a single-note deletion would perform.
+    /// This is read-only and powers the CLI's non-mutating default preview.
+    #[instrument(skip(self))]
+    pub async fn preview_note_delete(&self, id: &str) -> Result<SourceDeleteSummary> {
+        let raw_id = id.strip_prefix("note:").unwrap_or(id);
+        let note_id = RecordId::new("note", raw_id);
+        if !self.note_is_visible(&note_id).await? {
+            return Err(DbError::NotFound("note".into(), id.into()));
+        }
+        self.delete_summary_for_notes(std::slice::from_ref(&note_id))
+            .await
+    }
+
+    /// Delete one visible note and return the same exact cascade reported by
+    /// [`Self::preview_note_delete`]. Proposal retirement happens before the
+    /// physical dependent cleanup, so accepted-edge audits never dangle.
+    #[instrument(skip(self))]
+    pub async fn delete_note_with_summary(&self, id: &str) -> Result<SourceDeleteSummary> {
         // Serialize endpoint removal with proposal acceptance. Without this,
         // deletion could run after acceptance checks existence but before the
         // accepted edge write, leaving a dangling endpoint reference.
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
         let note_id = RecordId::new("note", raw_id);
+        if !self.note_is_visible(&note_id).await? {
+            return Err(DbError::NotFound("note".into(), id.into()));
+        }
+        let summary = self
+            .delete_summary_for_notes(std::slice::from_ref(&note_id))
+            .await?;
         self.supersede_proposals_for_removed_notes(std::slice::from_ref(&note_id))
             .await?;
         self.delete_notes_and_dependents(std::slice::from_ref(&note_id))
             .await?;
-        Ok(())
+        Ok(summary)
     }
 
     /// List recent notes (basic fields only, for CLI)
     #[instrument(skip(self))]
     pub async fn list_notes(&self, limit: usize) -> Result<Vec<SearchResult>> {
+        self.list_notes_filtered(limit, &[], None).await
+    }
+
+    /// List visible notes with deterministic, CLI-oriented tag/source filters.
+    #[instrument(skip(self, tags))]
+    pub async fn list_notes_filtered(
+        &self,
+        limit: usize,
+        tags: &[String],
+        source_uri: Option<&str>,
+    ) -> Result<Vec<SearchResult>> {
         let mut notes: Vec<SearchResult> = self
             .db
             .query(format!("SELECT * FROM note WHERE {VISIBLE_NOTE_CONDITION}"))
@@ -1475,6 +1528,12 @@ impl Repository {
         // SurrealDB multi-result `take` issues and deserialization problems
         // with full `Note` records.
         notes.sort_by_key(|note| std::cmp::Reverse(note.created_at));
+        notes.retain(|note| {
+            source_uri.is_none_or(|source_uri| note.source_uri.as_deref() == Some(source_uri))
+                && tags
+                    .iter()
+                    .all(|tag| note.tags.iter().any(|note_tag| note_tag == tag))
+        });
         if notes.len() > limit {
             notes.truncate(limit);
         }
@@ -4411,12 +4470,17 @@ impl Repository {
         let notes = self
             .source_owned_note_ids(source_id, generation, older_than_generation)
             .await?;
-        let mut summary = SourceDeleteSummary {
-            notes: notes.len() as u64,
-            note_edges: self.count_note_edges_for_notes(&notes).await?,
-            proposals: self.count_mutable_proposals_for_notes(&notes).await?,
-            ..SourceDeleteSummary::default()
-        };
+        self.delete_summary_for_notes(&notes).await
+    }
+
+    /// Count the relationships and provenance records that physical note
+    /// cleanup removes. Shared source/note accounting keeps dry-run previews
+    /// exact and makes confirmed single-note deletion report the same shape.
+    async fn delete_summary_for_notes(&self, notes: &[RecordId]) -> Result<SourceDeleteSummary> {
+        let mut summary = SourceDeleteSummary::default();
+        summary.notes = notes.len() as u64;
+        summary.note_edges = self.count_note_edges_for_notes(&notes).await?;
+        summary.proposals = self.count_mutable_proposals_for_notes(&notes).await?;
         for note_id in notes {
             let counts: Vec<SourceDeleteCount> = self
                 .db
@@ -4427,7 +4491,7 @@ impl Repository {
                        { kind: 'message_provenance', count: (SELECT count() FROM note_from_message WHERE in = $note GROUP ALL)[0].count }\
                      ];",
                 )
-                .bind(("note", note_id))
+                .bind(("note", note_id.clone()))
                 .await?
                 .take(0)?;
             for count in counts {
@@ -7970,15 +8034,15 @@ mod tests {
             .resulting_edge_id
             .unwrap();
 
-        repo.delete_note(&record_id_to_string(&removed))
-            .await
-            .unwrap();
+        let removed_id = record_id_to_string(&removed);
+        let preview = repo.preview_note_delete(&removed_id).await.unwrap();
+        assert_eq!(preview.notes, 1);
+        assert_eq!(preview.note_edges, 1);
+        assert_eq!(preview.proposals, 2);
+        let deleted = repo.delete_note_with_summary(&removed_id).await.unwrap();
+        assert_eq!(deleted, preview);
 
-        assert!(repo
-            .get_note(&record_id_to_string(&removed))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(repo.get_note(&removed_id).await.unwrap().is_none());
         assert_eq!(
             repo.get_edge_proposal(&pending_id)
                 .await

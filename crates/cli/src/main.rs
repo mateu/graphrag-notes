@@ -3,11 +3,14 @@
 //! A command-line interface for the GraphRAG Notes system.
 
 mod backup;
+mod commands;
 mod doctor;
 mod eval;
+mod output;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use commands::notes::NotesCommand;
 use eval::{
     build_baseline_comparison, evaluate_ranked_results_with_tokens, load_baseline, load_eval_cases,
     parse_regression_thresholds, AugmentationDiagnosticsReport, EvalCaseReport, EvalMetadata,
@@ -117,6 +120,12 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+
+    /// Safely list, show, edit, or delete notes
+    Notes {
+        #[command(subcommand)]
+        command: NotesCommand,
     },
 
     /// Add a new note
@@ -1120,6 +1129,9 @@ async fn main() -> Result<()> {
     let needs_tei = matches!(
         cli.command,
         Commands::Add { .. }
+            | Commands::Notes {
+                command: NotesCommand::Edit { .. },
+            }
             | Commands::Import { .. }
             | Commands::Sources {
                 command: SourcesCommand::Reimport { .. },
@@ -1135,6 +1147,9 @@ async fn main() -> Result<()> {
     let needs_tgi = matches!(
         &cli.command,
         Commands::Add { .. }
+            | Commands::Notes {
+                command: NotesCommand::Edit { .. },
+            }
             | Commands::Import { .. }
             | Commands::Sources {
                 command: SourcesCommand::Reimport { .. },
@@ -1217,6 +1232,11 @@ async fn main() -> Result<()> {
             tags,
         } => {
             cmd_add(repo, tei, tgi, librarian_config, content, title, tags).await?;
+        }
+        Commands::Notes { command } => {
+            let librarian =
+                LibrarianAgent::new(repo.clone(), tei, tgi).with_runtime_config(librarian_config);
+            commands::notes::run(repo, librarian, command).await?;
         }
         Commands::Import { path, force } => {
             cmd_import(repo, tei, tgi, librarian_config, path, force).await?;
@@ -1330,6 +1350,7 @@ async fn main() -> Result<()> {
             .await?;
         }
         Commands::List { limit } => {
+            eprintln!("Deprecated: use `graphrag notes list` for stable --format output.");
             cmd_list(repo, limit).await?;
         }
         Commands::Garden { command } => {
@@ -1427,6 +1448,9 @@ async fn main() -> Result<()> {
             cmd_show_entities(repo, note_id).await?;
         }
         Commands::ShowNote { note_id } => {
+            eprintln!(
+                "Deprecated: use `graphrag notes show {note_id}` for stable --format output."
+            );
             cmd_show_note(repo, note_id).await?;
         }
         Commands::ListEdges { limit } => {
@@ -3606,6 +3630,64 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn notes_commands_expose_safe_edit_delete_and_machine_output_flags() {
+        let edit = Cli::try_parse_from([
+            "graphrag", "notes", "edit", "note:one", "--title", "Revised", "--detach", "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            edit.command,
+            Commands::Notes {
+                command: NotesCommand::Edit {
+                    detach: true,
+                    format: output::OutputFormat::Json,
+                    ..
+                }
+            }
+        ));
+
+        let delete = Cli::try_parse_from([
+            "graphrag",
+            "notes",
+            "delete",
+            "note:one",
+            "--dry-run",
+            "--format",
+            "jsonl",
+        ])
+        .unwrap();
+        assert!(matches!(
+            delete.command,
+            Commands::Notes {
+                command: NotesCommand::Delete {
+                    dry_run: true,
+                    yes: false,
+                    format: output::OutputFormat::Jsonl,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn output_envelope_has_stable_required_machine_fields() {
+        let envelope =
+            output::OutputEnvelope::success("notes.show", serde_json::json!({"id": "note:one"}));
+        let json = serde_json::to_value(envelope).unwrap();
+        for key in [
+            "schema_version",
+            "command",
+            "success",
+            "data",
+            "warnings",
+            "errors",
+        ] {
+            assert!(json.get(key).is_some(), "missing output key {key}");
+        }
     }
 
     #[test]
