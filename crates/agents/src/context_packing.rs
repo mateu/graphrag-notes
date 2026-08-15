@@ -285,7 +285,11 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
     let mut dropped_duplicates = 0usize;
     let mut dropped_for_relevance = 0usize;
     for (rank, hit) in hits.into_iter().enumerate() {
-        if !seen_ids.insert(hit.id.clone()) || hit.content.trim().is_empty() {
+        if hit.content.trim().is_empty() {
+            exclusions.push(hit.explanation_with_inclusion(crate::InclusionReason::EmptyContent));
+            continue;
+        }
+        if !seen_ids.insert(hit.id.clone()) {
             dropped_duplicates += 1;
             exclusions.push(hit.explanation_with_inclusion(crate::InclusionReason::Duplicate));
             continue;
@@ -1554,6 +1558,29 @@ mod tests {
         assert_eq!(context.diagnostics.graph_candidates_considered, 3);
         assert_eq!(context.diagnostics.graph_candidates_selected, 0);
         assert_eq!(context.diagnostics.graph_candidates_dropped, 3);
+    }
+
+    #[test]
+    fn empty_content_is_reported_separately_from_duplicate_ids() {
+        let context = build_augment_context_from_hits(
+            "query".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("note:shared", 0.9, "   "),
+                hit("note:shared", 0.8, "usable candidate"),
+            ],
+            options(),
+            0,
+        );
+
+        assert_eq!(context.diagnostics.dropped_duplicates, 0);
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(context.chunks[0].id, "note:shared");
+        assert!(context.exclusions.iter().any(|explanation| {
+            explanation.result_id == "note:shared"
+                && explanation.inclusion == crate::InclusionReason::EmptyContent
+        }));
     }
 
     #[test]

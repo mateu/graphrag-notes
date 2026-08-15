@@ -209,6 +209,13 @@ impl EnrichedSearchResult {
             role: None,
         })
     }
+
+    /// Final weighted score used to order this legacy context-search result.
+    /// This remains separate from the raw fusion evidence exposed by
+    /// [`Self::explanation`].
+    pub fn final_score(&self) -> f32 {
+        self.final_score
+    }
 }
 
 struct ExplanationInput<'a> {
@@ -2959,6 +2966,34 @@ mod tests {
         );
         assert_eq!(explanation.effective_weight, 0.6);
         assert_eq!(explanation.fused.value, 0.4);
+    }
+
+    #[test]
+    fn context_result_exposes_its_final_weighted_score() {
+        let result = EnrichedSearchResult {
+            result: SearchResult {
+                id: RecordId::new("note", "weighted"),
+                title: Some("Weighted context hit".into()),
+                content: "context hit".into(),
+                note_type: "note".into(),
+                tags: Vec::new(),
+                created_at: Utc::now(),
+                source_uri: None,
+                vec_distance: Some(0.1),
+                fts_score: Some(0.5),
+                fusion: FusionEvidence {
+                    fused_score: 0.4,
+                    ..Default::default()
+                },
+            },
+            related: None,
+            score_kind: crate::ScoreKind::WeightedFusion,
+            final_score: 0.24,
+            effective_weight: 0.6,
+        };
+
+        assert_eq!(result.final_score(), 0.24);
+        assert_eq!(result.explanation().fused.value, 0.4);
     }
 
     #[test]

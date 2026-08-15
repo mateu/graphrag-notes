@@ -15,6 +15,7 @@ pub enum InclusionReason {
     Selected,
     Filtered,
     Duplicate,
+    EmptyContent,
     NearDuplicate,
     RelevanceThreshold,
     TokenBudget,

@@ -2595,7 +2595,7 @@ impl SearchMachineResult {
             content: note.content.clone(),
             created_at: Some(note.created_at.to_rfc3339()),
             source_uri: note.source_uri.clone(),
-            score: note.fusion.fused_score,
+            score: result.final_score(),
             conversation_uuid: None,
             message_index: None,
             role: None,
@@ -2831,10 +2831,28 @@ async fn cmd_search(
 
         if format != output::OutputFormat::Human {
             if !explain {
+                let related_by_note = if context && scope == SearchScope::Notes {
+                    let context_repo = repo.clone();
+                    best_effort_related_notes(&results.hits, move |id| {
+                        let repo = context_repo.clone();
+                        async move {
+                            let note_id = parse_record_id(&id, Some("note"))?;
+                            Ok::<_, anyhow::Error>(repo.get_related_notes(&note_id).await?)
+                        }
+                    })
+                    .await?
+                } else {
+                    HashMap::new()
+                };
                 let output = results
                     .hits
                     .iter()
-                    .map(|result| SearchMachineResult::from_scoped(result, None))
+                    .map(|result| {
+                        SearchMachineResult::from_scoped(
+                            result,
+                            related_by_note.get(&result.id).cloned(),
+                        )
+                    })
                     .collect::<Vec<_>>();
                 return match format {
                     output::OutputFormat::Json => output::print(
@@ -4220,6 +4238,28 @@ mod tests {
         ] {
             assert!(search.get(evidence_field).is_none());
         }
+
+        let search_with_context = SearchMachineResult::from_scoped(
+            &graphrag_agents::search::ScopedSearchResult {
+                hit_type: SearchHitType::Note,
+                id: "note:context".into(),
+                title: Some("Context".into()),
+                content: "context result".into(),
+                created_at: None,
+                source_uri: None,
+                score: 0.75,
+                fusion: Default::default(),
+                score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+            Some(RelatedNotes::default()),
+        );
+        let search_with_context = serde_json::to_value(search_with_context).unwrap();
+        assert!(search_with_context.get("related").is_some());
 
         let augment = serde_json::to_value(AugmentMachineChunk {
             citation: 1,
