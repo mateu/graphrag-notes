@@ -558,6 +558,11 @@ impl SearchAgent {
             .iter()
             .map(|entity| (record_id_to_string(&entity.id), entity.name.clone()))
             .collect::<HashMap<_, _>>();
+        let entity_ranks = entity_ids
+            .iter()
+            .enumerate()
+            .map(|(rank, entity_id)| (record_id_to_string(entity_id), rank))
+            .collect::<HashMap<_, _>>();
         let entity_seed_ids = self
             .repo
             .graph_notes_for_entities(
@@ -584,14 +589,19 @@ impl SearchAgent {
                 .cloned()
                 .into_iter()
                 .collect::<Vec<_>>();
+            let entity_rank = *entity_ranks
+                .get(&record_id_to_string(&seed.entity_id))
+                .expect("seed entity must come from the ranked entity query");
             if let Some(existing) = frontier.get_mut(&id) {
                 existing.query_entities.extend(entity_name);
                 existing.query_entities.sort();
                 existing.query_entities.dedup();
+                existing.initial_entity_rank = existing.initial_entity_rank.min(entity_rank);
             } else {
                 frontier.insert(
                     id.clone(),
-                    GraphFrontier::seed(seed.note_id, id, entity_name, self.graph.seed_score),
+                    GraphFrontier::seed(seed.note_id, id, entity_name, self.graph.seed_score)
+                        .with_initial_entity_rank(entity_rank),
                 );
             }
         }
@@ -681,6 +691,7 @@ impl SearchAgent {
                         visited,
                         score,
                         decay,
+                        initial_entity_rank: from.initial_entity_rank,
                     };
                     eligible.entry(from.id.clone()).or_default().push(state);
                 }
@@ -849,6 +860,10 @@ struct GraphFrontier {
     visited: HashSet<String>,
     score: f32,
     decay: f32,
+    /// A lower value is a more specific/ranked local entity match. Hybrid
+    /// seeds have no entity match and sort after every entity-derived seed at
+    /// initial candidate admission.
+    initial_entity_rank: usize,
 }
 
 impl GraphFrontier {
@@ -864,7 +879,13 @@ impl GraphFrontier {
             visited,
             score,
             decay: 1.0,
+            initial_entity_rank: usize::MAX,
         }
+    }
+
+    fn with_initial_entity_rank(mut self, rank: usize) -> Self {
+        self.initial_entity_rank = rank;
+        self
     }
 
     fn evidence(&self, hop: Option<usize>) -> GraphEvidence {
@@ -887,6 +908,22 @@ fn ranked_frontier_states(frontier: &BTreeMap<String, GraphFrontier>) -> Vec<&Gr
         right
             .score
             .total_cmp(&left.score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    states
+}
+
+/// Initial states additionally honor the deterministic local entity-match
+/// rank. Without this, equal seed scores would let note IDs displace a more
+/// specific query entity before the first graph traversal.
+fn ranked_initial_frontier_states(
+    frontier: &BTreeMap<String, GraphFrontier>,
+) -> Vec<&GraphFrontier> {
+    let mut states = frontier.values().collect::<Vec<_>>();
+    states.sort_by(|left, right| {
+        left.initial_entity_rank
+            .cmp(&right.initial_entity_rank)
+            .then_with(|| right.score.total_cmp(&left.score))
             .then_with(|| left.id.cmp(&right.id))
     });
     states
@@ -926,7 +963,7 @@ fn admit_initial_graph_frontier(
     candidate_cap: usize,
 ) -> BTreeMap<String, GraphFrontier> {
     let mut admitted = BTreeMap::new();
-    for state in ranked_frontier_states(&frontier)
+    for state in ranked_initial_frontier_states(&frontier)
         .into_iter()
         .take(candidate_cap)
     {
@@ -1552,6 +1589,48 @@ mod tests {
             candidates.keys().cloned().collect::<Vec<_>>(),
             vec!["note:mmm-middle-score", "note:zzz-high-score"]
         );
+    }
+
+    #[test]
+    fn initial_frontier_prefers_ranked_entity_seeds_over_note_ids_and_graph_on_hybrids() {
+        let hybrid = GraphFrontier::seed(
+            RecordId::new("note", "aaa-hybrid"),
+            "note:aaa-hybrid".into(),
+            Vec::new(),
+            0.03,
+        );
+        let lower_ranked_entity = GraphFrontier::seed(
+            RecordId::new("note", "bbb-lower-ranked-entity"),
+            "note:bbb-lower-ranked-entity".into(),
+            vec!["Beacon".into()],
+            0.03,
+        )
+        .with_initial_entity_rank(1);
+        let higher_ranked_entity = GraphFrontier::seed(
+            RecordId::new("note", "zzz-higher-ranked-entity"),
+            "note:zzz-higher-ranked-entity".into(),
+            vec!["Atlas".into()],
+            0.03,
+        )
+        .with_initial_entity_rank(0);
+        let frontier = BTreeMap::from([
+            (hybrid.id.clone(), hybrid),
+            (lower_ranked_entity.id.clone(), lower_ranked_entity),
+            (higher_ranked_entity.id.clone(), higher_ranked_entity),
+        ]);
+
+        let mut candidates = BTreeMap::new();
+        let capped = admit_initial_graph_frontier(frontier.clone(), &mut candidates, 1);
+        assert!(capped.contains_key("note:zzz-higher-ranked-entity"));
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates.contains_key("note:zzz-higher-ranked-entity"));
+
+        // Explicit graph=on retains hybrid seeds as traversal anchors when
+        // capacity permits, but they never displace a ranked entity seed.
+        let mut candidates = BTreeMap::new();
+        let uncapped = admit_initial_graph_frontier(frontier, &mut candidates, 3);
+        assert!(uncapped.contains_key("note:aaa-hybrid"));
+        assert_eq!(candidates.len(), 2);
     }
 
     #[test]
