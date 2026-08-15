@@ -1207,7 +1207,10 @@ mod tests {
     use crate::context_packing::build_augment_context_from_hits;
     use crate::DeterministicEmbedder;
     use graphrag_core::{EdgeType, Entity, EntityType, Note, SourceType};
-    use graphrag_db::{compatibility::embedding_metadata, init_memory, Repository};
+    use graphrag_db::{
+        compatibility::{embedding_metadata, EmbeddingIdentity},
+        init_memory, Repository,
+    };
     use std::sync::Arc;
 
     #[tokio::test]
@@ -1297,6 +1300,13 @@ mod tests {
     #[tokio::test]
     async fn augment_entity_filter_applies_before_graph_candidates_consume_fetch_cap() {
         let repo = Repository::new(init_memory().await.unwrap());
+        let embedding = vec![1.0; 1024];
+        repo.record_embedding_metadata(
+            &EmbeddingIdentity::new("deterministic-test", "fixture", embedding.len()),
+            None,
+        )
+        .await
+        .unwrap();
         let graph_seed = repo
             .create_note(Note::new("unmatched graph seed"))
             .await
@@ -1315,10 +1325,13 @@ mod tests {
         // This is an ordinary hybrid/full-text candidate. It must survive the
         // four-result graph fetch budget because it is the only result linked
         // to the requested entity filter.
-        let qualifying = repo
-            .create_note(Note::new("Graph X qualifying retrieval evidence"))
-            .await
-            .unwrap();
+        let mut qualifying_note = Note::new("Graph X qualifying retrieval evidence");
+        // Ensure the relevant ordinary retrieval hit is present in the
+        // hybrid candidate pool. Without this, the test's five same-term
+        // full-text documents compete for the pre-fusion database limit and
+        // make the fixture, rather than entity filtering, nondeterministic.
+        qualifying_note.embedding = embedding.clone();
+        let qualifying = repo.create_note(qualifying_note).await.unwrap();
 
         let mut graph_entity = Entity::new("Graph", EntityType::Project);
         graph_entity.metadata = serde_json::json!({});
@@ -1358,8 +1371,11 @@ mod tests {
         // candidate. Before filtering moved before ranking/truncation, these
         // four non-X graph results would have left the context empty.
         graph.seed_score = 10.0;
-        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
-            .with_graph_config(graph);
+        let search = SearchAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default().with_default_embedding(embedding)),
+        )
+        .with_graph_config(graph);
 
         let context = search
             .build_augmented_context_with_graph(
