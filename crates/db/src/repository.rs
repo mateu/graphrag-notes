@@ -2605,9 +2605,9 @@ impl Repository {
                         (false, false) => "false".to_string(),
                     };
                     format!(
-                        "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
+                        "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence \
                          FROM {table} WHERE {direction} AND (confidence = NONE OR confidence >= $min_confidence) AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} \
-                         ORDER BY id ASC LIMIT $limit;"
+                         ORDER BY graph_confidence DESC, id ASC LIMIT $limit;"
                     )
                 })
                 .collect::<String>();

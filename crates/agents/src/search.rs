@@ -648,8 +648,7 @@ impl SearchAgent {
                     self.graph.min_confidence,
                 )
                 .await?;
-            let mut next = BTreeMap::<String, GraphFrontier>::new();
-            let mut fanout = HashMap::<String, usize>::new();
+            let mut eligible = HashMap::<String, Vec<GraphFrontier>>::new();
             for edge in edges {
                 for (from, neighbor, direction) in
                     graph_edge_transitions(&edge, &current, &self.graph)
@@ -662,14 +661,6 @@ impl SearchAgent {
                     if confidence < self.graph.min_confidence {
                         continue;
                     }
-                    // Count only usable transitions. A rejected cycle or
-                    // low-confidence edge must not consume this node's
-                    // bounded fanout and hide a later valid neighbor.
-                    let used = fanout.entry(from.id.clone()).or_default();
-                    if *used >= self.graph.per_node_fanout {
-                        continue;
-                    }
-                    *used += 1;
                     let score = from.score * self.graph.per_hop_decay * confidence;
                     let decay = from.decay * self.graph.per_hop_decay;
                     let mut path = from.path.clone();
@@ -693,11 +684,22 @@ impl SearchAgent {
                         score,
                         decay,
                     };
+                    eligible.entry(from.id.clone()).or_default().push(state);
+                }
+            }
+            let mut next = BTreeMap::<String, GraphFrontier>::new();
+            for states in eligible.values_mut() {
+                // Database row/table ordering is only a transport detail.
+                // Rank every usable transition before consuming this source
+                // node's fanout budget so a weaker early edge cannot starve a
+                // later stronger one.
+                states.sort_by(graph_transition_priority);
+                for state in states.drain(..).take(self.graph.per_node_fanout) {
                     let replace = next
-                        .get(&neighbor_id)
-                        .is_none_or(|existing| state.score > existing.score);
+                        .get(&state.id)
+                        .is_none_or(|existing| graph_transition_priority(&state, existing).is_lt());
                     if replace {
-                        next.insert(neighbor_id.clone(), state);
+                        next.insert(state.id.clone(), state);
                     }
                 }
             }
@@ -902,6 +904,19 @@ fn ranked_frontier_states(frontier: &BTreeMap<String, GraphFrontier>) -> Vec<&Gr
             .then_with(|| left.id.cmp(&right.id))
     });
     states
+}
+
+fn graph_transition_priority(left: &GraphFrontier, right: &GraphFrontier) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| {
+            left.path
+                .last()
+                .map(|step| step.edge_id.as_str())
+                .cmp(&right.path.last().map(|step| step.edge_id.as_str()))
+        })
+        .then_with(|| left.id.cmp(&right.id))
 }
 
 fn graph_edge_transitions<'a>(
@@ -1474,6 +1489,88 @@ mod tests {
             .expect("the second seed must retain its own per-node fanout");
         assert_eq!(second_graph.hops, 1);
         assert_eq!(second_graph.query_entities, vec!["Beta"]);
+    }
+
+    #[tokio::test]
+    async fn graph_fanout_prefers_the_strongest_transition_across_table_and_record_order() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("ranked fanout seed"))
+            .await
+            .unwrap();
+        let low = repo
+            .create_note(Note::new("low contradicts edge"))
+            .await
+            .unwrap();
+        let middle = repo
+            .create_note(Note::new("middle supports edge"))
+            .await
+            .unwrap();
+        let strongest = repo
+            .create_note(Note::new("strongest supports edge"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Ranked fanout", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        // The earlier contradicts table and the earlier supports record are
+        // both weaker. With a fanout of one, only the later high-confidence
+        // supports edge may survive.
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            low.id.as_ref().unwrap(),
+            EdgeType::Contradicts,
+            Some(0.2),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            middle.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.6),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            strongest.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.95),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 2;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Ranked fanout",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+
+        let strongest_id = record_id_to_string(strongest.id.as_ref().unwrap());
+        let evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == strongest_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the strongest eligible edge should consume the sole fanout slot");
+        assert_eq!(evidence.path.len(), 1);
+        assert_eq!(evidence.path[0].edge_type, "supports");
+        assert_eq!(evidence.path[0].confidence, 0.95);
     }
 
     #[tokio::test]
