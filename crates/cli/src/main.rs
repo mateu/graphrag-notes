@@ -2619,7 +2619,14 @@ async fn cmd_search(
                     ),
                     |_| Ok(()),
                 ),
-                output::OutputFormat::Jsonl => output::print_jsonl("search", explanations.iter()),
+                output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
+                    "search",
+                    explanations.iter(),
+                    explain::search_pipeline(
+                        &graphrag_agents::GraphRetrievalSummary::default(),
+                        filters,
+                    ),
+                ),
                 output::OutputFormat::Human => unreachable!("handled above"),
             };
         }
@@ -2661,7 +2668,7 @@ async fn cmd_search(
         }
     } else {
         if context && scope != SearchScope::Notes {
-            println!("Context is only available for notes scope; continuing without context.\n");
+            eprintln!("Context is only available for notes scope; continuing without context.");
         }
 
         let results = search
@@ -2692,7 +2699,11 @@ async fn cmd_search(
                     explain::search_json(&explanations, &results.summary, filters),
                     |_| Ok(()),
                 ),
-                output::OutputFormat::Jsonl => output::print_jsonl("search", explanations.iter()),
+                output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
+                    "search",
+                    explanations.iter(),
+                    explain::search_pipeline(&results.summary, filters),
+                ),
                 output::OutputFormat::Human => unreachable!("handled above"),
             };
         }
@@ -2899,7 +2910,11 @@ async fn cmd_augment(
                 ),
                 |_| Ok(()),
             ),
-            output::OutputFormat::Jsonl => output::print_jsonl("augment", explanations.iter()),
+            output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
+                "augment",
+                explanations.iter(),
+                explain::augmentation_pipeline(&ctx.diagnostics, ctx.total_tokens, filters),
+            ),
             output::OutputFormat::Human => unreachable!("handled above"),
         };
     }

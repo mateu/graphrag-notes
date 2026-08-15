@@ -270,6 +270,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             entity_filter,
             counter.mode(),
             dropped_for_entity_filter,
+            &graph_summary,
         );
         context.exclusions = entity_exclusions;
         context.exclusions.extend(exclusions);
@@ -404,6 +405,7 @@ pub(crate) fn empty_context(
     entity_filter: Option<String>,
     mode: TokenCountMode,
     dropped_for_entity_filter: usize,
+    graph_summary: &GraphRetrievalSummary,
 ) -> AugmentContext {
     let diagnostics = AugmentDiagnostics {
         token_count_mode: mode,
@@ -413,9 +415,9 @@ pub(crate) fn empty_context(
         dropped_for_relevance: 0,
         dropped_for_budget: 0,
         dropped_for_entity_filter,
-        graph_candidates_considered: 0,
-        graph_candidates_selected: 0,
-        graph_candidates_dropped: 0,
+        graph_candidates_considered: graph_summary.candidates_considered,
+        graph_candidates_selected: graph_summary.candidates_selected,
+        graph_candidates_dropped: graph_summary.candidates_dropped,
     };
     AugmentContext {
         query,
@@ -1523,6 +1525,31 @@ mod tests {
             max_chunk_tokens: 30,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn zero_budget_context_retains_graph_packing_diagnostics() {
+        let mut zero_budget = options();
+        zero_budget.max_total_tokens = 0;
+        let context = build_augment_context_from_hits_with_graph(
+            "query".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit("note:graph", 0.9, "graph candidate")],
+            zero_budget,
+            Vec::new(),
+            GraphRetrievalSummary {
+                entities_matched: 1,
+                candidates_considered: 3,
+                candidates_selected: 2,
+                candidates_dropped: 1,
+            },
+        );
+
+        assert!(context.chunks.is_empty());
+        assert_eq!(context.diagnostics.graph_candidates_considered, 3);
+        assert_eq!(context.diagnostics.graph_candidates_selected, 2);
+        assert_eq!(context.diagnostics.graph_candidates_dropped, 1);
     }
 
     #[test]
