@@ -6,7 +6,7 @@ use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 
 /// The type/classification of a note
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb_types")]
 #[surreal(untagged, lowercase)]
@@ -22,13 +22,8 @@ pub enum NoteType {
     /// A synthesis of multiple notes
     Synthesis,
     /// Raw/unprocessed note
+    #[default]
     Raw,
-}
-
-impl Default for NoteType {
-    fn default() -> Self {
-        Self::Raw
-    }
 }
 
 /// An atomic note - the fundamental unit of knowledge
@@ -188,6 +183,10 @@ impl Note {
     }
 
     /// Attach deterministic Markdown chunk provenance.
+    // Chunking produces these fields together from one immutable chunk. A
+    // dedicated builder object would only add allocations and obscure that
+    // one-to-one transfer at the sole production call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_chunk_metadata(
         mut self,
         chunk_key: String,

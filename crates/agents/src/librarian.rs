@@ -1583,7 +1583,7 @@ impl LibrarianAgent {
                     )
                     .await?;
 
-                if completed as usize % progress_every == 0
+                if (completed as usize).is_multiple_of(progress_every)
                     || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
                 {
                     let elapsed = start.elapsed().as_secs_f32().max(0.001);
@@ -1823,7 +1823,7 @@ impl LibrarianAgent {
 
         let mut notes = Vec::new();
 
-        for (chunk, embedding) in chunks.iter().zip(embeddings.into_iter()) {
+        for (chunk, embedding) in chunks.iter().zip(embeddings) {
             let mut note = Note::new(chunk.clone())
                 .with_type(NoteType::Raw)
                 .with_embedding(embedding);
@@ -2036,7 +2036,7 @@ impl LibrarianAgent {
             }
 
             processed += 1;
-            if processed % progress_every == 0
+            if processed.is_multiple_of(progress_every)
                 || last_progress.elapsed() >= Duration::from_secs(progress_every_secs)
             {
                 info!(
@@ -2450,10 +2450,8 @@ impl LibrarianAgent {
 
         // Create notes
         let mut stats = NoteCreationStats::default();
-        for (idx, ((content, title), embedding)) in note_builders
-            .into_iter()
-            .zip(embeddings.into_iter())
-            .enumerate()
+        for (idx, ((content, title), embedding)) in
+            note_builders.into_iter().zip(embeddings).enumerate()
         {
             let mut note = Note::new(&content)
                 .with_type(NoteType::Synthesis)
@@ -2614,8 +2612,7 @@ impl LibrarianAgent {
         let embeddings = self.embed_batch(&texts_to_embed).await?;
         let mut stats = NoteCreationStats::default();
 
-        for ((content, title, tags, message_idx), embedding) in
-            builders.into_iter().zip(embeddings.into_iter())
+        for ((content, title, tags, message_idx), embedding) in builders.into_iter().zip(embeddings)
         {
             let mut note = Note::new(content)
                 .with_type(NoteType::Raw)
@@ -2792,14 +2789,11 @@ impl LibrarianAgent {
         if let Some(blocks) = message.content_blocks.as_array() {
             signal.block_count = blocks.len();
             for block in blocks {
-                if let Some(t) = block.get("type").and_then(|value| value.as_str()) {
-                    match t {
-                        "tool_use" | "tool_result" | "token_budget" => {
-                            signal.has_tooling = true;
-                            signal.tool_block_count += 1;
-                        }
-                        _ => {}
-                    }
+                if let Some("tool_use" | "tool_result" | "token_budget") =
+                    block.get("type").and_then(|value| value.as_str())
+                {
+                    signal.has_tooling = true;
+                    signal.tool_block_count += 1;
                 }
                 if let Some(citations) = block.get("citations").and_then(|value| value.as_array()) {
                     if !citations.is_empty() {
@@ -3233,7 +3227,7 @@ mod tests {
         );
         assert_eq!(
             librarian
-                .extract_entities_for_note_ids(&[initial_id.clone()], true)
+                .extract_entities_for_note_ids(std::slice::from_ref(&initial_id), true)
                 .await
                 .unwrap(),
             1

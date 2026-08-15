@@ -1,30 +1,122 @@
-name: Rust CI
+name: Rust quality gates
 
 on:
   pull_request:
   push:
     branches:
       - main
-      - chore/surrealdb-3-upgrade-audit
+  workflow_dispatch:
+  schedule:
+    # Dependency advisories are useful, but should never make a normal PR
+    # depend on registry/network availability.
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+# Superseded PR commits do not need to finish. Main is deliberately exempt so
+# every pushed main commit retains a complete release-readiness record.
+concurrency:
+  group: rust-quality-gates-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  RUSTC_WRAPPER: ""
+  CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  format:
+    name: format
     runs-on: ubuntu-latest
-    env:
-      RUSTC_WRAPPER: ""
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt
+      - name: Check formatting (cargo fmt --all -- --check)
+        run: cargo fmt --all -- --check
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.1
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-gates-v1
+      - name: Lint all workspace targets and features
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Cargo check
+  msrv:
+    name: msrv (Rust 1.97.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-gates-v1
+      - name: Check declared minimum supported Rust version
         run: cargo check --workspace --locked
 
-      - name: Cargo test
-        run: cargo test --workspace --locked --quiet -- --test-threads=1
+  offline-integration:
+    name: unit and offline integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-gates-v1
+      - name: Run deterministic workspace tests (cargo test --workspace --locked)
+        run: cargo test --workspace --locked
+
+  persistent-round-trip:
+    name: persistent DB, migrations, and data round trip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-gates-v1
+      - name: Fresh migration fixture
+        run: cargo test -p graphrag-db migrations::tests::fresh_database_reaches_latest_schema_version --lib -- --exact
+      - name: Upgrade migration fixture
+        run: cargo test -p graphrag-db migrations::tests::a_database_at_v001_can_upgrade_without_losing_data --lib -- --exact
+      - name: Source idempotency fixture
+        run: cargo test -p graphrag-db repository::tests::source_lifecycle_is_idempotent_and_preserves_manual_notes --lib -- --exact
+      - name: Resumable inference fault-injection fixture
+        run: cargo test -p graphrag-agents librarian::tests::embedding_resume_persists_reconciliation_before_next_batch_cancellation --lib -- --exact
+      - name: Portable backup and reindex round-trip fixture
+        run: cargo test -p graphrag-cli backup::tests::portable_backup_round_trip_is_streamed_verified_and_restorable --bin graphrag -- --exact
+
+  retrieval-regression:
+    name: retrieval regression baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-gates-v1
+      - name: Compare deterministic fixture with tests/baselines/retrieval-v1.json
+        run: cargo test -p graphrag-cli eval::tests::committed_retrieval_fixture_matches_versioned_baseline --bin graphrag -- --exact --nocapture
+
+  dependency-audit:
+    name: scheduled dependency and security audit
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quality-gates-v1
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit Cargo.lock (cargo audit)
+        run: cargo audit

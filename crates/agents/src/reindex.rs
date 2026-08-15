@@ -1297,7 +1297,7 @@ mod tests {
             .await
             .unwrap();
         assert!(repo
-            .full_reindex_scope_widened(&[initial_id.clone()])
+            .full_reindex_scope_widened(std::slice::from_ref(&initial_id))
             .await
             .unwrap());
 
@@ -1411,7 +1411,15 @@ mod tests {
         repo.update_note(&note_id, edited).await.unwrap();
 
         assert!(repo
-            .commit_reindex(&job_id, owner, &[note_id.clone()], &target, false, false, 1)
+            .commit_reindex(
+                &job_id,
+                owner,
+                std::slice::from_ref(&note_id),
+                &target,
+                false,
+                false,
+                1,
+            )
             .await
             .is_err());
         assert_eq!(

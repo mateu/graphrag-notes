@@ -236,6 +236,7 @@ pub struct CaseMetrics {
     pub latency_ms: u64,
 }
 
+#[cfg(test)]
 pub fn evaluate_ranked_results(
     case: &EvalAugmentCase,
     results: &[RankedResult],
@@ -358,7 +359,7 @@ pub fn evaluate_ranked_results_with_tokens(
     let provenance_passed = provenance_accuracy.is_none_or(|accuracy| accuracy == 1.0);
     let checks_passed = case
         .has_checks()
-        .then(|| relevance_passed && text_passed && !forbidden_result_found && provenance_passed);
+        .then_some(relevance_passed && text_passed && !forbidden_result_found && provenance_passed);
 
     CaseMetrics {
         k,
@@ -829,6 +830,13 @@ fn result_prompt_text(result: &RankedResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    #[derive(Deserialize)]
+    struct RankedFixtureCase {
+        name: String,
+        results: Vec<RankedResult>,
+    }
 
     fn case(value: serde_json::Value) -> EvalAugmentCase {
         serde_json::from_value(value).unwrap()
@@ -842,6 +850,53 @@ mod tests {
             conversation_uuid: None,
             approx_tokens: 10,
         }
+    }
+
+    fn retrieval_fixture_report() -> EvalRunReport {
+        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/eval");
+        let cases = load_eval_cases(&fixture_dir.join("retrieval-regression-cases-v1.jsonl"))
+            .expect("retrieval regression case fixture must parse");
+        let ranked: Vec<RankedFixtureCase> = serde_json::from_str(
+            &std::fs::read_to_string(
+                fixture_dir.join("retrieval-regression-ranked-results-v1.json"),
+            )
+            .expect("retrieval regression ranked-results fixture must be readable"),
+        )
+        .expect("retrieval regression ranked-results fixture must parse");
+        let mut results_by_name: BTreeMap<String, Vec<RankedResult>> = ranked
+            .into_iter()
+            .map(|fixture| (fixture.name, fixture.results))
+            .collect();
+
+        let reports = cases
+            .into_iter()
+            .map(|case| {
+                let name = case.display_name().to_string();
+                let results = results_by_name.remove(&name).unwrap_or_else(|| {
+                    panic!("ranked-results fixture is missing deterministic case `{name}`")
+                });
+                EvalCaseReport {
+                    query: case.query.clone(),
+                    name,
+                    metrics: evaluate_ranked_results(&case, &results, case.resolved_k(10), 0),
+                    augmentation: None,
+                }
+            })
+            .collect();
+        assert!(
+            results_by_name.is_empty(),
+            "ranked-results fixture has cases not present in the regression corpus: {:?}",
+            results_by_name.keys().collect::<Vec<_>>()
+        );
+
+        EvalRunReport::from_cases(
+            EvalMetadata {
+                schema_version: EVAL_SCHEMA_VERSION,
+                provider: "fixture".into(),
+                model: "ranked-results-v1".into(),
+            },
+            reports,
+        )
     }
 
     #[test]
@@ -1229,6 +1284,41 @@ mod tests {
         assert!(cases.iter().any(|case| {
             case.name.as_deref() == Some("graph-accepted-path") && !case.forbidden_ids.is_empty()
         }));
+    }
+
+    #[test]
+    fn committed_retrieval_fixture_matches_versioned_baseline() {
+        let baseline_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/baselines/retrieval-v1.json");
+        let baseline =
+            load_baseline(&baseline_path).expect("committed retrieval baseline must parse");
+        let mut current = retrieval_fixture_report();
+        let thresholds = parse_regression_thresholds(&[
+            "recall_at_k=0.00".into(),
+            "precision_at_k=0.00".into(),
+            "mrr=0.00".into(),
+            "ndcg_at_k=0.00".into(),
+            "provenance_accuracy=0.00".into(),
+        ])
+        .expect("retrieval gate thresholds must be valid");
+        let comparison = build_baseline_comparison(&current, &baseline, &thresholds)
+            .expect("committed baseline must expose every gated metric");
+        current.baseline = Some(comparison);
+
+        assert_eq!(baseline.metadata.schema_version, EVAL_SCHEMA_VERSION);
+        assert_eq!(baseline.metadata.provider, "fixture");
+        assert_eq!(baseline.metadata.model, "ranked-results-v1");
+        assert!(
+            current
+                .baseline
+                .as_ref()
+                .expect("comparison was attached")
+                .regressions
+                .is_empty(),
+            "retrieval regression fixture failed against {} with zero-drop thresholds:\n{}",
+            baseline_path.display(),
+            current.human_report()
+        );
     }
 
     #[test]

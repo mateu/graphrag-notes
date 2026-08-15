@@ -690,9 +690,11 @@ impl EntityExtractor for TgiClient {
 /// Inputs not explicitly configured receive a stable 1024-dimensional vector.
 /// Configured inputs are useful for exercising ranking and dimension-error
 /// paths without an HTTP inference service.
+type FixtureEmbeddingMap = HashMap<(String, bool), Vec<f32>>;
+
 #[derive(Clone)]
 pub struct DeterministicEmbedder {
-    embeddings: Arc<Mutex<HashMap<(String, bool), Vec<f32>>>>,
+    embeddings: Arc<Mutex<FixtureEmbeddingMap>>,
     default_embedding: Vec<f32>,
     generate_per_input: bool,
     health: bool,
@@ -1223,6 +1225,7 @@ fn ollama_predict_budgets(options: &Option<Value>) -> Vec<u32> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

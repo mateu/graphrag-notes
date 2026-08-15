@@ -28,7 +28,7 @@ pub struct CliOverrides {
     pub database_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct RuntimeConfig {
     pub database: DatabaseConfig,
@@ -49,20 +49,6 @@ pub struct RuntimeConfig {
 struct LibrarianChunkingControlPresence {
     target_chunk_size: bool,
     chunk_overlap: bool,
-}
-
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
-            database: DatabaseConfig::default(),
-            inference: InferenceConfig::default(),
-            search: SearchConfig::default(),
-            augment: AugmentConfig::default(),
-            gardener: GardenerConfig::default(),
-            librarian: LibrarianConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

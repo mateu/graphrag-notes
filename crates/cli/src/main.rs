@@ -1782,7 +1782,7 @@ async fn cmd_add(
             // Read from stdin
             eprintln!("Enter note content (Ctrl+D to finish):");
             let stdin = io::stdin();
-            let lines: Vec<String> = stdin.lock().lines().filter_map(|l| l.ok()).collect();
+            let lines: Vec<String> = stdin.lock().lines().map_while(Result::ok).collect();
             lines.join("\n")
         }
     };
@@ -2141,6 +2141,7 @@ async fn cmd_import_chats(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_migrate_chats(
     repo: Repository,
     tei: SharedEmbedder,
@@ -2245,6 +2246,7 @@ async fn cmd_migrate_chats(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_extract_entities(
     repo: Repository,
     tei: SharedEmbedder,
@@ -2414,6 +2416,7 @@ async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_search(
     repo: Repository,
     tei: SharedEmbedder,
@@ -3187,6 +3190,7 @@ async fn cmd_stats(repo: Repository) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_interactive(
     repo: Repository,
     tei: SharedEmbedder,
@@ -3224,8 +3228,8 @@ async fn cmd_interactive(
         }
 
         let parts: Vec<&str> = line.trim().splitn(2, ' ').collect();
-        let cmd = parts.first().map(|s| *s).unwrap_or("");
-        let arg = parts.get(1).map(|s| *s).unwrap_or("");
+        let cmd = parts.first().copied().unwrap_or("");
+        let arg = parts.get(1).copied().unwrap_or("");
 
         match cmd {
             "" => continue,
@@ -3341,6 +3345,7 @@ async fn cmd_interactive(
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

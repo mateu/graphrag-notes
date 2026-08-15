@@ -1,0 +1,6 @@
+# Deterministic, offline retrieval regression cases. These are a compact,
+# versioned subset of the broader v2 evaluation corpus and pair only with
+# retrieval-regression-ranked-results-v1.json.
+{"schema_version":2,"name":"note-with-source-filter","query":"local music service","scope":"notes","k":3,"source_uri":"fixture://notes/homelab.md","relevance":[{"id":"note:music","grade":3},{"id":"note:network","grade":1}],"expected_source_uris":["fixture://notes/homelab.md"],"forbidden_ids":["note:unrelated"]}
+{"schema_version":2,"name":"message-provenance","query":"adapter pairing","scope":"messages","k":2,"relevance":[{"id":"message:adapter-1","grade":2}],"expected_conversation_uuids":["fixture-conversation-support"]}
+{"schema_version":2,"name":"conversation-summary","query":"what was decided","scope":"all","k":3,"expected_ids":["conversation:project-summary"],"expected_contains":["migration decision"]}

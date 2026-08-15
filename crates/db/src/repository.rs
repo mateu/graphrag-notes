@@ -1203,6 +1203,7 @@ impl Repository {
     /// Atomically publish all staged vectors and the corresponding model
     /// identity. Any provider failure or cancellation before this method leaves
     /// every active vector and metadata field on the last known-good model.
+    #[allow(clippy::too_many_arguments)]
     pub async fn commit_reindex(
         &self,
         job_id: &RecordId,
@@ -1473,7 +1474,7 @@ impl Repository {
         // Sort by creation time descending and apply limit in Rust to avoid
         // SurrealDB multi-result `take` issues and deserialization problems
         // with full `Note` records.
-        notes.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        notes.sort_by_key(|note| std::cmp::Reverse(note.created_at));
         if notes.len() > limit {
             notes.truncate(limit);
         }
@@ -1661,6 +1662,7 @@ impl Repository {
     /// Hybrid note search using explicitly configured vector and full-text
     /// weights. The caller is responsible for validating that they sum to one.
     #[instrument(skip(self, embedding))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn hybrid_search_notes_with_weights(
         &self,
         query_text: &str,
@@ -1855,6 +1857,7 @@ impl Repository {
 
     /// Hybrid message search using explicitly configured ranking weights.
     #[instrument(skip(self, embedding))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn hybrid_search_messages_with_weights(
         &self,
         query_text: &str,
@@ -2014,6 +2017,7 @@ impl Repository {
     /// Hybrid conversation-summary search using explicitly configured ranking
     /// weights.
     #[instrument(skip(self, embedding))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn hybrid_search_conversation_summaries_with_weights(
         &self,
         query_text: &str,
@@ -2882,6 +2886,7 @@ impl Repository {
         Ok(existing.is_some())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn create_audited_edge(
         &self,
         from_id: &RecordId,
@@ -3115,6 +3120,7 @@ impl Repository {
     /// either the entire extraction result or none of it; it can never copy a
     /// prefix of a multi-entity extraction to a successor generation.
     #[instrument(skip(self, entities))]
+    #[allow(clippy::mutable_key_type)] // Surreal `RecordId` is the database's canonical edge key.
     pub async fn upsert_entities_and_link_note(
         &self,
         note_id: &RecordId,
@@ -3175,6 +3181,7 @@ impl Repository {
     /// either the old complete set or the new complete set, never the old
     /// delete/infer/insert gap.
     #[instrument(skip(self, entities))]
+    #[allow(clippy::mutable_key_type)] // Deduplication must retain typed `RecordId`s for writes.
     pub async fn replace_note_entities(
         &self,
         note_id: &RecordId,
@@ -3300,11 +3307,7 @@ impl Repository {
     /// Get entities linked to a note
     #[instrument(skip(self))]
     pub async fn get_entities_for_note(&self, note_id: &str) -> Result<Vec<Entity>> {
-        let raw = if note_id.starts_with("note:") {
-            note_id["note:".len()..].to_string()
-        } else {
-            note_id.to_string()
-        };
+        let raw = note_id.strip_prefix("note:").unwrap_or(note_id).to_string();
         let note_record_id = RecordId::new("note", raw);
 
         let entity_ids: Vec<RecordId> = self
@@ -3338,11 +3341,7 @@ impl Repository {
             count: Option<u64>,
         }
 
-        let raw = if note_id.starts_with("note:") {
-            note_id["note:".len()..].to_string()
-        } else {
-            note_id.to_string()
-        };
+        let raw = note_id.strip_prefix("note:").unwrap_or(note_id).to_string();
         let note_record_id = RecordId::new("note", raw);
         let normalized = entity_query.trim().to_lowercase();
 
@@ -3580,6 +3579,7 @@ impl Repository {
     /// high-degree early note cannot consume a shared table `LIMIT` and starve
     /// later seeds. Proposal tables are deliberately never consulted.
     #[instrument(skip(self, note_ids, edge_types))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn graph_note_edges(
         &self,
         note_ids: &[RecordId],
@@ -3819,6 +3819,7 @@ impl Repository {
             .await
     }
 
+    #[allow(clippy::mutable_key_type)] // Typed `RecordId` maps are copied directly into edge writes.
     async fn copy_note_dependents_to_successors_locked(
         &self,
         successors: &[(RecordId, RecordId, bool)],
@@ -3879,6 +3880,7 @@ impl Repository {
         // Snapshot each edge once before writing successors. This handles an
         // edge whose two endpoints are both reconciled chunks and preserves
         // manual as well as generated graph relationships.
+        #[allow(clippy::mutable_key_type)] // Edge ids remain typed for successor copying.
         let mut seen_edges = HashSet::new();
         let mut edges = Vec::new();
         for old_id in successors.keys() {
@@ -4101,6 +4103,7 @@ impl Repository {
         let note_ids = self
             .source_owned_note_ids(source_id, Some(generation), false)
             .await?;
+        #[allow(clippy::mutable_key_type)] // Edge ids remain typed for proposal retargeting.
         let mut seen_edges = HashSet::new();
         for note_id in note_ids {
             for edge in self.get_note_edges(&record_id_to_string(&note_id)).await? {
@@ -4408,10 +4411,12 @@ impl Repository {
         let notes = self
             .source_owned_note_ids(source_id, generation, older_than_generation)
             .await?;
-        let mut summary = SourceDeleteSummary::default();
-        summary.notes = notes.len() as u64;
-        summary.note_edges = self.count_note_edges_for_notes(&notes).await?;
-        summary.proposals = self.count_mutable_proposals_for_notes(&notes).await?;
+        let mut summary = SourceDeleteSummary {
+            notes: notes.len() as u64,
+            note_edges: self.count_note_edges_for_notes(&notes).await?,
+            proposals: self.count_mutable_proposals_for_notes(&notes).await?,
+            ..SourceDeleteSummary::default()
+        };
         for note_id in notes {
             let counts: Vec<SourceDeleteCount> = self
                 .db

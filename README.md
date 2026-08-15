@@ -127,7 +127,8 @@ Defaults:
 
 ### Prerequisites
 
-- Rust 1.75+ (install via [rustup](https://rustup.rs/))
+- Rust 1.97.1+ (install via [rustup](https://rustup.rs/)); this is the
+  workspace MSRV and is checked in CI
 - Running local inference backends:
   - either **TEI + TGI**
   - or **Ollama**

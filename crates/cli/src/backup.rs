@@ -155,6 +155,7 @@ pub async fn export_jsonl(repo: &Repository, path: &Path) -> Result<BackupSummar
 
 /// Verify a standalone JSONL export and its sidecar manifest without opening
 /// a database.
+#[cfg(test)]
 pub fn verify_jsonl(path: &Path) -> Result<BackupSummary> {
     let manifest = read_manifest_file(&jsonl_manifest_path(path))?;
     validate_manifest_schema(&manifest)?;
@@ -174,7 +175,7 @@ fn verify_payload(payload_path: &Path, manifest: &PortableBackupManifest) -> Res
         );
     }
 
-    let validation = inspect_records(&payload_path, &manifest)?;
+    let validation = inspect_records(payload_path, manifest)?;
     if validation.bytes != manifest.payload.bytes {
         bail!(
             "portable backup byte count mismatch: manifest {}, payload {}",
@@ -406,7 +407,7 @@ fn read_manifest(path: &Path) -> Result<PortableBackupManifest> {
 }
 
 fn read_manifest_file(manifest_path: &Path) -> Result<PortableBackupManifest> {
-    let reader = File::open(&manifest_path)
+    let reader = File::open(manifest_path)
         .with_context(|| format!("open portable backup manifest {}", manifest_path.display()))?;
     serde_json::from_reader(reader)
         .with_context(|| format!("parse portable backup manifest {}", manifest_path.display()))

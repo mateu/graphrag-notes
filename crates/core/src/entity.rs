@@ -6,7 +6,7 @@ use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 
 /// The type/classification of an entity
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, SurrealValue)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash, SurrealValue)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb_types")]
 #[surreal(untagged, lowercase)]
@@ -26,13 +26,8 @@ pub enum EntityType {
     /// A date or time period
     Date,
     /// Generic/other
+    #[default]
     Other,
-}
-
-impl Default for EntityType {
-    fn default() -> Self {
-        Self::Other
-    }
 }
 
 /// An entity extracted from notes
@@ -86,7 +81,6 @@ impl Entity {
     /// Canonicalize a name for deduplication
     pub fn canonicalize(name: &str) -> String {
         name.to_lowercase()
-            .trim()
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
