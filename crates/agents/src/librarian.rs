@@ -5170,7 +5170,11 @@ mod tests {
             .is_empty());
 
         let source = repo
-            .create_source(Source::manual().with_content("source"))
+            .create_source(
+                Source::manual()
+                    .with_title("Detach fixture")
+                    .with_content("source"),
+            )
             .await
             .unwrap();
         let generated = repo
