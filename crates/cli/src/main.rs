@@ -945,6 +945,12 @@ async fn run_archive_only_command(cli: &Cli) -> Result<bool> {
 /// produced by Clap-adjacent handlers that intentionally use `anyhow::bail!`.
 fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
     for cause in error.chain() {
+        if cause
+            .downcast_ref::<commands::notes::NotesEditValidationError>()
+            .is_some()
+        {
+            return output::ExitCode::Validation;
+        }
         if let Some(error) = cause.downcast_ref::<graphrag_db::DbError>() {
             return match error {
                 graphrag_db::DbError::NotFound(_, _) => output::ExitCode::NotFound,
@@ -3826,6 +3832,17 @@ mod tests {
 
         let validation = anyhow::anyhow!("refusing to delete without --yes");
         assert_eq!(exit_code_for(&validation), output::ExitCode::Validation);
+
+        let unreadable_file = anyhow::Error::new(
+            commands::notes::NotesEditValidationError::UnreadableContentFile {
+                path: PathBuf::from("missing.md"),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+            },
+        );
+        assert_eq!(
+            exit_code_for(&unreadable_file),
+            output::ExitCode::Validation
+        );
 
         let partial = anyhow::Error::new(graphrag_agents::AgentError::DurablePartialFailure {
             job_id: "processing_job:one".into(),

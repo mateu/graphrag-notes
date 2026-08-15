@@ -1,12 +1,39 @@
 use crate::output::{self, OutputFormat};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::Subcommand;
 use graphrag_agents::LibrarianAgent;
 use graphrag_core::{record_id_to_string, Note};
 use graphrag_db::{repository::SearchResult, Repository, SourceDeleteSummary};
 use serde::Serialize;
+use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
+
+/// Explicit validation failure for local edit input. This is deliberately
+/// distinct from provider/database I/O so the top-level CLI can honor the
+/// documented validation exit code for a missing or unreadable content file.
+#[derive(Debug)]
+pub enum NotesEditValidationError {
+    UnreadableContentFile { path: PathBuf, source: io::Error },
+}
+
+impl fmt::Display for NotesEditValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnreadableContentFile { path, .. } => {
+                write!(formatter, "failed to read content file: {}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for NotesEditValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnreadableContentFile { source, .. } => Some(source),
+        }
+    }
+}
 
 #[derive(Subcommand)]
 pub enum NotesCommand {
@@ -204,9 +231,7 @@ async fn edit(
     prepared_edit: Option<PreparedEdit>,
 ) -> Result<()> {
     let existing = get_visible_note(&repo, &id).await?;
-    let content = prepared_edit
-        .map(|prepared| prepared.content)
-        .unwrap_or(read_edit_content(content_file, stdin)?);
+    let content = select_edit_content(prepared_edit, content_file, stdin)?;
     validate_edit_request(
         &existing,
         &id,
@@ -320,11 +345,12 @@ async fn get_visible_note(repo: &Repository, id: &str) -> Result<Note> {
 
 fn read_edit_content(content_file: Option<PathBuf>, stdin: bool) -> Result<Option<String>> {
     match (content_file, stdin) {
-        (Some(path), false) => {
-            Ok(Some(std::fs::read_to_string(&path).with_context(|| {
-                format!("failed to read content file: {}", path.display())
-            })?))
-        }
+        (Some(path), false) => Ok(Some(std::fs::read_to_string(&path).map_err(|source| {
+            anyhow::Error::new(NotesEditValidationError::UnreadableContentFile {
+                path: path.clone(),
+                source,
+            })
+        })?)),
         (None, true) => {
             let mut content = String::new();
             io::stdin().read_to_string(&mut content)?;
@@ -332,6 +358,17 @@ fn read_edit_content(content_file: Option<PathBuf>, stdin: bool) -> Result<Optio
         }
         (None, false) => Ok(None),
         (Some(_), true) => unreachable!("clap rejects conflicting content inputs"),
+    }
+}
+
+fn select_edit_content(
+    prepared_edit: Option<PreparedEdit>,
+    content_file: Option<PathBuf>,
+    stdin: bool,
+) -> Result<Option<String>> {
+    match prepared_edit {
+        Some(prepared) => Ok(prepared.content),
+        None => read_edit_content(content_file, stdin),
     }
 }
 
@@ -384,7 +421,7 @@ fn print_delete_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::{has_edit_action, validate_edit_request};
+    use super::{has_edit_action, select_edit_content, validate_edit_request, PreparedEdit};
     use graphrag_core::Note;
 
     #[test]
@@ -416,5 +453,20 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("use --detach"));
+    }
+
+    #[test]
+    fn prepared_edit_content_is_reused_without_reading_the_original_input_again() {
+        let content = select_edit_content(
+            Some(PreparedEdit {
+                content: Some("already read".into()),
+            }),
+            Some(std::path::PathBuf::from(
+                "definitely-missing-content-file.md",
+            )),
+            false,
+        )
+        .unwrap();
+        assert_eq!(content.as_deref(), Some("already read"));
     }
 }
