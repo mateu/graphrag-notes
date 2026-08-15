@@ -136,6 +136,10 @@ impl ReindexAgent {
                     "changing the active embedding model requires `reindex --all`; partial scopes would leave a mixed-model corpus".into(),
                 ));
             }
+        } else if !preview.scope.is_all() && self.repo.vector_bearing_record_count().await? != 0 {
+            return Err(AgentError::Processing(
+                "legacy vector-bearing data has no embedding metadata; use `reindex --all` before establishing a corpus-wide identity".into(),
+            ));
         }
         let job = self
             .repo
@@ -629,6 +633,39 @@ mod tests {
                 .model,
             "replacement-model"
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_vectors_without_metadata_reject_partial_reindex() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("legacy").with_embedding(vector(0.2)))
+            .await
+            .unwrap();
+        assert!(repo.portable_embedding_metadata().await.unwrap().is_none());
+
+        let embedder: SharedEmbedder = Arc::new(
+            DeterministicEmbedder::default().with_identity("replacement", "replacement-model"),
+        );
+        let agent = ReindexAgent::new(repo.clone(), embedder);
+        let preview = agent
+            .preview(ReindexScope {
+                notes: true,
+                messages: false,
+                summaries: false,
+            })
+            .await
+            .unwrap();
+        let error = agent
+            .start(
+                preview,
+                EmbeddingIdentity::new("replacement", "replacement-model", 1024),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("reindex --all"));
+        assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
+        assert!(repo.portable_embedding_metadata().await.unwrap().is_none());
     }
 
     #[tokio::test]

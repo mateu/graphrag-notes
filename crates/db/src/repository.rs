@@ -571,6 +571,13 @@ impl Repository {
         crate::compatibility::embedding_metadata(&self.db).await
     }
 
+    /// Count active vector-bearing records independently of metadata. This is
+    /// used to keep a legacy, unlabelled corpus from accepting a partial model
+    /// cutover that would make the global identity dishonest.
+    pub async fn vector_bearing_record_count(&self) -> Result<usize> {
+        crate::compatibility::vector_bearing_record_count(&self.db).await
+    }
+
     /// Check the active embedding identity before a vector read or write.
     /// This method is read-only and therefore safe to use for search paths.
     pub async fn check_embedding_compatibility(
