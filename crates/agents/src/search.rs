@@ -751,7 +751,11 @@ impl SearchAgent {
         graph: GraphEvidence,
     ) -> ScopedSearchResult {
         let mut hit = self.from_note_result(result);
-        hit.score = graph.score;
+        // Graph-only candidates share the final ranker with every other
+        // search scope. Apply the note channel's configured weight here just
+        // as `from_note_result` does, including an explicitly configured
+        // zero weight.
+        hit.score = graph.score * self.note_weight;
         hit.fusion = FusionEvidence {
             fused_score: graph.score,
             ..Default::default()
@@ -1041,6 +1045,79 @@ mod tests {
         assert_eq!(evidence.path[0].edge_type, "supports");
         assert_eq!(evidence.path[0].direction, "outbound");
         assert_eq!(on.summary.entities_matched, 1);
+    }
+
+    #[tokio::test]
+    async fn graph_only_notes_honor_zero_note_weight_before_all_scope_ranking() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("Weight-sensitive graph seed"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("graph-only neighboring note"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Weight seed", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_fusion_config(FusionConfig::default(), 0.0, 1.0, 1.0)
+            .search_with_scope_graph(
+                "Weight seed",
+                10,
+                SearchScope::All,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        let graph_only = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .expect("accepted neighbor should be included as a graph-only note");
+        assert!(graph_only.graph.is_some());
+        assert_eq!(graph_only.score, 0.0);
+
+        // The same all-scope final sorter must rank a positive message-channel
+        // score above the disabled graph-only note score.
+        let mut ranked = vec![
+            graph_only.clone(),
+            ScopedSearchResult {
+                hit_type: SearchHitType::Message,
+                id: "message:weighted".into(),
+                title: None,
+                content: "message result".into(),
+                created_at: None,
+                source_uri: None,
+                score: 0.01,
+                fusion: FusionEvidence {
+                    fused_score: 0.01,
+                    ..Default::default()
+                },
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+        ];
+        rank_scoped_results(&mut ranked);
+        assert_eq!(ranked[0].id, "message:weighted");
     }
 
     #[tokio::test]

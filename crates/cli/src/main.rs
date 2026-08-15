@@ -14,10 +14,10 @@ use eval::{
 };
 use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
-    GraphMode, GraphRetrievalConfig, InferenceProviderConfig, InferenceProviders, LibrarianAgent,
-    LibrarianRuntimeConfig, ProcessingConfig, ProcessingRunResult, ResilientEmbedder,
-    ResilientEntityExtractor, SearchAgent, SearchHitType, SearchScope, SharedEmbedder,
-    SharedEntityExtractor, TokenCountMode,
+    GraphMode, GraphPathStep, GraphRetrievalConfig, InferenceProviderConfig, InferenceProviders,
+    LibrarianAgent, LibrarianRuntimeConfig, ProcessingConfig, ProcessingRunResult,
+    ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType, SearchScope,
+    SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
@@ -2114,15 +2114,7 @@ async fn cmd_search(
                     graph.seed_note_id,
                     graph.hops,
                     graph.query_entities.join(", "),
-                    graph
-                        .path
-                        .iter()
-                        .map(|step| format!(
-                            "{}:{}({:.2})",
-                            step.direction, step.edge_type, step.confidence
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(" -> "),
+                    render_graph_path(&graph.path, " -> "),
                     graph.provenance_ids.join(", "),
                 );
             }
@@ -2244,15 +2236,7 @@ async fn cmd_augment(
                 ", graph_seed={}, graph_hops={}, graph_path={}, graph_provenance={}",
                 graph.seed_note_id,
                 graph.hops,
-                graph
-                    .path
-                    .iter()
-                    .map(|step| format!(
-                        "{}:{}:{}→{}",
-                        step.direction, step.edge_type, step.from_id, step.to_id
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(" | "),
+                render_graph_path(&graph.path, " | "),
                 graph.provenance_ids.join(" | "),
             ));
         }
@@ -2263,6 +2247,27 @@ async fn cmd_augment(
     }
 
     Ok(())
+}
+
+/// Keep terminal graph evidence reconstructable even when multiple edges share
+/// a type or a path has more than one hop. `GraphPathStep` is also serialized
+/// in structured agent output; this compact rendering retains the same record
+/// identities for the human CLI surfaces.
+fn render_graph_path(path: &[GraphPathStep], separator: &str) -> String {
+    path.iter()
+        .map(|step| {
+            format!(
+                "{}:{} edge={} endpoints={}→{} confidence={:.2}",
+                step.direction,
+                step.edge_type,
+                step.edge_id,
+                step.from_id,
+                step.to_id,
+                step.confidence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3127,6 +3132,33 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn graph_path_rendering_retains_edge_and_endpoint_record_ids() {
+        let path = vec![
+            GraphPathStep {
+                edge_id: "note_edge:one".into(),
+                edge_type: "supports".into(),
+                direction: "outbound".into(),
+                confidence: 0.9,
+                from_id: "note:seed".into(),
+                to_id: "note:middle".into(),
+            },
+            GraphPathStep {
+                edge_id: "note_edge:two".into(),
+                edge_type: "contradicts".into(),
+                direction: "inbound".into(),
+                confidence: 0.75,
+                from_id: "note:target".into(),
+                to_id: "note:middle".into(),
+            },
+        ];
+
+        assert_eq!(
+            render_graph_path(&path, " -> "),
+            "outbound:supports edge=note_edge:one endpoints=note:seed→note:middle confidence=0.90 -> inbound:contradicts edge=note_edge:two endpoints=note:target→note:middle confidence=0.75"
+        );
     }
 
     #[test]
