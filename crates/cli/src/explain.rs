@@ -51,8 +51,14 @@ pub fn human(explanation: &RetrievalExplanation) -> String {
     .collect::<Vec<_>>()
     .join(",");
     format!(
-        "rank={} fused={:.4} channels={} decision={:?}",
-        explanation.rank, explanation.fused.value, channels, explanation.inclusion
+        "id={} rank={} final={:.4} weight={:.3} fused={:.4} channels={} decision={:?}",
+        explanation.result_id,
+        explanation.rank,
+        explanation.final_score.value,
+        explanation.effective_weight,
+        explanation.fused.value,
+        channels,
+        explanation.inclusion
     )
 }
 
@@ -72,6 +78,14 @@ mod tests {
             rank: 1,
             context_rank: Some(1),
             hit_type: SearchHitTypeEvidence::Note,
+            final_score: ScoreEvidence {
+                value: 0.5,
+                kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                meaning: "final",
+                rank: None,
+                raw_value: None,
+            },
+            effective_weight: 0.7,
             fused: ScoreEvidence {
                 value: 0.5,
                 kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
@@ -106,7 +120,10 @@ mod tests {
     #[test]
     fn human_and_json_share_the_versioned_evidence_contract() {
         let evidence = sample();
-        assert!(human(&evidence).contains("channels=vector"));
+        let human = human(&evidence);
+        assert!(human.contains("id=note:fixture"));
+        assert!(human.contains("final=0.5000"));
+        assert!(human.contains("channels=vector"));
         let json = json(&[evidence]);
         assert_eq!(json["schema_version"], 1);
         assert_eq!(json["results"][0]["result_id"], "note:fixture");
@@ -114,6 +131,8 @@ mod tests {
             json["results"][0]["fused"]["kind"],
             "reciprocal_rank_fusion"
         );
+        assert_eq!(json["results"][0]["final_score"]["value"], 0.5);
+        assert!((json["results"][0]["effective_weight"].as_f64().unwrap() - 0.7).abs() < 1e-6);
         assert_eq!(json["results"][0]["vector"]["rank"], 1);
         assert!((json["results"][0]["vector"]["raw_value"].as_f64().unwrap() - 0.1).abs() < 1e-6);
     }

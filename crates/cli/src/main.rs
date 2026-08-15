@@ -2917,6 +2917,13 @@ async fn cmd_augment(
         packing_diagnostics_text(&ctx.diagnostics)
     );
 
+    if explain && !ctx.exclusions.is_empty() {
+        println!("\nExcluded candidates:");
+        for exclusion in &ctx.exclusions {
+            println!("  • {}", explain::human(exclusion));
+        }
+    }
+
     if ctx.chunks.is_empty() {
         println!("No augmentation context found.");
         return Ok(());
@@ -4132,6 +4139,7 @@ mod tests {
                 score: 1.0,
                 fusion: Default::default(),
                 score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,
@@ -4147,6 +4155,7 @@ mod tests {
                 score: 0.9,
                 fusion: Default::default(),
                 score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,

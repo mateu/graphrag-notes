@@ -124,6 +124,7 @@ pub struct AugmentChunk {
     /// describe the actual retrieval result, not a reconstructed score.
     pub fusion: FusionEvidence,
     pub score_kind: crate::ScoreKind,
+    pub effective_weight: f32,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
@@ -191,6 +192,8 @@ impl AugmentChunk {
             rank: self.fusion.final_rank,
             context_rank: Some(rank),
             hit_type: self.hit_type.into(),
+            final_score: crate::final_rank_score(self.score, self.score_kind),
+            effective_weight: self.effective_weight,
             fused,
             vector,
             full_text,
@@ -218,7 +221,7 @@ pub(crate) fn build_augment_context_from_hits(
     entity_filter: Option<String>,
     hits: Vec<ScopedSearchResult>,
     options: AugmentOptions,
-    dropped_for_entity_filter: usize,
+    _dropped_for_entity_filter: usize,
 ) -> AugmentContext {
     build_augment_context_from_hits_with_graph(
         query,
@@ -226,7 +229,7 @@ pub(crate) fn build_augment_context_from_hits(
         entity_filter,
         hits,
         options,
-        dropped_for_entity_filter,
+        Vec::new(),
         GraphRetrievalSummary::default(),
     )
 }
@@ -237,9 +240,14 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
     entity_filter: Option<String>,
     hits: Vec<ScopedSearchResult>,
     options: AugmentOptions,
-    dropped_for_entity_filter: usize,
+    entity_filtered: Vec<ScopedSearchResult>,
     graph_summary: GraphRetrievalSummary,
 ) -> AugmentContext {
+    let dropped_for_entity_filter = entity_filtered.len();
+    let entity_exclusions = entity_filtered
+        .iter()
+        .map(|hit| hit.explanation_with_inclusion(crate::InclusionReason::Filtered))
+        .collect::<Vec<_>>();
     let counter = options.token_counter.as_ref();
     if options.max_chunks == 0 || options.max_total_tokens == 0 || options.max_chunk_tokens == 0 {
         let reason = if options.max_chunks == 0 {
@@ -258,12 +266,13 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             counter.mode(),
             dropped_for_entity_filter,
         );
-        context.exclusions = exclusions;
+        context.exclusions = entity_exclusions;
+        context.exclusions.extend(exclusions);
         return context;
     }
 
     let mut candidates = Vec::new();
-    let mut exclusions = Vec::new();
+    let mut exclusions = entity_exclusions;
     let mut seen_ids = HashSet::new();
     let mut dropped_duplicates = 0usize;
     let mut dropped_for_relevance = 0usize;
@@ -516,6 +525,7 @@ fn fit_candidate(
         score: candidate.hit.score,
         fusion: candidate.hit.fusion.clone(),
         score_kind: candidate.hit.score_kind,
+        effective_weight: candidate.hit.effective_weight,
         conversation_uuid: candidate.hit.conversation_uuid.clone(),
         message_index: candidate.hit.message_index,
         role: candidate.hit.role.clone(),
@@ -574,6 +584,7 @@ fn fit_candidate(
             score: candidate.hit.score,
             fusion: candidate.hit.fusion.clone(),
             score_kind: candidate.hit.score_kind,
+            effective_weight: candidate.hit.effective_weight,
             conversation_uuid: candidate.hit.conversation_uuid.clone(),
             message_index: candidate.hit.message_index,
             role: candidate.hit.role.clone(),
@@ -1490,6 +1501,7 @@ mod tests {
                 ..Default::default()
             },
             score_kind: crate::ScoreKind::ReciprocalRankFusion,
+            effective_weight: 1.0,
             conversation_uuid: None,
             message_index: None,
             role: None,

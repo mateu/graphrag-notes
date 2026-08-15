@@ -19,8 +19,8 @@ pub mod search;
 pub use chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker};
 pub use error::{AgentError, Result};
 pub use evidence::{
-    fusion_scores, InclusionReason, ProvenanceEvidence, RetrievalExplanation, ScoreEvidence,
-    ScoreKind, SearchHitTypeEvidence, EXPLANATION_SCHEMA_VERSION,
+    final_rank_score, fusion_scores, InclusionReason, ProvenanceEvidence, RetrievalExplanation,
+    ScoreEvidence, ScoreKind, SearchHitTypeEvidence, EXPLANATION_SCHEMA_VERSION,
 };
 pub use gardener::GardenerAgent;
 pub use inference::{

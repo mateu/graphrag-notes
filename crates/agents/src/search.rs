@@ -117,6 +117,8 @@ pub struct EnrichedSearchResult {
     pub result: SearchResult,
     pub related: Option<RelatedNotes>,
     score_kind: crate::ScoreKind,
+    final_score: f32,
+    effective_weight: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +148,8 @@ pub struct ScopedSearchResult {
     /// surface while current CLI output remains unchanged.
     pub fusion: FusionEvidence,
     pub score_kind: crate::ScoreKind,
+    /// The configured hit-type multiplier applied before final ordering.
+    pub effective_weight: f32,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
@@ -165,6 +169,8 @@ impl ScopedSearchResult {
             title: self.title.clone(),
             fusion: &self.fusion,
             score_kind: self.score_kind,
+            final_score: self.score,
+            effective_weight: self.effective_weight,
             graph: self.graph.clone(),
             source_uri: self.source_uri.clone(),
             conversation_uuid: self.conversation_uuid.clone(),
@@ -194,6 +200,8 @@ impl EnrichedSearchResult {
             title: self.result.title.clone(),
             fusion: &self.result.fusion,
             score_kind: self.score_kind,
+            final_score: self.final_score,
+            effective_weight: self.effective_weight,
             graph: None,
             source_uri: self.result.source_uri.clone(),
             conversation_uuid: None,
@@ -209,6 +217,8 @@ struct ExplanationInput<'a> {
     title: Option<String>,
     fusion: &'a FusionEvidence,
     score_kind: crate::ScoreKind,
+    final_score: f32,
+    effective_weight: f32,
     graph: Option<GraphEvidence>,
     source_uri: Option<String>,
     conversation_uuid: Option<String>,
@@ -225,6 +235,8 @@ fn retrieval_explanation(input: ExplanationInput<'_>) -> crate::RetrievalExplana
         rank: input.fusion.final_rank,
         context_rank: None,
         hit_type: input.hit_type.into(),
+        final_score: crate::final_rank_score(input.final_score, input.score_kind),
+        effective_weight: input.effective_weight,
         fused,
         vector,
         full_text,
@@ -390,11 +402,14 @@ impl SearchAgent {
         for result in results {
             // Try to get related notes (best effort) using the full RecordId
             let related = self.repo.get_related_notes(&result.id).await.ok();
+            let final_score = fusion::apply_hit_type_weight(&result.fusion, self.note_weight);
 
             enriched.push(EnrichedSearchResult {
                 result,
                 related,
                 score_kind: self.fusion.strategy.into(),
+                final_score,
+                effective_weight: self.note_weight,
             });
         }
 
@@ -470,7 +485,7 @@ impl SearchAgent {
         source_uri: Option<String>,
         graph_mode: GraphMode,
         entity_filter: Option<&str>,
-    ) -> Result<(GraphSearchResults, usize)> {
+    ) -> Result<(GraphSearchResults, Vec<ScopedSearchResult>)> {
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
         let embedding = self.embed_query(query).await?;
         let mut scoped_results = Vec::new();
@@ -555,14 +570,14 @@ impl SearchAgent {
             }
         }
 
-        let mut dropped_for_entity_filter = 0usize;
+        let mut entity_filtered = Vec::new();
         if let Some(filter) = entity_filter {
             let mut filtered = Vec::with_capacity(scoped_results.len());
             for hit in scoped_results {
                 if hit.hit_type == SearchHitType::Note
                     && !self.repo.note_has_entity_name(&hit.id, filter).await?
                 {
-                    dropped_for_entity_filter += 1;
+                    entity_filtered.push(hit);
                     continue;
                 }
                 filtered.push(hit);
@@ -587,7 +602,7 @@ impl SearchAgent {
                 hits: scoped_results,
                 summary,
             },
-            dropped_for_entity_filter,
+            entity_filtered,
         ))
     }
 
@@ -640,7 +655,7 @@ impl SearchAgent {
         }
 
         let fetch_limit = (options.max_chunks * 4).clamp(options.max_chunks, 200);
-        let (graph_results, dropped_for_entity_filter) = self
+        let (graph_results, entity_filtered) = self
             .search_with_scope_graph_filtered(
                 query,
                 fetch_limit,
@@ -660,7 +675,7 @@ impl SearchAgent {
                 entity_filter,
                 hits,
                 options,
-                dropped_for_entity_filter,
+                entity_filtered,
                 graph_results.summary,
             ),
         )
@@ -908,6 +923,7 @@ impl SearchAgent {
             ..Default::default()
         };
         hit.score_kind = crate::ScoreKind::GraphTraversal;
+        hit.effective_weight = self.note_weight;
         hit.graph = Some(graph);
         hit
     }
@@ -924,6 +940,7 @@ impl SearchAgent {
             score: fusion::apply_hit_type_weight(&result.fusion, self.note_weight),
             fusion: result.fusion,
             score_kind: self.fusion.strategy.into(),
+            effective_weight: self.note_weight,
             conversation_uuid: None,
             message_index: None,
             role: None,
@@ -947,6 +964,7 @@ impl SearchAgent {
             score: fusion::apply_hit_type_weight(&result.fusion, self.message_weight),
             fusion: result.fusion,
             score_kind: self.fusion.strategy.into(),
+            effective_weight: self.message_weight,
             conversation_uuid: Some(result.conversation_uuid),
             message_index: Some(result.message_index),
             role: Some(result.role),
@@ -971,6 +989,7 @@ impl SearchAgent {
             score: fusion::apply_hit_type_weight(&result.fusion, self.conversation_summary_weight),
             fusion: result.fusion,
             score_kind: self.fusion.strategy.into(),
+            effective_weight: self.conversation_summary_weight,
             conversation_uuid: Some(result.uuid),
             message_index: None,
             role: None,
@@ -1513,6 +1532,11 @@ mod tests {
             record_id_to_string(qualifying.id.as_ref().unwrap())
         );
         assert_eq!(context.diagnostics.dropped_for_entity_filter, 4);
+        assert_eq!(context.exclusions.len(), 4);
+        assert!(context.exclusions.iter().all(|explanation| {
+            explanation.inclusion == crate::InclusionReason::Filtered
+                && explanation.result_id.starts_with("note:")
+        }));
     }
 
     #[tokio::test]
@@ -1579,6 +1603,7 @@ mod tests {
                     ..Default::default()
                 },
                 score_kind: crate::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,
@@ -2860,11 +2885,29 @@ mod tests {
                 ..FusionEvidence::default()
             },
             score_kind: crate::ScoreKind::ReciprocalRankFusion,
+            effective_weight: 1.0,
             conversation_uuid: None,
             message_index: None,
             role: None,
             graph: None,
         }
+    }
+
+    #[test]
+    fn explanation_reports_the_score_and_weight_used_for_final_ranking() {
+        let mut hit = make_hit("note:weighted", 0.24, "weighted evidence");
+        hit.fusion.fused_score = 0.4;
+        hit.score_kind = crate::ScoreKind::WeightedFusion;
+        hit.effective_weight = 0.6;
+
+        let explanation = hit.explanation();
+        assert_eq!(explanation.final_score.value, 0.24);
+        assert_eq!(
+            explanation.final_score.kind,
+            crate::ScoreKind::WeightedFusion
+        );
+        assert_eq!(explanation.effective_weight, 0.6);
+        assert_eq!(explanation.fused.value, 0.4);
     }
 
     #[test]

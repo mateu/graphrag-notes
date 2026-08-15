@@ -86,6 +86,12 @@ pub struct RetrievalExplanation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_rank: Option<usize>,
     pub hit_type: SearchHitTypeEvidence,
+    /// The final hit-type-weighted score used by the shared result sorter.
+    /// This, rather than the unweighted fused channel score, determines rank.
+    pub final_score: ScoreEvidence,
+    /// Configured effective hit-type weight applied to `fused` to produce
+    /// `final_score` (or to graph traversal score for graph-only hits).
+    pub effective_weight: f32,
     pub fused: ScoreEvidence,
     pub vector: Option<ScoreEvidence>,
     pub full_text: Option<ScoreEvidence>,
@@ -161,6 +167,16 @@ pub fn fusion_scores(
             raw_value: fusion.fulltext_score,
         }),
     )
+}
+
+pub fn final_rank_score(value: f32, kind: ScoreKind) -> ScoreEvidence {
+    ScoreEvidence {
+        value,
+        kind,
+        meaning: "hit-type-weighted final rank score",
+        rank: None,
+        raw_value: None,
+    }
 }
 
 #[cfg(test)]
