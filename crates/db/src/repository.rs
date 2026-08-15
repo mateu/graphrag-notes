@@ -2741,6 +2741,38 @@ impl Repository {
         since: Option<DateTime<Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<NoteEdgeRow>> {
+        self.graph_note_edges_excluding_visited(
+            note_ids,
+            edge_types,
+            per_table_limit,
+            allow_outbound,
+            allow_inbound,
+            min_confidence,
+            since,
+            source_uri,
+            &HashMap::new(),
+        )
+        .await
+    }
+
+    /// Fetch bounded graph edges while excluding endpoint notes already on the
+    /// path for each current source. Applying this exclusion in the database
+    /// is necessary: otherwise a high-confidence back-edge can consume the
+    /// per-source table limit before traversal rejects the cycle in memory.
+    #[allow(clippy::too_many_arguments)]
+    #[instrument(skip(self, note_ids, edge_types, visited_note_ids))]
+    pub async fn graph_note_edges_excluding_visited(
+        &self,
+        note_ids: &[RecordId],
+        edge_types: &[String],
+        per_table_limit: usize,
+        allow_outbound: bool,
+        allow_inbound: bool,
+        min_confidence: f32,
+        since: Option<DateTime<Utc>>,
+        source_uri: Option<String>,
+        visited_note_ids: &HashMap<String, Vec<RecordId>>,
+    ) -> Result<Vec<NoteEdgeRow>> {
         if note_ids.is_empty()
             || edge_types.is_empty()
             || per_table_limit == 0
@@ -2769,13 +2801,13 @@ impl Repository {
                 .map(|index| {
                     let direction = match (allow_outbound, allow_inbound) {
                         (true, true) => format!(
-                            "((in = $note_{index} AND out IN {eligible_notes}) OR (out = $note_{index} AND in IN {eligible_notes}))"
+                            "((in = $note_{index} AND out IN {eligible_notes} AND out NOT IN $visited_{index}) OR (out = $note_{index} AND in IN {eligible_notes} AND in NOT IN $visited_{index}))"
                         ),
                         (true, false) => {
-                            format!("in = $note_{index} AND out IN {eligible_notes}")
+                            format!("in = $note_{index} AND out IN {eligible_notes} AND out NOT IN $visited_{index}")
                         }
                         (false, true) => {
-                            format!("out = $note_{index} AND in IN {eligible_notes}")
+                            format!("out = $note_{index} AND in IN {eligible_notes} AND in NOT IN $visited_{index}")
                         }
                         (false, false) => "false".to_string(),
                     };
@@ -2795,6 +2827,13 @@ impl Repository {
                 .bind(("source_uri", source_uri.clone()));
             for (index, note_id) in note_ids.iter().enumerate() {
                 query = query.bind((format!("note_{index}"), note_id.clone()));
+                query = query.bind((
+                    format!("visited_{index}"),
+                    visited_note_ids
+                        .get(&record_id_to_string(note_id))
+                        .cloned()
+                        .unwrap_or_default(),
+                ));
             }
             let mut response = query.await?;
             for index in 0..note_ids.len() {

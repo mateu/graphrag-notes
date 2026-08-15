@@ -2110,11 +2110,7 @@ async fn cmd_search(
             println!("   ID: {}", r.id);
             println!("   Score: {:.3}", r.score);
             if let Some(graph) = r.graph.as_ref() {
-                println!(
-                    "   Graph path: entities=[{}] {}",
-                    graph.query_entities.join(", "),
-                    render_graph_citation(graph, " -> "),
-                );
+                println!("   Graph path: {}", render_search_graph_evidence(graph),);
             }
             if let Some(related) = related_by_note.get(&r.id) {
                 let total =
@@ -2270,7 +2266,7 @@ async fn cmd_augment(
             provenance.push_str(&format!(", created_at={}", created_at.to_rfc3339()));
         }
         if let Some(graph) = chunk.graph.as_ref() {
-            provenance.push_str(&format!(", {}", render_graph_citation(graph, " | ")));
+            provenance.push_str(&render_augment_graph_evidence(graph));
         }
         println!(
             "  [C{}] {} | score={:.3} | tokens={} | {}",
@@ -2304,13 +2300,26 @@ fn render_graph_path(path: &[GraphPathStep], separator: &str) -> String {
 
 fn render_graph_citation(graph: &GraphEvidence, path_separator: &str) -> String {
     format!(
-        "graph_seed={}, graph_hops={}, graph_source_uri={}, graph_path={}, graph_provenance={}",
+        "graph_seed={}, graph_hops={}, graph_decay={:.2}, graph_source_uri={}, graph_path={}, graph_provenance={}",
         graph.seed_note_id,
         graph.hops,
+        graph.decay,
         graph.source_uri.as_deref().unwrap_or_default(),
         render_graph_path(&graph.path, path_separator),
         graph.provenance_ids.join(" | "),
     )
+}
+
+fn render_search_graph_evidence(graph: &GraphEvidence) -> String {
+    format!(
+        "entities=[{}] {}",
+        graph.query_entities.join(", "),
+        render_graph_citation(graph, " -> "),
+    )
+}
+
+fn render_augment_graph_evidence(graph: &GraphEvidence) -> String {
+    format!(", {}", render_graph_citation(graph, " | "))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3226,7 +3235,15 @@ mod tests {
 
         assert_eq!(
             render_graph_citation(&graph, " | "),
-            "graph_seed=note:seed, graph_hops=1, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+            "graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+        );
+        assert_eq!(
+            render_search_graph_evidence(&graph),
+            "entities=[Atlas] graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+        );
+        assert_eq!(
+            render_augment_graph_evidence(&graph),
+            ", graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
         );
     }
 

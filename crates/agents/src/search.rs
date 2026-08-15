@@ -643,9 +643,22 @@ impl SearchAgent {
                 .values()
                 .map(|state| state.note_id.clone())
                 .collect::<Vec<_>>();
+            let visited_note_ids = current
+                .values()
+                .map(|state| {
+                    (
+                        state.id.clone(),
+                        state
+                            .visited
+                            .iter()
+                            .map(|id| RecordId::new("note", id.strip_prefix("note:").unwrap_or(id)))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
             let edges = self
                 .repo
-                .graph_note_edges(
+                .graph_note_edges_excluding_visited(
                     &ids,
                     &self.graph.allowed_edge_types,
                     self.graph.per_node_fanout,
@@ -654,6 +667,7 @@ impl SearchAgent {
                     self.graph.min_confidence,
                     since,
                     source_uri.clone(),
+                    &visited_note_ids,
                 )
                 .await?;
             let mut eligible = HashMap::<String, Vec<GraphFrontier>>::new();
@@ -1391,6 +1405,77 @@ mod tests {
             .iter()
             .find(|hit| hit.id == target_id)
             .is_none_or(|hit| hit.graph.is_none()));
+    }
+
+    #[tokio::test]
+    async fn graph_two_hop_fanout_excludes_visited_back_edges_before_the_db_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("fanout cycle seed"))
+            .await
+            .unwrap();
+        let middle = repo
+            .create_note(Note::new("fanout cycle middle"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("fanout cycle target"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Fanout cycle", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        // At the middle note, the high-confidence inbound edge back to the
+        // seed sorts ahead of the viable B→C edge. A per-node fanout of one
+        // reaches C only when the already-visited seed is excluded in SQL.
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            middle.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            middle.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.2),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.max_hops = 2;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 3;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Fanout cycle",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        let evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the viable second-hop edge should survive the one-edge fanout");
+        assert_eq!(evidence.path.len(), 2);
+        assert_eq!(evidence.path[1].to_id, target_id);
     }
 
     #[tokio::test]
