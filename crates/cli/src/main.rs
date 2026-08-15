@@ -870,12 +870,63 @@ fn print_doctor_report(report: &doctor::DoctorReport, format: DoctorFormat) -> R
     Ok(())
 }
 
+/// Run archive-only operations before resolving runtime configuration. These
+/// commands never open the configured database or contact a provider, so an
+/// invalid config must not prevent an operator from inspecting or dry-running
+/// recovery data.
+async fn run_archive_only_command(cli: &Cli) -> Result<bool> {
+    if let Commands::Backup {
+        command: BackupCommand::Verify { path, format },
+    } = &cli.command
+    {
+        print_backup_summary(&backup::verify_backup(path)?, *format)?;
+        return Ok(true);
+    }
+    if let Commands::ImportData {
+        path,
+        dry_run: true,
+        format,
+    } = &cli.command
+    {
+        if cli.memory {
+            anyhow::bail!("import-data requires a fresh persistent --db-path, not --memory");
+        }
+        let target = cli.db_path.as_deref().context(
+            "import-data requires an explicit fresh --db-path; it never imports over the configured database",
+        )?;
+        print_backup_summary(&backup::import_jsonl(path, target, true).await?, *format)?;
+        return Ok(true);
+    }
+    if let Commands::Backup {
+        command:
+            BackupCommand::Restore {
+                path,
+                dry_run: true,
+                format,
+            },
+    } = &cli.command
+    {
+        if cli.memory {
+            anyhow::bail!("backup restore requires a fresh persistent --db-path, not --memory");
+        }
+        let target = cli.db_path.as_deref().context(
+            "backup restore requires an explicit fresh --db-path; it never restores over the configured database",
+        )?;
+        print_backup_summary(&backup::restore_backup(path, target, true).await?, *format)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Load environment variables from .env if present.
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+    if run_archive_only_command(&cli).await? {
+        return Ok(());
+    }
     let doctor_format = match &cli.command {
         Commands::Doctor { format } => Some(*format),
         _ => None,
