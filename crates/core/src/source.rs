@@ -9,12 +9,13 @@ use surrealdb::types::RecordId;
 use surrealdb_types::SurrealValue;
 
 /// The type of source
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb_types")]
 #[surreal(untagged, lowercase)]
 pub enum SourceType {
     /// User-typed note
+    #[default]
     Manual,
     /// Markdown file
     Markdown,
@@ -34,26 +35,15 @@ pub enum SourceType {
 ///
 /// `failed` never invalidates a previous successful generation. Consumers must
 /// use `successful_generation` rather than assuming `generation` is readable.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, SurrealValue)]
 #[serde(rename_all = "snake_case")]
 #[surreal(crate = "surrealdb_types")]
 #[surreal(untagged, lowercase)]
 pub enum SourceIngestionStatus {
     Pending,
+    #[default]
     Ready,
     Failed,
-}
-
-impl Default for SourceIngestionStatus {
-    fn default() -> Self {
-        Self::Ready
-    }
-}
-
-impl Default for SourceType {
-    fn default() -> Self {
-        Self::Manual
-    }
 }
 
 /// A source of notes/content

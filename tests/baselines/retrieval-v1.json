@@ -1,0 +1,83 @@
+{
+  "metadata": {
+    "schema_version": 2,
+    "provider": "fixture",
+    "model": "deterministic-stack-v1"
+  },
+  "cases": [
+    {
+      "name": "note-with-source-filter",
+      "query": "local music service",
+      "metrics": {
+        "k": 3,
+        "retrieved": 2,
+        "relevant_total": 2,
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.6666666666666666,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "provenance_accuracy": 1.0,
+        "substring_expectation_matched": null,
+        "forbidden_result_found": false,
+        "checks_passed": true,
+        "chunks": 2,
+        "tokens": 148,
+        "latency_ms": 0
+      }
+    },
+    {
+      "name": "message-provenance",
+      "query": "adapter pairing",
+      "metrics": {
+        "k": 2,
+        "retrieved": 1,
+        "relevant_total": 1,
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.5,
+        "reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "provenance_accuracy": 1.0,
+        "substring_expectation_matched": null,
+        "forbidden_result_found": false,
+        "checks_passed": true,
+        "chunks": 1,
+        "tokens": 88,
+        "latency_ms": 0
+      }
+    },
+    {
+      "name": "conversation-summary",
+      "query": "what was decided",
+      "metrics": {
+        "k": 3,
+        "retrieved": 3,
+        "relevant_total": 1,
+        "recall_at_k": 1.0,
+        "precision_at_k": 0.3333333333333333,
+        "reciprocal_rank": 0.3333333333333333,
+        "substring_expectation_matched": true,
+        "forbidden_result_found": false,
+        "checks_passed": true,
+        "chunks": 3,
+        "tokens": 264,
+        "latency_ms": 0
+      }
+    }
+  ],
+  "summary": {
+    "cases_total": 3,
+    "cases_with_checks": 3,
+    "cases_passed": 3,
+    "cases_missed": 0,
+    "cases_unscored": 0,
+    "recall_at_k": 1.0,
+    "precision_at_k": 0.49999999999999994,
+    "mrr": 0.7777777777777778,
+    "ndcg_at_k": 1.0,
+    "provenance_accuracy": 1.0,
+    "avg_chunks_per_case": 2.0,
+    "avg_tokens_per_case": 166.66666666666666,
+    "avg_latency_ms": 0.0,
+    "total_latency_ms": 0
+  }
+}

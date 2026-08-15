@@ -380,7 +380,7 @@ impl SearchAgent {
                     query,
                     embedding.clone(),
                     limit,
-                    since.clone(),
+                    since,
                     source_uri.clone(),
                     &self.fusion,
                 )
@@ -515,6 +515,7 @@ impl SearchAgent {
     /// Augmentation counterpart to [`Self::search_with_scope_graph`]. Graph
     /// candidates are packed by the existing budget/diversity implementation.
     #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn build_augmented_context_with_graph(
         &self,
         query: &str,
@@ -788,6 +789,7 @@ impl SearchAgent {
         Ok(GraphSearchResults { hits, summary })
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_graph_note_result(
         &self,
         result: SearchResult,
@@ -807,6 +809,7 @@ impl SearchAgent {
         hit
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_note_result(&self, result: SearchResult) -> ScopedSearchResult {
         ScopedSearchResult {
             hit_type: SearchHitType::Note,
@@ -824,6 +827,7 @@ impl SearchAgent {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_message_result(&self, result: MessageSearchResult) -> ScopedSearchResult {
         ScopedSearchResult {
             hit_type: SearchHitType::Message,
@@ -845,6 +849,7 @@ impl SearchAgent {
         }
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn from_conversation_result(&self, result: ConversationSearchResult) -> ScopedSearchResult {
         let title = result
             .title
@@ -1202,6 +1207,7 @@ fn rank_scoped_results(results: &mut [ScopedSearchResult]) {
     }
 }
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::context_packing::build_augment_context_from_hits;

@@ -233,6 +233,7 @@ pub fn best_rank(evidence: &FusionEvidence) -> usize {
 /// supplies a fixed hit-type ordinal (note, message, summary) and canonical
 /// record id; this keeps `scope=all` deterministic without comparing raw
 /// retriever scores from different tables.
+#[allow(clippy::too_many_arguments)]
 pub fn compare_scoped(
     left_score: f32,
     left: &FusionEvidence,

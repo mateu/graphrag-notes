@@ -2,6 +2,7 @@
 name = "graphrag-db"
 version.workspace = true
 edition = "2021"
+rust-version.workspace = true
 
 [features]
 default = ["rocksdb"]

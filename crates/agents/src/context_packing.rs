@@ -171,6 +171,7 @@ impl AugmentContext {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_augment_context_from_hits(
     query: String,
     scope: SearchScope,
@@ -1128,7 +1129,7 @@ fn is_hangul_trailing_jamo(ch: char) -> bool {
 
 fn is_hangul_lv_syllable(ch: char) -> bool {
     let scalar = ch as u32;
-    (0xac00..=0xd7a3).contains(&scalar) && (scalar - 0xac00) % 28 == 0
+    (0xac00..=0xd7a3).contains(&scalar) && (scalar - 0xac00).is_multiple_of(28)
 }
 
 fn append_normalized_cluster(
@@ -1318,6 +1319,7 @@ fn is_unspaced_script_char(ch: char) -> bool {
     )
 }
 
+#[cfg(test)]
 fn jaccard_similarity(left: &HashSet<String>, right: &HashSet<String>) -> f32 {
     if left.is_empty() || right.is_empty() {
         return 0.0;

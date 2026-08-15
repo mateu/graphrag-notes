@@ -393,15 +393,14 @@ fn assemble_blocks(blocks: &[Block], config: ChunkingConfig) -> Vec<Draft> {
                 .map_or(0, |draft| char_count(&draft.content))
                 + char_count(&part.separator_before)
                 + char_count(&part.content);
-            if current.is_some() && candidate_len > config.target_size {
-                if current
+            if current.is_some()
+                && candidate_len > config.target_size
+                && (current
                     .as_ref()
                     .is_some_and(|draft| char_count(&draft.content) >= config.min_size)
-                {
-                    flush(&mut current, &mut output);
-                } else if candidate_len > config.max_size {
-                    flush(&mut current, &mut output);
-                }
+                    || candidate_len > config.max_size)
+            {
+                flush(&mut current, &mut output);
             }
             match current.as_mut() {
                 Some(draft) => {
@@ -786,7 +785,7 @@ fn whitespace_break(text: &str, limit: usize) -> Option<usize> {
     text[..limit]
         .char_indices()
         .filter_map(|(offset, ch)| ch.is_whitespace().then_some(offset + ch.len_utf8()))
-        .last()
+        .next_back()
         .filter(|offset| *offset > 0)
 }
 
