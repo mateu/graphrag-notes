@@ -8,7 +8,7 @@ service. Normal pull requests run only deterministic offline tests.
 | --- | --- | --- |
 | `format` | `cargo fmt --all -- --check` | Formatting drift |
 | `clippy` | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Warnings and lint regressions |
-| `msrv` | `cargo +1.97.1 check --workspace --locked` | Declared Rust 1.97 MSRV |
+| `msrv` | `cargo +1.97.1 check --workspace --locked` | Declared Rust 1.97.1 MSRV |
 | `offline-integration` | `cargo test --workspace --locked` | Unit tests and offline integration with deterministic doubles |
 | `persistent-round-trip` | commands shown in `.github/workflows/rust-ci.yml` | Fresh/upgrade migrations, source idempotency, resilient processing, and portable round trips |
 | `retrieval-regression` | `cargo test -p graphrag-cli eval::tests::committed_retrieval_fixture_matches_versioned_baseline --bin graphrag -- --exact --nocapture` | Committed retrieval fixture baseline |

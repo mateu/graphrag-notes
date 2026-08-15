@@ -59,6 +59,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: quality-gates-v1
+      - name: Validate exact workspace MSRV declaration
+        run: python3 scripts/check-workspace-rust-version.py
       - name: Check declared minimum supported Rust version
         run: cargo check --workspace --locked
 
