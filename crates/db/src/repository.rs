@@ -2530,6 +2530,7 @@ impl Repository {
         } else {
             note_id.to_string()
         };
+        let note_record_id = RecordId::new("note", raw);
         let normalized = entity_query.trim().to_lowercase();
 
         if normalized.is_empty() {
@@ -2542,7 +2543,7 @@ impl Repository {
                 r#"
                 SELECT count() AS count
                 FROM mentions
-                WHERE in = type::thing("note", $note_id)
+                WHERE in = $note_id
                   AND out IN (
                     SELECT VALUE id
                     FROM entity
@@ -2551,7 +2552,7 @@ impl Repository {
                 GROUP ALL
             "#,
             )
-            .bind(("note_id", raw))
+            .bind(("note_id", note_record_id))
             .bind(("entity_query", normalized))
             .await?
             .take(0)?;

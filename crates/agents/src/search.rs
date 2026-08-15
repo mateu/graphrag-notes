@@ -347,6 +347,28 @@ impl SearchAgent {
         source_uri: Option<String>,
         graph_mode: GraphMode,
     ) -> Result<GraphSearchResults> {
+        self.search_with_scope_graph_filtered(
+            query, limit, scope, since_days, source_uri, graph_mode, None,
+        )
+        .await
+        .map(|(results, _)| results)
+    }
+
+    /// Internal filtered retrieval path for augmentation. The entity filter is
+    /// applied after all retrieval channels are merged but before their shared
+    /// rank/limit step, so graph-only non-matches cannot consume the context
+    /// fetch budget.
+    #[allow(clippy::too_many_arguments)]
+    async fn search_with_scope_graph_filtered(
+        &self,
+        query: &str,
+        limit: usize,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+        graph_mode: GraphMode,
+        entity_filter: Option<&str>,
+    ) -> Result<(GraphSearchResults, usize)> {
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
         let embedding = self.embed_query(query).await?;
         let mut scoped_results = Vec::new();
@@ -431,6 +453,21 @@ impl SearchAgent {
             }
         }
 
+        let mut dropped_for_entity_filter = 0usize;
+        if let Some(filter) = entity_filter {
+            let mut filtered = Vec::with_capacity(scoped_results.len());
+            for hit in scoped_results {
+                if hit.hit_type == SearchHitType::Note
+                    && !self.repo.note_has_entity_name(&hit.id, filter).await?
+                {
+                    dropped_for_entity_filter += 1;
+                    continue;
+                }
+                filtered.push(hit);
+            }
+            scoped_results = filtered;
+        }
+
         rank_scoped_results(&mut scoped_results);
         if scoped_results.len() > limit {
             scoped_results.truncate(limit);
@@ -443,10 +480,13 @@ impl SearchAgent {
             .candidates_considered
             .saturating_sub(summary.candidates_selected);
 
-        Ok(GraphSearchResults {
-            hits: scoped_results,
-            summary,
-        })
+        Ok((
+            GraphSearchResults {
+                hits: scoped_results,
+                summary,
+            },
+            dropped_for_entity_filter,
+        ))
     }
 
     /// Retrieve ranked context snippets and package them for prompt augmentation.
@@ -497,32 +537,18 @@ impl SearchAgent {
         }
 
         let fetch_limit = (options.max_chunks * 4).clamp(options.max_chunks, 200);
-        let graph_results = self
-            .search_with_scope_graph(
+        let (graph_results, dropped_for_entity_filter) = self
+            .search_with_scope_graph_filtered(
                 query,
                 fetch_limit,
                 scope,
                 since_days,
                 source_uri,
                 graph_mode,
+                entity_filter.as_deref(),
             )
             .await?;
-        let mut hits = graph_results.hits;
-
-        let mut dropped_for_entity_filter = 0usize;
-        if let Some(filter) = entity_filter.as_ref() {
-            let mut filtered = Vec::with_capacity(hits.len());
-            for hit in hits {
-                if hit.hit_type == SearchHitType::Note
-                    && !self.repo.note_has_entity_name(&hit.id, filter).await?
-                {
-                    dropped_for_entity_filter += 1;
-                    continue;
-                }
-                filtered.push(hit);
-            }
-            hits = filtered;
-        }
+        let hits = graph_results.hits;
 
         Ok(
             crate::context_packing::build_augment_context_from_hits_with_graph(
@@ -956,14 +982,35 @@ fn admit_graph_frontier(
     let mut admitted = BTreeMap::new();
     for state in ranked_frontier_states(&next) {
         let existing = candidates.get(&state.id);
-        if existing.is_none() && candidates.len() >= candidate_cap {
+        let evidence = state.evidence(Some(hop));
+        if let Some(existing) = existing {
+            if graph_evidence_priority(&evidence, existing).is_lt() {
+                candidates.insert(state.id.clone(), evidence);
+            }
+            admitted.insert(state.id.clone(), state.clone());
             continue;
         }
-        let evidence = state.evidence(Some(hop));
-        if existing.is_none_or(|existing| graph_evidence_priority(&evidence, existing).is_lt()) {
+        if candidates.len() < candidate_cap {
             candidates.insert(state.id.clone(), evidence);
+            admitted.insert(state.id.clone(), state.clone());
+            continue;
         }
-        admitted.insert(state.id.clone(), state.clone());
+
+        let weakest = candidates
+            .iter()
+            .max_by(|(left_id, left), (right_id, right)| {
+                graph_candidate_priority(left_id, left, right_id, right)
+            });
+        if let Some((weakest_id, weakest_evidence)) = weakest {
+            if graph_candidate_priority(&state.id, &evidence, weakest_id, weakest_evidence).is_lt()
+            {
+                let weakest_id = weakest_id.clone();
+                candidates.remove(&weakest_id);
+                admitted.remove(&weakest_id);
+                candidates.insert(state.id.clone(), evidence);
+                admitted.insert(state.id.clone(), state.clone());
+            }
+        }
     }
     admitted
 }
@@ -1061,6 +1108,17 @@ fn graph_evidence_priority(left: &GraphEvidence, right: &GraphEvidence) -> std::
         .total_cmp(&left.score)
         .then_with(|| graph_path_tie_break(&left.path, &right.path))
         .then_with(|| left.seed_note_id.cmp(&right.seed_note_id))
+}
+
+/// Lower ordering is better. Record IDs make an otherwise equal eviction
+/// decision reproducible rather than depending on hash/map iteration.
+fn graph_candidate_priority(
+    left_id: &str,
+    left: &GraphEvidence,
+    right_id: &str,
+    right: &GraphEvidence,
+) -> std::cmp::Ordering {
+    graph_evidence_priority(left, right).then_with(|| left_id.cmp(right_id))
 }
 
 fn graph_path_tie_break(left: &[GraphPathStep], right: &[GraphPathStep]) -> std::cmp::Ordering {
@@ -1234,6 +1292,99 @@ mod tests {
         assert_eq!(evidence.path[0].edge_type, "supports");
         assert_eq!(evidence.path[0].direction, "outbound");
         assert_eq!(on.summary.entities_matched, 1);
+    }
+
+    #[tokio::test]
+    async fn augment_entity_filter_applies_before_graph_candidates_consume_fetch_cap() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let graph_seed = repo
+            .create_note(Note::new("unmatched graph seed"))
+            .await
+            .unwrap();
+        let graph_neighbors = [
+            repo.create_note(Note::new("unmatched graph neighbor one"))
+                .await
+                .unwrap(),
+            repo.create_note(Note::new("unmatched graph neighbor two"))
+                .await
+                .unwrap(),
+            repo.create_note(Note::new("unmatched graph neighbor three"))
+                .await
+                .unwrap(),
+        ];
+        // This is an ordinary hybrid/full-text candidate. It must survive the
+        // four-result graph fetch budget because it is the only result linked
+        // to the requested entity filter.
+        let qualifying = repo
+            .create_note(Note::new("Graph X qualifying retrieval evidence"))
+            .await
+            .unwrap();
+
+        let mut graph_entity = Entity::new("Graph", EntityType::Project);
+        graph_entity.metadata = serde_json::json!({});
+        let graph_entity = repo.upsert_entity(graph_entity).await.unwrap();
+        let mut filter_entity = Entity::new("X", EntityType::Project);
+        filter_entity.metadata = serde_json::json!({});
+        let filter_entity = repo.upsert_entity(filter_entity).await.unwrap();
+        repo.link_note_to_entity(
+            graph_seed.id.as_ref().unwrap(),
+            graph_entity.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        repo.link_note_to_entity(
+            qualifying.id.as_ref().unwrap(),
+            filter_entity.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        for neighbor in &graph_neighbors {
+            repo.create_edge(
+                graph_seed.id.as_ref().unwrap(),
+                neighbor.id.as_ref().unwrap(),
+                EdgeType::Supports,
+                Some(1.0),
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut graph = GraphRetrievalConfig::default();
+        graph.max_seed_notes = 1;
+        graph.max_hops = 1;
+        graph.per_node_fanout = 3;
+        graph.candidate_cap = 4;
+        // Make the graph evidence decisively outrank the ordinary full-text
+        // candidate. Before filtering moved before ranking/truncation, these
+        // four non-X graph results would have left the context empty.
+        graph.seed_score = 10.0;
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(graph);
+
+        let context = search
+            .build_augmented_context_with_graph(
+                "Graph",
+                SearchScope::Notes,
+                None,
+                None,
+                Some("X".to_string()),
+                AugmentOptions {
+                    max_chunks: 1,
+                    max_total_tokens: 400,
+                    max_chunk_tokens: 100,
+                    ..Default::default()
+                },
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(
+            context.chunks[0].id,
+            record_id_to_string(qualifying.id.as_ref().unwrap())
+        );
+        assert_eq!(context.diagnostics.dropped_for_entity_filter, 4);
     }
 
     #[tokio::test]
@@ -1748,7 +1899,7 @@ mod tests {
     }
 
     #[test]
-    fn next_hop_expands_only_ranked_states_admitted_by_candidate_cap() {
+    fn next_hop_evicts_the_weakest_retained_state_before_expansion() {
         let seed = GraphFrontier::seed(
             RecordId::new("note", "seed"),
             "note:seed".into(),
@@ -1772,10 +1923,10 @@ mod tests {
         let admitted = admit_graph_frontier(next, &mut candidates, 3, 1);
         assert_eq!(
             admitted.keys().cloned().collect::<Vec<_>>(),
-            vec!["note:high", "note:middle"]
+            vec!["note:high", "note:low", "note:middle"]
         );
         assert_eq!(candidates.len(), 3);
-        assert!(!admitted.contains_key("note:low"));
+        assert!(!candidates.contains_key("note:seed"));
     }
 
     #[test]
@@ -1810,6 +1961,34 @@ mod tests {
         let admitted = admit_graph_frontier(next, &mut candidates, 2, 2);
         assert!(admitted.contains_key("note:target"));
         assert_eq!(candidates["note:target"].score, 0.02);
+    }
+
+    #[test]
+    fn stronger_later_hop_novel_candidate_evicts_the_weakest_retained_evidence() {
+        let weak = GraphFrontier::seed(
+            RecordId::new("note", "weak"),
+            "note:weak".into(),
+            vec!["Seed".into()],
+            0.01,
+        )
+        .evidence(None);
+        let mut candidates = BTreeMap::from([("note:weak".into(), weak)]);
+        let next = BTreeMap::from([(
+            "note:strong".into(),
+            GraphFrontier::seed(
+                RecordId::new("note", "strong"),
+                "note:strong".into(),
+                Vec::new(),
+                0.9,
+            ),
+        )]);
+
+        let admitted = admit_graph_frontier(next, &mut candidates, 1, 1);
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates.contains_key("note:strong"));
+        assert!(!candidates.contains_key("note:weak"));
+        assert!(admitted.contains_key("note:strong"));
     }
 
     #[tokio::test]
