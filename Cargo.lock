@@ -1579,6 +1579,7 @@ dependencies = [
  "tracing",
  "unicode-casefold",
  "unicode-normalization",
+ "uuid",
 ]
 
 [[package]]

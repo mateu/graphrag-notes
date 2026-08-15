@@ -5,6 +5,7 @@
 //! in the persisted job scope has been successfully embedded.
 
 use crate::{inference::validate_embedding_dim, AgentError, Result, SharedEmbedder};
+use chrono::{Duration, Utc};
 use graphrag_db::{
     compatibility::EmbeddingIdentity, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, Repository,
@@ -14,8 +15,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use uuid::Uuid;
 
 const REINDEX_BATCH_SIZE: usize = 32;
+const REINDEX_LEASE: Duration = Duration::minutes(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReindexScope {
@@ -151,7 +154,16 @@ impl ReindexAgent {
                 preview.item_fingerprints,
             )
             .await?;
-        self.run_job(job, identity).await
+        let job_id = job
+            .id
+            .as_ref()
+            .ok_or_else(|| AgentError::Processing("reindex job has no id".into()))?;
+        let owner = Uuid::new_v4().to_string();
+        let claimed = self
+            .repo
+            .claim_reindex_processing_job(job_id, &owner, Utc::now() + REINDEX_LEASE)
+            .await?;
+        self.run_job(claimed, identity, owner).await
     }
 
     pub async fn resume(&self, job_id: &str, identity: EmbeddingIdentity) -> Result<ReindexResult> {
@@ -176,21 +188,35 @@ impl ReindexAgent {
                 "reindex job target identity does not match the active provider/model/dimension; start a new reindex job instead of resuming mixed staging".into(),
             ));
         }
+        let id = job
+            .id
+            .clone()
+            .ok_or_else(|| AgentError::Processing("reindex job has no id".into()))?;
+        let owner = Uuid::new_v4().to_string();
+        let job = self
+            .repo
+            .claim_reindex_processing_job(&id, &owner, Utc::now() + REINDEX_LEASE)
+            .await
+            .map_err(|_| {
+                AgentError::Processing(
+                    "reindex job is already owned by a live worker; retry after its lease expires"
+                        .into(),
+                )
+            })?;
         let fingerprints = job.reindex_item_fingerprints.as_ref().ok_or_else(|| {
             AgentError::Processing(
                 "reindex job lacks content fingerprints; start a new reindex job instead of resuming unsafe staging".into(),
             )
         })?;
-        let id = job
-            .id
-            .clone()
-            .ok_or_else(|| AgentError::Processing("reindex job has no id".into()))?;
+        self.repo
+            .adopt_reindex_staging(&job.item_ids, &owner)
+            .await?;
         let checkpoint_index = job.checkpoint.as_ref().and_then(|checkpoint| {
             job.item_ids
                 .iter()
                 .position(|item_id| item_id == checkpoint)
         });
-        if let Some(checkpoint_index) = checkpoint_index {
+        let job = if let Some(checkpoint_index) = checkpoint_index {
             let mut rewind_to = None;
             for (index, item_id) in job.item_ids[..=checkpoint_index].iter().enumerate() {
                 if let Some(item) = self.repo.get_reindex_item(item_id).await? {
@@ -203,8 +229,9 @@ impl ReindexAgent {
             }
             if let Some(rewind_to) = rewind_to {
                 self.repo
-                    .update_processing_job(
+                    .update_owned_reindex_processing_job(
                         &id,
+                        &owner,
                         ProcessingJobUpdate {
                             completed_count: Some(rewind_to as u64),
                             checkpoint: Some(
@@ -215,17 +242,21 @@ impl ReindexAgent {
                             ..Default::default()
                         },
                     )
-                    .await?;
+                    .await?
+            } else {
+                job
             }
-        }
-        let resumed = self.repo.resume_processing_job(&id).await?;
-        self.run_job(resumed, identity).await
+        } else {
+            job
+        };
+        self.run_job(job, identity, owner).await
     }
 
     async fn run_job(
         &self,
         job: ProcessingJob,
         identity: EmbeddingIdentity,
+        owner: String,
     ) -> Result<ReindexResult> {
         let job_id = job
             .id
@@ -247,10 +278,12 @@ impl ReindexAgent {
         })?;
 
         for ids in job.item_ids[start_index..].chunks(REINDEX_BATCH_SIZE) {
+            self.renew_lease(&job_id, &owner).await?;
             if self.cancellation_requested.load(Ordering::Acquire) {
                 self.repo
-                    .update_processing_job(
+                    .update_owned_reindex_processing_job(
                         &job_id,
+                        &owner,
                         ProcessingJobUpdate {
                             status: Some(ProcessingJobStatus::Cancelled),
                             completed_count: Some(completed),
@@ -284,6 +317,7 @@ impl ReindexAgent {
                         return self
                             .fail(
                                 &job_id,
+                                &owner,
                                 completed,
                                 format!(
                                     "embedding provider returned {} embeddings for {} inputs",
@@ -293,29 +327,38 @@ impl ReindexAgent {
                             )
                             .await
                     }
-                    Err(error) => return self.fail(&job_id, completed, error.to_string()).await,
+                    Err(error) => {
+                        return self
+                            .fail(&job_id, &owner, completed, error.to_string())
+                            .await
+                    }
                 };
                 for (item, vector) in present.iter().zip(embeddings) {
                     if let Err(error) = validate_embedding_dim(vector.len()) {
-                        return self.fail(&job_id, completed, error.to_string()).await;
+                        return self
+                            .fail(&job_id, &owner, completed, error.to_string())
+                            .await;
                     }
                     if let Err(error) = self
                         .repo
-                        .stage_reindex_embedding(&item.id, vector, &item.text)
+                        .stage_reindex_embedding(&item.id, vector, &item.text, &owner)
                         .await
                     {
-                        return self.fail(&job_id, completed, error.to_string()).await;
+                        return self
+                            .fail(&job_id, &owner, completed, error.to_string())
+                            .await;
                     }
                     fingerprints.insert(item.id.clone(), reindex_fingerprint(&item.text));
                     completed += 1;
                 }
             }
             self.repo
-                .update_reindex_item_fingerprints(&job_id, fingerprints.clone())
+                .update_reindex_item_fingerprints_owned(&job_id, &owner, fingerprints.clone())
                 .await?;
             self.repo
-                .update_processing_job(
+                .update_owned_reindex_processing_job(
                     &job_id,
+                    &owner,
                     ProcessingJobUpdate {
                         completed_count: Some(completed),
                         checkpoint: Some(ids.last().cloned()),
@@ -326,8 +369,9 @@ impl ReindexAgent {
         }
         if self.cancellation_requested.load(Ordering::Acquire) {
             self.repo
-                .update_processing_job(
+                .update_owned_reindex_processing_job(
                     &job_id,
+                    &owner,
                     ProcessingJobUpdate {
                         status: Some(ProcessingJobStatus::Cancelled),
                         completed_count: Some(completed),
@@ -342,12 +386,26 @@ impl ReindexAgent {
                 cancelled: true,
             });
         }
-        if let Err(error) = self.repo.commit_reindex(&job.item_ids, &identity).await {
-            return self.fail(&job_id, completed, error.to_string()).await;
+        self.renew_lease(&job_id, &owner).await?;
+        if let Err(error) = self
+            .repo
+            .commit_reindex(
+                &job_id,
+                &owner,
+                &job.item_ids,
+                &identity,
+                job.scope.as_deref() == Some("reindex:notes,messages,summaries"),
+            )
+            .await
+        {
+            return self
+                .fail(&job_id, &owner, completed, error.to_string())
+                .await;
         }
         self.repo
-            .update_processing_job(
+            .update_owned_reindex_processing_job(
                 &job_id,
+                &owner,
                 ProcessingJobUpdate {
                     status: Some(ProcessingJobStatus::Completed),
                     completed_count: Some(completed),
@@ -368,12 +426,14 @@ impl ReindexAgent {
     async fn fail<T>(
         &self,
         id: &surrealdb::types::RecordId,
+        owner: &str,
         completed: u64,
         error: String,
     ) -> Result<T> {
         self.repo
-            .update_processing_job(
+            .update_owned_reindex_processing_job(
                 id,
+                owner,
                 ProcessingJobUpdate {
                     status: Some(ProcessingJobStatus::Failed),
                     completed_count: Some(completed),
@@ -386,6 +446,21 @@ impl ReindexAgent {
             .await?;
         Err(AgentError::Processing(error))
     }
+
+    async fn renew_lease(&self, id: &surrealdb::types::RecordId, owner: &str) -> Result<()> {
+        if self
+            .repo
+            .renew_reindex_processing_job_lease(id, owner, Utc::now() + REINDEX_LEASE)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(AgentError::Processing(
+                "reindex job lease was lost to another worker; refusing to publish stale staging"
+                    .into(),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -393,7 +468,7 @@ mod tests {
     use super::*;
     use crate::{DeterministicEmbedder, Embedder, InferenceCapabilities};
     use async_trait::async_trait;
-    use graphrag_core::Note;
+    use graphrag_core::{Entity, EntityType, Note};
     use graphrag_db::{init_memory, ProcessingJobStatus};
 
     fn vector(value: f32) -> Vec<f32> {
@@ -665,6 +740,151 @@ mod tests {
 
         assert!(error.to_string().contains("reindex --all"));
         assert!(repo.list_processing_jobs(10).await.unwrap().is_empty());
+        assert!(repo.portable_embedding_metadata().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_running_reindex_is_recovered_but_live_owner_cannot_be_stolen() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("orphaned").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let target = EmbeddingIdentity::new("replacement", "replacement-model", 1024);
+        let agent = ReindexAgent::new(
+            repo.clone(),
+            Arc::new(
+                DeterministicEmbedder::default().with_identity("replacement", "replacement-model"),
+            ),
+        );
+        let preview = agent.preview(ReindexScope::all()).await.unwrap();
+        let job = repo
+            .create_reindex_processing_job(
+                preview.item_ids.len() as u64,
+                format!("reindex:{}", preview.scope.label()),
+                preview.item_ids,
+                &target,
+                preview.item_fingerprints,
+            )
+            .await
+            .unwrap();
+        let job_id = job.id.as_ref().unwrap().clone();
+
+        // Simulate a process killed after claiming the job: a lease already
+        // in the past is recoverable, and the resumed owner completes it.
+        repo.claim_reindex_processing_job(&job_id, "crashed", Utc::now() - Duration::seconds(1))
+            .await
+            .unwrap();
+        let result = agent
+            .resume(&graphrag_core::record_id_to_string(&job_id), target.clone())
+            .await
+            .unwrap();
+        assert!(!result.cancelled);
+
+        // A fresh lease is not recoverable by a second process, so a live
+        // worker cannot be joined or replaced concurrently.
+        let second = repo
+            .create_reindex_processing_job(
+                0,
+                "reindex:all".into(),
+                Vec::new(),
+                &target,
+                BTreeMap::new(),
+            )
+            .await
+            .unwrap();
+        let second_id = second.id.as_ref().unwrap().clone();
+        repo.claim_reindex_processing_job(&second_id, "live", Utc::now() + Duration::minutes(1))
+            .await
+            .unwrap();
+        let error = agent
+            .resume(&graphrag_core::record_id_to_string(&second_id), target)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("live worker"));
+    }
+
+    #[tokio::test]
+    async fn full_reindex_clears_entity_vectors_before_model_identity_cutover() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
+            .await
+            .unwrap();
+        repo.create_note(Note::new("reindexed").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Old entity", EntityType::Concept).with_embedding(vector(0.2));
+        entity.metadata = serde_json::json!({});
+        repo.upsert_entity(entity).await.unwrap();
+        assert_eq!(repo.vector_bearing_record_count().await.unwrap(), 2);
+
+        let agent = ReindexAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().with_identity("new", "new-model")),
+        );
+        let target = EmbeddingIdentity::new("new", "new-model", 1024);
+        agent
+            .start(
+                agent.preview(ReindexScope::all()).await.unwrap(),
+                target.clone(),
+            )
+            .await
+            .unwrap();
+
+        // The note has a fresh vector and the entity's old-model vector has
+        // been cleared, so global metadata never labels it as new-model data.
+        assert_eq!(repo.vector_bearing_record_count().await.unwrap(), 1);
+        assert_eq!(
+            repo.portable_embedding_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding,
+            target
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_revalidates_staged_source_before_publishing_metadata() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("before staging").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let note_id = graphrag_core::record_id_to_string(note.id.as_ref().unwrap());
+        let target = EmbeddingIdentity::new("new", "new-model", 1024);
+        let mut fingerprints = BTreeMap::new();
+        fingerprints.insert(note_id.clone(), reindex_fingerprint("before staging"));
+        let job = repo
+            .create_reindex_processing_job(
+                1,
+                "reindex:notes".into(),
+                vec![note_id.clone()],
+                &target,
+                fingerprints,
+            )
+            .await
+            .unwrap();
+        let job_id = job.id.as_ref().unwrap().clone();
+        let owner = "commit-owner";
+        repo.claim_reindex_processing_job(&job_id, owner, Utc::now() + Duration::minutes(1))
+            .await
+            .unwrap();
+        repo.stage_reindex_embedding(&note_id, vector(0.9), "before staging", owner)
+            .await
+            .unwrap();
+
+        let mut edited = repo.get_note(&note_id).await.unwrap().unwrap();
+        edited.content = "edited after staging".into();
+        repo.update_note(&note_id, edited).await.unwrap();
+
+        assert!(repo
+            .commit_reindex(&job_id, owner, &[note_id.clone()], &target, false)
+            .await
+            .is_err());
+        assert_eq!(
+            repo.get_note(&note_id).await.unwrap().unwrap().embedding,
+            vector(0.1)
+        );
         assert!(repo.portable_embedding_metadata().await.unwrap().is_none());
     }
 

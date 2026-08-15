@@ -376,6 +376,12 @@ pub struct ProcessingJob {
     /// safe to resume even when an item was edited after its vector staged.
     #[serde(default)]
     pub reindex_item_fingerprints: Option<std::collections::BTreeMap<String, String>>,
+    /// Renewable owner lease for a reindex worker. An expired owner may be
+    /// replaced after a crash, but a live owner cannot be resumed concurrently.
+    #[serde(default)]
+    pub reindex_lease_owner: Option<String>,
+    #[serde(default)]
+    pub reindex_lease_expires_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub item_ids: Vec<String>,
     pub status: String,
@@ -674,7 +680,7 @@ impl Repository {
                 "CREATE processing_job SET job_type = 'reindex', scope = $scope, item_ids = $item_ids, \
                  target_embedding_provider = $provider, target_embedding_model = $model, target_embedding_dimension = $dimension, \
                  reindex_item_fingerprints = $fingerprints, \
-                 status = 'running', total_count = $total_count, completed_count = 0, failed_count = 0, \
+                 status = 'queued', total_count = $total_count, completed_count = 0, failed_count = 0, \
                  checkpoint = NONE, last_error = NONE, created_at = time::now(), updated_at = time::now(), \
                  finished_at = NONE RETURN AFTER",
             )
@@ -702,6 +708,126 @@ impl Repository {
             .query("UPDATE $id SET reindex_item_fingerprints = $fingerprints, updated_at = time::now()")
             .bind(("id", id.clone()))
             .bind(("fingerprints", fingerprints))
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    /// Update a reindex checkpoint only while this worker still owns its
+    /// durable lease. A recovered worker must never advance another owner's
+    /// checkpoint.
+    pub async fn update_reindex_item_fingerprints_owned(
+        &self,
+        id: &RecordId,
+        owner: &str,
+        fingerprints: std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET reindex_item_fingerprints = $fingerprints, updated_at = time::now() \
+                 WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner \
+                 AND reindex_lease_expires_at >= time::now() RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("fingerprints", fingerprints))
+            .await?
+            .take(0)?;
+        if job.is_none() {
+            return Err(DbError::NotFound(
+                "owned running reindex processing_job".into(),
+                record_id_to_string(id),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Atomically acquire a reindex job. A live lease cannot be stolen; an
+    /// expired lease represents a worker killed between durable checkpoints.
+    pub async fn claim_reindex_processing_job(
+        &self,
+        id: &RecordId,
+        owner: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ProcessingJob> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET status = 'running', reindex_lease_owner = $owner, \
+                 reindex_lease_expires_at = $lease_expires_at, last_error = NONE, finished_at = NONE, \
+                 updated_at = time::now() WHERE job_type = 'reindex' AND (status = 'queued' OR \
+                 status = 'cancelled' OR status = 'failed' OR (status = 'running' AND \
+                 (reindex_lease_expires_at IS NONE OR reindex_lease_expires_at < time::now()))) RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("lease_expires_at", lease_expires_at))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| {
+            DbError::NotFound(
+                "claimable reindex processing_job".into(),
+                record_id_to_string(id),
+            )
+        })
+    }
+
+    /// Renew a running reindex lease. A false result means another worker has
+    /// recovered the job or the lease expired before this worker could renew.
+    pub async fn renew_reindex_processing_job_lease(
+        &self,
+        id: &RecordId,
+        owner: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<bool> {
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET reindex_lease_expires_at = $lease_expires_at, updated_at = time::now() \
+                 WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner \
+                 AND reindex_lease_expires_at >= time::now() RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("lease_expires_at", lease_expires_at))
+            .await?
+            .take(0)?;
+        Ok(job.is_some())
+    }
+
+    /// Transfer still-valid staged rows to a recovered worker. The exact
+    /// source snapshot condition intentionally leaves edited rows for the new
+    /// worker to re-embed rather than adopting a stale vector.
+    pub async fn adopt_reindex_staging(&self, item_ids: &[String], owner: &str) -> Result<()> {
+        let mut notes = Vec::new();
+        let mut messages = Vec::new();
+        let mut conversations = Vec::new();
+        for id in item_ids {
+            let record = parse_record_id(id, None)?;
+            match record.table.as_str() {
+                "note" => notes.push(record),
+                "message" => messages.push(record),
+                "conversation" => conversations.push(record),
+                table => {
+                    return Err(DbError::QueryFailed(format!(
+                        "{table} is not a supported reindex record table"
+                    )))
+                }
+            }
+        }
+        self.db
+            .query(
+                "BEGIN TRANSACTION; \
+                 UPDATE note SET reindex_staging_owner = $owner WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_text = content; \
+                 UPDATE message SET reindex_staging_owner = $owner WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_text = content; \
+                 UPDATE conversation SET reindex_staging_owner = $owner WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_text = summary; \
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("owner", owner.to_string()))
+            .bind(("notes", notes))
+            .bind(("messages", messages))
+            .bind(("conversations", conversations))
             .await?
             .check()?;
         Ok(())
@@ -742,6 +868,49 @@ impl Repository {
             .await?
             .take(0)?;
         job.ok_or_else(|| DbError::NotFound("processing_job".into(), record_id_to_string(id)))
+    }
+
+    /// Apply a reindex worker update only if its lease is still live.
+    pub async fn update_owned_reindex_processing_job(
+        &self,
+        id: &RecordId,
+        owner: &str,
+        update: ProcessingJobUpdate,
+    ) -> Result<ProcessingJob> {
+        let status = update.status.map(ProcessingJobStatus::as_str);
+        let job: Option<ProcessingJob> = self
+            .db
+            .query(
+                "UPDATE $id SET status = IF $status = NONE THEN status ELSE $status END, \
+                 completed_count = IF $completed_count = NONE THEN completed_count ELSE $completed_count END, \
+                 failed_count = IF $failed_count = NONE THEN failed_count ELSE $failed_count END, \
+                 checkpoint = IF $checkpoint_set THEN $checkpoint ELSE checkpoint END, \
+                 last_error = IF $last_error_set THEN $last_error ELSE last_error END, \
+                 finished_at = IF $finish THEN time::now() ELSE finished_at END, updated_at = time::now() \
+                 WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner \
+                 AND reindex_lease_expires_at >= time::now() RETURN AFTER",
+            )
+            .bind(("id", id.clone()))
+            .bind(("owner", owner.to_string()))
+            .bind(("status", status))
+            .bind((
+                "completed_count",
+                update.completed_count.map(count_to_i64).transpose()?,
+            ))
+            .bind(("failed_count", update.failed_count.map(count_to_i64).transpose()?))
+            .bind(("checkpoint_set", update.checkpoint.is_some()))
+            .bind(("checkpoint", update.checkpoint.flatten()))
+            .bind(("last_error_set", update.last_error.is_some()))
+            .bind(("last_error", update.last_error.flatten()))
+            .bind(("finish", update.finish))
+            .await?
+            .take(0)?;
+        job.ok_or_else(|| {
+            DbError::NotFound(
+                "owned running reindex processing_job".into(),
+                record_id_to_string(id),
+            )
+        })
     }
 
     pub async fn get_processing_job(&self, id: &str) -> Result<Option<ProcessingJob>> {
@@ -869,6 +1038,7 @@ impl Repository {
         id: &str,
         embedding: Vec<f32>,
         expected_text: &str,
+        owner: &str,
     ) -> Result<()> {
         let record = parse_record_id(id, None)?;
         let (field, text_field) = match record.table.as_str() {
@@ -887,11 +1057,13 @@ impl Repository {
         let staged: Option<StagedRow> = self
             .db
             .query(format!(
-                "UPDATE $id SET {field} = $embedding WHERE {text_field} = $expected_text RETURN AFTER"
+                "UPDATE $id SET {field} = $embedding, reindex_source_text = $expected_text, \
+                 reindex_staging_owner = $owner WHERE {text_field} = $expected_text RETURN AFTER"
             ))
             .bind(("id", record))
             .bind(("embedding", embedding))
             .bind(("expected_text", expected_text.to_string()))
+            .bind(("owner", owner.to_string()))
             .await?
             .take(0)?;
         if staged.is_none() {
@@ -907,8 +1079,11 @@ impl Repository {
     /// every active vector and metadata field on the last known-good model.
     pub async fn commit_reindex(
         &self,
+        job_id: &RecordId,
+        owner: &str,
         item_ids: &[String],
         embedding: &EmbeddingIdentity,
+        clear_entity_embeddings: bool,
     ) -> Result<()> {
         let mut notes = Vec::new();
         let mut messages = Vec::new();
@@ -926,22 +1101,21 @@ impl Repository {
                 }
             }
         }
-        self.ensure_reindex_staged("note", "reindex_embedding", &notes)
-            .await?;
-        self.ensure_reindex_staged("message", "reindex_embedding", &messages)
-            .await?;
-        self.ensure_reindex_staged("conversation", "reindex_summary_embedding", &conversations)
-            .await?;
-
         let dimension = i64::try_from(embedding.dimension).map_err(|_| {
             DbError::QueryFailed("embedding dimension exceeds database integer range".into())
         })?;
         self.db
             .query(
                 "BEGIN TRANSACTION; \
-                 UPDATE note SET embedding = reindex_embedding, reindex_embedding = NONE WHERE id IN $notes; \
-                 UPDATE message SET embedding = reindex_embedding, reindex_embedding = NONE WHERE id IN $messages; \
-                 UPDATE conversation SET summary_embedding = reindex_summary_embedding, reindex_summary_embedding = NONE WHERE id IN $conversations; \
+                 LET $job_valid = (SELECT VALUE count() FROM processing_job WHERE id = $job_id AND job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner AND reindex_lease_expires_at >= time::now() GROUP ALL)[0] = 1; \
+                 LET $notes_valid = (SELECT VALUE count() FROM note WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_text = content AND reindex_staging_owner = $owner GROUP ALL)[0] = array::len($notes); \
+                 LET $messages_valid = (SELECT VALUE count() FROM message WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_text = content AND reindex_staging_owner = $owner GROUP ALL)[0] = array::len($messages); \
+                 LET $conversations_valid = (SELECT VALUE count() FROM conversation WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_text = summary AND reindex_staging_owner = $owner GROUP ALL)[0] = array::len($conversations); \
+                 IF !$job_valid OR !$notes_valid OR !$messages_valid OR !$conversations_valid THEN THROW 'reindex staging is stale, incomplete, or no longer owned' END; \
+                 UPDATE note SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $notes; \
+                 UPDATE message SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $messages; \
+                 UPDATE conversation SET summary_embedding = reindex_summary_embedding, reindex_summary_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $conversations; \
+                 UPDATE entity SET embedding = NONE WHERE $clear_entity_embeddings AND embedding IS NOT NONE; \
                  UPSERT graphrag_metadata SET key = 'active_embedding', \
                      application_schema_version = $schema_version, embedding_provider = $provider, \
                      embedding_model = $model, embedding_dimension = $dimension, \
@@ -949,6 +1123,8 @@ impl Repository {
                      last_reindex_status = 'completed', updated_at = time::now() WHERE key = 'active_embedding'; \
                  COMMIT TRANSACTION;",
             )
+            .bind(("job_id", job_id.clone()))
+            .bind(("owner", owner.to_string()))
             .bind(("notes", notes))
             .bind(("messages", messages))
             .bind(("conversations", conversations))
@@ -956,38 +1132,9 @@ impl Repository {
             .bind(("provider", embedding.provider.clone()))
             .bind(("model", embedding.model.clone()))
             .bind(("dimension", dimension))
+            .bind(("clear_entity_embeddings", clear_entity_embeddings))
             .await?
             .check()?;
-        Ok(())
-    }
-
-    async fn ensure_reindex_staged(
-        &self,
-        table: &str,
-        field: &str,
-        ids: &[RecordId],
-    ) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        #[derive(Deserialize, SurrealValue)]
-        struct CountRow {
-            #[serde(default)]
-            count: Option<u64>,
-        }
-        let row: Option<CountRow> = self
-            .db
-            .query(format!(
-                "SELECT count() AS count FROM {table} WHERE id IN $ids AND {field} IS NONE GROUP ALL"
-            ))
-            .bind(("ids", ids.to_vec()))
-            .await?
-            .take(0)?;
-        if row.and_then(|row| row.count).unwrap_or(0) != 0 {
-            return Err(DbError::QueryFailed(format!(
-                "reindex staging is incomplete for {table}"
-            )));
-        }
         Ok(())
     }
 
