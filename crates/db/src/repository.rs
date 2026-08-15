@@ -812,7 +812,8 @@ impl Repository {
                  reindex_lease_expires_at = $lease_expires_at, last_error = NONE, finished_at = NONE, \
                  updated_at = time::now() WHERE job_type = 'reindex' AND (status = 'queued' OR \
                  status = 'cancelled' OR status = 'failed' OR (status = 'running' AND \
-                 (reindex_lease_expires_at IS NONE OR reindex_lease_expires_at < time::now()))) RETURN AFTER",
+                 (reindex_lease_owner = $owner OR reindex_lease_expires_at IS NONE OR \
+                 reindex_lease_expires_at < time::now()))) RETURN AFTER",
             )
             .bind(("id", id.clone()))
             .bind(("owner", owner.to_string()))
@@ -870,20 +871,43 @@ impl Repository {
                 }
             }
         }
-        self.db
-            .query(
-                "BEGIN TRANSACTION; \
-                 UPDATE note SET reindex_staging_owner = $owner WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.search_content = search_content AND reindex_source_snapshot.chunk_heading_path = chunk_heading_path; \
-                 UPDATE message SET reindex_staging_owner = $owner WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.content_blocks = content_blocks; \
-                 UPDATE conversation SET reindex_staging_owner = $owner WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_snapshot.title = title AND reindex_source_snapshot.summary = summary; \
-                 COMMIT TRANSACTION;",
-            )
-            .bind(("owner", owner.to_string()))
-            .bind(("notes", notes))
-            .bind(("messages", messages))
-            .bind(("conversations", conversations))
-            .await?
-            .check()?;
+        // Each row remains safely retryable until `commit_reindex` publishes
+        // the complete generation atomically. Adoption therefore does not
+        // need to make unrelated record tables one transaction: splitting
+        // these independent, idempotent updates avoids SurrealDB aborting the
+        // entire resume when an empty/unrelated table update fails inside a
+        // multi-statement transaction. A crash partway through simply leaves
+        // some valid staged rows for the next owner to adopt again.
+        if !notes.is_empty() {
+            self.db
+                .query(
+                    "UPDATE note SET reindex_staging_owner = $owner WHERE id IN $ids AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.search_content = search_content AND reindex_source_snapshot.chunk_heading_path = chunk_heading_path",
+                )
+                .bind(("owner", owner.to_string()))
+                .bind(("ids", notes))
+                .await?
+                .check()?;
+        }
+        if !messages.is_empty() {
+            self.db
+                .query(
+                    "UPDATE message SET reindex_staging_owner = $owner WHERE id IN $ids AND reindex_embedding IS NOT NONE AND reindex_source_snapshot.content = content AND reindex_source_snapshot.content_blocks = content_blocks",
+                )
+                .bind(("owner", owner.to_string()))
+                .bind(("ids", messages))
+                .await?
+                .check()?;
+        }
+        if !conversations.is_empty() {
+            self.db
+                .query(
+                    "UPDATE conversation SET reindex_staging_owner = $owner WHERE id IN $ids AND reindex_summary_embedding IS NOT NONE AND reindex_source_snapshot.title = title AND reindex_source_snapshot.summary = summary",
+                )
+                .bind(("owner", owner.to_string()))
+                .bind(("ids", conversations))
+                .await?
+                .check()?;
+        }
         Ok(())
     }
 

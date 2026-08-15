@@ -70,6 +70,106 @@ pub fn print_jsonl<T: Serialize>(command: &str, values: impl IntoIterator<Item =
     Ok(())
 }
 
+/// Emit one versioned envelope per result while retaining pipeline metadata on
+/// every record. An empty result set still emits a single envelope with a
+/// `null` result, so JSONL consumers never lose the command filters or
+/// diagnostics that explain an empty response.
+pub fn print_jsonl_with_pipeline<T: Serialize>(
+    command: &str,
+    values: impl IntoIterator<Item = T>,
+    pipeline: serde_json::Value,
+) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    write_jsonl_with_pipeline(&mut stdout, command, values, &pipeline)
+}
+
+#[derive(Serialize)]
+struct JsonlPipelineData<'a, T> {
+    result: Option<T>,
+    pipeline: &'a serde_json::Value,
+}
+
+fn write_jsonl_with_pipeline<T: Serialize>(
+    writer: &mut dyn Write,
+    command: &str,
+    values: impl IntoIterator<Item = T>,
+    pipeline: &serde_json::Value,
+) -> Result<()> {
+    let mut wrote_result = false;
+    for value in values {
+        serde_json::to_writer(
+            &mut *writer,
+            &OutputEnvelope::success(
+                command,
+                JsonlPipelineData {
+                    result: Some(value),
+                    pipeline,
+                },
+            ),
+        )?;
+        writeln!(writer)?;
+        wrote_result = true;
+    }
+    if !wrote_result {
+        serde_json::to_writer(
+            &mut *writer,
+            &OutputEnvelope::success(
+                command,
+                JsonlPipelineData::<T> {
+                    result: None,
+                    pipeline,
+                },
+            ),
+        )?;
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipeline_jsonl_retains_metadata_for_results_and_empty_sets() {
+        let pipeline = serde_json::json!({"filters": {"scope": "Notes"}});
+        let mut output = Vec::new();
+        write_jsonl_with_pipeline(
+            &mut output,
+            "search",
+            [
+                serde_json::json!({"id": "note:1"}),
+                serde_json::json!({"id": "note:2"}),
+            ],
+            &pipeline,
+        )
+        .unwrap();
+        let records = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["data"]["result"]["id"], "note:1");
+        assert_eq!(records[1]["data"]["result"]["id"], "note:2");
+        assert!(records
+            .iter()
+            .all(|record| record["data"]["pipeline"] == pipeline));
+
+        output.clear();
+        write_jsonl_with_pipeline(
+            &mut output,
+            "augment",
+            std::iter::empty::<serde_json::Value>(),
+            &pipeline,
+        )
+        .unwrap();
+        let record = serde_json::from_slice::<serde_json::Value>(&output).unwrap();
+        assert!(record["data"]["result"].is_null());
+        assert_eq!(record["data"]["pipeline"], pipeline);
+    }
+}
+
 /// Documented process outcomes. Command handlers return ordinary errors; the
 /// top-level runner maps them to these values as output coverage expands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

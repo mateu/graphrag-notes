@@ -8,6 +8,7 @@ use crate::search::{
     GraphEvidence, GraphRetrievalSummary, ScopedSearchResult, SearchHitType, SearchScope,
 };
 use chrono::{DateTime, Utc};
+use graphrag_db::fusion::FusionEvidence;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -119,9 +120,16 @@ pub struct AugmentChunk {
     pub source_uri: Option<String>,
     /// Original retrieval evidence score, before diversity selection.
     pub score: f32,
+    /// Channel and final-rank evidence is retained so explanation renderers
+    /// describe the actual retrieval result, not a reconstructed score.
+    pub fusion: FusionEvidence,
+    pub score_kind: crate::ScoreKind,
+    pub effective_weight: f32,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
+    /// MMR inputs and outcome observed when this chunk was selected.
+    selection: crate::SelectionEvidence,
     /// Reconstructable accepted-edge path when this chunk was graph reached.
     pub graph: Option<GraphEvidence>,
     /// Snippet-only token count; `AugmentContext::total_tokens` includes all
@@ -155,6 +163,9 @@ pub struct AugmentContext {
     pub scope: SearchScope,
     pub entity_filter: Option<String>,
     pub chunks: Vec<AugmentChunk>,
+    /// Observed per-candidate packing exclusions. This retains identities and
+    /// decision types but never stores discarded prompt text.
+    pub exclusions: Vec<crate::RetrievalExplanation>,
     /// Count of the complete rendered prompt block under `diagnostics` mode.
     pub total_tokens: usize,
     pub diagnostics: AugmentDiagnostics,
@@ -171,6 +182,43 @@ impl AugmentContext {
     }
 }
 
+impl AugmentChunk {
+    /// Evidence used by narrow renderers and citations; this is derived from
+    /// the selected chunk rather than a separate provenance assembly path.
+    pub fn explanation(&self, rank: usize) -> crate::RetrievalExplanation {
+        let (fused, vector, full_text) = crate::fusion_scores(&self.fusion, self.score_kind);
+        crate::RetrievalExplanation {
+            schema_version: crate::EXPLANATION_SCHEMA_VERSION,
+            result_id: self.id.clone(),
+            title: self.title.clone(),
+            rank: self.fusion.final_rank,
+            context_rank: Some(rank),
+            hit_type: self.hit_type.into(),
+            final_score: crate::final_rank_score(self.score, self.score_kind),
+            effective_weight: self.effective_weight,
+            fused,
+            vector,
+            full_text,
+            relevance: None,
+            selection: Some(self.selection.clone()),
+            near_duplicate: None,
+            graph: self.graph.clone(),
+            inclusion: crate::InclusionReason::Selected,
+            token_count: Some(self.rendered_tokens),
+            embedding_provider: None,
+            embedding_model: None,
+            provenance: crate::ProvenanceEvidence {
+                source_uri: self.source_uri.clone(),
+                conversation_uuid: self.conversation_uuid.clone(),
+                message_index: self.message_index,
+                role: self.role.clone(),
+                selected_span_start: self.selected_span_start,
+                selected_span_end: self.selected_span_end,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn build_augment_context_from_hits(
     query: String,
@@ -178,7 +226,7 @@ pub(crate) fn build_augment_context_from_hits(
     entity_filter: Option<String>,
     hits: Vec<ScopedSearchResult>,
     options: AugmentOptions,
-    dropped_for_entity_filter: usize,
+    _dropped_for_entity_filter: usize,
 ) -> AugmentContext {
     build_augment_context_from_hits_with_graph(
         query,
@@ -186,7 +234,7 @@ pub(crate) fn build_augment_context_from_hits(
         entity_filter,
         hits,
         options,
-        dropped_for_entity_filter,
+        Vec::new(),
         GraphRetrievalSummary::default(),
     )
 }
@@ -197,27 +245,58 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
     entity_filter: Option<String>,
     hits: Vec<ScopedSearchResult>,
     options: AugmentOptions,
-    dropped_for_entity_filter: usize,
+    entity_filtered: Vec<ScopedSearchResult>,
     graph_summary: GraphRetrievalSummary,
 ) -> AugmentContext {
+    let dropped_for_entity_filter = entity_filtered.len();
+    let entity_exclusions = entity_filtered
+        .iter()
+        .map(|hit| hit.explanation_with_inclusion(crate::InclusionReason::Filtered))
+        .collect::<Vec<_>>();
     let counter = options.token_counter.as_ref();
     if options.max_chunks == 0 || options.max_total_tokens == 0 || options.max_chunk_tokens == 0 {
-        return empty_context(
+        let reason = if options.max_chunks == 0 {
+            crate::InclusionReason::DiagnosticLimit
+        } else {
+            crate::InclusionReason::TokenBudget
+        };
+        let exclusions = hits
+            .iter()
+            .map(|hit| hit.explanation_with_inclusion(reason))
+            .collect::<Vec<_>>();
+        let dropped_for_budget = if reason == crate::InclusionReason::TokenBudget {
+            exclusions.len()
+        } else {
+            0
+        };
+        let mut context = empty_context(
             query,
             scope,
             entity_filter,
             counter.mode(),
             dropped_for_entity_filter,
+            &graph_summary,
         );
+        context.exclusions = entity_exclusions;
+        context.exclusions.extend(exclusions);
+        context.diagnostics.dropped_for_budget = dropped_for_budget;
+        context.dropped_for_budget = dropped_for_budget;
+        return context;
     }
 
     let mut candidates = Vec::new();
+    let mut exclusions = entity_exclusions;
     let mut seen_ids = HashSet::new();
     let mut dropped_duplicates = 0usize;
     let mut dropped_for_relevance = 0usize;
     for (rank, hit) in hits.into_iter().enumerate() {
-        if !seen_ids.insert(hit.id.clone()) || hit.content.trim().is_empty() {
+        if hit.content.trim().is_empty() {
+            exclusions.push(hit.explanation_with_inclusion(crate::InclusionReason::EmptyContent));
+            continue;
+        }
+        if !seen_ids.insert(hit.id.clone()) {
             dropped_duplicates += 1;
+            exclusions.push(hit.explanation_with_inclusion(crate::InclusionReason::Duplicate));
             continue;
         }
         let mut candidate = Candidate::from_hit(hit);
@@ -229,6 +308,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         let keep = candidate.relevance >= options.min_relevance;
         if !keep {
             dropped_for_relevance += 1;
+            exclusions.push(candidate.explanation_with_relevance_threshold(options.min_relevance));
         }
         keep
     });
@@ -258,12 +338,25 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             .map(|(index, _)| index)
             .expect("candidates is non-empty");
         let candidate = candidates.swap_remove(next_index);
+        let selection = selection_evidence(&candidate, &selected_tokens, options.novelty_weight);
 
-        if selected.iter().any(|selected| {
-            multiset_jaccard_similarity(&candidate.full_tokens, &selected.full_tokens)
-                >= options.near_duplicate_threshold
-        }) {
+        if let Some((matching_result_id, jaccard_similarity)) = selected
+            .iter()
+            .map(|selected| {
+                (
+                    selected.chunk.id.clone(),
+                    multiset_jaccard_similarity(&candidate.full_tokens, &selected.full_tokens),
+                )
+            })
+            .max_by(|(_, left), (_, right)| left.total_cmp(right))
+            .filter(|(_, similarity)| *similarity >= options.near_duplicate_threshold)
+        {
             dropped_near_duplicates += 1;
+            exclusions.push(candidate.explanation_with_near_duplicate(
+                matching_result_id,
+                jaccard_similarity,
+                options.near_duplicate_threshold,
+            ));
             continue;
         }
 
@@ -272,9 +365,16 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             .iter()
             .map(|selected| selected.chunk.clone())
             .collect::<Vec<_>>();
-        let Some(chunk) = fit_candidate(&candidate, &query, citation, &rendered_chunks, &options)
-        else {
+        let Some(chunk) = fit_candidate(
+            &candidate,
+            selection,
+            &query,
+            citation,
+            &rendered_chunks,
+            &options,
+        ) else {
             dropped_for_budget += 1;
+            exclusions.push(candidate.explanation(crate::InclusionReason::TokenBudget));
             continue;
         };
         selected.push(SelectedChunk {
@@ -287,6 +387,11 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         .into_iter()
         .map(|selected| selected.chunk)
         .collect::<Vec<_>>();
+    exclusions.extend(
+        candidates
+            .into_iter()
+            .map(|candidate| candidate.explanation(crate::InclusionReason::DiagnosticLimit)),
+    );
 
     let total_tokens = counter.count(&render_prompt_block(&chunks));
     let snippet_tokens = chunks
@@ -312,6 +417,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         scope,
         entity_filter,
         chunks,
+        exclusions,
         total_tokens,
         dropped_duplicates,
         dropped_for_budget,
@@ -326,6 +432,7 @@ pub(crate) fn empty_context(
     entity_filter: Option<String>,
     mode: TokenCountMode,
     dropped_for_entity_filter: usize,
+    graph_summary: &GraphRetrievalSummary,
 ) -> AugmentContext {
     let diagnostics = AugmentDiagnostics {
         token_count_mode: mode,
@@ -335,15 +442,20 @@ pub(crate) fn empty_context(
         dropped_for_relevance: 0,
         dropped_for_budget: 0,
         dropped_for_entity_filter,
-        graph_candidates_considered: 0,
+        graph_candidates_considered: graph_summary.candidates_considered,
+        // Retrieval may have selected graph hits before the packer runs, but
+        // a zero budget selects none into the final context. Account for all
+        // considered graph candidates as packing drops rather than reporting
+        // the pre-packing retrieval selection.
         graph_candidates_selected: 0,
-        graph_candidates_dropped: 0,
+        graph_candidates_dropped: graph_summary.candidates_considered,
     };
     AugmentContext {
         query,
         scope,
         entity_filter,
         chunks: Vec::new(),
+        exclusions: Vec::new(),
         total_tokens: 0,
         dropped_duplicates: 0,
         dropped_for_budget: 0,
@@ -389,6 +501,38 @@ impl Candidate {
     fn content(&self) -> &str {
         self.hit.content.trim()
     }
+
+    fn explanation(&self, inclusion: crate::InclusionReason) -> crate::RetrievalExplanation {
+        self.hit.explanation_with_inclusion(inclusion)
+    }
+
+    fn explanation_with_relevance_threshold(&self, threshold: f32) -> crate::RetrievalExplanation {
+        let mut explanation = self
+            .hit
+            .explanation_with_inclusion(crate::InclusionReason::RelevanceThreshold);
+        explanation.relevance = Some(crate::RelevanceEvidence {
+            normalized: self.relevance,
+            threshold,
+        });
+        explanation
+    }
+
+    fn explanation_with_near_duplicate(
+        &self,
+        matching_result_id: String,
+        jaccard_similarity: f32,
+        threshold: f32,
+    ) -> crate::RetrievalExplanation {
+        let mut explanation = self
+            .hit
+            .explanation_with_inclusion(crate::InclusionReason::NearDuplicate);
+        explanation.near_duplicate = Some(crate::NearDuplicateEvidence {
+            matching_result_id,
+            jaccard_similarity,
+            threshold,
+        });
+        explanation
+    }
 }
 
 fn selection_score(
@@ -396,12 +540,24 @@ fn selection_score(
     selected: &[&HashMap<String, usize>],
     novelty_weight: f32,
 ) -> f32 {
+    selection_evidence(candidate, selected, novelty_weight).score
+}
+
+fn selection_evidence(
+    candidate: &Candidate,
+    selected: &[&HashMap<String, usize>],
+    novelty_weight: f32,
+) -> crate::SelectionEvidence {
     let novelty = selected
         .iter()
         .map(|chosen| 1.0 - multiset_jaccard_similarity(&candidate.full_tokens, chosen))
         .fold(1.0_f32, f32::min);
     let novelty_weight = novelty_weight.clamp(0.0, 1.0);
-    candidate.relevance * (1.0 - novelty_weight) + novelty * novelty_weight
+    crate::SelectionEvidence {
+        normalized_relevance: candidate.relevance,
+        novelty,
+        score: candidate.relevance * (1.0 - novelty_weight) + novelty * novelty_weight,
+    }
 }
 
 fn normalize_candidate_relevance(candidates: &mut [Candidate]) {
@@ -431,6 +587,7 @@ fn normalize_candidate_relevance(candidates: &mut [Candidate]) {
 
 fn fit_candidate(
     candidate: &Candidate,
+    selection: crate::SelectionEvidence,
     query: &str,
     citation: usize,
     chunks: &[AugmentChunk],
@@ -447,9 +604,13 @@ fn fit_candidate(
         created_at: candidate.hit.created_at,
         source_uri: candidate.hit.source_uri.clone(),
         score: candidate.hit.score,
+        fusion: candidate.hit.fusion.clone(),
+        score_kind: candidate.hit.score_kind,
+        effective_weight: candidate.hit.effective_weight,
         conversation_uuid: candidate.hit.conversation_uuid.clone(),
         message_index: candidate.hit.message_index,
         role: candidate.hit.role.clone(),
+        selection: selection.clone(),
         graph: candidate.hit.graph.clone(),
         approx_tokens: 0,
         rendered_tokens: 0,
@@ -503,9 +664,13 @@ fn fit_candidate(
             created_at: candidate.hit.created_at,
             source_uri: candidate.hit.source_uri.clone(),
             score: candidate.hit.score,
+            fusion: candidate.hit.fusion.clone(),
+            score_kind: candidate.hit.score_kind,
+            effective_weight: candidate.hit.effective_weight,
             conversation_uuid: candidate.hit.conversation_uuid.clone(),
             message_index: candidate.hit.message_index,
             role: candidate.hit.role.clone(),
+            selection: selection.clone(),
             graph: candidate.hit.graph.clone(),
             approx_tokens: snippet_tokens,
             rendered_tokens: 0,
@@ -1418,6 +1583,8 @@ mod tests {
                 fused_score: score,
                 ..Default::default()
             },
+            score_kind: crate::ScoreKind::ReciprocalRankFusion,
+            effective_weight: 1.0,
             conversation_uuid: None,
             message_index: None,
             role: None,
@@ -1432,6 +1599,54 @@ mod tests {
             max_chunk_tokens: 30,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn zero_budget_context_retains_graph_packing_diagnostics() {
+        let mut zero_budget = options();
+        zero_budget.max_total_tokens = 0;
+        let context = build_augment_context_from_hits_with_graph(
+            "query".into(),
+            SearchScope::Notes,
+            None,
+            vec![hit("note:graph", 0.9, "graph candidate")],
+            zero_budget,
+            Vec::new(),
+            GraphRetrievalSummary {
+                entities_matched: 1,
+                candidates_considered: 3,
+                candidates_selected: 2,
+                candidates_dropped: 1,
+            },
+        );
+
+        assert!(context.chunks.is_empty());
+        assert_eq!(context.diagnostics.graph_candidates_considered, 3);
+        assert_eq!(context.diagnostics.graph_candidates_selected, 0);
+        assert_eq!(context.diagnostics.graph_candidates_dropped, 3);
+    }
+
+    #[test]
+    fn empty_content_is_reported_separately_from_duplicate_ids() {
+        let context = build_augment_context_from_hits(
+            "query".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("note:shared", 0.9, "   "),
+                hit("note:shared", 0.8, "usable candidate"),
+            ],
+            options(),
+            0,
+        );
+
+        assert_eq!(context.diagnostics.dropped_duplicates, 0);
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(context.chunks[0].id, "note:shared");
+        assert!(context.exclusions.iter().any(|explanation| {
+            explanation.result_id == "note:shared"
+                && explanation.inclusion == crate::InclusionReason::EmptyContent
+        }));
     }
 
     #[test]
@@ -2063,6 +2278,99 @@ mod tests {
         assert_eq!(context.total_tokens, 0);
         assert_eq!(context.render_prompt_block(), "");
         assert_eq!(context.diagnostics.dropped_for_relevance, 1);
+    }
+
+    #[test]
+    fn context_retains_identified_per_candidate_exclusion_decisions() {
+        let mut packing_options = options().with_token_counter(Arc::new(ExactWords));
+        packing_options.min_relevance = 0.5;
+        packing_options.max_total_tokens = 10;
+        packing_options.max_chunk_tokens = 8;
+        packing_options.near_duplicate_threshold = 0.8;
+        let context = build_augment_context_from_hits(
+            "needle".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("note:selected", 1.0, "needle one"),
+                hit("note:near", 0.9, "needle one"),
+                hit("note:low", 0.1, "unrelated low relevance"),
+                hit("note:budget", 0.8, "needle four five six seven eight"),
+                hit("note:selected", 0.7, "duplicate id"),
+            ],
+            packing_options,
+            0,
+        );
+
+        let decisions = context
+            .exclusions
+            .iter()
+            .map(|explanation| (explanation.result_id.as_str(), explanation.inclusion))
+            .collect::<Vec<_>>();
+        assert!(decisions.contains(&("note:selected", crate::InclusionReason::Duplicate)));
+        assert!(decisions.contains(&("note:near", crate::InclusionReason::NearDuplicate)));
+        assert!(decisions.contains(&("note:low", crate::InclusionReason::RelevanceThreshold)));
+        assert!(decisions.contains(&("note:budget", crate::InclusionReason::TokenBudget)));
+        let relevance = context
+            .exclusions
+            .iter()
+            .find(|explanation| explanation.result_id == "note:low")
+            .and_then(|explanation| explanation.relevance.as_ref())
+            .expect("relevance exclusion should retain normalized score and threshold");
+        assert_eq!(relevance.normalized, 0.0);
+        assert_eq!(relevance.threshold, 0.5);
+        let near_duplicate = context
+            .exclusions
+            .iter()
+            .find(|explanation| explanation.result_id == "note:near")
+            .and_then(|explanation| explanation.near_duplicate.as_ref())
+            .expect("near-duplicate exclusion should retain its selected match and similarity");
+        assert_eq!(near_duplicate.matching_result_id, "note:selected");
+        assert!(near_duplicate.jaccard_similarity >= near_duplicate.threshold);
+        assert_eq!(near_duplicate.threshold, 0.8);
+        assert!(context.chunks.iter().all(|chunk| !chunk.id.is_empty()));
+    }
+
+    #[test]
+    fn selected_chunk_explanations_retain_observed_mmr_inputs_and_score() {
+        let mut selection_options = options();
+        selection_options.max_chunks = 3;
+        selection_options.max_total_tokens = 300;
+        selection_options.max_chunk_tokens = 80;
+        selection_options.novelty_weight = 0.8;
+        selection_options.near_duplicate_threshold = 1.0;
+        let context = build_augment_context_from_hits(
+            "rust".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("n:best", 1.0, "rust ownership borrowing lifetimes guide"),
+                hit(
+                    "n:related",
+                    0.9,
+                    "rust ownership borrowing lifetimes reference",
+                ),
+                hit("n:novel", 0.8, "gardening soil watering and recipes"),
+            ],
+            selection_options,
+            0,
+        );
+
+        assert_eq!(
+            context
+                .chunks
+                .iter()
+                .map(|chunk| chunk.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["n:best", "n:novel", "n:related"]
+        );
+        let novel = context.chunks[1]
+            .explanation(2)
+            .selection
+            .expect("selected chunk should retain MMR decision evidence");
+        assert_eq!(novel.normalized_relevance, 0.0);
+        assert_eq!(novel.novelty, 1.0);
+        assert_eq!(novel.score, 0.8);
     }
 
     #[test]

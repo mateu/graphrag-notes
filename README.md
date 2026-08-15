@@ -87,6 +87,12 @@ downloads a tokenizer or contacts a provider. Library callers with a locally
 installed model tokenizer can inject a `TokenCounter` and receive **exact**
 mode in `AugmentContext.diagnostics`. The human command prints the same stable
 diagnostics (mode, header tokens, and drop reasons); `AugmentDiagnostics`
+is paired with a versioned retrieval-evidence contract. Explain surfaces use
+the same object for human and JSON output: fusion/vector/full-text channels,
+accepted graph paths, provenance, selected source spans, token counts, and
+typed inclusion or drop decisions. Evidence is observational—it never changes
+ranking or context selection—and intentionally excludes prompts, credentials,
+headers, and unrelated absolute local paths.
 derives `Serialize` for JSON/API callers. A zero or too-small budget yields an
 empty context rather than a prompt block that exceeds its cap.
 
@@ -498,7 +504,15 @@ graphrag search "machine learning" --context
 graphrag search "Atlas" --graph=off
 graphrag search "Atlas" --graph=on
 graphrag augment "Atlas" --graph=auto
+# `--explain` is global; JSON and JSONL use the versioned output envelope.
+graphrag --explain search "Atlas" --format json
+graphrag augment "Atlas" --explain --format jsonl
 ```
+
+`--explain` adds compact evidence lines to human output and emits the same
+versioned evidence object for machine output. It reports final/fused rank,
+vector distance or BM25 score when available, accepted graph paths, provenance,
+and context token/span decisions; it does not change retrieval or packing.
 
 ### 5. Run the Gardener
 

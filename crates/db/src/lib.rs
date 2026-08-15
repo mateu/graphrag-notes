@@ -25,6 +25,7 @@ use surrealdb::engine::local::RocksDb;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 /// A database client together with process-local coordination scoped to that
 /// client identity. Cloning a connection preserves the same coordination;
@@ -79,13 +80,23 @@ pub async fn connect_persistent(path: impl AsRef<Path>) -> Result<DbConnection> 
 /// Initialize database in-memory (for testing)
 pub async fn init_memory() -> Result<DbConnection> {
     let db = DbConnection::new(Surreal::new::<Mem>(()).await?);
-    setup_database(&db).await?;
+    // SurrealDB's in-memory engine can be shared by concurrently running
+    // clients. Give each test/ephemeral client its own namespace so a
+    // transaction in one caller cannot observe or conflict with another
+    // caller's fixtures. Persistent stores retain the stable application
+    // namespace through `setup_database` below.
+    let namespace = format!("graphrag_memory_{}", Uuid::new_v4().simple());
+    setup_database_at(&db, &namespace, "notes").await?;
     Ok(db)
 }
 
 /// Setup database namespace, database, and schema
 async fn setup_database(db: &DbConnection) -> Result<()> {
-    db.use_ns("graphrag").use_db("notes").await?;
+    setup_database_at(db, "graphrag", "notes").await
+}
+
+async fn setup_database_at(db: &DbConnection, namespace: &str, database: &str) -> Result<()> {
+    db.use_ns(namespace).use_db(database).await?;
     schema::initialize_schema(db).await?;
     Ok(())
 }
@@ -99,6 +110,23 @@ mod tests {
         let db = init_memory().await.expect("Failed to init memory db");
         // Just verify it connects
         let _: Vec<serde_json::Value> = db.select("note").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn memory_clients_use_isolated_namespaces() {
+        let first = Repository::new(init_memory().await.unwrap());
+        let created = first
+            .create_note(graphrag_core::Note::new("isolated memory fixture"))
+            .await
+            .unwrap();
+        let second = Repository::new(init_memory().await.unwrap());
+        assert!(second
+            .get_note(&graphrag_core::record_id_to_string(
+                created.id.as_ref().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[cfg(feature = "rocksdb")]

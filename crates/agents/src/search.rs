@@ -116,6 +116,9 @@ pub struct GraphSearchResults {
 pub struct EnrichedSearchResult {
     pub result: SearchResult,
     pub related: Option<RelatedNotes>,
+    score_kind: crate::ScoreKind,
+    final_score: f32,
+    effective_weight: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +147,9 @@ pub struct ScopedSearchResult {
     /// Retrieval evidence is intentionally retained for a later `--explain`
     /// surface while current CLI output remains unchanged.
     pub fusion: FusionEvidence,
+    pub score_kind: crate::ScoreKind,
+    /// The configured hit-type multiplier applied before final ordering.
+    pub effective_weight: f32,
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
@@ -151,6 +157,113 @@ pub struct ScopedSearchResult {
     /// graph channel. Ordinary hybrid candidates retain their existing
     /// evidence unchanged.
     pub graph: Option<GraphEvidence>,
+}
+
+impl ScopedSearchResult {
+    /// Build observational evidence for a ranked retrieval result. This has no
+    /// effect on fusion, ordering, or graph expansion.
+    pub fn explanation(&self) -> crate::RetrievalExplanation {
+        retrieval_explanation(ExplanationInput {
+            hit_type: self.hit_type,
+            result_id: self.id.clone(),
+            title: self.title.clone(),
+            fusion: &self.fusion,
+            score_kind: self.score_kind,
+            final_score: self.score,
+            effective_weight: self.effective_weight,
+            graph: self.graph.clone(),
+            source_uri: self.source_uri.clone(),
+            conversation_uuid: self.conversation_uuid.clone(),
+            message_index: self.message_index,
+            role: self.role.clone(),
+        })
+    }
+
+    pub fn explanation_with_inclusion(
+        &self,
+        inclusion: crate::InclusionReason,
+    ) -> crate::RetrievalExplanation {
+        let mut explanation = self.explanation();
+        explanation.inclusion = inclusion;
+        explanation
+    }
+}
+
+impl EnrichedSearchResult {
+    /// The legacy related-notes path retains the same fused note result. This
+    /// adapter keeps `--context --graph=off --explain` observational rather
+    /// than sending the query through a different retrieval route.
+    pub fn explanation(&self) -> crate::RetrievalExplanation {
+        retrieval_explanation(ExplanationInput {
+            hit_type: SearchHitType::Note,
+            result_id: record_id_to_string(&self.result.id),
+            title: self.result.title.clone(),
+            fusion: &self.result.fusion,
+            score_kind: self.score_kind,
+            final_score: self.final_score,
+            effective_weight: self.effective_weight,
+            graph: None,
+            source_uri: self.result.source_uri.clone(),
+            conversation_uuid: None,
+            message_index: None,
+            role: None,
+        })
+    }
+
+    /// Final weighted score used to order this legacy context-search result.
+    /// This remains separate from the raw fusion evidence exposed by
+    /// [`Self::explanation`].
+    pub fn final_score(&self) -> f32 {
+        self.final_score
+    }
+}
+
+struct ExplanationInput<'a> {
+    hit_type: SearchHitType,
+    result_id: String,
+    title: Option<String>,
+    fusion: &'a FusionEvidence,
+    score_kind: crate::ScoreKind,
+    final_score: f32,
+    effective_weight: f32,
+    graph: Option<GraphEvidence>,
+    source_uri: Option<String>,
+    conversation_uuid: Option<String>,
+    message_index: Option<i64>,
+    role: Option<String>,
+}
+
+fn retrieval_explanation(input: ExplanationInput<'_>) -> crate::RetrievalExplanation {
+    let (fused, vector, full_text) = crate::fusion_scores(input.fusion, input.score_kind);
+    crate::RetrievalExplanation {
+        schema_version: crate::EXPLANATION_SCHEMA_VERSION,
+        result_id: input.result_id,
+        title: input.title,
+        rank: input.fusion.final_rank,
+        context_rank: None,
+        hit_type: input.hit_type.into(),
+        final_score: crate::final_rank_score(input.final_score, input.score_kind),
+        effective_weight: input.effective_weight,
+        fused,
+        vector,
+        full_text,
+        relevance: None,
+        selection: None,
+        near_duplicate: None,
+        graph: input.graph,
+        inclusion: crate::InclusionReason::Selected,
+        token_count: None,
+        embedding_provider: None,
+        embedding_model: None,
+        provenance: crate::ProvenanceEvidence {
+            source_uri: input.source_uri,
+            conversation_uuid: input.conversation_uuid,
+            message_index: input.message_index,
+            role: input.role,
+            selected_span_start: None,
+            selected_span_end: None,
+        },
+    }
 }
 
 pub use crate::context_packing::{
@@ -181,6 +294,13 @@ impl SearchAgent {
             conversation_summary_weight: 1.0,
             graph: GraphRetrievalConfig::default(),
         }
+    }
+
+    /// Identifies the provider that embedded this query for explain renderers.
+    /// The identity is observational and does not participate in retrieval.
+    pub fn embedding_identity(&self) -> (String, String) {
+        let capabilities = self.embedder.capabilities();
+        (capabilities.provider, capabilities.model)
     }
 
     /// Set vector and full-text weights while retaining the RRF default.
@@ -292,8 +412,15 @@ impl SearchAgent {
         for result in results {
             // Try to get related notes (best effort) using the full RecordId
             let related = self.repo.get_related_notes(&result.id).await.ok();
+            let final_score = fusion::apply_hit_type_weight(&result.fusion, self.note_weight);
 
-            enriched.push(EnrichedSearchResult { result, related });
+            enriched.push(EnrichedSearchResult {
+                result,
+                related,
+                score_kind: self.fusion.strategy.into(),
+                final_score,
+                effective_weight: self.note_weight,
+            });
         }
 
         Ok(enriched)
@@ -368,7 +495,7 @@ impl SearchAgent {
         source_uri: Option<String>,
         graph_mode: GraphMode,
         entity_filter: Option<&str>,
-    ) -> Result<(GraphSearchResults, usize)> {
+    ) -> Result<(GraphSearchResults, Vec<ScopedSearchResult>)> {
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
         let embedding = self.embed_query(query).await?;
         let mut scoped_results = Vec::new();
@@ -453,14 +580,19 @@ impl SearchAgent {
             }
         }
 
-        let mut dropped_for_entity_filter = 0usize;
+        let mut entity_filtered = Vec::new();
         if let Some(filter) = entity_filter {
+            // Excluded candidates still carry evidence, so assign the
+            // merged-ranking position before removing them. Survivors are
+            // ranked again below after filtering, while these explanations
+            // retain the truthful pre-filter rank that caused their review.
+            rank_scoped_results(&mut scoped_results);
             let mut filtered = Vec::with_capacity(scoped_results.len());
             for hit in scoped_results {
                 if hit.hit_type == SearchHitType::Note
                     && !self.repo.note_has_entity_name(&hit.id, filter).await?
                 {
-                    dropped_for_entity_filter += 1;
+                    entity_filtered.push(hit);
                     continue;
                 }
                 filtered.push(hit);
@@ -485,7 +617,7 @@ impl SearchAgent {
                 hits: scoped_results,
                 summary,
             },
-            dropped_for_entity_filter,
+            entity_filtered,
         ))
     }
 
@@ -526,19 +658,74 @@ impl SearchAgent {
         options: AugmentOptions,
         graph_mode: GraphMode,
     ) -> Result<AugmentContext> {
-        if options.max_chunks == 0 || options.max_total_tokens == 0 || options.max_chunk_tokens == 0
-        {
+        self.build_augmented_context_with_graph_inner(
+            query,
+            scope,
+            since_days,
+            source_uri,
+            entity_filter,
+            options,
+            graph_mode,
+            false,
+        )
+        .await
+    }
+
+    /// Explain-only augmentation path. Unlike the public construction API,
+    /// this samples a bounded set for zero budgets so callers can expose
+    /// identified packing exclusions.
+    #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn build_augmented_context_with_graph_explain(
+        &self,
+        query: &str,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+        entity_filter: Option<String>,
+        options: AugmentOptions,
+        graph_mode: GraphMode,
+    ) -> Result<AugmentContext> {
+        self.build_augmented_context_with_graph_inner(
+            query,
+            scope,
+            since_days,
+            source_uri,
+            entity_filter,
+            options,
+            graph_mode,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn build_augmented_context_with_graph_inner(
+        &self,
+        query: &str,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+        entity_filter: Option<String>,
+        options: AugmentOptions,
+        graph_mode: GraphMode,
+        sample_zero_budget_candidates: bool,
+    ) -> Result<AugmentContext> {
+        let zero_budget = options.max_chunks == 0
+            || options.max_total_tokens == 0
+            || options.max_chunk_tokens == 0;
+        if zero_budget && !sample_zero_budget_candidates {
             return Ok(crate::context_packing::empty_context(
                 query.to_string(),
                 scope,
                 entity_filter,
                 options.token_counter.mode(),
                 0,
+                &GraphRetrievalSummary::default(),
             ));
         }
-
-        let fetch_limit = (options.max_chunks * 4).clamp(options.max_chunks, 200);
-        let (graph_results, dropped_for_entity_filter) = self
+        let fetch_limit = options.max_chunks.max(1).saturating_mul(4).clamp(4, 200);
+        let (graph_results, entity_filtered) = self
             .search_with_scope_graph_filtered(
                 query,
                 fetch_limit,
@@ -558,7 +745,7 @@ impl SearchAgent {
                 entity_filter,
                 hits,
                 options,
-                dropped_for_entity_filter,
+                entity_filtered,
                 graph_results.summary,
             ),
         )
@@ -805,6 +992,8 @@ impl SearchAgent {
             fused_score: graph.score,
             ..Default::default()
         };
+        hit.score_kind = crate::ScoreKind::GraphTraversal;
+        hit.effective_weight = self.note_weight;
         hit.graph = Some(graph);
         hit
     }
@@ -820,6 +1009,8 @@ impl SearchAgent {
             source_uri: result.source_uri,
             score: fusion::apply_hit_type_weight(&result.fusion, self.note_weight),
             fusion: result.fusion,
+            score_kind: self.fusion.strategy.into(),
+            effective_weight: self.note_weight,
             conversation_uuid: None,
             message_index: None,
             role: None,
@@ -842,6 +1033,8 @@ impl SearchAgent {
             source_uri: result.source_uri,
             score: fusion::apply_hit_type_weight(&result.fusion, self.message_weight),
             fusion: result.fusion,
+            score_kind: self.fusion.strategy.into(),
+            effective_weight: self.message_weight,
             conversation_uuid: Some(result.conversation_uuid),
             message_index: Some(result.message_index),
             role: Some(result.role),
@@ -865,6 +1058,8 @@ impl SearchAgent {
             source_uri: result.source_uri,
             score: fusion::apply_hit_type_weight(&result.fusion, self.conversation_summary_weight),
             fusion: result.fusion,
+            score_kind: self.fusion.strategy.into(),
+            effective_weight: self.conversation_summary_weight,
             conversation_uuid: Some(result.uuid),
             message_index: None,
             role: None,
@@ -1407,6 +1602,99 @@ mod tests {
             record_id_to_string(qualifying.id.as_ref().unwrap())
         );
         assert_eq!(context.diagnostics.dropped_for_entity_filter, 4);
+        assert_eq!(context.exclusions.len(), 4);
+        assert!(context.exclusions.iter().all(|explanation| {
+            explanation.inclusion == crate::InclusionReason::Filtered
+                && explanation.result_id.starts_with("note:")
+                && explanation.rank > 0
+        }));
+    }
+
+    #[tokio::test]
+    async fn zero_augmentation_budgets_emit_identified_token_budget_exclusions() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("zero budget retrieval candidate"))
+            .await
+            .unwrap();
+        let note_id = record_id_to_string(note.id.as_ref().unwrap());
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()));
+
+        for options in [
+            AugmentOptions {
+                max_chunks: 1,
+                max_total_tokens: 0,
+                max_chunk_tokens: 32,
+                ..Default::default()
+            },
+            AugmentOptions {
+                max_chunks: 1,
+                max_total_tokens: 32,
+                max_chunk_tokens: 0,
+                ..Default::default()
+            },
+        ] {
+            let context = search
+                .build_augmented_context_with_graph_explain(
+                    "budget",
+                    SearchScope::Notes,
+                    None,
+                    None,
+                    None,
+                    options,
+                    GraphMode::Off,
+                )
+                .await
+                .unwrap();
+            assert!(context.chunks.is_empty());
+            assert!(context.exclusions.iter().any(|explanation| {
+                explanation.result_id == note_id
+                    && explanation.inclusion == crate::InclusionReason::TokenBudget
+            }));
+            let budget_exclusions = context
+                .exclusions
+                .iter()
+                .filter(|explanation| explanation.inclusion == crate::InclusionReason::TokenBudget)
+                .count();
+            assert!(budget_exclusions > 0);
+            assert_eq!(context.diagnostics.dropped_for_budget, budget_exclusions);
+            assert_eq!(context.dropped_for_budget, budget_exclusions);
+        }
+    }
+
+    #[tokio::test]
+    async fn public_zero_budget_augmentation_skips_candidate_sampling() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("unobserved zero-budget candidate"))
+            .await
+            .unwrap();
+        // A public zero-budget request must return before embedding or retrieval. If
+        // candidate sampling were reintroduced here, this deliberately unavailable
+        // embedder would make the request fail.
+        let search = SearchAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default().fail_next_requests(1, "offline")),
+        );
+        let context = search
+            .build_augmented_context_with_graph(
+                "budget",
+                SearchScope::Notes,
+                None,
+                None,
+                None,
+                AugmentOptions {
+                    max_chunks: 1,
+                    max_total_tokens: 0,
+                    max_chunk_tokens: 32,
+                    ..Default::default()
+                },
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        assert!(context.chunks.is_empty());
+        assert!(context.exclusions.is_empty());
+        assert_eq!(context.diagnostics.dropped_for_budget, 0);
     }
 
     #[tokio::test]
@@ -1472,6 +1760,8 @@ mod tests {
                     fused_score: 0.01,
                     ..Default::default()
                 },
+                score_kind: crate::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,
@@ -2752,11 +3042,58 @@ mod tests {
                 fused_score: score,
                 ..FusionEvidence::default()
             },
+            score_kind: crate::ScoreKind::ReciprocalRankFusion,
+            effective_weight: 1.0,
             conversation_uuid: None,
             message_index: None,
             role: None,
             graph: None,
         }
+    }
+
+    #[test]
+    fn explanation_reports_the_score_and_weight_used_for_final_ranking() {
+        let mut hit = make_hit("note:weighted", 0.24, "weighted evidence");
+        hit.fusion.fused_score = 0.4;
+        hit.score_kind = crate::ScoreKind::WeightedFusion;
+        hit.effective_weight = 0.6;
+
+        let explanation = hit.explanation();
+        assert_eq!(explanation.final_score.value, 0.24);
+        assert_eq!(
+            explanation.final_score.kind,
+            crate::ScoreKind::WeightedFusion
+        );
+        assert_eq!(explanation.effective_weight, 0.6);
+        assert_eq!(explanation.fused.value, 0.4);
+    }
+
+    #[test]
+    fn context_result_exposes_its_final_weighted_score() {
+        let result = EnrichedSearchResult {
+            result: SearchResult {
+                id: RecordId::new("note", "weighted"),
+                title: Some("Weighted context hit".into()),
+                content: "context hit".into(),
+                note_type: "note".into(),
+                tags: Vec::new(),
+                created_at: Utc::now(),
+                source_uri: None,
+                vec_distance: Some(0.1),
+                fts_score: Some(0.5),
+                fusion: FusionEvidence {
+                    fused_score: 0.4,
+                    ..Default::default()
+                },
+            },
+            related: None,
+            score_kind: crate::ScoreKind::WeightedFusion,
+            final_score: 0.24,
+            effective_weight: 0.6,
+        };
+
+        assert_eq!(result.final_score(), 0.24);
+        assert_eq!(result.explanation().fused.value, 0.4);
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod backup;
 mod commands;
 mod doctor;
 mod eval;
+mod explain;
 mod output;
 
 use anyhow::{Context, Result};
@@ -77,6 +78,11 @@ struct Cli {
     /// Bypass the durable local inference cache for this invocation.
     #[arg(long, global = true)]
     no_cache: bool,
+
+    /// Include versioned retrieval and context-selection evidence where the
+    /// selected command supports explainability.
+    #[arg(long, global = true)]
+    explain: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -222,6 +228,10 @@ enum Commands {
         /// Accepted-edge graph retrieval policy
         #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
         graph: GraphModeArg,
+
+        /// Render results for people, JSON consumers, or JSONL pipelines.
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
     },
 
     /// Build prompt-ready augmentation context with citations
@@ -260,6 +270,10 @@ enum Commands {
         /// Accepted-edge graph retrieval policy
         #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
         graph: GraphModeArg,
+
+        /// Render results for people, JSON consumers, or JSONL pipelines.
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
     },
 
     /// Evaluate augmentation retrieval quality from a JSON/JSONL test set
@@ -846,6 +860,66 @@ fn augment_options(
     }
 }
 
+/// Zero budgets normally return an empty context without contacting the
+/// embedder. Explain mode deliberately samples a bounded candidate set so it
+/// can report identified exclusion decisions; ordinary output must retain the
+/// established no-inference fast path.
+fn should_sample_augment_candidates(explain: bool, options: &AugmentOptions) -> bool {
+    explain
+        || (options.max_chunks != 0
+            && options.max_total_tokens != 0
+            && options.max_chunk_tokens != 0)
+}
+
+fn augment_needs_tei(
+    explain: bool,
+    limit: Option<usize>,
+    max_tokens: Option<usize>,
+    max_chunk_tokens: Option<usize>,
+    config: &AugmentConfig,
+) -> bool {
+    should_sample_augment_candidates(
+        explain,
+        &augment_options(
+            limit.unwrap_or(config.default_limit),
+            max_tokens.unwrap_or(config.max_tokens),
+            max_chunk_tokens.unwrap_or(config.max_chunk_tokens),
+            config,
+        ),
+    )
+}
+
+fn zero_budget_augment_context(
+    query: String,
+    scope: SearchScope,
+    entity_filter: Option<String>,
+) -> graphrag_agents::AugmentContext {
+    let diagnostics = AugmentDiagnostics {
+        token_count_mode: TokenCountMode::Estimated,
+        header_tokens: 0,
+        dropped_duplicates: 0,
+        dropped_near_duplicates: 0,
+        dropped_for_relevance: 0,
+        dropped_for_budget: 0,
+        dropped_for_entity_filter: 0,
+        graph_candidates_considered: 0,
+        graph_candidates_selected: 0,
+        graph_candidates_dropped: 0,
+    };
+    graphrag_agents::AugmentContext {
+        query,
+        scope,
+        entity_filter,
+        chunks: Vec::new(),
+        exclusions: Vec::new(),
+        total_tokens: 0,
+        diagnostics,
+        dropped_duplicates: 0,
+        dropped_for_budget: 0,
+        dropped_for_entity_filter: 0,
+    }
+}
+
 fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> String {
     let token_count_mode = match diagnostics.token_count_mode {
         TokenCountMode::Exact => "exact",
@@ -1233,7 +1307,23 @@ async fn run() -> Result<()> {
         &cli.command,
         Commands::Notes { command } if notes_edit_requires_inference(command)
     );
-    let needs_tei = notes_edit_reprocesses
+    let augment_needs_embeddings = match &cli.command {
+        Commands::Augment {
+            limit,
+            max_tokens,
+            max_chunk_tokens,
+            ..
+        } => augment_needs_tei(
+            cli.explain,
+            *limit,
+            *max_tokens,
+            *max_chunk_tokens,
+            &config.augment,
+        ),
+        _ => false,
+    };
+    let needs_tei = augment_needs_embeddings
+        || notes_edit_reprocesses
         || matches!(
             cli.command,
             Commands::Add { .. }
@@ -1244,7 +1334,6 @@ async fn run() -> Result<()> {
                 | Commands::ImportChats { .. }
                 | Commands::MigrateChats { .. }
                 | Commands::Search { .. }
-                | Commands::Augment { .. }
                 | Commands::EvalAugment { .. }
                 | Commands::Reindex { .. }
                 | Commands::Interactive
@@ -1302,6 +1391,7 @@ async fn run() -> Result<()> {
     .then(install_cancellation_handler);
 
     // Execute command
+    let explain = cli.explain;
     match cli.command {
         Commands::Export {
             path,
@@ -1377,6 +1467,7 @@ async fn run() -> Result<()> {
             source_uri,
             context,
             graph,
+            format,
         } => {
             cmd_search(
                 repo,
@@ -1388,6 +1479,8 @@ async fn run() -> Result<()> {
                 source_uri,
                 context,
                 graph,
+                explain,
+                format,
                 config.search.clone(),
             )
             .await?;
@@ -1434,6 +1527,7 @@ async fn run() -> Result<()> {
             max_tokens,
             max_chunk_tokens,
             graph,
+            format,
         } => {
             cmd_augment(
                 repo,
@@ -1449,6 +1543,8 @@ async fn run() -> Result<()> {
                 graph,
                 config.search.clone(),
                 config.augment.clone(),
+                explain,
+                format,
             )
             .await?;
         }
@@ -2543,6 +2639,137 @@ async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct SearchMachineResult {
+    id: String,
+    hit_type: &'static str,
+    title: Option<String>,
+    content: String,
+    created_at: Option<String>,
+    source_uri: Option<String>,
+    score: f32,
+    conversation_uuid: Option<String>,
+    message_index: Option<i64>,
+    role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    related: Option<RelatedNotes>,
+}
+
+#[derive(Serialize)]
+struct SearchMachineOutput {
+    results: Vec<SearchMachineResult>,
+}
+
+impl SearchMachineResult {
+    fn from_context(result: &graphrag_agents::search::EnrichedSearchResult) -> Self {
+        let note = &result.result;
+        Self {
+            id: record_id_to_string(&note.id),
+            hit_type: "note",
+            title: note.title.clone(),
+            content: note.content.clone(),
+            created_at: Some(note.created_at.to_rfc3339()),
+            source_uri: note.source_uri.clone(),
+            score: result.final_score(),
+            conversation_uuid: None,
+            message_index: None,
+            role: None,
+            related: result.related.clone(),
+        }
+    }
+
+    fn from_scoped(
+        result: &graphrag_agents::search::ScopedSearchResult,
+        related: Option<RelatedNotes>,
+    ) -> Self {
+        Self {
+            id: result.id.clone(),
+            hit_type: search_hit_type_name(result.hit_type),
+            title: result.title.clone(),
+            content: result.content.clone(),
+            created_at: result.created_at.map(|value| value.to_rfc3339()),
+            source_uri: result.source_uri.clone(),
+            score: result.score,
+            conversation_uuid: result.conversation_uuid.clone(),
+            message_index: result.message_index,
+            role: result.role.clone(),
+            related,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct AugmentMachineChunk {
+    citation: usize,
+    hit_type: &'static str,
+    id: String,
+    title: Option<String>,
+    snippet: String,
+    created_at: Option<String>,
+    source_uri: Option<String>,
+    score: f32,
+    conversation_uuid: Option<String>,
+    message_index: Option<i64>,
+    role: Option<String>,
+    approx_tokens: usize,
+    rendered_tokens: usize,
+    truncated: bool,
+    selected_span_start: Option<usize>,
+    selected_span_end: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct AugmentMachineOutput {
+    query: String,
+    scope: String,
+    entity_filter: Option<String>,
+    prompt: String,
+    chunks: Vec<AugmentMachineChunk>,
+    total_tokens: usize,
+    diagnostics: AugmentDiagnostics,
+}
+
+fn search_hit_type_name(hit_type: SearchHitType) -> &'static str {
+    match hit_type {
+        SearchHitType::Note => "note",
+        SearchHitType::Message => "message",
+        SearchHitType::ConversationSummary => "conversation-summary",
+    }
+}
+
+fn augment_machine_output(ctx: &graphrag_agents::AugmentContext) -> AugmentMachineOutput {
+    AugmentMachineOutput {
+        query: ctx.query.clone(),
+        scope: format!("{:?}", ctx.scope),
+        entity_filter: ctx.entity_filter.clone(),
+        prompt: ctx.render_prompt_block(),
+        chunks: ctx
+            .chunks
+            .iter()
+            .map(|chunk| AugmentMachineChunk {
+                citation: chunk.citation,
+                hit_type: search_hit_type_name(chunk.hit_type),
+                id: chunk.id.clone(),
+                title: chunk.title.clone(),
+                snippet: chunk.snippet.clone(),
+                created_at: chunk.created_at.map(|value| value.to_rfc3339()),
+                source_uri: chunk.source_uri.clone(),
+                score: chunk.score,
+                conversation_uuid: chunk.conversation_uuid.clone(),
+                message_index: chunk.message_index,
+                role: chunk.role.clone(),
+                approx_tokens: chunk.approx_tokens,
+                rendered_tokens: chunk.rendered_tokens,
+                truncated: chunk.truncated,
+                selected_span_start: chunk.selected_span_start,
+                selected_span_end: chunk.selected_span_end,
+            })
+            .collect(),
+        total_tokens: ctx.total_tokens,
+        diagnostics: ctx.diagnostics.clone(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_search(
     repo: Repository,
@@ -2554,9 +2781,19 @@ async fn cmd_search(
     source_uri: Option<String>,
     context: bool,
     graph: GraphModeArg,
+    explain: bool,
+    format: output::OutputFormat,
     search_config: SearchConfig,
 ) -> Result<()> {
     let search = configured_search_agent(repo.clone(), tei, &search_config);
+    let embedding_identity = search.embedding_identity();
+    let filters = serde_json::json!({
+        "scope": format!("{scope:?}"),
+        "since_days": since_days,
+        "source_uri": source_uri,
+        "context": context,
+        "graph": format!("{graph:?}"),
+    });
     let scope = match scope {
         SearchScopeArg::Notes => SearchScope::Notes,
         SearchScopeArg::Messages => SearchScope::Messages,
@@ -2565,8 +2802,67 @@ async fn cmd_search(
 
     if context && scope == SearchScope::Notes && graph == GraphModeArg::Off {
         let results = search
-            .search_with_context_filtered(&query, limit, since_days, source_uri)
+            .search_with_context_filtered(&query, limit, since_days, source_uri.clone())
             .await?;
+        let related_by_note = results
+            .iter()
+            .filter_map(|result| {
+                result
+                    .related
+                    .clone()
+                    .map(|related| (record_id_to_string(&result.result.id), related))
+            })
+            .collect::<HashMap<_, _>>();
+
+        if format != output::OutputFormat::Human {
+            if !explain {
+                let output = results
+                    .iter()
+                    .map(SearchMachineResult::from_context)
+                    .collect::<Vec<_>>();
+                return match format {
+                    output::OutputFormat::Json => output::print(
+                        format,
+                        "search",
+                        SearchMachineOutput { results: output },
+                        |_| Ok(()),
+                    ),
+                    output::OutputFormat::Jsonl => output::print_jsonl("search", output),
+                    output::OutputFormat::Human => unreachable!("handled above"),
+                };
+            }
+            let explanations = results
+                .iter()
+                .map(|result| {
+                    result
+                        .explanation()
+                        .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+                })
+                .collect::<Vec<_>>();
+            return match format {
+                output::OutputFormat::Json => output::print(
+                    format,
+                    "search",
+                    explain::search_json(
+                        &explanations,
+                        &graphrag_agents::GraphRetrievalSummary::default(),
+                        filters,
+                        &related_by_note,
+                    ),
+                    |_| Ok(()),
+                ),
+                output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
+                    "search",
+                    explanations.iter(),
+                    explain::search_pipeline(
+                        &graphrag_agents::GraphRetrievalSummary::default(),
+                        filters,
+                        &related_by_note,
+                    ),
+                ),
+                output::OutputFormat::Human => unreachable!("handled above"),
+            };
+        }
 
         if results.is_empty() {
             println!("No results found.");
@@ -2597,16 +2893,96 @@ async fn cmd_search(
                 }
             }
 
+            if explain {
+                println!("   Explain: {}", explain::human(&result.explanation()));
+            }
+
             println!();
         }
     } else {
         if context && scope != SearchScope::Notes {
-            println!("Context is only available for notes scope; continuing without context.\n");
+            eprintln!("Context is only available for notes scope; continuing without context.");
         }
 
         let results = search
-            .search_with_scope_graph(&query, limit, scope, since_days, source_uri, graph.into())
+            .search_with_scope_graph(
+                &query,
+                limit,
+                scope,
+                since_days,
+                source_uri.clone(),
+                graph.into(),
+            )
             .await?;
+        // `--context` is part of the command result, not merely human
+        // decoration. Resolve it before either machine renderer returns so
+        // JSON and JSONL retain the same related-note data as terminal output.
+        let related_by_note = if context && scope == SearchScope::Notes {
+            let context_repo = repo.clone();
+            best_effort_related_notes(&results.hits, move |id| {
+                let repo = context_repo.clone();
+                async move {
+                    let note_id = parse_record_id(&id, Some("note"))?;
+                    Ok::<_, anyhow::Error>(repo.get_related_notes(&note_id).await?)
+                }
+            })
+            .await?
+        } else {
+            HashMap::new()
+        };
+
+        if format != output::OutputFormat::Human {
+            if !explain {
+                let output = results
+                    .hits
+                    .iter()
+                    .map(|result| {
+                        SearchMachineResult::from_scoped(
+                            result,
+                            related_by_note.get(&result.id).cloned(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                return match format {
+                    output::OutputFormat::Json => output::print(
+                        format,
+                        "search",
+                        SearchMachineOutput { results: output },
+                        |_| Ok(()),
+                    ),
+                    output::OutputFormat::Jsonl => output::print_jsonl("search", output),
+                    output::OutputFormat::Human => unreachable!("handled above"),
+                };
+            }
+            let explanations = results
+                .hits
+                .iter()
+                .map(|result| {
+                    result
+                        .explanation()
+                        .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+                })
+                .collect::<Vec<_>>();
+            return match format {
+                output::OutputFormat::Json => output::print(
+                    format,
+                    "search",
+                    explain::search_json(
+                        &explanations,
+                        &results.summary,
+                        filters,
+                        &related_by_note,
+                    ),
+                    |_| Ok(()),
+                ),
+                output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
+                    "search",
+                    explanations.iter(),
+                    explain::search_pipeline(&results.summary, filters, &related_by_note),
+                ),
+                output::OutputFormat::Human => unreachable!("handled above"),
+            };
+        }
 
         if results.hits.is_empty() {
             println!("No results found.");
@@ -2626,22 +3002,6 @@ async fn cmd_search(
         // accepted-edge summary. Keep it for the default `--graph=auto`
         // path as well as explicit modes; graph evidence is additive, not a
         // replacement for get_related_notes output.
-        let related_by_note = if context && scope == SearchScope::Notes {
-            let context_repo = repo.clone();
-            best_effort_related_notes(&results.hits, move |id| {
-                let repo = context_repo.clone();
-                async move {
-                    // `best_effort_related_notes` validates the primary ID
-                    // before invoking this lookup.
-                    let note_id = parse_record_id(&id, Some("note"))?;
-                    Ok::<_, anyhow::Error>(repo.get_related_notes(&note_id).await?)
-                }
-            })
-            .await?
-        } else {
-            HashMap::new()
-        };
-
         for (i, r) in results.hits.iter().enumerate() {
             let kind = match r.hit_type {
                 SearchHitType::Note => "note",
@@ -2685,6 +3045,9 @@ async fn cmd_search(
                 preview,
                 if r.content.len() > 200 { "..." } else { "" }
             );
+            if explain {
+                println!("   Explain: {}", explain::human(&r.explanation()));
+            }
             println!();
         }
     }
@@ -2747,29 +3110,114 @@ async fn cmd_augment(
     graph: GraphModeArg,
     search_config: SearchConfig,
     augment_config: AugmentConfig,
+    explain: bool,
+    format: output::OutputFormat,
 ) -> Result<()> {
     if entity.is_some() && scope != SearchScopeArg::Notes {
         anyhow::bail!("--entity currently requires --scope notes");
     }
 
+    let filters = serde_json::json!({
+        "scope": format!("{scope:?}"),
+        "since_days": since_days,
+        "source_uri": source_uri,
+        "entity": entity,
+        "graph": format!("{graph:?}"),
+    });
     let scope = match scope {
         SearchScopeArg::Notes => SearchScope::Notes,
         SearchScopeArg::Messages => SearchScope::Messages,
         SearchScopeArg::All => SearchScope::All,
     };
 
-    let search = configured_search_agent(repo, tei, &search_config);
-    let ctx = search
-        .build_augmented_context_with_graph(
-            &query,
-            scope,
-            since_days,
-            source_uri,
-            entity.clone(),
-            augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
-            graph.into(),
+    let options = augment_options(limit, max_tokens, max_chunk_tokens, &augment_config);
+    let (ctx, embedding_identity) = if should_sample_augment_candidates(explain, &options) {
+        let search = configured_search_agent(repo, tei, &search_config);
+        let embedding_identity = search.embedding_identity();
+        let ctx = if explain {
+            search
+                .build_augmented_context_with_graph_explain(
+                    &query,
+                    scope,
+                    since_days,
+                    source_uri.clone(),
+                    entity.clone(),
+                    options.clone(),
+                    graph.into(),
+                )
+                .await?
+        } else {
+            search
+                .build_augmented_context_with_graph(
+                    &query,
+                    scope,
+                    since_days,
+                    source_uri.clone(),
+                    entity.clone(),
+                    options.clone(),
+                    graph.into(),
+                )
+                .await?
+        };
+        (ctx, Some(embedding_identity))
+    } else {
+        (
+            zero_budget_augment_context(query.clone(), scope, entity.clone()),
+            None,
         )
-        .await?;
+    };
+
+    if format != output::OutputFormat::Human {
+        if !explain {
+            let output = augment_machine_output(&ctx);
+            return match format {
+                output::OutputFormat::Json => output::print(format, "augment", output, |_| Ok(())),
+                output::OutputFormat::Jsonl => output::print_jsonl("augment", output.chunks),
+                output::OutputFormat::Human => unreachable!("handled above"),
+            };
+        }
+        let embedding_identity = embedding_identity
+            .as_ref()
+            .expect("explain mode always samples augmentation candidates");
+        let mut explanations = ctx
+            .chunks
+            .iter()
+            .enumerate()
+            .map(|(index, chunk)| {
+                chunk
+                    .explanation(index + 1)
+                    .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+            })
+            .collect::<Vec<_>>();
+        explanations.extend(ctx.exclusions.iter().cloned().map(|explanation| {
+            explanation.with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+        }));
+        return match format {
+            output::OutputFormat::Json => output::print(
+                format,
+                "augment",
+                explain::augmentation_json(
+                    &explanations,
+                    &ctx.diagnostics,
+                    ctx.total_tokens,
+                    filters,
+                    &options,
+                ),
+                |_| Ok(()),
+            ),
+            output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
+                "augment",
+                explanations.iter(),
+                explain::augmentation_pipeline(
+                    &ctx.diagnostics,
+                    ctx.total_tokens,
+                    filters,
+                    &options,
+                ),
+            ),
+            output::OutputFormat::Human => unreachable!("handled above"),
+        };
+    }
 
     println!("Augmentation context:");
     println!("  • Query: {}", ctx.query);
@@ -2783,6 +3231,13 @@ async fn cmd_augment(
         "  • Packing diagnostics: {}",
         packing_diagnostics_text(&ctx.diagnostics)
     );
+
+    if explain && !ctx.exclusions.is_empty() {
+        println!("\nExcluded candidates:");
+        for exclusion in &ctx.exclusions {
+            println!("  • {}", explain::human(exclusion));
+        }
+    }
 
     if ctx.chunks.is_empty() {
         println!("No augmentation context found.");
@@ -2819,6 +3274,12 @@ async fn cmd_augment(
             "  [C{}] {} | score={:.3} | tokens={} | {}",
             chunk.citation, hit_kind, chunk.score, chunk.approx_tokens, provenance
         );
+        if explain {
+            println!(
+                "      Explain: {}",
+                explain::human(&chunk.explanation(chunk.citation))
+            );
+        }
     }
 
     Ok(())
@@ -3682,6 +4143,36 @@ mod tests {
     }
 
     #[test]
+    fn zero_budget_augmentation_samples_candidates_only_for_explain() {
+        let zero_total = augment_options(1, 0, 32, &AugmentConfig::default());
+        assert!(!should_sample_augment_candidates(false, &zero_total));
+        assert!(should_sample_augment_candidates(true, &zero_total));
+
+        let zero_chunk = augment_options(1, 32, 0, &AugmentConfig::default());
+        assert!(!should_sample_augment_candidates(false, &zero_chunk));
+
+        assert!(!augment_needs_tei(
+            false,
+            Some(1),
+            Some(0),
+            Some(32),
+            &AugmentConfig::default(),
+        ));
+        assert!(augment_needs_tei(
+            true,
+            Some(1),
+            Some(0),
+            Some(32),
+            &AugmentConfig::default(),
+        ));
+
+        let context = zero_budget_augment_context("query".into(), SearchScope::Notes, None);
+        assert!(context.chunks.is_empty());
+        assert!(context.exclusions.is_empty());
+        assert_eq!(context.total_tokens, 0);
+    }
+
+    #[test]
     fn human_packing_diagnostics_include_all_budget_and_selection_decisions() {
         let diagnostics = AugmentDiagnostics {
             token_count_mode: TokenCountMode::Estimated,
@@ -3733,6 +4224,30 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn explain_is_global_and_search_surfaces_use_the_shared_output_format() {
+        let search = Cli::try_parse_from([
+            "graphrag",
+            "search",
+            "atlas",
+            "--explain",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(search.explain);
+        assert!(matches!(
+            search.command,
+            Commands::Search {
+                format: output::OutputFormat::Json,
+                ..
+            }
+        ));
+
+        let augment = Cli::try_parse_from(["graphrag", "--explain", "augment", "atlas"]).unwrap();
+        assert!(augment.explain);
     }
 
     #[test]
@@ -3827,6 +4342,87 @@ mod tests {
         ] {
             assert!(json.get(key).is_some(), "missing output key {key}");
         }
+    }
+
+    #[test]
+    fn non_explain_machine_adapters_omit_retrieval_evidence() {
+        let search = SearchMachineResult::from_scoped(
+            &graphrag_agents::search::ScopedSearchResult {
+                hit_type: SearchHitType::Note,
+                id: "note:one".into(),
+                title: Some("One".into()),
+                content: "ordinary result".into(),
+                created_at: None,
+                source_uri: None,
+                score: 0.75,
+                fusion: Default::default(),
+                score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+            None,
+        );
+        let search = serde_json::to_value(search).unwrap();
+        assert_eq!(search["id"], "note:one");
+        for evidence_field in [
+            "final_score",
+            "fused",
+            "vector",
+            "full_text",
+            "graph",
+            "inclusion",
+            "effective_weight",
+        ] {
+            assert!(search.get(evidence_field).is_none());
+        }
+
+        let search_with_context = SearchMachineResult::from_scoped(
+            &graphrag_agents::search::ScopedSearchResult {
+                hit_type: SearchHitType::Note,
+                id: "note:context".into(),
+                title: Some("Context".into()),
+                content: "context result".into(),
+                created_at: None,
+                source_uri: None,
+                score: 0.75,
+                fusion: Default::default(),
+                score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+            Some(RelatedNotes::default()),
+        );
+        let search_with_context = serde_json::to_value(search_with_context).unwrap();
+        assert!(search_with_context.get("related").is_some());
+
+        let augment = serde_json::to_value(AugmentMachineChunk {
+            citation: 1,
+            hit_type: "note",
+            id: "note:one".into(),
+            title: Some("One".into()),
+            snippet: "ordinary result".into(),
+            created_at: None,
+            source_uri: None,
+            score: 0.75,
+            conversation_uuid: None,
+            message_index: None,
+            role: None,
+            approx_tokens: 2,
+            rendered_tokens: 2,
+            truncated: false,
+            selected_span_start: Some(0),
+            selected_span_end: Some(15),
+        })
+        .unwrap();
+        assert_eq!(augment["id"], "note:one");
+        assert!(augment.get("final_score").is_none());
+        assert!(augment.get("inclusion").is_none());
     }
 
     #[test]
@@ -3968,6 +4564,8 @@ mod tests {
                 source_uri: None,
                 score: 1.0,
                 fusion: Default::default(),
+                score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,
@@ -3982,6 +4580,8 @@ mod tests {
                 source_uri: None,
                 score: 0.9,
                 fusion: Default::default(),
+                score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
                 conversation_uuid: None,
                 message_index: None,
                 role: None,
