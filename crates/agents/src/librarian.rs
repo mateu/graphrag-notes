@@ -689,14 +689,22 @@ impl LibrarianAgent {
             crate::AgentError::Processing("cannot edit a note without an id".into())
         })?;
         let embedding = self.embed_text(&content).await?;
-        let extraction = self
-            .extractor
-            .extract(&truncate_for_extraction(
-                &content,
-                self.runtime.extract_max_chars,
-            ))
-            .await?;
-        let entities = extracted_entities_to_domain(extraction.entities);
+        // A content change invalidates all prior mention evidence. When
+        // extraction is explicitly skipped, persist the replacement note and
+        // clear that stale evidence instead of silently retaining links for
+        // the old text.
+        let entities = if self.runtime.skip_entity_extraction {
+            Vec::new()
+        } else {
+            let extraction = self
+                .extractor
+                .extract(&truncate_for_extraction(
+                    &content,
+                    self.runtime.extract_max_chars,
+                ))
+                .await?;
+            extracted_entities_to_domain(extraction.entities)
+        };
 
         let mut replacement = existing.clone();
         replacement.content = content;
@@ -729,14 +737,18 @@ impl LibrarianAgent {
         tags: Option<Vec<String>>,
     ) -> Result<Note> {
         let embedding = self.embed_text(&content).await?;
-        let extraction = self
-            .extractor
-            .extract(&truncate_for_extraction(
-                &content,
-                self.runtime.extract_max_chars,
-            ))
-            .await?;
-        let entities = extracted_entities_to_domain(extraction.entities);
+        let entities = if self.runtime.skip_entity_extraction {
+            Vec::new()
+        } else {
+            let extraction = self
+                .extractor
+                .extract(&truncate_for_extraction(
+                    &content,
+                    self.runtime.extract_max_chars,
+                ))
+                .await?;
+            extracted_entities_to_domain(extraction.entities)
+        };
 
         let mut detached = Note::new(content)
             .with_type(NoteType::Raw)
@@ -5108,6 +5120,76 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["New Entity"]
         );
+    }
+
+    #[tokio::test]
+    async fn skipped_extraction_edit_clears_stale_mentions_and_detach_skips_extractor() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let initial = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().with_fixture(
+                "old content",
+                EntityExtraction {
+                    entities: vec![ExtractedEntity {
+                        name: "Old Entity".into(),
+                        entity_type: Some("project".into()),
+                    }],
+                    relationships: Vec::new(),
+                },
+            )),
+        )
+        .ingest_text("old content", Some("Old".into()), Vec::new())
+        .await
+        .unwrap();
+        let initial_id = record_id_to_string(initial.id.as_ref().unwrap());
+        assert_eq!(
+            repo.get_entities_for_note(&initial_id).await.unwrap().len(),
+            1
+        );
+
+        // The failing fixture proves this path does not touch extraction when
+        // the runtime policy says to skip it.
+        let skipped = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().fail_next_requests(1, "offline")),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            skip_entity_extraction: true,
+            ..Default::default()
+        });
+        skipped
+            .update_manual_note_content(&initial, "new content".into(), None, None)
+            .await
+            .unwrap();
+        assert!(repo
+            .get_entities_for_note(&initial_id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let source = repo
+            .create_source(Source::manual().with_content("source"))
+            .await
+            .unwrap();
+        let generated = repo
+            .create_note(
+                Note::new("generated chunk")
+                    .with_source(source.id.unwrap())
+                    .with_source_generation(1),
+            )
+            .await
+            .unwrap();
+        let detached = skipped
+            .detach_note_to_manual(&generated, generated.content.clone(), None, None)
+            .await
+            .unwrap();
+        assert!(repo
+            .get_entities_for_note(&record_id_to_string(detached.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

@@ -159,8 +159,13 @@ async fn edit(
 ) -> Result<()> {
     let existing = get_visible_note(&repo, &id).await?;
     let content = read_edit_content(content_file, stdin)?;
-    if title.is_none() && tags.is_none() && content.is_none() {
-        bail!("notes edit requires --title, --tags, --content-file, or --stdin");
+    if !has_edit_action(
+        title.as_deref(),
+        tags.as_deref(),
+        content.as_deref(),
+        detach,
+    ) {
+        bail!("notes edit requires --title, --tags, --content-file, --stdin, or --detach");
     }
     if content
         .as_deref()
@@ -221,6 +226,15 @@ async fn edit(
             )
         },
     )
+}
+
+fn has_edit_action(
+    title: Option<&str>,
+    tags: Option<&[String]>,
+    content: Option<&str>,
+    detach: bool,
+) -> bool {
+    detach || title.is_some() || tags.is_some() || content.is_some()
 }
 
 async fn delete(repo: Repository, id: String, dry_run: bool, format: OutputFormat) -> Result<()> {
@@ -309,4 +323,15 @@ fn print_delete_summary(
         cascade.note_conversation_provenance,
         cascade.note_message_provenance,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_edit_action;
+
+    #[test]
+    fn detach_alone_is_an_edit_action() {
+        assert!(has_edit_action(None, None, None, true));
+        assert!(!has_edit_action(None, None, None, false));
+    }
 }
