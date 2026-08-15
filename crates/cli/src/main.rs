@@ -36,7 +36,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 /// GraphRAG Notes - An evolving knowledge graph for your notes
@@ -2080,16 +2080,7 @@ async fn cmd_search(
         // path as well as explicit modes; graph evidence is additive, not a
         // replacement for get_related_notes output.
         let related_by_note = if context && scope == SearchScope::Notes {
-            let mut related = HashMap::<String, RelatedNotes>::new();
-            for hit in results
-                .hits
-                .iter()
-                .filter(|hit| hit.hit_type == SearchHitType::Note)
-            {
-                let note_id = parse_record_id(&hit.id, Some("note"))?;
-                related.insert(hit.id.clone(), repo.get_related_notes(&note_id).await?);
-            }
-            related
+            best_effort_related_notes(&repo, &results.hits).await?
         } else {
             HashMap::new()
         };
@@ -2146,6 +2137,45 @@ async fn cmd_search(
     }
 
     Ok(())
+}
+
+async fn best_effort_related_notes(
+    repo: &Repository,
+    hits: &[graphrag_agents::search::ScopedSearchResult],
+) -> Result<HashMap<String, RelatedNotes>> {
+    let mut related = HashMap::new();
+    for hit in hits
+        .iter()
+        .filter(|hit| hit.hit_type == SearchHitType::Note)
+    {
+        // A malformed primary search ID remains a command error. Only the
+        // additive lookup below is intentionally non-fatal.
+        let note_id = parse_record_id(&hit.id, Some("note"))?;
+        retain_related_note_lookup(
+            &mut related,
+            hit.id.clone(),
+            repo.get_related_notes(&note_id).await,
+        );
+    }
+    Ok(related)
+}
+
+fn retain_related_note_lookup<E: std::fmt::Display>(
+    related: &mut HashMap<String, RelatedNotes>,
+    id: String,
+    result: std::result::Result<RelatedNotes, E>,
+) {
+    match result {
+        Ok(notes) => {
+            related.insert(id, notes);
+        }
+        Err(error) => {
+            // Context is additive. Preserve already-retrieved primary
+            // results and successful note summaries if one enrichment query
+            // fails, while keeping the failure observable.
+            warn!(note_id = %id, error = %error, "unable to load related-note context");
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3187,6 +3217,71 @@ mod tests {
             render_graph_citation(&graph, " | "),
             "graph_seed=note:seed, graph_hops=1, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
         );
+    }
+
+    #[test]
+    fn graph_mode_context_enrichment_keeps_primary_hits_after_one_lookup_failure() {
+        let hits = vec![
+            graphrag_agents::search::ScopedSearchResult {
+                hit_type: SearchHitType::Note,
+                id: "note:available".into(),
+                title: Some("available primary hit".into()),
+                content: "available".into(),
+                created_at: None,
+                source_uri: None,
+                score: 1.0,
+                fusion: Default::default(),
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+            graphrag_agents::search::ScopedSearchResult {
+                hit_type: SearchHitType::Note,
+                id: "note:unavailable".into(),
+                title: Some("unavailable primary hit".into()),
+                content: "unavailable".into(),
+                created_at: None,
+                source_uri: None,
+                score: 0.9,
+                fusion: Default::default(),
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+        ];
+        let mut context = HashMap::new();
+        retain_related_note_lookup(
+            &mut context,
+            "note:available".into(),
+            Ok::<_, &str>(RelatedNotes::default()),
+        );
+        retain_related_note_lookup(
+            &mut context,
+            "note:unavailable".into(),
+            Err::<RelatedNotes, _>("injected related-note lookup failure"),
+        );
+
+        // Both graph-capable command forms flow through this same enrichment
+        // path, which must retain primary hits and successful context when a
+        // separate related-note lookup fails.
+        for graph in ["auto", "on"] {
+            let cli =
+                Cli::try_parse_from(["graphrag", "search", "atlas", "--context", "--graph", graph])
+                    .unwrap();
+            assert!(matches!(
+                cli.command,
+                Commands::Search {
+                    context: true,
+                    graph: GraphModeArg::Auto | GraphModeArg::On,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(hits.len(), 2, "primary graph search hits are unchanged");
+        assert_eq!(context.len(), 1, "only the failed enrichment is omitted");
+        assert!(context.contains_key("note:available"));
     }
 
     #[test]
