@@ -70,6 +70,24 @@ pub struct RelevanceEvidence {
     pub threshold: f32,
 }
 
+/// Observed MMR inputs and outcome for a chunk admitted to prompt context.
+/// `novelty` is the candidate's minimum novelty against the chunks already
+/// selected at the moment this decision was made.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SelectionEvidence {
+    pub normalized_relevance: f32,
+    pub novelty: f32,
+    pub score: f32,
+}
+
+/// The selected chunk that caused a candidate to be omitted as too similar.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct NearDuplicateEvidence {
+    pub matching_result_id: String,
+    pub jaccard_similarity: f32,
+    pub threshold: f32,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ProvenanceEvidence {
     pub source_uri: Option<String>,
@@ -106,6 +124,14 @@ pub struct RetrievalExplanation {
     pub full_text: Option<ScoreEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relevance: Option<RelevanceEvidence>,
+    /// Present for selected context chunks so consumers can inspect the
+    /// observed MMR decision rather than inferring it from retrieval rank.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<SelectionEvidence>,
+    /// Present when the candidate was excluded because it matched an already
+    /// selected context chunk closely enough to cross the configured limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_duplicate: Option<NearDuplicateEvidence>,
     pub graph: Option<GraphEvidence>,
     pub inclusion: InclusionReason,
     pub token_count: Option<usize>,

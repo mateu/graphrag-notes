@@ -248,6 +248,8 @@ fn retrieval_explanation(input: ExplanationInput<'_>) -> crate::RetrievalExplana
         vector,
         full_text,
         relevance: None,
+        selection: None,
+        near_duplicate: None,
         graph: input.graph,
         inclusion: crate::InclusionReason::Selected,
         token_count: None,

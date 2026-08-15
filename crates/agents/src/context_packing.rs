@@ -128,6 +128,8 @@ pub struct AugmentChunk {
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
+    /// MMR inputs and outcome observed when this chunk was selected.
+    selection: crate::SelectionEvidence,
     /// Reconstructable accepted-edge path when this chunk was graph reached.
     pub graph: Option<GraphEvidence>,
     /// Snippet-only token count; `AugmentContext::total_tokens` includes all
@@ -198,6 +200,8 @@ impl AugmentChunk {
             vector,
             full_text,
             relevance: None,
+            selection: Some(self.selection.clone()),
+            near_duplicate: None,
             graph: self.graph.clone(),
             inclusion: crate::InclusionReason::Selected,
             token_count: Some(self.rendered_tokens),
@@ -334,13 +338,25 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             .map(|(index, _)| index)
             .expect("candidates is non-empty");
         let candidate = candidates.swap_remove(next_index);
+        let selection = selection_evidence(&candidate, &selected_tokens, options.novelty_weight);
 
-        if selected.iter().any(|selected| {
-            multiset_jaccard_similarity(&candidate.full_tokens, &selected.full_tokens)
-                >= options.near_duplicate_threshold
-        }) {
+        if let Some((matching_result_id, jaccard_similarity)) = selected
+            .iter()
+            .map(|selected| {
+                (
+                    selected.chunk.id.clone(),
+                    multiset_jaccard_similarity(&candidate.full_tokens, &selected.full_tokens),
+                )
+            })
+            .max_by(|(_, left), (_, right)| left.total_cmp(right))
+            .filter(|(_, similarity)| *similarity >= options.near_duplicate_threshold)
+        {
             dropped_near_duplicates += 1;
-            exclusions.push(candidate.explanation(crate::InclusionReason::NearDuplicate));
+            exclusions.push(candidate.explanation_with_near_duplicate(
+                matching_result_id,
+                jaccard_similarity,
+                options.near_duplicate_threshold,
+            ));
             continue;
         }
 
@@ -349,8 +365,14 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             .iter()
             .map(|selected| selected.chunk.clone())
             .collect::<Vec<_>>();
-        let Some(chunk) = fit_candidate(&candidate, &query, citation, &rendered_chunks, &options)
-        else {
+        let Some(chunk) = fit_candidate(
+            &candidate,
+            selection,
+            &query,
+            citation,
+            &rendered_chunks,
+            &options,
+        ) else {
             dropped_for_budget += 1;
             exclusions.push(candidate.explanation(crate::InclusionReason::TokenBudget));
             continue;
@@ -494,6 +516,23 @@ impl Candidate {
         });
         explanation
     }
+
+    fn explanation_with_near_duplicate(
+        &self,
+        matching_result_id: String,
+        jaccard_similarity: f32,
+        threshold: f32,
+    ) -> crate::RetrievalExplanation {
+        let mut explanation = self
+            .hit
+            .explanation_with_inclusion(crate::InclusionReason::NearDuplicate);
+        explanation.near_duplicate = Some(crate::NearDuplicateEvidence {
+            matching_result_id,
+            jaccard_similarity,
+            threshold,
+        });
+        explanation
+    }
 }
 
 fn selection_score(
@@ -501,12 +540,24 @@ fn selection_score(
     selected: &[&HashMap<String, usize>],
     novelty_weight: f32,
 ) -> f32 {
+    selection_evidence(candidate, selected, novelty_weight).score
+}
+
+fn selection_evidence(
+    candidate: &Candidate,
+    selected: &[&HashMap<String, usize>],
+    novelty_weight: f32,
+) -> crate::SelectionEvidence {
     let novelty = selected
         .iter()
         .map(|chosen| 1.0 - multiset_jaccard_similarity(&candidate.full_tokens, chosen))
         .fold(1.0_f32, f32::min);
     let novelty_weight = novelty_weight.clamp(0.0, 1.0);
-    candidate.relevance * (1.0 - novelty_weight) + novelty * novelty_weight
+    crate::SelectionEvidence {
+        normalized_relevance: candidate.relevance,
+        novelty,
+        score: candidate.relevance * (1.0 - novelty_weight) + novelty * novelty_weight,
+    }
 }
 
 fn normalize_candidate_relevance(candidates: &mut [Candidate]) {
@@ -536,6 +587,7 @@ fn normalize_candidate_relevance(candidates: &mut [Candidate]) {
 
 fn fit_candidate(
     candidate: &Candidate,
+    selection: crate::SelectionEvidence,
     query: &str,
     citation: usize,
     chunks: &[AugmentChunk],
@@ -558,6 +610,7 @@ fn fit_candidate(
         conversation_uuid: candidate.hit.conversation_uuid.clone(),
         message_index: candidate.hit.message_index,
         role: candidate.hit.role.clone(),
+        selection: selection.clone(),
         graph: candidate.hit.graph.clone(),
         approx_tokens: 0,
         rendered_tokens: 0,
@@ -617,6 +670,7 @@ fn fit_candidate(
             conversation_uuid: candidate.hit.conversation_uuid.clone(),
             message_index: candidate.hit.message_index,
             role: candidate.hit.role.clone(),
+            selection: selection.clone(),
             graph: candidate.hit.graph.clone(),
             approx_tokens: snippet_tokens,
             rendered_tokens: 0,
@@ -2265,7 +2319,58 @@ mod tests {
             .expect("relevance exclusion should retain normalized score and threshold");
         assert_eq!(relevance.normalized, 0.0);
         assert_eq!(relevance.threshold, 0.5);
+        let near_duplicate = context
+            .exclusions
+            .iter()
+            .find(|explanation| explanation.result_id == "note:near")
+            .and_then(|explanation| explanation.near_duplicate.as_ref())
+            .expect("near-duplicate exclusion should retain its selected match and similarity");
+        assert_eq!(near_duplicate.matching_result_id, "note:selected");
+        assert!(near_duplicate.jaccard_similarity >= near_duplicate.threshold);
+        assert_eq!(near_duplicate.threshold, 0.8);
         assert!(context.chunks.iter().all(|chunk| !chunk.id.is_empty()));
+    }
+
+    #[test]
+    fn selected_chunk_explanations_retain_observed_mmr_inputs_and_score() {
+        let mut selection_options = options();
+        selection_options.max_chunks = 3;
+        selection_options.max_total_tokens = 300;
+        selection_options.max_chunk_tokens = 80;
+        selection_options.novelty_weight = 0.8;
+        selection_options.near_duplicate_threshold = 1.0;
+        let context = build_augment_context_from_hits(
+            "rust".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("n:best", 1.0, "rust ownership borrowing lifetimes guide"),
+                hit(
+                    "n:related",
+                    0.9,
+                    "rust ownership borrowing lifetimes reference",
+                ),
+                hit("n:novel", 0.8, "gardening soil watering and recipes"),
+            ],
+            selection_options,
+            0,
+        );
+
+        assert_eq!(
+            context
+                .chunks
+                .iter()
+                .map(|chunk| chunk.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["n:best", "n:novel", "n:related"]
+        );
+        let novel = context.chunks[1]
+            .explanation(2)
+            .selection
+            .expect("selected chunk should retain MMR decision evidence");
+        assert_eq!(novel.normalized_relevance, 0.0);
+        assert_eq!(novel.novelty, 1.0);
+        assert_eq!(novel.score, 0.8);
     }
 
     #[test]

@@ -137,6 +137,8 @@ mod tests {
             }),
             full_text: None,
             relevance: None,
+            selection: None,
+            near_duplicate: None,
             graph: None,
             inclusion: InclusionReason::Selected,
             token_count: Some(3),
