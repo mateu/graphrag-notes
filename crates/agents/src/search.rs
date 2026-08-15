@@ -247,6 +247,7 @@ fn retrieval_explanation(input: ExplanationInput<'_>) -> crate::RetrievalExplana
         fused,
         vector,
         full_text,
+        relevance: None,
         graph: input.graph,
         inclusion: crate::InclusionReason::Selected,
         token_count: None,
@@ -655,10 +656,72 @@ impl SearchAgent {
         options: AugmentOptions,
         graph_mode: GraphMode,
     ) -> Result<AugmentContext> {
-        // Even an explicit zero context budget needs a bounded candidate
-        // sample: the packer turns it into identified `TokenBudget`
-        // exclusions for explain output instead of silently returning an
-        // unexplained empty context.
+        self.build_augmented_context_with_graph_inner(
+            query,
+            scope,
+            since_days,
+            source_uri,
+            entity_filter,
+            options,
+            graph_mode,
+            false,
+        )
+        .await
+    }
+
+    /// Explain-only augmentation path. Unlike the public construction API,
+    /// this samples a bounded set for zero budgets so callers can expose
+    /// identified packing exclusions.
+    #[instrument(skip(self))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn build_augmented_context_with_graph_explain(
+        &self,
+        query: &str,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+        entity_filter: Option<String>,
+        options: AugmentOptions,
+        graph_mode: GraphMode,
+    ) -> Result<AugmentContext> {
+        self.build_augmented_context_with_graph_inner(
+            query,
+            scope,
+            since_days,
+            source_uri,
+            entity_filter,
+            options,
+            graph_mode,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn build_augmented_context_with_graph_inner(
+        &self,
+        query: &str,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+        entity_filter: Option<String>,
+        options: AugmentOptions,
+        graph_mode: GraphMode,
+        sample_zero_budget_candidates: bool,
+    ) -> Result<AugmentContext> {
+        let zero_budget = options.max_chunks == 0
+            || options.max_total_tokens == 0
+            || options.max_chunk_tokens == 0;
+        if zero_budget && !sample_zero_budget_candidates {
+            return Ok(crate::context_packing::empty_context(
+                query.to_string(),
+                scope,
+                entity_filter,
+                options.token_counter.mode(),
+                0,
+                &GraphRetrievalSummary::default(),
+            ));
+        }
         let fetch_limit = options.max_chunks.max(1).saturating_mul(4).clamp(4, 200);
         let (graph_results, entity_filtered) = self
             .search_with_scope_graph_filtered(
@@ -1570,7 +1633,7 @@ mod tests {
             },
         ] {
             let context = search
-                .build_augmented_context_with_graph(
+                .build_augmented_context_with_graph_explain(
                     "budget",
                     SearchScope::Notes,
                     None,
@@ -1595,6 +1658,41 @@ mod tests {
             assert_eq!(context.diagnostics.dropped_for_budget, budget_exclusions);
             assert_eq!(context.dropped_for_budget, budget_exclusions);
         }
+    }
+
+    #[tokio::test]
+    async fn public_zero_budget_augmentation_skips_candidate_sampling() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("unobserved zero-budget candidate"))
+            .await
+            .unwrap();
+        // A public zero-budget request must return before embedding or retrieval. If
+        // candidate sampling were reintroduced here, this deliberately unavailable
+        // embedder would make the request fail.
+        let search = SearchAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default().fail_next_requests(1, "offline")),
+        );
+        let context = search
+            .build_augmented_context_with_graph(
+                "budget",
+                SearchScope::Notes,
+                None,
+                None,
+                None,
+                AugmentOptions {
+                    max_chunks: 1,
+                    max_total_tokens: 0,
+                    max_chunk_tokens: 32,
+                    ..Default::default()
+                },
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        assert!(context.chunks.is_empty());
+        assert!(context.exclusions.is_empty());
+        assert_eq!(context.diagnostics.dropped_for_budget, 0);
     }
 
     #[tokio::test]

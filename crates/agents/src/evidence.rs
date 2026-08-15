@@ -62,6 +62,14 @@ pub struct ScoreEvidence {
     pub raw_value: Option<f32>,
 }
 
+/// Packing relevance after normalizing the eligible retrieval candidate pool.
+/// Present only when a candidate is excluded by the relevance threshold.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RelevanceEvidence {
+    pub normalized: f32,
+    pub threshold: f32,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ProvenanceEvidence {
     pub source_uri: Option<String>,
@@ -96,6 +104,8 @@ pub struct RetrievalExplanation {
     pub fused: ScoreEvidence,
     pub vector: Option<ScoreEvidence>,
     pub full_text: Option<ScoreEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevance: Option<RelevanceEvidence>,
     pub graph: Option<GraphEvidence>,
     pub inclusion: InclusionReason,
     pub token_count: Option<usize>,

@@ -197,6 +197,7 @@ impl AugmentChunk {
             fused,
             vector,
             full_text,
+            relevance: None,
             graph: self.graph.clone(),
             inclusion: crate::InclusionReason::Selected,
             token_count: Some(self.rendered_tokens),
@@ -303,7 +304,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         let keep = candidate.relevance >= options.min_relevance;
         if !keep {
             dropped_for_relevance += 1;
-            exclusions.push(candidate.explanation(crate::InclusionReason::RelevanceThreshold));
+            exclusions.push(candidate.explanation_with_relevance_threshold(options.min_relevance));
         }
         keep
     });
@@ -481,6 +482,17 @@ impl Candidate {
 
     fn explanation(&self, inclusion: crate::InclusionReason) -> crate::RetrievalExplanation {
         self.hit.explanation_with_inclusion(inclusion)
+    }
+
+    fn explanation_with_relevance_threshold(&self, threshold: f32) -> crate::RetrievalExplanation {
+        let mut explanation = self
+            .hit
+            .explanation_with_inclusion(crate::InclusionReason::RelevanceThreshold);
+        explanation.relevance = Some(crate::RelevanceEvidence {
+            normalized: self.relevance,
+            threshold,
+        });
+        explanation
     }
 }
 
@@ -2245,6 +2257,14 @@ mod tests {
         assert!(decisions.contains(&("note:near", crate::InclusionReason::NearDuplicate)));
         assert!(decisions.contains(&("note:low", crate::InclusionReason::RelevanceThreshold)));
         assert!(decisions.contains(&("note:budget", crate::InclusionReason::TokenBudget)));
+        let relevance = context
+            .exclusions
+            .iter()
+            .find(|explanation| explanation.result_id == "note:low")
+            .and_then(|explanation| explanation.relevance.as_ref())
+            .expect("relevance exclusion should retain normalized score and threshold");
+        assert_eq!(relevance.normalized, 0.0);
+        assert_eq!(relevance.threshold, 0.5);
         assert!(context.chunks.iter().all(|chunk| !chunk.id.is_empty()));
     }
 

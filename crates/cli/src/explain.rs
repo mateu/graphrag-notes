@@ -1,6 +1,8 @@
 //! Narrow explainability rendering shared by future CLI output surfaces.
 
-use graphrag_agents::{AugmentDiagnostics, GraphRetrievalSummary, RetrievalExplanation};
+use graphrag_agents::{
+    AugmentDiagnostics, AugmentOptions, GraphRetrievalSummary, RetrievalExplanation,
+};
 use graphrag_db::repository::RelatedNotes;
 use std::collections::HashMap;
 
@@ -21,9 +23,10 @@ pub fn augmentation_json(
     diagnostics: &AugmentDiagnostics,
     total_tokens: usize,
     filters: serde_json::Value,
+    options: &AugmentOptions,
 ) -> serde_json::Value {
     let mut output = json(explanations);
-    output["pipeline"] = augmentation_pipeline(diagnostics, total_tokens, filters);
+    output["pipeline"] = augmentation_pipeline(diagnostics, total_tokens, filters, options);
     output
 }
 
@@ -31,11 +34,20 @@ pub fn augmentation_pipeline(
     diagnostics: &AugmentDiagnostics,
     total_tokens: usize,
     filters: serde_json::Value,
+    options: &AugmentOptions,
 ) -> serde_json::Value {
     serde_json::json!({
         "rendered_tokens": total_tokens,
         "diagnostics": diagnostics,
         "filters": filters,
+        "controls": {
+            "max_chunks": options.max_chunks,
+            "max_total_tokens": options.max_total_tokens,
+            "max_chunk_tokens": options.max_chunk_tokens,
+            "novelty_weight": options.novelty_weight,
+            "min_relevance": options.min_relevance,
+            "near_duplicate_threshold": options.near_duplicate_threshold,
+        },
     })
 }
 
@@ -124,6 +136,7 @@ mod tests {
                 raw_value: Some(0.1),
             }),
             full_text: None,
+            relevance: None,
             graph: None,
             inclusion: InclusionReason::Selected,
             token_count: Some(3),
@@ -175,10 +188,21 @@ mod tests {
             graph_candidates_dropped: 4,
         };
         let filters = serde_json::json!({"scope": "Notes", "entity": "Atlas"});
-        let augment = augmentation_pipeline(&diagnostics, 42, filters.clone());
+        let options = AugmentOptions {
+            max_chunks: 3,
+            max_total_tokens: 42,
+            max_chunk_tokens: 12,
+            novelty_weight: 0.25,
+            min_relevance: 0.4,
+            near_duplicate_threshold: 0.8,
+            ..Default::default()
+        };
+        let augment = augmentation_pipeline(&diagnostics, 42, filters.clone(), &options);
         assert_eq!(augment["rendered_tokens"], 42);
         assert_eq!(augment["diagnostics"]["dropped_for_budget"], 3);
         assert_eq!(augment["filters"], filters);
+        assert_eq!(augment["controls"]["max_chunks"], 3);
+        assert!((augment["controls"]["min_relevance"].as_f64().unwrap() - 0.4).abs() < 1e-6);
 
         let graph = GraphRetrievalSummary {
             entities_matched: 2,

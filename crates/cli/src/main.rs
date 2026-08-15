@@ -3134,17 +3134,31 @@ async fn cmd_augment(
     let (ctx, embedding_identity) = if should_sample_augment_candidates(explain, &options) {
         let search = configured_search_agent(repo, tei, &search_config);
         let embedding_identity = search.embedding_identity();
-        let ctx = search
-            .build_augmented_context_with_graph(
-                &query,
-                scope,
-                since_days,
-                source_uri.clone(),
-                entity.clone(),
-                options,
-                graph.into(),
-            )
-            .await?;
+        let ctx = if explain {
+            search
+                .build_augmented_context_with_graph_explain(
+                    &query,
+                    scope,
+                    since_days,
+                    source_uri.clone(),
+                    entity.clone(),
+                    options.clone(),
+                    graph.into(),
+                )
+                .await?
+        } else {
+            search
+                .build_augmented_context_with_graph(
+                    &query,
+                    scope,
+                    since_days,
+                    source_uri.clone(),
+                    entity.clone(),
+                    options.clone(),
+                    graph.into(),
+                )
+                .await?
+        };
         (ctx, Some(embedding_identity))
     } else {
         (
@@ -3187,13 +3201,19 @@ async fn cmd_augment(
                     &ctx.diagnostics,
                     ctx.total_tokens,
                     filters,
+                    &options,
                 ),
                 |_| Ok(()),
             ),
             output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
                 "augment",
                 explanations.iter(),
-                explain::augmentation_pipeline(&ctx.diagnostics, ctx.total_tokens, filters),
+                explain::augmentation_pipeline(
+                    &ctx.diagnostics,
+                    ctx.total_tokens,
+                    filters,
+                    &options,
+                ),
             ),
             output::OutputFormat::Human => unreachable!("handled above"),
         };
