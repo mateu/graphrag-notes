@@ -21,6 +21,8 @@ use uuid::Uuid;
 const REINDEX_BATCH_SIZE: usize = 32;
 const REINDEX_LEASE: Duration = Duration::minutes(2);
 const REINDEX_HEARTBEAT: StdDuration = StdDuration::from_secs(20);
+const REINDEX_RESUME_TRANSIENT_ATTEMPTS: usize = 2;
+const FAILED_TRANSACTION_MESSAGE: &str = "The query was not executed due to a failed transaction";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReindexScope {
@@ -89,6 +91,7 @@ pub struct ReindexAgent {
     cancellation_requested: Arc<AtomicBool>,
     lease_duration: Duration,
     lease_heartbeat: StdDuration,
+    batch_size: usize,
 }
 
 impl ReindexAgent {
@@ -99,6 +102,7 @@ impl ReindexAgent {
             cancellation_requested: Arc::new(AtomicBool::new(false)),
             lease_duration: REINDEX_LEASE,
             lease_heartbeat: REINDEX_HEARTBEAT,
+            batch_size: REINDEX_BATCH_SIZE,
         }
     }
 
@@ -115,6 +119,13 @@ impl ReindexAgent {
     ) -> Self {
         self.lease_duration = lease_duration;
         self.lease_heartbeat = lease_heartbeat;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_batch_size_for_test(mut self, batch_size: usize) -> Self {
+        assert!(batch_size > 0, "reindex batch size must be positive");
+        self.batch_size = batch_size;
         self
     }
 
@@ -183,7 +194,31 @@ impl ReindexAgent {
         self.run_job(claimed, identity, owner).await
     }
 
+    /// Resume from the durable checkpoint. A completed staging batch is
+    /// idempotent and the final cutover is atomic, so SurrealDB's explicit
+    /// aborted-transaction response is safe to retry once after the failed
+    /// job state has been durably recorded.
     pub async fn resume(&self, job_id: &str, identity: EmbeddingIdentity) -> Result<ReindexResult> {
+        for attempt in 0..REINDEX_RESUME_TRANSIENT_ATTEMPTS {
+            match self.resume_once(job_id, identity.clone()).await {
+                Ok(result) => return Ok(result),
+                Err(error)
+                    if is_failed_transaction(&error)
+                        && attempt + 1 < REINDEX_RESUME_TRANSIENT_ATTEMPTS =>
+                {
+                    tokio::time::sleep(StdDuration::from_millis(10)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("the bounded retry loop always returns")
+    }
+
+    async fn resume_once(
+        &self,
+        job_id: &str,
+        identity: EmbeddingIdentity,
+    ) -> Result<ReindexResult> {
         let job = self
             .repo
             .get_processing_job(job_id)
@@ -322,7 +357,7 @@ impl ReindexAgent {
             AgentError::Processing("reindex job lacks content fingerprints".into())
         })?;
 
-        for ids in job.item_ids[start_index..].chunks(REINDEX_BATCH_SIZE) {
+        for ids in job.item_ids[start_index..].chunks(self.batch_size) {
             self.renew_lease(&job_id, &owner).await?;
             if self.cancellation_requested.load(Ordering::Acquire) {
                 self.repo
@@ -550,6 +585,21 @@ impl ReindexAgent {
     }
 }
 
+fn is_failed_transaction(error: &AgentError) -> bool {
+    match error {
+        // `run_job` persists its failed terminal state before returning a
+        // processing error, so this retains the database origin without
+        // retrying arbitrary provider or validation failures.
+        AgentError::Processing(message) => {
+            message.starts_with("SurrealDB error: ") && message.contains(FAILED_TRANSACTION_MESSAGE)
+        }
+        AgentError::Database(graphrag_db::DbError::Surreal(error)) => {
+            error.to_string().contains(FAILED_TRANSACTION_MESSAGE)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +612,19 @@ mod tests {
 
     fn vector(value: f32) -> Vec<f32> {
         vec![value; graphrag_db::schema::EMBEDDING_DIMENSION]
+    }
+
+    #[test]
+    fn failed_transaction_retry_is_limited_to_surrealdb_abort_errors() {
+        assert!(is_failed_transaction(&AgentError::Processing(format!(
+            "SurrealDB error: {FAILED_TRANSACTION_MESSAGE}"
+        ))));
+        assert!(!is_failed_transaction(&AgentError::Processing(
+            "embedding provider failed transaction".into()
+        )));
+        assert!(!is_failed_transaction(&AgentError::Processing(
+            "SurrealDB error: staging is stale".into()
+        )));
     }
 
     struct CancellingEmbedder {
@@ -1500,12 +1563,17 @@ mod tests {
 
     #[tokio::test]
     async fn resume_reembeds_a_checkpointed_note_edited_after_staging() {
+        // This fixture needs a durable batch boundary, not the production
+        // batch's 32 × 1024-dimensional vectors. Keeping it small preserves
+        // the checkpoint/rewind/cutover contract while preventing this one
+        // test from creating a large concurrent in-memory transaction.
+        const TEST_BATCH_SIZE: usize = 2;
         let repo = Repository::new(init_memory().await.unwrap());
         repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
             .await
             .unwrap();
         let mut first_id = None;
-        for number in 0..(REINDEX_BATCH_SIZE + 1) {
+        for number in 0..(TEST_BATCH_SIZE + 1) {
             let note = repo
                 .create_note(Note::new(format!("snapshot {number}")).with_embedding(vector(0.1)))
                 .await
@@ -1522,7 +1590,9 @@ mod tests {
             cancelled: cancelled.clone(),
             calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         });
-        let agent = ReindexAgent::new(repo.clone(), stopping).with_cancellation_flag(cancelled);
+        let agent = ReindexAgent::new(repo.clone(), stopping)
+            .with_cancellation_flag(cancelled)
+            .with_batch_size_for_test(TEST_BATCH_SIZE);
         let job = agent
             .start(
                 agent.preview(ReindexScope::all()).await.unwrap(),
@@ -1541,6 +1611,7 @@ mod tests {
             .await
             .unwrap();
         let resumed = ReindexAgent::new(repo.clone(), Arc::new(fixture))
+            .with_batch_size_for_test(TEST_BATCH_SIZE)
             .resume(
                 &job.job_id,
                 EmbeddingIdentity::new("new", "new-model", 1024),

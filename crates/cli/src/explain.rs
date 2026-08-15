@@ -85,15 +85,42 @@ pub fn human(explanation: &RetrievalExplanation) -> String {
     .flatten()
     .collect::<Vec<_>>()
     .join(",");
+    let mut decision_evidence = Vec::new();
+    if let Some(selection) = explanation.selection.as_ref() {
+        decision_evidence.push(format!(
+            "selection(relevance={:.4}, novelty={:.4}, score={:.4})",
+            selection.normalized_relevance, selection.novelty, selection.score
+        ));
+    }
+    if let Some(relevance) = explanation.relevance.as_ref() {
+        decision_evidence.push(format!(
+            "relevance(normalized={:.4}, threshold={:.4})",
+            relevance.normalized, relevance.threshold
+        ));
+    }
+    if let Some(near_duplicate) = explanation.near_duplicate.as_ref() {
+        decision_evidence.push(format!(
+            "near_duplicate(match={}, similarity={:.4}, threshold={:.4})",
+            near_duplicate.matching_result_id,
+            near_duplicate.jaccard_similarity,
+            near_duplicate.threshold
+        ));
+    }
+    let decision_evidence = if decision_evidence.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", decision_evidence.join(" "))
+    };
     format!(
-        "id={} rank={} final={:.4} weight={:.3} fused={:.4} channels={} decision={:?}",
+        "id={} rank={} final={:.4} weight={:.3} fused={:.4} channels={} decision={:?}{}",
         explanation.result_id,
         explanation.rank,
         explanation.final_score.value,
         explanation.effective_weight,
         explanation.fused.value,
         channels,
-        explanation.inclusion
+        explanation.inclusion,
+        decision_evidence
     )
 }
 
@@ -101,8 +128,8 @@ pub fn human(explanation: &RetrievalExplanation) -> String {
 mod tests {
     use super::*;
     use graphrag_agents::{
-        InclusionReason, ProvenanceEvidence, RetrievalExplanation, ScoreEvidence,
-        SearchHitTypeEvidence,
+        InclusionReason, NearDuplicateEvidence, ProvenanceEvidence, RelevanceEvidence,
+        RetrievalExplanation, ScoreEvidence, SearchHitTypeEvidence, SelectionEvidence,
     };
 
     fn sample() -> RetrievalExplanation {
@@ -137,8 +164,16 @@ mod tests {
             }),
             full_text: None,
             relevance: None,
-            selection: None,
-            near_duplicate: None,
+            selection: Some(SelectionEvidence {
+                normalized_relevance: 0.75,
+                novelty: 0.5,
+                score: 0.625,
+            }),
+            near_duplicate: Some(NearDuplicateEvidence {
+                matching_result_id: "note:matched".into(),
+                jaccard_similarity: 0.9,
+                threshold: 0.85,
+            }),
             graph: None,
             inclusion: InclusionReason::Selected,
             token_count: Some(3),
@@ -157,11 +192,19 @@ mod tests {
 
     #[test]
     fn human_and_json_share_the_versioned_evidence_contract() {
-        let evidence = sample();
+        let mut evidence = sample();
+        evidence.relevance = Some(RelevanceEvidence {
+            normalized: 0.25,
+            threshold: 0.4,
+        });
         let human = human(&evidence);
         assert!(human.contains("id=note:fixture"));
         assert!(human.contains("final=0.5000"));
         assert!(human.contains("channels=vector"));
+        assert!(human.contains("selection(relevance=0.7500, novelty=0.5000, score=0.6250)"));
+        assert!(human.contains("relevance(normalized=0.2500, threshold=0.4000)"));
+        assert!(human
+            .contains("near_duplicate(match=note:matched, similarity=0.9000, threshold=0.8500)"));
         let json = json(&[evidence]);
         assert_eq!(json["schema_version"], 1);
         assert_eq!(json["results"][0]["result_id"], "note:fixture");
