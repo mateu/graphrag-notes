@@ -2040,6 +2040,23 @@ mod tests {
         assert!(punctuated_alias_matches
             .iter()
             .any(|entity| entity.id == *atlas.id.as_ref().unwrap()));
+
+        let mut gpt = Entity::new("GPT-4", EntityType::Technology);
+        gpt.metadata = serde_json::json!({});
+        let gpt = repo.upsert_entity(gpt).await.unwrap();
+        let mut gpt_alias = Entity::new("model reference", EntityType::Technology);
+        gpt_alias.metadata = serde_json::json!({"aliases": ["GPT-4"]});
+        let gpt_alias = repo.upsert_entity(gpt_alias).await.unwrap();
+        let punctuated_model_matches = repo
+            .find_graph_entities("Where is GPT-4?", 10)
+            .await
+            .unwrap();
+        assert!(punctuated_model_matches
+            .iter()
+            .any(|entity| entity.id == *gpt.id.as_ref().unwrap()));
+        assert!(punctuated_model_matches
+            .iter()
+            .any(|entity| entity.id == *gpt_alias.id.as_ref().unwrap()));
     }
 
     #[tokio::test]

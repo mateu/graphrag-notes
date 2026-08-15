@@ -2587,20 +2587,28 @@ impl Repository {
         prefixes: &[String],
         limit: i64,
     ) -> Result<Vec<GraphEntityMatch>> {
+        // Keep stored names and aliases on the exact same lexical boundary
+        // contract as `graph_query_normalize`: punctuation becomes a space,
+        // while Unicode letters and numbers remain terms. This lets `GPT-4`
+        // be found from either a punctuated or a sentence query.
+        let canonical_lexical = r#"string::trim(string::replace(string::lowercase(canonical_name), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
+        let alias_lexical = r#"string::trim(string::replace(string::lowercase($alias), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
         let prefix_conditions = prefixes
             .iter()
             .enumerate()
-            .map(|(index, _)| format!(" OR string::starts_with(canonical_name, $prefix_{index})"))
+            .map(|(index, _)| {
+                format!(" OR string::starts_with({canonical_lexical}, $prefix_{index})")
+            })
             .collect::<String>();
         let query = format!(
             r#"
                 SELECT id, name, canonical_name, metadata
                 FROM entity
-                WHERE canonical_name = $query
-                   OR string::contains(string::concat(' ', $query, ' '), string::concat(' ', canonical_name, ' '))
+                WHERE {canonical_lexical} = $query
+                   OR string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' '))
                    {prefix_conditions}
-                   OR array::any(metadata.aliases ?? [], |$alias| string::lowercase($alias) = $query)
-                   OR array::any(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', string::lowercase($alias), ' ')))
+                   OR array::any(metadata.aliases ?? [], |$alias| {alias_lexical} = $query)
+                   OR array::any(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))
                 ORDER BY canonical_name ASC, id ASC
                 LIMIT $limit
                 "#,
@@ -4391,6 +4399,28 @@ mod tests {
             vec!["atla".to_string()]
         );
         assert!(graph_prefix_terms("ai").is_empty());
+    }
+
+    #[tokio::test]
+    async fn graph_entity_lookup_normalizes_internal_punctuation_for_names_and_aliases() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut canonical = Entity::new("GPT-4", EntityType::Technology);
+        canonical.metadata = serde_json::json!({});
+        let canonical = repo.upsert_entity(canonical).await.unwrap();
+        let mut aliased = Entity::new("Model reference", EntityType::Technology);
+        aliased.metadata = serde_json::json!({"aliases": ["GPT-4"]});
+        let aliased = repo.upsert_entity(aliased).await.unwrap();
+
+        let matches = repo
+            .find_graph_entities("Where is GPT-4?", 10)
+            .await
+            .unwrap();
+        assert!(matches
+            .iter()
+            .any(|entity| entity.id == *canonical.id.as_ref().unwrap()));
+        assert!(matches
+            .iter()
+            .any(|entity| entity.id == *aliased.id.as_ref().unwrap()));
     }
 
     #[tokio::test]
