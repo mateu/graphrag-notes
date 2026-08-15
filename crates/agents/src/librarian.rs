@@ -674,6 +674,96 @@ impl LibrarianAgent {
         Ok(note)
     }
 
+    /// Reprocess edited manual-note content before replacing the persisted
+    /// searchable record. Provider work happens first, so an embedding or
+    /// extraction failure leaves the existing note and its mentions intact.
+    #[instrument(skip(self, existing, content, title, tags))]
+    pub async fn update_manual_note_content(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        let id = existing.id.as_ref().ok_or_else(|| {
+            crate::AgentError::Processing("cannot edit a note without an id".into())
+        })?;
+        let embedding = self.embed_text(&content).await?;
+        // A content change invalidates all prior mention evidence. When
+        // extraction is explicitly skipped, persist the replacement note and
+        // clear that stale evidence instead of silently retaining links for
+        // the old text.
+        let entities = if self.runtime.skip_entity_extraction {
+            Vec::new()
+        } else {
+            let extraction = self
+                .extractor
+                .extract(&truncate_for_extraction(
+                    &content,
+                    self.runtime.extract_max_chars,
+                ))
+                .await?;
+            extracted_entities_to_domain(extraction.entities)
+        };
+
+        let mut replacement = existing.clone();
+        replacement.content = content;
+        replacement.embedding = embedding;
+        if let Some(title) = title {
+            replacement.title = Some(title);
+        }
+        if let Some(tags) = tags {
+            replacement.tags = tags;
+        }
+        replacement.updated_at = chrono::Utc::now();
+        Ok(self
+            .repo
+            .update_note_and_replace_entities(&record_id_to_string(id), replacement, entities)
+            .await?)
+    }
+
+    /// Detach a source-generated note into a new manual note. The source id
+    /// remains as provenance while omitting `source_generation` ensures a
+    /// later source reimport or deletion cannot overwrite or remove the
+    /// detached user-owned note.
+    #[instrument(skip(self, existing, content, title, tags))]
+    pub async fn detach_note_to_manual(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        let embedding = self.embed_text(&content).await?;
+        let entities = if self.runtime.skip_entity_extraction {
+            Vec::new()
+        } else {
+            let extraction = self
+                .extractor
+                .extract(&truncate_for_extraction(
+                    &content,
+                    self.runtime.extract_max_chars,
+                ))
+                .await?;
+            extracted_entities_to_domain(extraction.entities)
+        };
+
+        let mut detached = Note::new(content)
+            .with_type(NoteType::Raw)
+            .with_embedding(embedding)
+            .with_tags(tags.unwrap_or_else(|| existing.tags.clone()));
+        if let Some(title) = title.or_else(|| existing.title.clone()) {
+            detached = detached.with_title(title);
+        }
+        if let Some(source_id) = existing.source_id.clone() {
+            detached = detached.with_source(source_id);
+        }
+        Ok(self
+            .repo
+            .create_note_and_replace_entities(detached, entities)
+            .await?)
+    }
+
     /// Ingest from a markdown file
     #[instrument(skip(self))]
     pub async fn ingest_markdown<C>(&self, path: &str, content: C) -> Result<Vec<Note>>
@@ -1057,10 +1147,19 @@ impl LibrarianAgent {
                         },
                     )
                     .await?;
+                if failed > 0 && completed > 0 {
+                    return Err(crate::AgentError::DurablePartialFailure {
+                        job_id: record_id_to_string(&job_id),
+                        completed,
+                        failed,
+                        message: first_error
+                            .unwrap_or_else(|| "one or more embedding items failed".to_string()),
+                    });
+                }
                 if failed > 0 {
-                    return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
-                        || "one or more embedding items failed".to_string(),
-                    )));
+                    return Err(crate::AgentError::Processing(
+                        first_error.unwrap_or_else(|| "all embedding items failed".to_string()),
+                    ));
                 }
                 return Ok(ProcessingRunResult {
                     job_id: record_id_to_string(&job_id),
@@ -1282,34 +1381,8 @@ impl LibrarianAgent {
 
         let text = truncate_for_extraction(&note.content, self.runtime.extract_max_chars);
         let extraction = self.extractor.extract(&text).await?;
-        let entities = extraction.entities;
-        let extracted_count = entities.len();
-        let entities = entities
-            .into_iter()
-            .map(|extracted| {
-                // Map string type to EntityType
-                let entity_type = match extracted
-                    .entity_type
-                    .as_deref()
-                    .unwrap_or("concept")
-                    .to_lowercase()
-                    .as_str()
-                {
-                    "person" | "per" => EntityType::Person,
-                    "organization" | "org" => EntityType::Organization,
-                    "location" | "loc" | "gpe" => EntityType::Location,
-                    "date" | "time" => EntityType::Date,
-                    _ => EntityType::Concept,
-                };
-
-                let mut entity = Entity::new(&extracted.name, entity_type);
-                // The persisted entity schema requires an object (or NONE) for
-                // metadata. Extraction supplies no metadata, so use an empty
-                // object instead of `Entity::new`'s JSON null default.
-                entity.metadata = serde_json::json!({});
-                entity
-            })
-            .collect::<Vec<_>>();
+        let extracted_count = extraction.entities.len();
+        let entities = extracted_entities_to_domain(extraction.entities);
         let linked_count = match &note.id {
             Some(note_id) => {
                 if replace_mentions {
@@ -1622,9 +1695,18 @@ impl LibrarianAgent {
         // Match embedding jobs: a persisted terminal failure is still an
         // invocation failure. The durable row above retains the detailed
         // failed count and first item diagnostic for `jobs show`/retry.
+        if failed > 0 && completed > 0 {
+            return Err(crate::AgentError::DurablePartialFailure {
+                job_id: record_id_to_string(&job_id),
+                completed,
+                failed,
+                message: first_error
+                    .unwrap_or_else(|| "one or more entity extraction items failed".to_string()),
+            });
+        }
         if failed > 0 {
             return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
-                || "one or more entity extraction items failed".to_string(),
+                || "all entity extraction items failed".to_string(),
             )));
         }
         Ok(ProcessingRunResult {
@@ -2866,6 +2948,35 @@ impl LibrarianAgent {
     }
 }
 
+fn extracted_entities_to_domain(
+    extracted_entities: Vec<crate::inference::ExtractedEntity>,
+) -> Vec<Entity> {
+    extracted_entities
+        .into_iter()
+        .map(|extracted| {
+            let entity_type = match extracted
+                .entity_type
+                .as_deref()
+                .unwrap_or("concept")
+                .to_lowercase()
+                .as_str()
+            {
+                "person" | "per" => EntityType::Person,
+                "organization" | "org" => EntityType::Organization,
+                "location" | "loc" | "gpe" => EntityType::Location,
+                "date" | "time" => EntityType::Date,
+                _ => EntityType::Concept,
+            };
+            let mut entity = Entity::new(&extracted.name, entity_type);
+            // The persisted entity schema requires an object (or NONE) for
+            // metadata. Extraction supplies no metadata, so use an empty
+            // object instead of `Entity::new`'s JSON null default.
+            entity.metadata = serde_json::json!({});
+            entity
+        })
+        .collect()
+}
+
 fn file_uri_to_path(uri: &str) -> Result<PathBuf> {
     let path = decode_file_uri(uri, cfg!(windows))?;
     Ok(PathBuf::from(path))
@@ -2986,7 +3097,7 @@ mod tests {
     };
     use graphrag_core::{
         normalized_content_hash, record_id_to_string, EdgeType, Entity, EntityType, Note,
-        ProposedEdgeStatus,
+        ProposedEdgeStatus, Source,
     };
     use graphrag_db::{
         compatibility::{EmbeddingIdentity, ExtractionIdentity},
@@ -3861,7 +3972,15 @@ mod tests {
             Arc::new(DeterministicEmbedder::default().fail_next_requests(2, "timeout")),
             Arc::new(FixtureEntityExtractor::default()),
         );
-        assert!(librarian.process_pending_embeddings().await.is_err());
+        let error = librarian.process_pending_embeddings().await.unwrap_err();
+        assert!(matches!(
+            error,
+            crate::AgentError::DurablePartialFailure {
+                completed: 1,
+                failed: 1,
+                ..
+            }
+        ));
         let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
         assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
         assert_eq!(job.failed_count, 1);
@@ -3871,6 +3990,40 @@ mod tests {
                 .is_some_and(|error| error.contains("timeout")),
             "the success after a fallback failure must not clear diagnostics"
         );
+    }
+
+    #[tokio::test]
+    async fn fully_failed_durable_jobs_are_not_reported_as_partial_failures() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("embedding failure"))
+            .await
+            .unwrap();
+        let embeddings = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().fail_next_requests(2, "offline")),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        assert!(matches!(
+            embeddings.process_pending_embeddings().await.unwrap_err(),
+            crate::AgentError::Processing(_)
+        ));
+
+        let entity_note = repo.create_note(Note::new("entity failure")).await.unwrap();
+        let extraction = LibrarianAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().fail_next_requests(1, "offline")),
+        );
+        assert!(matches!(
+            extraction
+                .extract_entities_for_note_ids_result(
+                    &[record_id_to_string(entity_note.id.as_ref().unwrap())],
+                    false,
+                )
+                .await
+                .unwrap_err(),
+            crate::AgentError::Processing(_)
+        ));
     }
 
     #[tokio::test]
@@ -4933,5 +5086,198 @@ mod tests {
             .unwrap();
         assert!(!imported.notes.is_empty());
         assert!(imported.notes.iter().all(|note| note.split_fenced_code));
+    }
+
+    #[tokio::test]
+    async fn manual_content_edit_reprocesses_mentions_and_provider_failure_keeps_old_note() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let initial = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .ingest_text(
+            "old searchable content",
+            Some("Old".into()),
+            vec!["old".into()],
+        )
+        .await
+        .unwrap();
+        let id = record_id_to_string(initial.id.as_ref().unwrap());
+
+        let failing = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().fail_next_requests(1, "offline")),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        assert!(
+            failing
+                .update_manual_note_content(
+                    &initial,
+                    "new content must not persist".into(),
+                    None,
+                    None,
+                )
+                .await
+                .is_err()
+        );
+        let unchanged = repo.get_note(&id).await.unwrap().unwrap();
+        assert_eq!(unchanged.content, "old searchable content");
+        assert_eq!(unchanged.tags, vec!["old"]);
+
+        let extractor = FixtureEntityExtractor::default().with_fixture(
+            "new searchable content",
+            EntityExtraction {
+                entities: vec![ExtractedEntity {
+                    name: "New Entity".into(),
+                    entity_type: Some("project".into()),
+                }],
+                relationships: Vec::new(),
+            },
+        );
+        let updating = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(extractor),
+        );
+        let updated = updating
+            .update_manual_note_content(
+                &unchanged,
+                "new searchable content".into(),
+                Some("New".into()),
+                Some(vec!["new".into()]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.content, "new searchable content");
+        assert_eq!(updated.title.as_deref(), Some("New"));
+        assert_eq!(updated.tags, vec!["new"]);
+        let entities = repo.get_entities_for_note(&id).await.unwrap();
+        assert_eq!(
+            entities
+                .iter()
+                .map(|entity| entity.name.as_str())
+                .collect::<Vec<_>>(),
+            ["New Entity"]
+        );
+    }
+
+    #[tokio::test]
+    async fn skipped_extraction_edit_clears_stale_mentions_and_detach_skips_extractor() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let initial = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().with_fixture(
+                "old content",
+                EntityExtraction {
+                    entities: vec![ExtractedEntity {
+                        name: "Old Entity".into(),
+                        entity_type: Some("project".into()),
+                    }],
+                    relationships: Vec::new(),
+                },
+            )),
+        )
+        .ingest_text("old content", Some("Old".into()), Vec::new())
+        .await
+        .unwrap();
+        let initial_id = record_id_to_string(initial.id.as_ref().unwrap());
+        assert_eq!(
+            repo.get_entities_for_note(&initial_id).await.unwrap().len(),
+            1
+        );
+
+        // The failing fixture proves this path does not touch extraction when
+        // the runtime policy says to skip it.
+        let skipped = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().fail_next_requests(1, "offline")),
+        )
+        .with_runtime_config(LibrarianRuntimeConfig {
+            skip_entity_extraction: true,
+            ..Default::default()
+        });
+        skipped
+            .update_manual_note_content(&initial, "new content".into(), None, None)
+            .await
+            .unwrap();
+        assert!(repo
+            .get_entities_for_note(&initial_id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let source = repo
+            .create_source(
+                Source::manual()
+                    .with_title("Detach fixture")
+                    .with_content("source"),
+            )
+            .await
+            .unwrap();
+        let generated = repo
+            .create_note(
+                Note::new("generated chunk")
+                    .with_source(source.id.unwrap())
+                    .with_source_generation(1),
+            )
+            .await
+            .unwrap();
+        let detached = skipped
+            .detach_note_to_manual(&generated, generated.content.clone(), None, None)
+            .await
+            .unwrap();
+        assert!(repo
+            .get_entities_for_note(&record_id_to_string(detached.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn detach_creates_manual_note_with_source_provenance() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = repo
+            .create_source(
+                Source::manual()
+                    .with_title("Imported fixture")
+                    .with_content("source"),
+            )
+            .await
+            .unwrap();
+        let imported = repo
+            .create_note(
+                Note::new("generated chunk")
+                    .with_source(source.id.clone().unwrap())
+                    .with_source_generation(1),
+            )
+            .await
+            .unwrap();
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+
+        let detached = librarian
+            .detach_note_to_manual(
+                &imported,
+                "manual replacement".into(),
+                Some("Detached".into()),
+                Some(vec!["manual".into()]),
+            )
+            .await
+            .unwrap();
+        assert_ne!(detached.id, imported.id);
+        assert_eq!(detached.source_id, imported.source_id);
+        assert_eq!(detached.source_generation, None);
+        assert_eq!(detached.content, "manual replacement");
+        assert!(repo
+            .get_note(&record_id_to_string(imported.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
     }
 }

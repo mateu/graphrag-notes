@@ -3,11 +3,14 @@
 //! A command-line interface for the GraphRAG Notes system.
 
 mod backup;
+mod commands;
 mod doctor;
 mod eval;
+mod output;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use commands::notes::NotesCommand;
 use eval::{
     build_baseline_comparison, evaluate_ranked_results_with_tokens, load_baseline, load_eval_cases,
     parse_regression_thresholds, AugmentationDiagnosticsReport, EvalCaseReport, EvalMetadata,
@@ -117,6 +120,12 @@ enum Commands {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+
+    /// Safely list, show, edit, or delete notes
+    Notes {
+        #[command(subcommand)]
+        command: NotesCommand,
     },
 
     /// Add a new note
@@ -676,6 +685,19 @@ fn to_import_mode(mode: ImportModeArg) -> ChatImportMode {
     }
 }
 
+/// Metadata-only note edits are local repository updates. Content replacement
+/// and source detachment each need the embedding and extraction providers.
+fn notes_edit_requires_inference(command: &NotesCommand) -> bool {
+    matches!(
+        command,
+        NotesCommand::Edit {
+            content_file: Some(_),
+            ..
+        } | NotesCommand::Edit { stdin: true, .. }
+            | NotesCommand::Edit { detach: true, .. }
+    )
+}
+
 fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig {
     InferenceProviderConfig {
         embedding_provider: config.inference.embedding_provider.clone(),
@@ -918,8 +940,92 @@ async fn run_archive_only_command(cli: &Cli) -> Result<bool> {
     Ok(false)
 }
 
+/// Convert expected command failures into the documented automation contract.
+/// Typed errors take precedence; message fallbacks cover validation failures
+/// produced by Clap-adjacent handlers that intentionally use `anyhow::bail!`.
+fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
+    for cause in error.chain() {
+        if cause
+            .downcast_ref::<commands::notes::NotesEditValidationError>()
+            .is_some()
+        {
+            return output::ExitCode::Validation;
+        }
+        if cause
+            .downcast_ref::<graphrag_config::ConfigError>()
+            .is_some()
+        {
+            // Configuration is supplied at invocation time through --config,
+            // environment, or the resolved local config path. A read, parse,
+            // or validation failure is therefore a recoverable user-input
+            // error, not an internal command failure.
+            return output::ExitCode::Validation;
+        }
+        if let Some(error) = cause.downcast_ref::<graphrag_db::DbError>() {
+            return match error {
+                graphrag_db::DbError::NotFound(_, _) => output::ExitCode::NotFound,
+                graphrag_db::DbError::EmbeddingCompatibility { .. }
+                | graphrag_db::DbError::LegacyEmbeddingMetadata { .. } => {
+                    output::ExitCode::Compatibility
+                }
+                _ => output::ExitCode::Internal,
+            };
+        }
+        if let Some(error) = cause.downcast_ref::<graphrag_agents::AgentError>() {
+            return match error {
+                graphrag_agents::AgentError::NotFound(_) => output::ExitCode::NotFound,
+                graphrag_agents::AgentError::Database(graphrag_db::DbError::NotFound(_, _)) => {
+                    output::ExitCode::NotFound
+                }
+                graphrag_agents::AgentError::Database(
+                    graphrag_db::DbError::EmbeddingCompatibility { .. }
+                    | graphrag_db::DbError::LegacyEmbeddingMetadata { .. },
+                ) => output::ExitCode::Compatibility,
+                graphrag_agents::AgentError::DurablePartialFailure { .. } => {
+                    output::ExitCode::PartialFailure
+                }
+                _ => output::ExitCode::Internal,
+            };
+        }
+    }
+
+    let message = error.to_string().to_lowercase();
+    if message.contains("not found") {
+        output::ExitCode::NotFound
+    } else if message.contains("compatibility") || message.contains("legacy vector") {
+        output::ExitCode::Compatibility
+    } else if [
+        "requires",
+        "required",
+        "refusing",
+        "cannot",
+        "invalid",
+        "must ",
+        "without --yes",
+        "empty",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+    {
+        output::ExitCode::Validation
+    } else {
+        output::ExitCode::Internal
+    }
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    let exit_code = match run().await {
+        Ok(()) => output::ExitCode::Success,
+        Err(error) => {
+            eprintln!("Error: {error:#}");
+            exit_code_for(&error)
+        }
+    };
+    std::process::exit(exit_code as i32);
+}
+
+async fn run() -> Result<()> {
     // Load environment variables from .env if present.
     dotenvy::dotenv().ok();
 
@@ -1098,6 +1204,12 @@ async fn main() -> Result<()> {
     }
 
     let repo = Repository::new(db);
+    // Resolve local notes-edit validation before provider health checks so an
+    // offline service cannot mask a deterministic validation/not-found error.
+    let prepared_notes_edit = match &cli.command {
+        Commands::Notes { command } => commands::notes::prepare_edit(&repo, command).await?,
+        _ => None,
+    };
     let providers = InferenceProviders::from_config(&inference_config);
     let processing = processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache)?;
     let extraction_processing =
@@ -1117,37 +1229,43 @@ async fn main() -> Result<()> {
     ));
 
     // Check inference services only when needed
-    let needs_tei = matches!(
-        cli.command,
-        Commands::Add { .. }
-            | Commands::Import { .. }
-            | Commands::Sources {
-                command: SourcesCommand::Reimport { .. },
-            }
-            | Commands::ImportChats { .. }
-            | Commands::MigrateChats { .. }
-            | Commands::Search { .. }
-            | Commands::Augment { .. }
-            | Commands::EvalAugment { .. }
-            | Commands::Reindex { .. }
-            | Commands::Interactive
-    );
-    let needs_tgi = matches!(
+    let notes_edit_reprocesses = matches!(
         &cli.command,
-        Commands::Add { .. }
-            | Commands::Import { .. }
-            | Commands::Sources {
-                command: SourcesCommand::Reimport { .. },
-            }
-            | Commands::ImportChats { .. }
-            | Commands::Interactive
-            | Commands::ExtractEntities { .. }
-            | Commands::MigrateChats {
-                with_notes: true,
-                ..
-            }
-    ) && (!skip_extraction
-        || matches!(&cli.command, Commands::ExtractEntities { .. }));
+        Commands::Notes { command } if notes_edit_requires_inference(command)
+    );
+    let needs_tei = notes_edit_reprocesses
+        || matches!(
+            cli.command,
+            Commands::Add { .. }
+                | Commands::Import { .. }
+                | Commands::Sources {
+                    command: SourcesCommand::Reimport { .. },
+                }
+                | Commands::ImportChats { .. }
+                | Commands::MigrateChats { .. }
+                | Commands::Search { .. }
+                | Commands::Augment { .. }
+                | Commands::EvalAugment { .. }
+                | Commands::Reindex { .. }
+                | Commands::Interactive
+        );
+    let needs_tgi = (notes_edit_reprocesses
+        || matches!(
+            &cli.command,
+            Commands::Add { .. }
+                | Commands::Import { .. }
+                | Commands::Sources {
+                    command: SourcesCommand::Reimport { .. },
+                }
+                | Commands::ImportChats { .. }
+                | Commands::Interactive
+                | Commands::ExtractEntities { .. }
+                | Commands::MigrateChats {
+                    with_notes: true,
+                    ..
+                }
+        ))
+        && (!skip_extraction || matches!(&cli.command, Commands::ExtractEntities { .. }));
 
     if needs_tei {
         let tei_ok = tei.health().await.unwrap_or(false);
@@ -1217,6 +1335,11 @@ async fn main() -> Result<()> {
             tags,
         } => {
             cmd_add(repo, tei, tgi, librarian_config, content, title, tags).await?;
+        }
+        Commands::Notes { command } => {
+            let librarian =
+                LibrarianAgent::new(repo.clone(), tei, tgi).with_runtime_config(librarian_config);
+            commands::notes::run(repo, librarian, command, prepared_notes_edit).await?;
         }
         Commands::Import { path, force } => {
             cmd_import(repo, tei, tgi, librarian_config, path, force).await?;
@@ -1330,6 +1453,7 @@ async fn main() -> Result<()> {
             .await?;
         }
         Commands::List { limit } => {
+            eprintln!("Deprecated: use `graphrag notes list` for stable --format output.");
             cmd_list(repo, limit).await?;
         }
         Commands::Garden { command } => {
@@ -1427,6 +1551,9 @@ async fn main() -> Result<()> {
             cmd_show_entities(repo, note_id).await?;
         }
         Commands::ShowNote { note_id } => {
+            eprintln!(
+                "Deprecated: use `graphrag notes show {note_id}` for stable --format output."
+            );
             cmd_show_note(repo, note_id).await?;
         }
         Commands::ListEdges { limit } => {
@@ -3606,6 +3733,166 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn notes_commands_expose_safe_edit_delete_and_machine_output_flags() {
+        let edit = Cli::try_parse_from([
+            "graphrag", "notes", "edit", "note:one", "--title", "Revised", "--detach", "--format",
+            "json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            edit.command,
+            Commands::Notes {
+                command: NotesCommand::Edit {
+                    detach: true,
+                    format: output::OutputFormat::Json,
+                    ..
+                }
+            }
+        ));
+
+        let delete = Cli::try_parse_from([
+            "graphrag",
+            "notes",
+            "delete",
+            "note:one",
+            "--dry-run",
+            "--format",
+            "jsonl",
+        ])
+        .unwrap();
+        assert!(matches!(
+            delete.command,
+            Commands::Notes {
+                command: NotesCommand::Delete {
+                    dry_run: true,
+                    yes: false,
+                    format: output::OutputFormat::Jsonl,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn metadata_only_notes_edit_skips_provider_preflight() {
+        let metadata_only = NotesCommand::Edit {
+            id: "note:one".into(),
+            title: Some("Retitled".into()),
+            content_file: None,
+            stdin: false,
+            tags: None,
+            detach: false,
+            format: output::OutputFormat::Human,
+        };
+        assert!(!notes_edit_requires_inference(&metadata_only));
+
+        let content_edit = NotesCommand::Edit {
+            id: "note:one".into(),
+            title: None,
+            content_file: Some(PathBuf::from("replacement.md")),
+            stdin: false,
+            tags: None,
+            detach: false,
+            format: output::OutputFormat::Human,
+        };
+        assert!(notes_edit_requires_inference(&content_edit));
+
+        let detached_edit = NotesCommand::Edit {
+            id: "note:one".into(),
+            title: None,
+            content_file: None,
+            stdin: false,
+            tags: None,
+            detach: true,
+            format: output::OutputFormat::Human,
+        };
+        assert!(notes_edit_requires_inference(&detached_edit));
+    }
+
+    #[test]
+    fn output_envelope_has_stable_required_machine_fields() {
+        let envelope =
+            output::OutputEnvelope::success("notes.show", serde_json::json!({"id": "note:one"}));
+        let json = serde_json::to_value(envelope).unwrap();
+        for key in [
+            "schema_version",
+            "command",
+            "success",
+            "data",
+            "warnings",
+            "errors",
+        ] {
+            assert!(json.get(key).is_some(), "missing output key {key}");
+        }
+    }
+
+    #[test]
+    fn documented_exit_codes_classify_typed_and_validation_errors() {
+        let not_found = anyhow::Error::new(graphrag_db::DbError::NotFound(
+            "note".into(),
+            "note:missing".into(),
+        ));
+        assert_eq!(exit_code_for(&not_found), output::ExitCode::NotFound);
+
+        let compatibility =
+            anyhow::Error::new(graphrag_db::DbError::LegacyEmbeddingMetadata { vector_records: 1 });
+        assert_eq!(
+            exit_code_for(&compatibility),
+            output::ExitCode::Compatibility
+        );
+
+        let validation = anyhow::anyhow!("refusing to delete without --yes");
+        assert_eq!(exit_code_for(&validation), output::ExitCode::Validation);
+
+        let unreadable_file = anyhow::Error::new(
+            commands::notes::NotesEditValidationError::UnreadableContentFile {
+                path: PathBuf::from("missing.md"),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+            },
+        );
+        assert_eq!(
+            exit_code_for(&unreadable_file),
+            output::ExitCode::Validation
+        );
+
+        let unreadable_config = anyhow::Error::new(graphrag_config::ConfigError::ReadFile {
+            path: PathBuf::from("missing-config.toml"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        });
+        assert_eq!(
+            exit_code_for(&unreadable_config),
+            output::ExitCode::Validation
+        );
+
+        let malformed_config_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(malformed_config_file.path(), "database = [").unwrap();
+        let malformed_config = anyhow::Error::new(
+            graphrag_config::RuntimeConfig::from_file(malformed_config_file.path())
+                .expect_err("fixture must not parse"),
+        );
+        assert_eq!(
+            exit_code_for(&malformed_config),
+            output::ExitCode::Validation
+        );
+
+        let partial = anyhow::Error::new(graphrag_agents::AgentError::DurablePartialFailure {
+            job_id: "processing_job:one".into(),
+            completed: 3,
+            failed: 1,
+            message: "provider rejected one item".into(),
+        });
+        assert_eq!(exit_code_for(&partial), output::ExitCode::PartialFailure);
+
+        // Ordinary errors can happen to contain this word, but are not a
+        // persisted partial durable outcome and must retain their normal
+        // failure classification.
+        let ordinary_failure = anyhow::Error::new(graphrag_agents::AgentError::Processing(
+            "provider failed before a job existed".into(),
+        ));
+        assert_eq!(exit_code_for(&ordinary_failure), output::ExitCode::Internal);
     }
 
     #[test]
