@@ -14,6 +14,7 @@ mod portable;
 mod sources;
 mod stats;
 
+pub use chats::{EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEdgeRow};
 pub use graph::{SourceDeleteSummary, SourceImportAction, SourceImportPlan};
 use ids::normalize_note_id;
 pub use ids::parse_record_id;

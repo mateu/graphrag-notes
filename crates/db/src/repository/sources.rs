@@ -367,7 +367,7 @@ impl Repository {
     }
 
     #[cfg(test)]
-    async fn promote_file_import(&self, source: &mut Source) -> Result<()> {
+    pub(crate) async fn promote_file_import(&self, source: &mut Source) -> Result<()> {
         // Promotion changes which source generation is visible. Keep that
         // transition and retirement of proposals for the newly hidden notes
         // atomic with respect to proposal acceptance in this repository.
@@ -465,7 +465,7 @@ impl Repository {
         Ok(summary)
     }
 
-    async fn replace_source(&self, source: &Source) -> Result<()> {
+    pub(crate) async fn replace_source(&self, source: &Source) -> Result<()> {
         let id = source
             .id
             .as_ref()

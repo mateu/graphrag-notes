@@ -365,7 +365,7 @@ impl Repository {
     /// Atomically transition a pending proposal to a claimed state. Rejection
     /// is terminal immediately; acceptance is finalized only after its edge
     /// has been created and recorded.
-    async fn claim_pending_proposal(
+    pub(crate) async fn claim_pending_proposal(
         &self,
         id: &RecordId,
         status: ProposedEdgeStatus,
@@ -539,7 +539,7 @@ impl Repository {
 
     /// Accept every matching pending proposal, using a stable record-id cursor
     /// so a large batch cannot silently stop at an arbitrary first page.
-    async fn accept_gardener_proposals_above_in_pages(
+    pub(crate) async fn accept_gardener_proposals_above_in_pages(
         &self,
         min_confidence: f32,
         reviewer: Option<String>,
