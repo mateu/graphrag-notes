@@ -88,3 +88,30 @@ pub fn fusion_scores(
         }),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fusion_evidence_uses_stable_score_meanings_and_schema_version() {
+        let fusion = FusionEvidence {
+            vector_rank: Some(2),
+            fulltext_rank: Some(3),
+            fused_score: 0.42,
+            ..Default::default()
+        };
+        let (fused, vector, full_text) = fusion_scores(&fusion);
+        assert_eq!(fused.value, 0.42);
+        assert_eq!(fused.meaning, "weighted reciprocal-rank fusion score");
+        assert_eq!(
+            vector.unwrap().meaning,
+            "vector retrieval rank; lower is better"
+        );
+        assert_eq!(
+            full_text.unwrap().meaning,
+            "full-text retrieval rank; lower is better"
+        );
+        assert_eq!(EXPLANATION_SCHEMA_VERSION, 1);
+    }
+}

@@ -87,6 +87,12 @@ downloads a tokenizer or contacts a provider. Library callers with a locally
 installed model tokenizer can inject a `TokenCounter` and receive **exact**
 mode in `AugmentContext.diagnostics`. The human command prints the same stable
 diagnostics (mode, header tokens, and drop reasons); `AugmentDiagnostics`
+is paired with a versioned retrieval-evidence contract. Explain surfaces use
+the same object for human and JSON output: fusion/vector/full-text channels,
+accepted graph paths, provenance, selected source spans, token counts, and
+typed inclusion or drop decisions. Evidence is observational—it never changes
+ranking or context selection—and intentionally excludes prompts, credentials,
+headers, and unrelated absolute local paths.
 derives `Serialize` for JSON/API callers. A zero or too-small budget yields an
 empty context rather than a prompt block that exceeds its cap.
 
