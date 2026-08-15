@@ -2564,6 +2564,137 @@ async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct SearchMachineResult {
+    id: String,
+    hit_type: &'static str,
+    title: Option<String>,
+    content: String,
+    created_at: Option<String>,
+    source_uri: Option<String>,
+    score: f32,
+    conversation_uuid: Option<String>,
+    message_index: Option<i64>,
+    role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    related: Option<RelatedNotes>,
+}
+
+#[derive(Serialize)]
+struct SearchMachineOutput {
+    results: Vec<SearchMachineResult>,
+}
+
+impl SearchMachineResult {
+    fn from_context(result: &graphrag_agents::search::EnrichedSearchResult) -> Self {
+        let note = &result.result;
+        Self {
+            id: record_id_to_string(&note.id),
+            hit_type: "note",
+            title: note.title.clone(),
+            content: note.content.clone(),
+            created_at: Some(note.created_at.to_rfc3339()),
+            source_uri: note.source_uri.clone(),
+            score: note.fusion.fused_score,
+            conversation_uuid: None,
+            message_index: None,
+            role: None,
+            related: result.related.clone(),
+        }
+    }
+
+    fn from_scoped(
+        result: &graphrag_agents::search::ScopedSearchResult,
+        related: Option<RelatedNotes>,
+    ) -> Self {
+        Self {
+            id: result.id.clone(),
+            hit_type: search_hit_type_name(result.hit_type),
+            title: result.title.clone(),
+            content: result.content.clone(),
+            created_at: result.created_at.map(|value| value.to_rfc3339()),
+            source_uri: result.source_uri.clone(),
+            score: result.score,
+            conversation_uuid: result.conversation_uuid.clone(),
+            message_index: result.message_index,
+            role: result.role.clone(),
+            related,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct AugmentMachineChunk {
+    citation: usize,
+    hit_type: &'static str,
+    id: String,
+    title: Option<String>,
+    snippet: String,
+    created_at: Option<String>,
+    source_uri: Option<String>,
+    score: f32,
+    conversation_uuid: Option<String>,
+    message_index: Option<i64>,
+    role: Option<String>,
+    approx_tokens: usize,
+    rendered_tokens: usize,
+    truncated: bool,
+    selected_span_start: Option<usize>,
+    selected_span_end: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct AugmentMachineOutput {
+    query: String,
+    scope: String,
+    entity_filter: Option<String>,
+    prompt: String,
+    chunks: Vec<AugmentMachineChunk>,
+    total_tokens: usize,
+    diagnostics: AugmentDiagnostics,
+}
+
+fn search_hit_type_name(hit_type: SearchHitType) -> &'static str {
+    match hit_type {
+        SearchHitType::Note => "note",
+        SearchHitType::Message => "message",
+        SearchHitType::ConversationSummary => "conversation-summary",
+    }
+}
+
+fn augment_machine_output(ctx: &graphrag_agents::AugmentContext) -> AugmentMachineOutput {
+    AugmentMachineOutput {
+        query: ctx.query.clone(),
+        scope: format!("{:?}", ctx.scope),
+        entity_filter: ctx.entity_filter.clone(),
+        prompt: ctx.render_prompt_block(),
+        chunks: ctx
+            .chunks
+            .iter()
+            .map(|chunk| AugmentMachineChunk {
+                citation: chunk.citation,
+                hit_type: search_hit_type_name(chunk.hit_type),
+                id: chunk.id.clone(),
+                title: chunk.title.clone(),
+                snippet: chunk.snippet.clone(),
+                created_at: chunk.created_at.map(|value| value.to_rfc3339()),
+                source_uri: chunk.source_uri.clone(),
+                score: chunk.score,
+                conversation_uuid: chunk.conversation_uuid.clone(),
+                message_index: chunk.message_index,
+                role: chunk.role.clone(),
+                approx_tokens: chunk.approx_tokens,
+                rendered_tokens: chunk.rendered_tokens,
+                truncated: chunk.truncated,
+                selected_span_start: chunk.selected_span_start,
+                selected_span_end: chunk.selected_span_end,
+            })
+            .collect(),
+        total_tokens: ctx.total_tokens,
+        diagnostics: ctx.diagnostics.clone(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_search(
     repo: Repository,
@@ -2599,15 +2730,31 @@ async fn cmd_search(
             .search_with_context_filtered(&query, limit, since_days, source_uri.clone())
             .await?;
 
-        let explanations = results
-            .iter()
-            .map(|result| {
-                result
-                    .explanation()
-                    .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
-            })
-            .collect::<Vec<_>>();
         if format != output::OutputFormat::Human {
+            if !explain {
+                let output = results
+                    .iter()
+                    .map(SearchMachineResult::from_context)
+                    .collect::<Vec<_>>();
+                return match format {
+                    output::OutputFormat::Json => output::print(
+                        format,
+                        "search",
+                        SearchMachineOutput { results: output },
+                        |_| Ok(()),
+                    ),
+                    output::OutputFormat::Jsonl => output::print_jsonl("search", output),
+                    output::OutputFormat::Human => unreachable!("handled above"),
+                };
+            }
+            let explanations = results
+                .iter()
+                .map(|result| {
+                    result
+                        .explanation()
+                        .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+                })
+                .collect::<Vec<_>>();
             return match format {
                 output::OutputFormat::Json => output::print(
                     format,
@@ -2682,16 +2829,33 @@ async fn cmd_search(
             )
             .await?;
 
-        let explanations = results
-            .hits
-            .iter()
-            .map(|result| {
-                result
-                    .explanation()
-                    .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
-            })
-            .collect::<Vec<_>>();
         if format != output::OutputFormat::Human {
+            if !explain {
+                let output = results
+                    .hits
+                    .iter()
+                    .map(|result| SearchMachineResult::from_scoped(result, None))
+                    .collect::<Vec<_>>();
+                return match format {
+                    output::OutputFormat::Json => output::print(
+                        format,
+                        "search",
+                        SearchMachineOutput { results: output },
+                        |_| Ok(()),
+                    ),
+                    output::OutputFormat::Jsonl => output::print_jsonl("search", output),
+                    output::OutputFormat::Human => unreachable!("handled above"),
+                };
+            }
+            let explanations = results
+                .hits
+                .iter()
+                .map(|result| {
+                    result
+                        .explanation()
+                        .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+                })
+                .collect::<Vec<_>>();
             return match format {
                 output::OutputFormat::Json => output::print(
                     format,
@@ -2884,20 +3048,28 @@ async fn cmd_augment(
         )
         .await?;
 
-    let mut explanations = ctx
-        .chunks
-        .iter()
-        .enumerate()
-        .map(|(index, chunk)| {
-            chunk
-                .explanation(index + 1)
-                .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
-        })
-        .collect::<Vec<_>>();
-    explanations.extend(ctx.exclusions.iter().cloned().map(|explanation| {
-        explanation.with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
-    }));
     if format != output::OutputFormat::Human {
+        if !explain {
+            let output = augment_machine_output(&ctx);
+            return match format {
+                output::OutputFormat::Json => output::print(format, "augment", output, |_| Ok(())),
+                output::OutputFormat::Jsonl => output::print_jsonl("augment", output.chunks),
+                output::OutputFormat::Human => unreachable!("handled above"),
+            };
+        }
+        let mut explanations = ctx
+            .chunks
+            .iter()
+            .enumerate()
+            .map(|(index, chunk)| {
+                chunk
+                    .explanation(index + 1)
+                    .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+            })
+            .collect::<Vec<_>>();
+        explanations.extend(ctx.exclusions.iter().cloned().map(|explanation| {
+            explanation.with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+        }));
         return match format {
             output::OutputFormat::Json => output::print(
                 format,
@@ -4012,6 +4184,65 @@ mod tests {
         ] {
             assert!(json.get(key).is_some(), "missing output key {key}");
         }
+    }
+
+    #[test]
+    fn non_explain_machine_adapters_omit_retrieval_evidence() {
+        let search = SearchMachineResult::from_scoped(
+            &graphrag_agents::search::ScopedSearchResult {
+                hit_type: SearchHitType::Note,
+                id: "note:one".into(),
+                title: Some("One".into()),
+                content: "ordinary result".into(),
+                created_at: None,
+                source_uri: None,
+                score: 0.75,
+                fusion: Default::default(),
+                score_kind: graphrag_agents::ScoreKind::ReciprocalRankFusion,
+                effective_weight: 1.0,
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+            None,
+        );
+        let search = serde_json::to_value(search).unwrap();
+        assert_eq!(search["id"], "note:one");
+        for evidence_field in [
+            "final_score",
+            "fused",
+            "vector",
+            "full_text",
+            "graph",
+            "inclusion",
+            "effective_weight",
+        ] {
+            assert!(search.get(evidence_field).is_none());
+        }
+
+        let augment = serde_json::to_value(AugmentMachineChunk {
+            citation: 1,
+            hit_type: "note",
+            id: "note:one".into(),
+            title: Some("One".into()),
+            snippet: "ordinary result".into(),
+            created_at: None,
+            source_uri: None,
+            score: 0.75,
+            conversation_uuid: None,
+            message_index: None,
+            role: None,
+            approx_tokens: 2,
+            rendered_tokens: 2,
+            truncated: false,
+            selected_span_start: Some(0),
+            selected_span_end: Some(15),
+        })
+        .unwrap();
+        assert_eq!(augment["id"], "note:one");
+        assert!(augment.get("final_score").is_none());
+        assert!(augment.get("inclusion").is_none());
     }
 
     #[test]

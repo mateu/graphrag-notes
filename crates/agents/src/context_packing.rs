@@ -416,8 +416,12 @@ pub(crate) fn empty_context(
         dropped_for_budget: 0,
         dropped_for_entity_filter,
         graph_candidates_considered: graph_summary.candidates_considered,
-        graph_candidates_selected: graph_summary.candidates_selected,
-        graph_candidates_dropped: graph_summary.candidates_dropped,
+        // Retrieval may have selected graph hits before the packer runs, but
+        // a zero budget selects none into the final context. Account for all
+        // considered graph candidates as packing drops rather than reporting
+        // the pre-packing retrieval selection.
+        graph_candidates_selected: 0,
+        graph_candidates_dropped: graph_summary.candidates_considered,
     };
     AugmentContext {
         query,
@@ -1548,8 +1552,8 @@ mod tests {
 
         assert!(context.chunks.is_empty());
         assert_eq!(context.diagnostics.graph_candidates_considered, 3);
-        assert_eq!(context.diagnostics.graph_candidates_selected, 2);
-        assert_eq!(context.diagnostics.graph_candidates_dropped, 1);
+        assert_eq!(context.diagnostics.graph_candidates_selected, 0);
+        assert_eq!(context.diagnostics.graph_candidates_dropped, 3);
     }
 
     #[test]
