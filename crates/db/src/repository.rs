@@ -372,6 +372,10 @@ pub struct ProcessingJob {
     pub target_embedding_model: Option<String>,
     #[serde(default)]
     pub target_embedding_dimension: Option<i64>,
+    /// Snapshot text fingerprints for reindex items. They make a checkpoint
+    /// safe to resume even when an item was edited after its vector staged.
+    #[serde(default)]
+    pub reindex_item_fingerprints: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default)]
     pub item_ids: Vec<String>,
     pub status: String,
@@ -652,6 +656,7 @@ impl Repository {
         scope: String,
         item_ids: Vec<String>,
         embedding: &EmbeddingIdentity,
+        item_fingerprints: std::collections::BTreeMap<String, String>,
     ) -> Result<ProcessingJob> {
         let dimension = i64::try_from(embedding.dimension).map_err(|_| {
             DbError::QueryFailed("embedding dimension exceeds database integer range".into())
@@ -661,6 +666,7 @@ impl Repository {
             .query(
                 "CREATE processing_job SET job_type = 'reindex', scope = $scope, item_ids = $item_ids, \
                  target_embedding_provider = $provider, target_embedding_model = $model, target_embedding_dimension = $dimension, \
+                 reindex_item_fingerprints = $fingerprints, \
                  status = 'running', total_count = $total_count, completed_count = 0, failed_count = 0, \
                  checkpoint = NONE, last_error = NONE, created_at = time::now(), updated_at = time::now(), \
                  finished_at = NONE RETURN AFTER",
@@ -670,10 +676,28 @@ impl Repository {
             .bind(("provider", embedding.provider.clone()))
             .bind(("model", embedding.model.clone()))
             .bind(("dimension", dimension))
+            .bind(("fingerprints", item_fingerprints))
             .bind(("total_count", count_to_i64(total_count)?))
             .await?
             .take(0)?;
         job.ok_or_else(|| DbError::QueryFailed("create reindex processing_job".into()))
+    }
+
+    /// Replace the job's fingerprint snapshot only after the corresponding
+    /// staged vectors committed. A crash before this write repeats work; it
+    /// never treats a stale staged vector as current.
+    pub async fn update_reindex_item_fingerprints(
+        &self,
+        id: &RecordId,
+        fingerprints: std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        self.db
+            .query("UPDATE $id SET reindex_item_fingerprints = $fingerprints, updated_at = time::now()")
+            .bind(("id", id.clone()))
+            .bind(("fingerprints", fingerprints))
+            .await?
+            .check()?;
+        Ok(())
     }
 
     /// Update progress only after an item's atomic database mutation has
@@ -833,23 +857,41 @@ impl Repository {
     /// Persist a newly computed vector in the inactive reindex field. Search
     /// continues to read the old active vector until [`Self::commit_reindex`]
     /// validates and swaps the full selected generation.
-    pub async fn stage_reindex_embedding(&self, id: &str, embedding: Vec<f32>) -> Result<()> {
+    pub async fn stage_reindex_embedding(
+        &self,
+        id: &str,
+        embedding: Vec<f32>,
+        expected_text: &str,
+    ) -> Result<()> {
         let record = parse_record_id(id, None)?;
-        let field = match record.table.as_str() {
-            "note" | "message" => "reindex_embedding",
-            "conversation" => "reindex_summary_embedding",
+        let (field, text_field) = match record.table.as_str() {
+            "note" | "message" => ("reindex_embedding", "content"),
+            "conversation" => ("reindex_summary_embedding", "summary"),
             table => {
                 return Err(DbError::QueryFailed(format!(
                     "{table} is not a supported reindex record table"
                 )))
             }
         };
-        self.db
-            .query(format!("UPDATE $id SET {field} = $embedding"))
+        #[derive(Deserialize, SurrealValue)]
+        struct StagedRow {
+            id: RecordId,
+        }
+        let staged: Option<StagedRow> = self
+            .db
+            .query(format!(
+                "UPDATE $id SET {field} = $embedding WHERE {text_field} = $expected_text RETURN AFTER"
+            ))
             .bind(("id", record))
             .bind(("embedding", embedding))
+            .bind(("expected_text", expected_text.to_string()))
             .await?
-            .check()?;
+            .take(0)?;
+        if staged.is_none() {
+            return Err(DbError::QueryFailed(
+                "reindex item changed or disappeared while its embedding was being staged".into(),
+            ));
+        }
         Ok(())
     }
 

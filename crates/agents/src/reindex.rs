@@ -9,6 +9,7 @@ use graphrag_db::{
     compatibility::EmbeddingIdentity, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, Repository,
 };
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -59,10 +60,15 @@ impl ReindexScope {
 pub struct ReindexPreview {
     pub scope: ReindexScope,
     pub item_ids: Vec<String>,
+    pub item_fingerprints: BTreeMap<String, String>,
     /// Provider-neutral estimate for operators. Local providers do not expose
     /// a stable currency price, so character volume is the honest preflight
     /// cost unit rather than a fabricated dollar amount.
     pub estimated_input_characters: u64,
+}
+
+fn reindex_fingerprint(text: &str) -> String {
+    graphrag_core::normalized_content_hash(text)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,15 +109,18 @@ impl ReindexAgent {
             .snapshot_reindex_item_ids(scope.notes, scope.messages, scope.summaries)
             .await?;
         let mut estimated_input_characters = 0_u64;
+        let mut item_fingerprints = BTreeMap::new();
         for id in &item_ids {
             if let Some(item) = self.repo.get_reindex_item(id).await? {
                 estimated_input_characters =
                     estimated_input_characters.saturating_add(item.text.chars().count() as u64);
+                item_fingerprints.insert(item.id, reindex_fingerprint(&item.text));
             }
         }
         Ok(ReindexPreview {
             scope,
             item_ids,
+            item_fingerprints,
             estimated_input_characters,
         })
     }
@@ -135,6 +144,7 @@ impl ReindexAgent {
                 format!("reindex:{}", preview.scope.label()),
                 preview.item_ids,
                 &identity,
+                preview.item_fingerprints,
             )
             .await?;
         self.run_job(job, identity).await
@@ -162,10 +172,48 @@ impl ReindexAgent {
                 "reindex job target identity does not match the active provider/model/dimension; start a new reindex job instead of resuming mixed staging".into(),
             ));
         }
+        let fingerprints = job.reindex_item_fingerprints.as_ref().ok_or_else(|| {
+            AgentError::Processing(
+                "reindex job lacks content fingerprints; start a new reindex job instead of resuming unsafe staging".into(),
+            )
+        })?;
         let id = job
             .id
             .clone()
             .ok_or_else(|| AgentError::Processing("reindex job has no id".into()))?;
+        let checkpoint_index = job.checkpoint.as_ref().and_then(|checkpoint| {
+            job.item_ids
+                .iter()
+                .position(|item_id| item_id == checkpoint)
+        });
+        if let Some(checkpoint_index) = checkpoint_index {
+            let mut rewind_to = None;
+            for (index, item_id) in job.item_ids[..=checkpoint_index].iter().enumerate() {
+                if let Some(item) = self.repo.get_reindex_item(item_id).await? {
+                    let persisted = fingerprints.get(item_id);
+                    if persisted != Some(&reindex_fingerprint(&item.text)) {
+                        rewind_to = Some(index);
+                        break;
+                    }
+                }
+            }
+            if let Some(rewind_to) = rewind_to {
+                self.repo
+                    .update_processing_job(
+                        &id,
+                        ProcessingJobUpdate {
+                            completed_count: Some(rewind_to as u64),
+                            checkpoint: Some(
+                                rewind_to
+                                    .checked_sub(1)
+                                    .and_then(|index| job.item_ids.get(index).cloned()),
+                            ),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+            }
+        }
         let resumed = self.repo.resume_processing_job(&id).await?;
         self.run_job(resumed, identity).await
     }
@@ -190,6 +238,9 @@ impl ReindexAgent {
             .and_then(|checkpoint| job.item_ids.iter().position(|id| id == checkpoint))
             .map_or(0, |index| index.saturating_add(1));
         let mut completed = u64::try_from(job.completed_count.max(0)).unwrap_or(0);
+        let mut fingerprints = job.reindex_item_fingerprints.clone().ok_or_else(|| {
+            AgentError::Processing("reindex job lacks content fingerprints".into())
+        })?;
 
         for ids in job.item_ids[start_index..].chunks(REINDEX_BATCH_SIZE) {
             if self.cancellation_requested.load(Ordering::Acquire) {
@@ -244,12 +295,20 @@ impl ReindexAgent {
                     if let Err(error) = validate_embedding_dim(vector.len()) {
                         return self.fail(&job_id, completed, error.to_string()).await;
                     }
-                    if let Err(error) = self.repo.stage_reindex_embedding(&item.id, vector).await {
+                    if let Err(error) = self
+                        .repo
+                        .stage_reindex_embedding(&item.id, vector, &item.text)
+                        .await
+                    {
                         return self.fail(&job_id, completed, error.to_string()).await;
                     }
+                    fingerprints.insert(item.id.clone(), reindex_fingerprint(&item.text));
                     completed += 1;
                 }
             }
+            self.repo
+                .update_reindex_item_fingerprints(&job_id, fingerprints.clone())
+                .await?;
             self.repo
                 .update_processing_job(
                     &job_id,
@@ -639,5 +698,61 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resumed.completed, (REINDEX_BATCH_SIZE + 1) as u64);
+    }
+
+    #[tokio::test]
+    async fn resume_reembeds_a_checkpointed_note_edited_after_staging() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
+            .await
+            .unwrap();
+        let mut first_id = None;
+        for number in 0..(REINDEX_BATCH_SIZE + 1) {
+            let note = repo
+                .create_note(Note::new(format!("snapshot {number}")).with_embedding(vector(0.1)))
+                .await
+                .unwrap();
+            if number == 0 {
+                first_id = Some(graphrag_core::record_id_to_string(
+                    note.id.as_ref().unwrap(),
+                ));
+            }
+        }
+        let first_id = first_id.unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stopping: SharedEmbedder = Arc::new(CancellingEmbedder {
+            cancelled: cancelled.clone(),
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let agent = ReindexAgent::new(repo.clone(), stopping).with_cancellation_flag(cancelled);
+        let job = agent
+            .start(
+                agent.preview(ReindexScope::all()).await.unwrap(),
+                EmbeddingIdentity::new("new", "new-model", 1024),
+            )
+            .await
+            .unwrap();
+        assert!(job.cancelled);
+        let mut edited = repo.get_note(&first_id).await.unwrap().unwrap();
+        edited.content = "edited after checkpoint".into();
+        repo.update_note(&first_id, edited).await.unwrap();
+
+        let fixture = DeterministicEmbedder::default().with_identity("new", "new-model");
+        let expected = fixture
+            .embed("edited after checkpoint", false)
+            .await
+            .unwrap();
+        let resumed = ReindexAgent::new(repo.clone(), Arc::new(fixture))
+            .resume(
+                &job.job_id,
+                EmbeddingIdentity::new("new", "new-model", 1024),
+            )
+            .await
+            .unwrap();
+        assert!(!resumed.cancelled);
+        assert_eq!(
+            repo.get_note(&first_id).await.unwrap().unwrap().embedding,
+            expected
+        );
     }
 }
