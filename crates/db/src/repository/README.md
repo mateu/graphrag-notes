@@ -7,6 +7,7 @@ the public re-exports; callers must not depend on a domain module path.
 | --- | --- | --- |
 | `ids` | Canonical `table:key` parsing and raw note-key normalization | Bind a typed `RecordId` once; never add a second table prefix. |
 | `models` | Shared public query/result rows | Data-only types are re-exported through the façade; SQL remains in the owning domain. |
+| `metadata` | Embedding/extraction compatibility reads and initialization | Delegates to compatibility helpers; never rewrites a non-empty corpus identity. |
 | `portable` | Logical archive table allow-list, paged export, and restore conversion | Export remains `ORDER BY id ASC`; every restore record's timestamp/reference casts are bound in the same create statement. |
 | `stats` | Aggregate `DbStats` query | Counts are returned by one query snapshot, not independent table reads. |
 | `repository.rs` (transitional) | Notes, search, chats, sources, entities, graph, jobs, metadata, and proposals | These move mechanically into like-named modules in follow-up slices; existing SQL and lifecycle locks must move verbatim. |
