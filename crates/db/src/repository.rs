@@ -2251,7 +2251,16 @@ impl Repository {
                 VALUES ($entity_type, $name, $canonical_name, $embedding, $metadata, time::now())
                 ON DUPLICATE KEY UPDATE 
                     name = $name,
-                    embedding = $embedding
+                    embedding = $embedding,
+                    metadata = object::extend(
+                        object::extend(metadata ?? {}, $metadata),
+                        {
+                            aliases: array::distinct(array::concat(
+                                metadata.aliases ?? [],
+                                $metadata.aliases ?? []
+                            ))
+                        }
+                    )
             "#)
             .bind(("entity_type", entity_type.clone()))
             .bind(("name", name.clone()))
@@ -4525,6 +4534,31 @@ mod tests {
         assert!(matches
             .iter()
             .any(|entity| entity.id == *aliased.id.as_ref().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn duplicate_entity_upsert_merges_aliases_without_losing_metadata() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut original = Entity::new("Atlas service", EntityType::Project);
+        original.metadata = serde_json::json!({"aliases": ["Atlas"]});
+        let original = repo.upsert_entity(original).await.unwrap();
+
+        let mut update = Entity::new("Atlas Service", EntityType::Project);
+        update.metadata = serde_json::json!({"aliases": ["Atlas", "Atlas v2"]});
+        let updated = repo.upsert_entity(update).await.unwrap();
+
+        assert_eq!(updated.id, original.id);
+        assert_eq!(
+            updated.metadata["aliases"],
+            serde_json::json!(["Atlas", "Atlas v2"])
+        );
+
+        let original_matches = repo.find_graph_entities("Atlas", 1).await.unwrap();
+        assert_eq!(original_matches.len(), 1);
+        assert_eq!(original_matches[0].id, *original.id.as_ref().unwrap());
+        let matches = repo.find_graph_entities("Atlas v2", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *original.id.as_ref().unwrap());
     }
 
     #[tokio::test]
