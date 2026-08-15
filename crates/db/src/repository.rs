@@ -2253,7 +2253,7 @@ impl Repository {
                     name = $name,
                     embedding = $embedding,
                     metadata = object::extend(
-                        object::extend(metadata ?? {}, $metadata),
+                        object::extend(metadata ?? {}, $metadata ?? {}),
                         {
                             aliases: array::distinct(array::concat(
                                 metadata.aliases ?? [],
@@ -2664,18 +2664,45 @@ impl Repository {
             }
             GraphEntityMatchTier::Exact | GraphEntityMatchTier::Prefix => None,
         };
+        let prefix_plausibility = match tier {
+            GraphEntityMatchTier::Prefix => Some(format!(
+                "array::min([{}])",
+                prefixes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, prefix)| {
+                        // Prefix recovery is for short, likely truncated
+                        // entity fragments. Prefer the shortest matching
+                        // query fragment so a context word such as
+                        // `deployed` cannot crowd out `zeta` at a small cap.
+                        format!(
+                            "IF string::starts_with({canonical_lexical}, $prefix_{index}) THEN {} ELSE 2147483647 END",
+                            prefix.chars().count()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            GraphEntityMatchTier::Exact | GraphEntityMatchTier::ContainedPhrase => None,
+        };
         let select_specificity = phrase_specificity
             .as_ref()
             .map(|specificity| format!(", {specificity} AS graph_match_specificity"))
             .unwrap_or_default();
+        let select_prefix_plausibility = prefix_plausibility
+            .as_ref()
+            .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
+            .unwrap_or_default();
         let ordering = if phrase_specificity.is_some() {
             "graph_match_specificity DESC, canonical_name ASC, id ASC"
+        } else if prefix_plausibility.is_some() {
+            "graph_prefix_plausibility ASC, canonical_name ASC, id ASC"
         } else {
             "canonical_name ASC, id ASC"
         };
         let query = format!(
             r#"
-                SELECT id, name, canonical_name, metadata{select_specificity}
+                SELECT id, name, canonical_name, metadata{select_specificity}{select_prefix_plausibility}
                 FROM entity
                 WHERE {match_condition}
                 ORDER BY {ordering}
@@ -4559,6 +4586,34 @@ mod tests {
         let matches = repo.find_graph_entities("Atlas v2", 1).await.unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].id, *original.id.as_ref().unwrap());
+    }
+
+    #[tokio::test]
+    async fn graph_prefix_lookup_prefers_the_likely_entity_fragment_over_context_words() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut zeta = Entity::new("Zeta archive", EntityType::Project);
+        zeta.metadata = serde_json::json!({});
+        let zeta = repo.upsert_entity(zeta).await.unwrap();
+        let mut deployed = Entity::new("Deployed controller", EntityType::Project);
+        deployed.metadata = serde_json::json!({});
+        repo.upsert_entity(deployed).await.unwrap();
+
+        // Neither multi-word canonical name is contained in the sentence, so
+        // this uses prefix recovery. The four-character entity fragment must
+        // win before the eight-character context word at a one-entity cap.
+        let matches = repo.find_graph_entities("zeta deployed", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *zeta.id.as_ref().unwrap());
+
+        let mut atla = Entity::new("Atlas archive", EntityType::Project);
+        atla.metadata = serde_json::json!({});
+        repo.upsert_entity(atla).await.unwrap();
+        let atla_matches = repo
+            .find_graph_entities("atla deployment", 1)
+            .await
+            .unwrap();
+        assert_eq!(atla_matches.len(), 1);
+        assert_eq!(atla_matches[0].name, "Atlas archive");
     }
 
     #[tokio::test]
