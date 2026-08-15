@@ -1140,9 +1140,13 @@ impl LibrarianAgent {
                     )
                     .await?;
                 if failed > 0 {
-                    return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
-                        || "one or more embedding items failed".to_string(),
-                    )));
+                    return Err(crate::AgentError::DurablePartialFailure {
+                        job_id: record_id_to_string(&job_id),
+                        completed,
+                        failed,
+                        message: first_error
+                            .unwrap_or_else(|| "one or more embedding items failed".to_string()),
+                    });
                 }
                 return Ok(ProcessingRunResult {
                     job_id: record_id_to_string(&job_id),
@@ -1679,9 +1683,13 @@ impl LibrarianAgent {
         // invocation failure. The durable row above retains the detailed
         // failed count and first item diagnostic for `jobs show`/retry.
         if failed > 0 {
-            return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
-                || "one or more entity extraction items failed".to_string(),
-            )));
+            return Err(crate::AgentError::DurablePartialFailure {
+                job_id: record_id_to_string(&job_id),
+                completed,
+                failed,
+                message: first_error
+                    .unwrap_or_else(|| "one or more entity extraction items failed".to_string()),
+            });
         }
         Ok(ProcessingRunResult {
             job_id: record_id_to_string(&job_id),
@@ -3946,7 +3954,15 @@ mod tests {
             Arc::new(DeterministicEmbedder::default().fail_next_requests(2, "timeout")),
             Arc::new(FixtureEntityExtractor::default()),
         );
-        assert!(librarian.process_pending_embeddings().await.is_err());
+        let error = librarian.process_pending_embeddings().await.unwrap_err();
+        assert!(matches!(
+            error,
+            crate::AgentError::DurablePartialFailure {
+                completed: 1,
+                failed: 1,
+                ..
+            }
+        ));
         let job = repo.list_processing_jobs(1).await.unwrap().remove(0);
         assert_eq!(job.status, ProcessingJobStatus::Failed.as_str());
         assert_eq!(job.failed_count, 1);

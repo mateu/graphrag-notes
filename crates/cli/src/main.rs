@@ -686,7 +686,7 @@ fn to_import_mode(mode: ImportModeArg) -> ChatImportMode {
 }
 
 /// Metadata-only note edits are local repository updates. Content replacement
-/// is the only edit mode that needs the embedding and extraction providers.
+/// and source detachment each need the embedding and extraction providers.
 fn notes_edit_requires_inference(command: &NotesCommand) -> bool {
     matches!(
         command,
@@ -694,6 +694,7 @@ fn notes_edit_requires_inference(command: &NotesCommand) -> bool {
             content_file: Some(_),
             ..
         } | NotesCommand::Edit { stdin: true, .. }
+            | NotesCommand::Edit { detach: true, .. }
     )
 }
 
@@ -964,9 +965,7 @@ fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
                     graphrag_db::DbError::EmbeddingCompatibility { .. }
                     | graphrag_db::DbError::LegacyEmbeddingMetadata { .. },
                 ) => output::ExitCode::Compatibility,
-                graphrag_agents::AgentError::Processing(message)
-                    if message.contains("partial") || message.contains("failed") =>
-                {
+                graphrag_agents::AgentError::DurablePartialFailure { .. } => {
                     output::ExitCode::PartialFailure
                 }
                 _ => output::ExitCode::Internal,
@@ -979,8 +978,6 @@ fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
         output::ExitCode::NotFound
     } else if message.contains("compatibility") || message.contains("legacy vector") {
         output::ExitCode::Compatibility
-    } else if message.contains("partial") {
-        output::ExitCode::PartialFailure
     } else if [
         "requires",
         "required",
@@ -3776,6 +3773,17 @@ mod tests {
             format: output::OutputFormat::Human,
         };
         assert!(notes_edit_requires_inference(&content_edit));
+
+        let detached_edit = NotesCommand::Edit {
+            id: "note:one".into(),
+            title: None,
+            content_file: None,
+            stdin: false,
+            tags: None,
+            detach: true,
+            format: output::OutputFormat::Human,
+        };
+        assert!(notes_edit_requires_inference(&detached_edit));
     }
 
     #[test]
@@ -3812,6 +3820,22 @@ mod tests {
 
         let validation = anyhow::anyhow!("refusing to delete without --yes");
         assert_eq!(exit_code_for(&validation), output::ExitCode::Validation);
+
+        let partial = anyhow::Error::new(graphrag_agents::AgentError::DurablePartialFailure {
+            job_id: "processing_job:one".into(),
+            completed: 3,
+            failed: 1,
+            message: "provider rejected one item".into(),
+        });
+        assert_eq!(exit_code_for(&partial), output::ExitCode::PartialFailure);
+
+        // Ordinary errors can happen to contain this word, but are not a
+        // persisted partial durable outcome and must retain their normal
+        // failure classification.
+        let ordinary_failure = anyhow::Error::new(graphrag_agents::AgentError::Processing(
+            "provider failed before a job existed".into(),
+        ));
+        assert_eq!(exit_code_for(&ordinary_failure), output::ExitCode::Internal);
     }
 
     #[test]

@@ -108,9 +108,10 @@ pub fn classify_retry(error: &AgentError) -> RetryClassification {
         AgentError::InferenceService(message) => classify_message(message),
         // These categories include dimension checks and deterministic parser
         // failures, both explicitly excluded from retries.
-        AgentError::Database(_) | AgentError::NotFound(_) | AgentError::Processing(_) => {
-            RetryClassification::Permanent
-        }
+        AgentError::Database(_)
+        | AgentError::NotFound(_)
+        | AgentError::Processing(_)
+        | AgentError::DurablePartialFailure { .. } => RetryClassification::Permanent,
     }
 }
 
