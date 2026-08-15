@@ -1999,7 +1999,7 @@ mod tests {
     #[tokio::test]
     async fn graph_entity_matching_uses_whole_tokens_or_safe_prefixes_not_substrings() {
         let repo = Repository::new(init_memory().await.unwrap());
-        for name in ["Chair", "Email relay"] {
+        for name in ["Chair", "Email relay", "Whatever", "Atlas"] {
             let mut entity = Entity::new(name, EntityType::Project);
             entity.metadata = serde_json::json!({});
             repo.upsert_entity(entity).await.unwrap();
@@ -2021,6 +2021,23 @@ mod tests {
             .await
             .unwrap();
         assert!(alias_phrase_matches
+            .iter()
+            .any(|entity| entity.id == *atlas.id.as_ref().unwrap()));
+
+        let sentence_matches = repo
+            .find_graph_entities("what changed in atlas", 10)
+            .await
+            .unwrap();
+        assert!(sentence_matches.iter().any(|entity| entity.name == "Atlas"));
+        assert!(sentence_matches
+            .iter()
+            .all(|entity| entity.name != "Whatever"));
+
+        let punctuated_alias_matches = repo
+            .find_graph_entities("Where is Atlas?", 10)
+            .await
+            .unwrap();
+        assert!(punctuated_alias_matches
             .iter()
             .any(|entity| entity.id == *atlas.id.as_ref().unwrap()));
     }

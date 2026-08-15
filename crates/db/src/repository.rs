@@ -41,6 +41,75 @@ const VISIBLE_NOTE_CONDITION: &str = "(source_id IS NONE OR source_generation IS
 // superseded generation.
 const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)) AND out IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation))";
 
+fn graph_query_normalize(query: &str) -> String {
+    // Entity canonicalization retains arbitrary Unicode text. Split only at
+    // lexical boundaries so adjacent punctuation (for example `Atlas?`) does
+    // not become part of a term, while CJK and other non-Latin letters remain
+    // intact rather than being treated as ASCII-only words.
+    Entity::canonicalize(query)
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn graph_prefix_terms(normalized_query: &str) -> Vec<String> {
+    normalized_query
+        .split_whitespace()
+        .filter(|term| term.chars().count() >= 4 && !is_graph_prefix_stop_word(term))
+        .map(str::to_string)
+        .collect()
+}
+
+fn is_graph_prefix_stop_word(term: &str) -> bool {
+    matches!(
+        term,
+        "a" | "an"
+            | "and"
+            | "are"
+            | "as"
+            | "at"
+            | "be"
+            | "by"
+            | "can"
+            | "changed"
+            | "change"
+            | "could"
+            | "did"
+            | "does"
+            | "for"
+            | "from"
+            | "had"
+            | "has"
+            | "have"
+            | "how"
+            | "in"
+            | "is"
+            | "it"
+            | "of"
+            | "on"
+            | "or"
+            | "recent"
+            | "show"
+            | "tell"
+            | "that"
+            | "the"
+            | "this"
+            | "to"
+            | "was"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "who"
+            | "why"
+            | "will"
+            | "with"
+            | "would"
+            | "you"
+    )
+}
+
 fn count_to_i64(count: u64) -> Result<i64> {
     i64::try_from(count)
         .map_err(|_| DbError::QueryFailed("processing count exceeds database integer range".into()))
@@ -2482,22 +2551,43 @@ impl Repository {
         normalized_query: &str,
         limit: usize,
     ) -> Result<Vec<GraphEntityMatch>> {
-        if normalized_query.trim().is_empty() || limit == 0 {
+        let normalized_query = graph_query_normalize(normalized_query);
+        if normalized_query.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).map_err(|_| {
             DbError::QueryFailed("graph entity limit exceeds database integer range".into())
         })?;
-        // Exact names and whole normalized token/phrase matches are safe
-        // seeds. Prefixes are intentionally limited to three or more
-        // characters, so a short query such as `ai` cannot match `chair` or
-        // `email` just because it occurs in the middle of a name.
-        let prefix_tokens = normalized_query
-            .split_whitespace()
-            .filter(|token| token.chars().count() >= 3)
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let prefix_conditions = prefix_tokens
+
+        // Exact canonical/alias phrase matches are always preferred. Only
+        // when they produce no local entity do we consider typo-style prefix
+        // seeds, preventing ordinary sentence words from crowding the cap.
+        let exact = self
+            .query_graph_entities(&normalized_query, &[], limit)
+            .await?;
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
+
+        // Prefixes are a narrow recovery path for partial entity terms such
+        // as `atla`. They require four characters and exclude common query
+        // words, preserving the `ai`/`chair` boundary safety while avoiding
+        // `what` -> `Whatever` false seeds.
+        let prefixes = graph_prefix_terms(&normalized_query);
+        if prefixes.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.query_graph_entities(&normalized_query, &prefixes, limit)
+            .await
+    }
+
+    async fn query_graph_entities(
+        &self,
+        normalized_query: &str,
+        prefixes: &[String],
+        limit: i64,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        let prefix_conditions = prefixes
             .iter()
             .enumerate()
             .map(|(index, _)| format!(" OR string::starts_with(canonical_name, $prefix_{index})"))
@@ -2520,8 +2610,8 @@ impl Repository {
             .query(query)
             .bind(("query", normalized_query.to_string()))
             .bind(("limit", limit));
-        for (index, prefix) in prefix_tokens.into_iter().enumerate() {
-            query = query.bind((format!("prefix_{index}"), prefix));
+        for (index, prefix) in prefixes.iter().enumerate() {
+            query = query.bind((format!("prefix_{index}"), prefix.clone()));
         }
         query.await?.take(0).map_err(Into::into)
     }
@@ -4290,6 +4380,17 @@ mod tests {
             .take(0)
             .unwrap();
         (conversation_id, message.unwrap().id)
+    }
+
+    #[test]
+    fn graph_entity_query_normalization_keeps_unicode_terms_and_guards_prefixes() {
+        assert_eq!(graph_query_normalize("Where is Atlas?"), "where is atlas");
+        assert_eq!(graph_query_normalize("東京？"), "東京");
+        assert_eq!(
+            graph_prefix_terms("what changed in atla"),
+            vec!["atla".to_string()]
+        );
+        assert!(graph_prefix_terms("ai").is_empty());
     }
 
     #[tokio::test]
