@@ -2080,7 +2080,17 @@ async fn cmd_search(
         // path as well as explicit modes; graph evidence is additive, not a
         // replacement for get_related_notes output.
         let related_by_note = if context && scope == SearchScope::Notes {
-            best_effort_related_notes(&repo, &results.hits).await?
+            let context_repo = repo.clone();
+            best_effort_related_notes(&results.hits, move |id| {
+                let repo = context_repo.clone();
+                async move {
+                    // `best_effort_related_notes` validates the primary ID
+                    // before invoking this lookup.
+                    let note_id = parse_record_id(&id, Some("note"))?;
+                    Ok::<_, anyhow::Error>(repo.get_related_notes(&note_id).await?)
+                }
+            })
+            .await?
         } else {
             HashMap::new()
         };
@@ -2139,10 +2149,15 @@ async fn cmd_search(
     Ok(())
 }
 
-async fn best_effort_related_notes(
-    repo: &Repository,
+async fn best_effort_related_notes<F, Fut, E>(
     hits: &[graphrag_agents::search::ScopedSearchResult],
-) -> Result<HashMap<String, RelatedNotes>> {
+    mut lookup: F,
+) -> Result<HashMap<String, RelatedNotes>>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<RelatedNotes, E>>,
+    E: std::fmt::Display,
+{
     let mut related = HashMap::new();
     for hit in hits
         .iter()
@@ -2150,12 +2165,8 @@ async fn best_effort_related_notes(
     {
         // A malformed primary search ID remains a command error. Only the
         // additive lookup below is intentionally non-fatal.
-        let note_id = parse_record_id(&hit.id, Some("note"))?;
-        retain_related_note_lookup(
-            &mut related,
-            hit.id.clone(),
-            repo.get_related_notes(&note_id).await,
-        );
+        parse_record_id(&hit.id, Some("note"))?;
+        retain_related_note_lookup(&mut related, hit.id.clone(), lookup(hit.id.clone()).await);
     }
     Ok(related)
 }
@@ -3219,8 +3230,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn graph_mode_context_enrichment_keeps_primary_hits_after_one_lookup_failure() {
+    #[tokio::test]
+    async fn graph_mode_context_enrichment_keeps_primary_hits_after_one_lookup_failure() {
         let hits = vec![
             graphrag_agents::search::ScopedSearchResult {
                 hit_type: SearchHitType::Note,
@@ -3251,17 +3262,15 @@ mod tests {
                 graph: None,
             },
         ];
-        let mut context = HashMap::new();
-        retain_related_note_lookup(
-            &mut context,
-            "note:available".into(),
-            Ok::<_, &str>(RelatedNotes::default()),
-        );
-        retain_related_note_lookup(
-            &mut context,
-            "note:unavailable".into(),
-            Err::<RelatedNotes, _>("injected related-note lookup failure"),
-        );
+        let context = best_effort_related_notes(&hits, |id| async move {
+            if id == "note:unavailable" {
+                Err("injected related-note lookup failure")
+            } else {
+                Ok(RelatedNotes::default())
+            }
+        })
+        .await
+        .unwrap();
 
         // Both graph-capable command forms flow through this same enrichment
         // path, which must retain primary hits and successful context when a
