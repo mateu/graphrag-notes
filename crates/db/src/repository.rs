@@ -2488,25 +2488,42 @@ impl Repository {
         let limit = i64::try_from(limit).map_err(|_| {
             DbError::QueryFailed("graph entity limit exceeds database integer range".into())
         })?;
-        self.db
-            .query(
-                r#"
+        // Exact names and whole normalized token/phrase matches are safe
+        // seeds. Prefixes are intentionally limited to three or more
+        // characters, so a short query such as `ai` cannot match `chair` or
+        // `email` just because it occurs in the middle of a name.
+        let prefix_tokens = normalized_query
+            .split_whitespace()
+            .filter(|token| token.chars().count() >= 3)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let prefix_conditions = prefix_tokens
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format!(" OR string::starts_with(canonical_name, $prefix_{index})"))
+            .collect::<String>();
+        let query = format!(
+            r#"
                 SELECT id, name, canonical_name, metadata
                 FROM entity
                 WHERE canonical_name = $query
-                   OR $query CONTAINS canonical_name
-                   OR canonical_name CONTAINS $query
-                   OR array::any(metadata.aliases ?? [], |$alias| $query CONTAINS string::lowercase($alias))
-                   OR array::any(metadata.aliases ?? [], |$alias| string::lowercase($alias) CONTAINS $query)
+                   OR string::contains(string::concat(' ', $query, ' '), string::concat(' ', canonical_name, ' '))
+                   {prefix_conditions}
+                   OR array::any(metadata.aliases ?? [], |$alias| string::lowercase($alias) = $query)
+                   OR array::any(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', string::lowercase($alias), ' ')))
                 ORDER BY canonical_name ASC, id ASC
                 LIMIT $limit
                 "#,
-            )
+        );
+        let mut query = self
+            .db
+            .query(query)
             .bind(("query", normalized_query.to_string()))
-            .bind(("limit", limit))
-            .await?
-            .take(0)
-            .map_err(Into::into)
+            .bind(("limit", limit));
+        for (index, prefix) in prefix_tokens.into_iter().enumerate() {
+            query = query.bind((format!("prefix_{index}"), prefix));
+        }
+        query.await?.take(0).map_err(Into::into)
     }
 
     /// Fetch visible note IDs mentioned by any supplied entities in one
@@ -2517,6 +2534,8 @@ impl Repository {
         &self,
         entity_ids: &[RecordId],
         limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
     ) -> Result<Vec<GraphEntityNoteSeed>> {
         if entity_ids.is_empty() || limit == 0 {
             return Ok(Vec::new());
@@ -2529,12 +2548,15 @@ impl Repository {
         let limit = i64::try_from(relation_limit).map_err(|_| {
             DbError::QueryFailed("graph note limit exceeds database integer range".into())
         })?;
+        let since = since.map(|timestamp| timestamp.to_rfc3339());
         self.db
             .query(format!(
-                "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out IN $entity_ids AND in IN (SELECT VALUE id FROM note WHERE {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC, out ASC LIMIT $limit"
+                "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out IN $entity_ids AND in IN (SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC, out ASC LIMIT $limit"
             ))
             .bind(("entity_ids", entity_ids.to_vec()))
             .bind(("limit", limit))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
             .await?
             .take(0)
             .map_err(Into::into)

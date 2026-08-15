@@ -560,7 +560,12 @@ impl SearchAgent {
             .collect::<HashMap<_, _>>();
         let entity_seed_ids = self
             .repo
-            .graph_notes_for_entities(&entity_ids, self.graph.max_seed_notes)
+            .graph_notes_for_entities(
+                &entity_ids,
+                self.graph.max_seed_notes,
+                since,
+                source_uri.clone(),
+            )
             .await?;
 
         // `auto` is deliberately conservative: it activates only when a
@@ -950,7 +955,7 @@ mod tests {
     use super::*;
     use crate::context_packing::build_augment_context_from_hits;
     use crate::DeterministicEmbedder;
-    use graphrag_core::{EdgeType, Entity, EntityType, Note};
+    use graphrag_core::{EdgeType, Entity, EntityType, Note, SourceType};
     use graphrag_db::{compatibility::embedding_metadata, init_memory, Repository};
     use std::sync::Arc;
 
@@ -1460,6 +1465,109 @@ mod tests {
             graph.query_entities.len() == 1
                 && matches!(graph.query_entities[0].as_str(), "Alpha" | "Beta" | "Gamma")
         }));
+    }
+
+    #[tokio::test]
+    async fn graph_entity_seed_filters_apply_before_the_unique_seed_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut excluded = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "excluded.md".into(),
+                "fixture://excluded.md".into(),
+                "excluded".into(),
+                "sha256:excluded".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let excluded_note = repo
+            .create_note(
+                Note::new("excluded seed")
+                    .with_source(excluded.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(excluded.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut excluded.source)
+            .await
+            .unwrap();
+
+        let mut eligible = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "eligible.md".into(),
+                "fixture://eligible.md".into(),
+                "eligible".into(),
+                "sha256:eligible".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let eligible_note = repo
+            .create_note(
+                Note::new("eligible seed")
+                    .with_source(eligible.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(eligible.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut eligible.source)
+            .await
+            .unwrap();
+
+        let mut entity = Entity::new("Scoped", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        for note in [&excluded_note, &eligible_note] {
+            repo.link_note_to_entity(note.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+
+        let seeds = repo
+            .graph_notes_for_entities(
+                &[entity.id.as_ref().unwrap().clone()],
+                1,
+                Some(Utc::now() - Duration::hours(1)),
+                Some("fixture://eligible.md".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(
+            record_id_to_string(&seeds[0].note_id),
+            record_id_to_string(eligible_note.id.as_ref().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_entity_matching_uses_whole_tokens_or_safe_prefixes_not_substrings() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        for name in ["Chair", "Email relay"] {
+            let mut entity = Entity::new(name, EntityType::Project);
+            entity.metadata = serde_json::json!({});
+            repo.upsert_entity(entity).await.unwrap();
+        }
+        let mut atlas = Entity::new("Atlas service", EntityType::Project);
+        atlas.metadata = serde_json::json!({"aliases": ["atlas"]});
+        let atlas = repo.upsert_entity(atlas).await.unwrap();
+
+        assert!(repo.find_graph_entities("ai", 10).await.unwrap().is_empty());
+        let prefix_matches = repo
+            .find_graph_entities("atla deployment", 10)
+            .await
+            .unwrap();
+        assert!(prefix_matches
+            .iter()
+            .any(|entity| entity.id == *atlas.id.as_ref().unwrap()));
+        let alias_phrase_matches = repo
+            .find_graph_entities("where is atlas deployed", 10)
+            .await
+            .unwrap();
+        assert!(alias_phrase_matches
+            .iter()
+            .any(|entity| entity.id == *atlas.id.as_ref().unwrap()));
     }
 
     #[tokio::test]
