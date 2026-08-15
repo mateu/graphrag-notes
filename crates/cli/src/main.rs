@@ -14,18 +14,21 @@ use eval::{
 };
 use graphrag_agents::{
     AugmentDiagnostics, AugmentOptions, ChatImportMode, ChatIngestOptions, GardenerAgent,
-    InferenceProviderConfig, InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig,
-    ProcessingConfig, ProcessingRunResult, ResilientEmbedder, ResilientEntityExtractor,
-    SearchAgent, SearchHitType, SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
+    GraphEvidence, GraphMode, GraphPathStep, GraphRetrievalConfig, InferenceProviderConfig,
+    InferenceProviders, LibrarianAgent, LibrarianRuntimeConfig, ProcessingConfig,
+    ProcessingRunResult, ResilientEmbedder, ResilientEntityExtractor, SearchAgent, SearchHitType,
+    SearchScope, SharedEmbedder, SharedEntityExtractor, TokenCountMode,
 };
 use graphrag_config::{AugmentConfig, CliOverrides, RuntimeConfig, SearchConfig};
 use graphrag_core::{record_id_to_string, ChatExport, ProposedEdgeStatus, Source};
 use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
-    init_memory, init_persistent, migrations, parse_record_id, ProcessingJob, ProcessingJobType,
-    Repository, SourceDeleteSummary,
+    init_memory, init_persistent, migrations, parse_record_id,
+    repository::RelatedNotes,
+    ProcessingJob, ProcessingJobType, Repository, SourceDeleteSummary,
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{
@@ -33,7 +36,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 /// GraphRAG Notes - An evolving knowledge graph for your notes
@@ -179,6 +182,10 @@ enum Commands {
         /// Include graph context
         #[arg(short, long)]
         context: bool,
+
+        /// Accepted-edge graph retrieval policy
+        #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
+        graph: GraphModeArg,
     },
 
     /// Build prompt-ready augmentation context with citations
@@ -213,6 +220,10 @@ enum Commands {
         /// Approximate max tokens per chunk
         #[arg(long)]
         max_chunk_tokens: Option<usize>,
+
+        /// Accepted-edge graph retrieval policy
+        #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
+        graph: GraphModeArg,
     },
 
     /// Evaluate augmentation retrieval quality from a JSON/JSONL test set
@@ -544,6 +555,23 @@ enum SearchScopeArg {
     All,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum GraphModeArg {
+    Off,
+    Auto,
+    On,
+}
+
+impl From<GraphModeArg> for GraphMode {
+    fn from(value: GraphModeArg) -> Self {
+        match value {
+            GraphModeArg::Off => Self::Off,
+            GraphModeArg::Auto => Self::Auto,
+            GraphModeArg::On => Self::On,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum DoctorFormat {
     Human,
@@ -658,20 +686,35 @@ fn configured_search_agent(
         "weighted" => FusionStrategy::Weighted,
         _ => FusionStrategy::ReciprocalRank,
     };
-    SearchAgent::new(repo, embedder).with_fusion_config(
-        FusionConfig {
-            strategy,
-            rrf_k: search.rrf_k,
-            vector_weight: search.vector_weight,
-            fulltext_weight: search.fulltext_weight,
-            candidate_pool_multiplier: search.candidate_pool_multiplier,
-            candidate_pool_min: search.candidate_pool_min,
-            candidate_pool_max: search.candidate_pool_max,
-        },
-        search.note_weight,
-        search.message_weight,
-        search.conversation_summary_weight,
-    )
+    SearchAgent::new(repo, embedder)
+        .with_fusion_config(
+            FusionConfig {
+                strategy,
+                rrf_k: search.rrf_k,
+                vector_weight: search.vector_weight,
+                fulltext_weight: search.fulltext_weight,
+                candidate_pool_multiplier: search.candidate_pool_multiplier,
+                candidate_pool_min: search.candidate_pool_min,
+                candidate_pool_max: search.candidate_pool_max,
+            },
+            search.note_weight,
+            search.message_weight,
+            search.conversation_summary_weight,
+        )
+        .with_graph_config(GraphRetrievalConfig {
+            enabled: search.graph_enabled,
+            max_seed_entities: search.graph_max_seed_entities,
+            max_seed_notes: search.graph_max_seed_notes,
+            max_hops: search.graph_max_hops,
+            per_node_fanout: search.graph_per_node_fanout,
+            allowed_edge_types: search.graph_allowed_edge_types.clone(),
+            allow_outbound: search.graph_allow_outbound,
+            allow_inbound: search.graph_allow_inbound,
+            min_confidence: search.graph_min_confidence,
+            per_hop_decay: search.graph_per_hop_decay,
+            candidate_cap: search.graph_candidate_cap,
+            seed_score: search.graph_seed_score,
+        })
 }
 
 fn augment_options(
@@ -697,13 +740,16 @@ fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> String {
         TokenCountMode::Estimated => "estimated",
     };
     format!(
-        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_entity_filter={}",
+        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_entity_filter={}; graph_considered={}; graph_selected={}; graph_dropped={}",
         diagnostics.header_tokens,
         diagnostics.dropped_duplicates,
         diagnostics.dropped_near_duplicates,
         diagnostics.dropped_for_relevance,
         diagnostics.dropped_for_budget,
         diagnostics.dropped_for_entity_filter,
+        diagnostics.graph_candidates_considered,
+        diagnostics.graph_candidates_selected,
+        diagnostics.graph_candidates_dropped,
     )
 }
 
@@ -988,6 +1034,7 @@ async fn main() -> Result<()> {
             since_days,
             source_uri,
             context,
+            graph,
         } => {
             cmd_search(
                 repo,
@@ -998,6 +1045,7 @@ async fn main() -> Result<()> {
                 since_days,
                 source_uri,
                 context,
+                graph,
                 config.search.clone(),
             )
             .await?;
@@ -1043,6 +1091,7 @@ async fn main() -> Result<()> {
             entity,
             max_tokens,
             max_chunk_tokens,
+            graph,
         } => {
             cmd_augment(
                 repo,
@@ -1055,6 +1104,7 @@ async fn main() -> Result<()> {
                 entity,
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
+                graph,
                 config.search.clone(),
                 config.augment.clone(),
             )
@@ -1956,16 +2006,17 @@ async fn cmd_search(
     since_days: Option<u32>,
     source_uri: Option<String>,
     context: bool,
+    graph: GraphModeArg,
     search_config: SearchConfig,
 ) -> Result<()> {
-    let search = configured_search_agent(repo, tei, &search_config);
+    let search = configured_search_agent(repo.clone(), tei, &search_config);
     let scope = match scope {
         SearchScopeArg::Notes => SearchScope::Notes,
         SearchScopeArg::Messages => SearchScope::Messages,
         SearchScopeArg::All => SearchScope::All,
     };
 
-    if context && scope == SearchScope::Notes {
+    if context && scope == SearchScope::Notes && graph == GraphModeArg::Off {
         let results = search
             .search_with_context_filtered(&query, limit, since_days, source_uri)
             .await?;
@@ -2007,17 +2058,44 @@ async fn cmd_search(
         }
 
         let results = search
-            .search_with_scope(&query, limit, scope, since_days, source_uri)
+            .search_with_scope_graph(&query, limit, scope, since_days, source_uri, graph.into())
             .await?;
 
-        if results.is_empty() {
+        if results.hits.is_empty() {
             println!("No results found.");
             return Ok(());
         }
 
-        println!("Found {} results:\n", results.len());
+        println!("Found {} results:\n", results.hits.len());
+        println!(
+            "Graph: entities={} considered={} selected={} dropped={}\n",
+            results.summary.entities_matched,
+            results.summary.candidates_considered,
+            results.summary.candidates_selected,
+            results.summary.candidates_dropped,
+        );
 
-        for (i, r) in results.iter().enumerate() {
+        // `--context` predates graph retrieval and remains an independent
+        // accepted-edge summary. Keep it for the default `--graph=auto`
+        // path as well as explicit modes; graph evidence is additive, not a
+        // replacement for get_related_notes output.
+        let related_by_note = if context && scope == SearchScope::Notes {
+            let context_repo = repo.clone();
+            best_effort_related_notes(&results.hits, move |id| {
+                let repo = context_repo.clone();
+                async move {
+                    // `best_effort_related_notes` validates the primary ID
+                    // before invoking this lookup.
+                    let note_id = parse_record_id(&id, Some("note"))?;
+                    Ok::<_, anyhow::Error>(repo.get_related_notes(&note_id).await?)
+                }
+            })
+            .await?
+        } else {
+            HashMap::new()
+        };
+
+        for (i, r) in results.hits.iter().enumerate() {
             let kind = match r.hit_type {
                 SearchHitType::Note => "note",
                 SearchHitType::Message => "message",
@@ -2031,6 +2109,16 @@ async fn cmd_search(
             );
             println!("   ID: {}", r.id);
             println!("   Score: {:.3}", r.score);
+            if let Some(graph) = r.graph.as_ref() {
+                println!("   Graph path: {}", render_search_graph_evidence(graph),);
+            }
+            if let Some(related) = related_by_note.get(&r.id) {
+                let total =
+                    related.supporting.len() + related.contradicting.len() + related.related.len();
+                if total > 0 {
+                    println!("   → {} related notes", total);
+                }
+            }
             if let Some(ref conversation_uuid) = r.conversation_uuid {
                 println!("   Conversation UUID: {}", conversation_uuid);
             }
@@ -2057,6 +2145,46 @@ async fn cmd_search(
     Ok(())
 }
 
+async fn best_effort_related_notes<F, Fut, E>(
+    hits: &[graphrag_agents::search::ScopedSearchResult],
+    mut lookup: F,
+) -> Result<HashMap<String, RelatedNotes>>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<RelatedNotes, E>>,
+    E: std::fmt::Display,
+{
+    let mut related = HashMap::new();
+    for hit in hits
+        .iter()
+        .filter(|hit| hit.hit_type == SearchHitType::Note)
+    {
+        // A malformed primary search ID remains a command error. Only the
+        // additive lookup below is intentionally non-fatal.
+        parse_record_id(&hit.id, Some("note"))?;
+        retain_related_note_lookup(&mut related, hit.id.clone(), lookup(hit.id.clone()).await);
+    }
+    Ok(related)
+}
+
+fn retain_related_note_lookup<E: std::fmt::Display>(
+    related: &mut HashMap<String, RelatedNotes>,
+    id: String,
+    result: std::result::Result<RelatedNotes, E>,
+) {
+    match result {
+        Ok(notes) => {
+            related.insert(id, notes);
+        }
+        Err(error) => {
+            // Context is additive. Preserve already-retrieved primary
+            // results and successful note summaries if one enrichment query
+            // fails, while keeping the failure observable.
+            warn!(note_id = %id, error = %error, "unable to load related-note context");
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_augment(
     repo: Repository,
@@ -2069,6 +2197,7 @@ async fn cmd_augment(
     entity: Option<String>,
     max_tokens: usize,
     max_chunk_tokens: usize,
+    graph: GraphModeArg,
     search_config: SearchConfig,
     augment_config: AugmentConfig,
 ) -> Result<()> {
@@ -2084,13 +2213,14 @@ async fn cmd_augment(
 
     let search = configured_search_agent(repo, tei, &search_config);
     let ctx = search
-        .build_augmented_context(
+        .build_augmented_context_with_graph(
             &query,
             scope,
             since_days,
             source_uri,
             entity.clone(),
             augment_options(limit, max_tokens, max_chunk_tokens, &augment_config),
+            graph.into(),
         )
         .await?;
 
@@ -2135,6 +2265,9 @@ async fn cmd_augment(
         if let Some(created_at) = chunk.created_at {
             provenance.push_str(&format!(", created_at={}", created_at.to_rfc3339()));
         }
+        if let Some(graph) = chunk.graph.as_ref() {
+            provenance.push_str(&render_augment_graph_evidence(graph));
+        }
         println!(
             "  [C{}] {} | score={:.3} | tokens={} | {}",
             chunk.citation, hit_kind, chunk.score, chunk.approx_tokens, provenance
@@ -2142,6 +2275,51 @@ async fn cmd_augment(
     }
 
     Ok(())
+}
+
+/// Keep terminal graph evidence reconstructable even when multiple edges share
+/// a type or a path has more than one hop. `GraphPathStep` is also serialized
+/// in structured agent output; this compact rendering retains the same record
+/// identities for the human CLI surfaces.
+fn render_graph_path(path: &[GraphPathStep], separator: &str) -> String {
+    path.iter()
+        .map(|step| {
+            format!(
+                "{}:{} edge={} endpoints={}→{} confidence={:.2}",
+                step.direction,
+                step.edge_type,
+                step.edge_id,
+                step.from_id,
+                step.to_id,
+                step.confidence
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn render_graph_citation(graph: &GraphEvidence, path_separator: &str) -> String {
+    format!(
+        "graph_seed={}, graph_hops={}, graph_decay={:.2}, graph_source_uri={}, graph_path={}, graph_provenance={}",
+        graph.seed_note_id,
+        graph.hops,
+        graph.decay,
+        graph.source_uri.as_deref().unwrap_or_default(),
+        render_graph_path(&graph.path, path_separator),
+        graph.provenance_ids.join(" | "),
+    )
+}
+
+fn render_search_graph_evidence(graph: &GraphEvidence) -> String {
+    format!(
+        "entities=[{}] {}",
+        graph.query_entities.join(", "),
+        render_graph_citation(graph, " -> "),
+    )
+}
+
+fn render_augment_graph_evidence(graph: &GraphEvidence) -> String {
+    format!(", {}", render_graph_citation(graph, " | "))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2964,10 +3142,13 @@ mod tests {
             dropped_for_relevance: 3,
             dropped_for_budget: 4,
             dropped_for_entity_filter: 5,
+            graph_candidates_considered: 6,
+            graph_candidates_selected: 2,
+            graph_candidates_dropped: 4,
         };
         assert_eq!(
             packing_diagnostics_text(&diagnostics),
-            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5"
+            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5; graph_considered=6; graph_selected=2; graph_dropped=4"
         );
     }
 
@@ -2981,6 +3162,152 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["graphrag", "garden", "apply"]).is_err());
+    }
+
+    #[test]
+    fn search_and_augment_accept_explicit_graph_modes() {
+        let search = Cli::try_parse_from(["graphrag", "search", "atlas", "--graph=off"]).unwrap();
+        assert!(matches!(
+            search.command,
+            Commands::Search {
+                graph: GraphModeArg::Off,
+                ..
+            }
+        ));
+
+        let augment =
+            Cli::try_parse_from(["graphrag", "augment", "atlas", "--graph", "on"]).unwrap();
+        assert!(matches!(
+            augment.command,
+            Commands::Augment {
+                graph: GraphModeArg::On,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn graph_path_rendering_retains_edge_and_endpoint_record_ids() {
+        let path = vec![
+            GraphPathStep {
+                edge_id: "note_edge:one".into(),
+                edge_type: "supports".into(),
+                direction: "outbound".into(),
+                confidence: 0.9,
+                from_id: "note:seed".into(),
+                to_id: "note:middle".into(),
+            },
+            GraphPathStep {
+                edge_id: "note_edge:two".into(),
+                edge_type: "contradicts".into(),
+                direction: "inbound".into(),
+                confidence: 0.75,
+                from_id: "note:target".into(),
+                to_id: "note:middle".into(),
+            },
+        ];
+
+        assert_eq!(
+            render_graph_path(&path, " -> "),
+            "outbound:supports edge=note_edge:one endpoints=note:seed→note:middle confidence=0.90 -> inbound:contradicts edge=note_edge:two endpoints=note:target→note:middle confidence=0.75"
+        );
+    }
+
+    #[test]
+    fn graph_citation_rendering_retains_source_uri_and_reconstructable_path() {
+        let graph = GraphEvidence {
+            query_entities: vec!["Atlas".into()],
+            seed_note_id: "note:seed".into(),
+            path: vec![GraphPathStep {
+                edge_id: "note_edge:one".into(),
+                edge_type: "supports".into(),
+                direction: "outbound".into(),
+                confidence: 0.9,
+                from_id: "note:seed".into(),
+                to_id: "note:target".into(),
+            }],
+            hops: 1,
+            decay: 0.8,
+            score: 0.72,
+            source_uri: Some("file:///notes/atlas.md".into()),
+            provenance_ids: vec!["message:provenance".into()],
+        };
+
+        assert_eq!(
+            render_graph_citation(&graph, " | "),
+            "graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+        );
+        assert_eq!(
+            render_search_graph_evidence(&graph),
+            "entities=[Atlas] graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+        );
+        assert_eq!(
+            render_augment_graph_evidence(&graph),
+            ", graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_mode_context_enrichment_keeps_primary_hits_after_one_lookup_failure() {
+        let hits = vec![
+            graphrag_agents::search::ScopedSearchResult {
+                hit_type: SearchHitType::Note,
+                id: "note:available".into(),
+                title: Some("available primary hit".into()),
+                content: "available".into(),
+                created_at: None,
+                source_uri: None,
+                score: 1.0,
+                fusion: Default::default(),
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+            graphrag_agents::search::ScopedSearchResult {
+                hit_type: SearchHitType::Note,
+                id: "note:unavailable".into(),
+                title: Some("unavailable primary hit".into()),
+                content: "unavailable".into(),
+                created_at: None,
+                source_uri: None,
+                score: 0.9,
+                fusion: Default::default(),
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+        ];
+        let context = best_effort_related_notes(&hits, |id| async move {
+            if id == "note:unavailable" {
+                Err("injected related-note lookup failure")
+            } else {
+                Ok(RelatedNotes::default())
+            }
+        })
+        .await
+        .unwrap();
+
+        // Both graph-capable command forms flow through this same enrichment
+        // path, which must retain primary hits and successful context when a
+        // separate related-note lookup fails.
+        for graph in ["auto", "on"] {
+            let cli =
+                Cli::try_parse_from(["graphrag", "search", "atlas", "--context", "--graph", graph])
+                    .unwrap();
+            assert!(matches!(
+                cli.command,
+                Commands::Search {
+                    context: true,
+                    graph: GraphModeArg::Auto | GraphModeArg::On,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(hits.len(), 2, "primary graph search hits are unchanged");
+        assert_eq!(context.len(), 1, "only the failed enrichment is omitted");
+        assert!(context.contains_key("note:available"));
     }
 
     #[test]

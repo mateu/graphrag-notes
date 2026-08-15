@@ -2,17 +2,114 @@
 
 use crate::{inference::validate_embedding_dim, Result, SharedEmbedder};
 use chrono::{Duration, Utc};
-use graphrag_core::record_id_to_string;
+use graphrag_core::{record_id_to_string, Entity};
 use graphrag_db::compatibility::EmbeddingIdentity;
 use graphrag_db::repository::{
-    ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
+    ConversationSearchResult, GraphEntityNoteSeed, MessageSearchResult, NoteEdgeRow, RelatedNotes,
+    SearchResult, SimilarNote,
 };
 use graphrag_db::{
     fusion::{self, FusionConfig, FusionEvidence},
     Repository,
 };
 
+use serde::Serialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use surrealdb::types::RecordId;
 use tracing::{debug, info, instrument};
+
+/// Per-invocation graph policy. `auto` runs only when a bounded local graph
+/// candidate exists; `on` uses the same safe bounds but makes the request
+/// explicit; `off` reproduces the pre-graph ranking path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphMode {
+    Off,
+    Auto,
+    On,
+}
+
+/// Validated bounds for the accepted-edge graph retrieval channel.
+#[derive(Debug, Clone)]
+pub struct GraphRetrievalConfig {
+    pub enabled: bool,
+    pub max_seed_entities: usize,
+    pub max_seed_notes: usize,
+    pub max_hops: usize,
+    pub per_node_fanout: usize,
+    pub allowed_edge_types: Vec<String>,
+    pub allow_outbound: bool,
+    pub allow_inbound: bool,
+    pub min_confidence: f32,
+    pub per_hop_decay: f32,
+    pub candidate_cap: usize,
+    /// Fixed graph-channel score before hop/confidence decay. It shares the
+    /// existing final sorter rather than creating a second ranker.
+    pub seed_score: f32,
+}
+
+impl Default for GraphRetrievalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_seed_entities: 4,
+            max_seed_notes: 12,
+            max_hops: 1,
+            per_node_fanout: 8,
+            allowed_edge_types: vec![
+                "supports".into(),
+                "contradicts".into(),
+                "derived_from".into(),
+                "related_to".into(),
+            ],
+            allow_outbound: true,
+            allow_inbound: true,
+            min_confidence: 0.0,
+            per_hop_decay: 0.8,
+            candidate_cap: 32,
+            seed_score: 0.03,
+        }
+    }
+}
+
+/// Human-reconstructable graph path retained from retrieval through context
+/// packing and CLI citations.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GraphPathStep {
+    pub edge_id: String,
+    pub edge_type: String,
+    pub direction: String,
+    pub confidence: f32,
+    pub from_id: String,
+    pub to_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GraphEvidence {
+    pub query_entities: Vec<String>,
+    pub seed_note_id: String,
+    pub path: Vec<GraphPathStep>,
+    pub hops: usize,
+    pub decay: f32,
+    pub score: f32,
+    pub source_uri: Option<String>,
+    /// Original chat record IDs when the note was derived from imported chat
+    /// content. File-backed provenance remains in `source_uri`.
+    pub provenance_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct GraphRetrievalSummary {
+    pub entities_matched: usize,
+    pub candidates_considered: usize,
+    pub candidates_selected: usize,
+    pub candidates_dropped: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphSearchResults {
+    pub hits: Vec<ScopedSearchResult>,
+    pub summary: GraphRetrievalSummary,
+}
 
 /// Search result with optional graph context
 #[derive(Debug)]
@@ -50,6 +147,10 @@ pub struct ScopedSearchResult {
     pub conversation_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
+    /// Present only when this note was reached through the bounded accepted
+    /// graph channel. Ordinary hybrid candidates retain their existing
+    /// evidence unchanged.
+    pub graph: Option<GraphEvidence>,
 }
 
 pub use crate::context_packing::{
@@ -65,6 +166,7 @@ pub struct SearchAgent {
     note_weight: f32,
     message_weight: f32,
     conversation_summary_weight: f32,
+    graph: GraphRetrievalConfig,
 }
 
 impl SearchAgent {
@@ -77,6 +179,7 @@ impl SearchAgent {
             note_weight: 1.0,
             message_weight: 1.0,
             conversation_summary_weight: 1.0,
+            graph: GraphRetrievalConfig::default(),
         }
     }
 
@@ -101,6 +204,11 @@ impl SearchAgent {
         self.note_weight = note_weight;
         self.message_weight = message_weight;
         self.conversation_summary_weight = conversation_summary_weight;
+        self
+    }
+
+    pub fn with_graph_config(mut self, graph: GraphRetrievalConfig) -> Self {
+        self.graph = graph;
         self
     }
 
@@ -221,6 +329,46 @@ impl SearchAgent {
         since_days: Option<u32>,
         source_uri: Option<String>,
     ) -> Result<Vec<ScopedSearchResult>> {
+        Ok(self
+            .search_with_scope_graph(query, limit, scope, since_days, source_uri, GraphMode::Off)
+            .await?
+            .hits)
+    }
+
+    /// Search through the normal hybrid channels and, when requested, merge
+    /// bounded accepted-edge candidates into the same deterministic sorter.
+    #[instrument(skip(self))]
+    pub async fn search_with_scope_graph(
+        &self,
+        query: &str,
+        limit: usize,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+        graph_mode: GraphMode,
+    ) -> Result<GraphSearchResults> {
+        self.search_with_scope_graph_filtered(
+            query, limit, scope, since_days, source_uri, graph_mode, None,
+        )
+        .await
+        .map(|(results, _)| results)
+    }
+
+    /// Internal filtered retrieval path for augmentation. The entity filter is
+    /// applied after all retrieval channels are merged but before their shared
+    /// rank/limit step, so graph-only non-matches cannot consume the context
+    /// fetch budget.
+    #[allow(clippy::too_many_arguments)]
+    async fn search_with_scope_graph_filtered(
+        &self,
+        query: &str,
+        limit: usize,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+        graph_mode: GraphMode,
+        entity_filter: Option<&str>,
+    ) -> Result<(GraphSearchResults, usize)> {
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
         let embedding = self.embed_query(query).await?;
         let mut scoped_results = Vec::new();
@@ -232,7 +380,7 @@ impl SearchAgent {
                     query,
                     embedding.clone(),
                     limit,
-                    since,
+                    since.clone(),
                     source_uri.clone(),
                     &self.fusion,
                 )
@@ -271,7 +419,7 @@ impl SearchAgent {
                     embedding,
                     limit,
                     since,
-                    source_uri,
+                    source_uri.clone(),
                     &self.fusion,
                 )
                 .await?;
@@ -282,12 +430,63 @@ impl SearchAgent {
             );
         }
 
+        let mut summary = GraphRetrievalSummary::default();
+        if !matches!(graph_mode, GraphMode::Off)
+            && self.graph.enabled
+            && matches!(scope, SearchScope::Notes | SearchScope::All)
+        {
+            let graph = self
+                .graph_candidates(
+                    query,
+                    &scoped_results,
+                    since,
+                    source_uri.clone(),
+                    matches!(graph_mode, GraphMode::Auto),
+                )
+                .await?;
+            summary = graph.summary;
+            // `auto` has no special score path: if there are no useful local
+            // entities/seeds/neighbors, graph.hits is empty and baseline
+            // ranking is bit-for-bit preserved.
+            if !graph.hits.is_empty() || matches!(graph_mode, GraphMode::On) {
+                merge_graph_hits(&mut scoped_results, graph.hits);
+            }
+        }
+
+        let mut dropped_for_entity_filter = 0usize;
+        if let Some(filter) = entity_filter {
+            let mut filtered = Vec::with_capacity(scoped_results.len());
+            for hit in scoped_results {
+                if hit.hit_type == SearchHitType::Note
+                    && !self.repo.note_has_entity_name(&hit.id, filter).await?
+                {
+                    dropped_for_entity_filter += 1;
+                    continue;
+                }
+                filtered.push(hit);
+            }
+            scoped_results = filtered;
+        }
+
         rank_scoped_results(&mut scoped_results);
         if scoped_results.len() > limit {
             scoped_results.truncate(limit);
         }
+        summary.candidates_selected = scoped_results
+            .iter()
+            .filter(|hit| hit.graph.is_some())
+            .count();
+        summary.candidates_dropped = summary
+            .candidates_considered
+            .saturating_sub(summary.candidates_selected);
 
-        Ok(scoped_results)
+        Ok((
+            GraphSearchResults {
+                hits: scoped_results,
+                summary,
+            },
+            dropped_for_entity_filter,
+        ))
     }
 
     /// Retrieve ranked context snippets and package them for prompt augmentation.
@@ -301,6 +500,31 @@ impl SearchAgent {
         entity_filter: Option<String>,
         options: AugmentOptions,
     ) -> Result<AugmentContext> {
+        self.build_augmented_context_with_graph(
+            query,
+            scope,
+            since_days,
+            source_uri,
+            entity_filter,
+            options,
+            GraphMode::Auto,
+        )
+        .await
+    }
+
+    /// Augmentation counterpart to [`Self::search_with_scope_graph`]. Graph
+    /// candidates are packed by the existing budget/diversity implementation.
+    #[instrument(skip(self))]
+    pub async fn build_augmented_context_with_graph(
+        &self,
+        query: &str,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+        entity_filter: Option<String>,
+        options: AugmentOptions,
+        graph_mode: GraphMode,
+    ) -> Result<AugmentContext> {
         if options.max_chunks == 0 || options.max_total_tokens == 0 || options.max_chunk_tokens == 0
         {
             return Ok(crate::context_packing::empty_context(
@@ -313,33 +537,274 @@ impl SearchAgent {
         }
 
         let fetch_limit = (options.max_chunks * 4).clamp(options.max_chunks, 200);
-        let mut hits = self
-            .search_with_scope(query, fetch_limit, scope, since_days, source_uri)
+        let (graph_results, dropped_for_entity_filter) = self
+            .search_with_scope_graph_filtered(
+                query,
+                fetch_limit,
+                scope,
+                since_days,
+                source_uri,
+                graph_mode,
+                entity_filter.as_deref(),
+            )
+            .await?;
+        let hits = graph_results.hits;
+
+        Ok(
+            crate::context_packing::build_augment_context_from_hits_with_graph(
+                query.to_string(),
+                scope,
+                entity_filter,
+                hits,
+                options,
+                dropped_for_entity_filter,
+                graph_results.summary,
+            ),
+        )
+    }
+
+    async fn graph_candidates(
+        &self,
+        query: &str,
+        baseline: &[ScopedSearchResult],
+        since: Option<chrono::DateTime<Utc>>,
+        source_uri: Option<String>,
+        require_entity_seed: bool,
+    ) -> Result<GraphSearchResults> {
+        let normalized_query = Entity::canonicalize(query);
+        let entities = self
+            .repo
+            .find_graph_entities(&normalized_query, self.graph.max_seed_entities)
+            .await?;
+        let entity_ids = entities
+            .iter()
+            .map(|entity| entity.id.clone())
+            .collect::<Vec<_>>();
+        let entity_names = entities
+            .iter()
+            .map(|entity| (record_id_to_string(&entity.id), entity.name.clone()))
+            .collect::<HashMap<_, _>>();
+        let entity_ranks = entity_ids
+            .iter()
+            .enumerate()
+            .map(|(rank, entity_id)| (record_id_to_string(entity_id), rank))
+            .collect::<HashMap<_, _>>();
+        let entity_seed_ids = self
+            .repo
+            .graph_notes_for_entities(
+                &entity_ids,
+                self.graph.max_seed_notes,
+                since,
+                source_uri.clone(),
+            )
             .await?;
 
-        let mut dropped_for_entity_filter = 0usize;
-        if let Some(filter) = entity_filter.as_ref() {
-            let mut filtered = Vec::with_capacity(hits.len());
-            for hit in hits {
-                if hit.hit_type == SearchHitType::Note
-                    && !self.repo.note_has_entity_name(&hit.id, filter).await?
-                {
-                    dropped_for_entity_filter += 1;
-                    continue;
-                }
-                filtered.push(hit);
+        // `auto` is deliberately conservative: it activates only when a
+        // local entity match provides useful graph evidence. Explicit `on`
+        // may additionally use ordinary hybrid notes as bounded seeds.
+        let mut frontier = BTreeMap::<String, GraphFrontier>::new();
+        let selected_seed_note_ids =
+            select_graph_seed_note_ids(&entity_ids, &entity_seed_ids, self.graph.max_seed_notes);
+        for seed in entity_seed_ids
+            .into_iter()
+            .filter(|seed| selected_seed_note_ids.contains(&record_id_to_string(&seed.note_id)))
+        {
+            let id = record_id_to_string(&seed.note_id);
+            let entity_name = entity_names
+                .get(&record_id_to_string(&seed.entity_id))
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let entity_rank = *entity_ranks
+                .get(&record_id_to_string(&seed.entity_id))
+                .expect("seed entity must come from the ranked entity query");
+            if let Some(existing) = frontier.get_mut(&id) {
+                existing.query_entities.extend(entity_name);
+                existing.query_entities.sort();
+                existing.query_entities.dedup();
+                existing.initial_entity_rank = existing.initial_entity_rank.min(entity_rank);
+            } else {
+                frontier.insert(
+                    id.clone(),
+                    GraphFrontier::seed(seed.note_id, id, entity_name, self.graph.seed_score)
+                        .with_initial_entity_rank(entity_rank),
+                );
             }
-            hits = filtered;
+        }
+        if !require_entity_seed {
+            for hit in baseline
+                .iter()
+                .filter(|hit| hit.hit_type == SearchHitType::Note)
+            {
+                if frontier.len() >= self.graph.max_seed_notes {
+                    break;
+                }
+                let raw = hit.id.strip_prefix("note:").unwrap_or(&hit.id);
+                let note_id = RecordId::new("note", raw);
+                frontier.entry(hit.id.clone()).or_insert_with(|| {
+                    GraphFrontier::seed(note_id, hit.id.clone(), Vec::new(), self.graph.seed_score)
+                });
+            }
         }
 
-        Ok(crate::context_packing::build_augment_context_from_hits(
-            query.to_string(),
-            scope,
-            entity_filter,
-            hits,
-            options,
-            dropped_for_entity_filter,
-        ))
+        let mut summary = GraphRetrievalSummary {
+            entities_matched: entities.len(),
+            ..Default::default()
+        };
+        if frontier.is_empty() || self.graph.candidate_cap == 0 {
+            return Ok(GraphSearchResults {
+                hits: Vec::new(),
+                summary,
+            });
+        }
+
+        let mut candidates = BTreeMap::<String, GraphEvidence>::new();
+        let mut current =
+            admit_initial_graph_frontier(frontier, &mut candidates, self.graph.candidate_cap);
+        for hop in 1..=self.graph.max_hops.min(2) {
+            if current.is_empty() {
+                break;
+            }
+            let ids = current
+                .values()
+                .map(|state| state.note_id.clone())
+                .collect::<Vec<_>>();
+            let visited_note_ids = current
+                .values()
+                .map(|state| {
+                    (
+                        state.id.clone(),
+                        state
+                            .visited
+                            .iter()
+                            .map(|id| RecordId::new("note", id.strip_prefix("note:").unwrap_or(id)))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            let edges = self
+                .repo
+                .graph_note_edges_excluding_visited(
+                    &ids,
+                    &self.graph.allowed_edge_types,
+                    self.graph.per_node_fanout,
+                    self.graph.allow_outbound,
+                    self.graph.allow_inbound,
+                    self.graph.min_confidence,
+                    since,
+                    source_uri.clone(),
+                    &visited_note_ids,
+                )
+                .await?;
+            let mut eligible = HashMap::<String, Vec<GraphFrontier>>::new();
+            for edge in edges {
+                for (from, neighbor, direction) in
+                    graph_edge_transitions(&edge, &current, &self.graph)
+                {
+                    let neighbor_id = record_id_to_string(&neighbor);
+                    if from.visited.contains(&neighbor_id) || neighbor_id == from.id {
+                        continue;
+                    }
+                    let confidence = edge.confidence.unwrap_or(1.0).clamp(0.0, 1.0);
+                    if confidence < self.graph.min_confidence {
+                        continue;
+                    }
+                    let score = from.score * self.graph.per_hop_decay * confidence;
+                    let decay = from.decay * self.graph.per_hop_decay;
+                    let mut path = from.path.clone();
+                    path.push(GraphPathStep {
+                        edge_id: record_id_to_string(&edge.id),
+                        edge_type: edge.edge_type.clone(),
+                        direction: direction.to_string(),
+                        confidence,
+                        from_id: from.id.clone(),
+                        to_id: neighbor_id.clone(),
+                    });
+                    let mut visited = from.visited.clone();
+                    visited.insert(neighbor_id.clone());
+                    let state = GraphFrontier {
+                        note_id: neighbor,
+                        id: neighbor_id.clone(),
+                        query_entities: from.query_entities.clone(),
+                        seed_note_id: from.seed_note_id.clone(),
+                        path,
+                        visited,
+                        score,
+                        decay,
+                        initial_entity_rank: from.initial_entity_rank,
+                    };
+                    eligible.entry(from.id.clone()).or_default().push(state);
+                }
+            }
+            let mut next = BTreeMap::<String, GraphFrontier>::new();
+            for states in eligible.values_mut() {
+                // Database row/table ordering is only a transport detail.
+                // Rank every usable transition before consuming this source
+                // node's fanout budget so a weaker early edge cannot starve a
+                // later stronger one.
+                states.sort_by(graph_transition_priority);
+                for state in states.drain(..).take(self.graph.per_node_fanout) {
+                    let replace = next
+                        .get(&state.id)
+                        .is_none_or(|existing| graph_transition_priority(&state, existing).is_lt());
+                    if replace {
+                        next.insert(state.id.clone(), state);
+                    }
+                }
+            }
+            current = admit_graph_frontier(next, &mut candidates, self.graph.candidate_cap, hop);
+        }
+
+        summary.candidates_considered = candidates.len();
+        let ids = candidates
+            .keys()
+            .map(|id| RecordId::new("note", id.strip_prefix("note:").unwrap_or(id)))
+            .collect::<Vec<_>>();
+        let records = self
+            .repo
+            .graph_notes_by_ids(&ids, since, source_uri)
+            .await?;
+        let provenance = self
+            .repo
+            .graph_note_provenance_ids(
+                &records
+                    .iter()
+                    .map(|record| record.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let mut hits = records
+            .into_iter()
+            .filter_map(|record| {
+                let id = record_id_to_string(&record.id);
+                candidates.remove(&id).map(|mut evidence| {
+                    evidence.source_uri = record.source_uri.clone();
+                    evidence.provenance_ids = provenance.get(&id).cloned().unwrap_or_default();
+                    self.from_graph_note_result(record, evidence)
+                })
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(GraphSearchResults { hits, summary })
+    }
+
+    fn from_graph_note_result(
+        &self,
+        result: SearchResult,
+        graph: GraphEvidence,
+    ) -> ScopedSearchResult {
+        let mut hit = self.from_note_result(result);
+        // Graph-only candidates share the final ranker with every other
+        // search scope. Apply the note channel's configured weight here just
+        // as `from_note_result` does, including an explicitly configured
+        // zero weight.
+        hit.score = graph.score * self.note_weight;
+        hit.fusion = FusionEvidence {
+            fused_score: graph.score,
+            ..Default::default()
+        };
+        hit.graph = Some(graph);
+        hit
     }
 
     fn from_note_result(&self, result: SearchResult) -> ScopedSearchResult {
@@ -355,6 +820,7 @@ impl SearchAgent {
             conversation_uuid: None,
             message_index: None,
             role: None,
+            graph: None,
         }
     }
 
@@ -375,6 +841,7 @@ impl SearchAgent {
             conversation_uuid: Some(result.conversation_uuid),
             message_index: Some(result.message_index),
             role: Some(result.role),
+            graph: None,
         }
     }
 
@@ -396,6 +863,7 @@ impl SearchAgent {
             conversation_uuid: Some(result.uuid),
             message_index: None,
             role: None,
+            graph: None,
         }
     }
 
@@ -419,6 +887,292 @@ impl SearchAgent {
             .await?;
 
         Ok(similar)
+    }
+}
+
+#[derive(Clone)]
+struct GraphFrontier {
+    note_id: RecordId,
+    id: String,
+    query_entities: Vec<String>,
+    seed_note_id: String,
+    path: Vec<GraphPathStep>,
+    visited: HashSet<String>,
+    score: f32,
+    decay: f32,
+    /// A lower value is a more specific/ranked local entity match. Hybrid
+    /// seeds have no entity match and sort after every entity-derived seed at
+    /// initial candidate admission.
+    initial_entity_rank: usize,
+}
+
+impl GraphFrontier {
+    fn seed(note_id: RecordId, id: String, query_entities: Vec<String>, score: f32) -> Self {
+        let mut visited = HashSet::new();
+        visited.insert(id.clone());
+        Self {
+            note_id,
+            seed_note_id: id.clone(),
+            id,
+            query_entities,
+            path: Vec::new(),
+            visited,
+            score,
+            decay: 1.0,
+            initial_entity_rank: usize::MAX,
+        }
+    }
+
+    fn with_initial_entity_rank(mut self, rank: usize) -> Self {
+        self.initial_entity_rank = rank;
+        self
+    }
+
+    fn evidence(&self, hop: Option<usize>) -> GraphEvidence {
+        GraphEvidence {
+            query_entities: self.query_entities.clone(),
+            seed_note_id: self.seed_note_id.clone(),
+            path: self.path.clone(),
+            hops: hop.unwrap_or(self.path.len()),
+            decay: self.decay,
+            score: self.score,
+            source_uri: None,
+            provenance_ids: Vec::new(),
+        }
+    }
+}
+
+fn ranked_frontier_states(frontier: &BTreeMap<String, GraphFrontier>) -> Vec<&GraphFrontier> {
+    let mut states = frontier.values().collect::<Vec<_>>();
+    states.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    states
+}
+
+/// Initial states additionally honor the deterministic local entity-match
+/// rank. Without this, equal seed scores would let note IDs displace a more
+/// specific query entity before the first graph traversal.
+fn ranked_initial_frontier_states(
+    frontier: &BTreeMap<String, GraphFrontier>,
+) -> Vec<&GraphFrontier> {
+    let mut states = frontier.values().collect::<Vec<_>>();
+    states.sort_by(|left, right| {
+        left.initial_entity_rank
+            .cmp(&right.initial_entity_rank)
+            .then_with(|| right.score.total_cmp(&left.score))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    states
+}
+
+/// Admit only the ranked next-hop states that fit the candidate budget. A
+/// state for an already selected note remains eligible at the cap because it
+/// can replace weaker evidence; rejected novel states are never expanded on a
+/// later hop.
+fn admit_graph_frontier(
+    next: BTreeMap<String, GraphFrontier>,
+    candidates: &mut BTreeMap<String, GraphEvidence>,
+    candidate_cap: usize,
+    hop: usize,
+) -> BTreeMap<String, GraphFrontier> {
+    let mut admitted = BTreeMap::new();
+    for state in ranked_frontier_states(&next) {
+        let existing = candidates.get(&state.id);
+        let evidence = state.evidence(Some(hop));
+        if let Some(existing) = existing {
+            if graph_evidence_priority(&evidence, existing).is_lt() {
+                candidates.insert(state.id.clone(), evidence);
+            }
+            admitted.insert(state.id.clone(), state.clone());
+            continue;
+        }
+        if candidates.len() < candidate_cap {
+            candidates.insert(state.id.clone(), evidence);
+            admitted.insert(state.id.clone(), state.clone());
+            continue;
+        }
+
+        let weakest = candidates
+            .iter()
+            .max_by(|(left_id, left), (right_id, right)| {
+                graph_candidate_priority(left_id, left, right_id, right)
+            });
+        if let Some((weakest_id, weakest_evidence)) = weakest {
+            if graph_candidate_priority(&state.id, &evidence, weakest_id, weakest_evidence).is_lt()
+            {
+                let weakest_id = weakest_id.clone();
+                candidates.remove(&weakest_id);
+                admitted.remove(&weakest_id);
+                candidates.insert(state.id.clone(), evidence);
+                admitted.insert(state.id.clone(), state.clone());
+            }
+        }
+    }
+    admitted
+}
+
+/// Initial entity/hybrid seeds receive the same ranked cap as later hops
+/// before any graph edge query. Entity-associated states populate initial
+/// graph evidence; hybrid-only seeds still act only as traversal anchors.
+fn admit_initial_graph_frontier(
+    frontier: BTreeMap<String, GraphFrontier>,
+    candidates: &mut BTreeMap<String, GraphEvidence>,
+    candidate_cap: usize,
+) -> BTreeMap<String, GraphFrontier> {
+    let mut admitted = BTreeMap::new();
+    for state in ranked_initial_frontier_states(&frontier)
+        .into_iter()
+        .take(candidate_cap)
+    {
+        if !state.query_entities.is_empty() {
+            candidates.insert(state.id.clone(), state.evidence(None));
+        }
+        admitted.insert(state.id.clone(), state.clone());
+    }
+    admitted
+}
+
+/// Choose bounded entity-derived seed notes without letting a high-degree
+/// entity consume every slot before later ranked entity matches are seen.
+/// The first pass reserves one distinct note per ranked entity when capacity
+/// permits; the second pass fills remaining slots in the same rank order.
+/// Callers then merge every retained note's entity associations into evidence.
+fn select_graph_seed_note_ids(
+    entity_ids: &[RecordId],
+    seeds: &[GraphEntityNoteSeed],
+    max_seed_notes: usize,
+) -> HashSet<String> {
+    if max_seed_notes == 0 {
+        return HashSet::new();
+    }
+
+    let mut seeds_by_entity = HashMap::<String, Vec<&GraphEntityNoteSeed>>::new();
+    for seed in seeds {
+        seeds_by_entity
+            .entry(record_id_to_string(&seed.entity_id))
+            .or_default()
+            .push(seed);
+    }
+
+    let mut selected = HashSet::new();
+    for entity_id in entity_ids {
+        if selected.len() >= max_seed_notes {
+            break;
+        }
+        if let Some(entity_seeds) = seeds_by_entity.get(&record_id_to_string(entity_id)) {
+            if let Some(seed) = entity_seeds
+                .iter()
+                .find(|seed| !selected.contains(&record_id_to_string(&seed.note_id)))
+            {
+                selected.insert(record_id_to_string(&seed.note_id));
+            }
+        }
+    }
+
+    for entity_id in entity_ids {
+        if selected.len() >= max_seed_notes {
+            break;
+        }
+        if let Some(entity_seeds) = seeds_by_entity.get(&record_id_to_string(entity_id)) {
+            for seed in entity_seeds {
+                if selected.len() >= max_seed_notes {
+                    break;
+                }
+                selected.insert(record_id_to_string(&seed.note_id));
+            }
+        }
+    }
+    selected
+}
+
+fn graph_transition_priority(left: &GraphFrontier, right: &GraphFrontier) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| {
+            left.path
+                .last()
+                .map(|step| step.edge_id.as_str())
+                .cmp(&right.path.last().map(|step| step.edge_id.as_str()))
+        })
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+fn graph_evidence_priority(left: &GraphEvidence, right: &GraphEvidence) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| graph_path_tie_break(&left.path, &right.path))
+        .then_with(|| left.seed_note_id.cmp(&right.seed_note_id))
+}
+
+/// Lower ordering is better. Record IDs make an otherwise equal eviction
+/// decision reproducible rather than depending on hash/map iteration.
+fn graph_candidate_priority(
+    left_id: &str,
+    left: &GraphEvidence,
+    right_id: &str,
+    right: &GraphEvidence,
+) -> std::cmp::Ordering {
+    graph_evidence_priority(left, right).then_with(|| left_id.cmp(right_id))
+}
+
+fn graph_path_tie_break(left: &[GraphPathStep], right: &[GraphPathStep]) -> std::cmp::Ordering {
+    for (left_step, right_step) in left.iter().zip(right) {
+        let ordering = left_step
+            .edge_id
+            .cmp(&right_step.edge_id)
+            .then_with(|| left_step.from_id.cmp(&right_step.from_id))
+            .then_with(|| left_step.to_id.cmp(&right_step.to_id))
+            .then_with(|| left_step.direction.cmp(&right_step.direction));
+        if !ordering.is_eq() {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn graph_edge_transitions<'a>(
+    edge: &'a NoteEdgeRow,
+    frontier: &'a BTreeMap<String, GraphFrontier>,
+    config: &'a GraphRetrievalConfig,
+) -> Vec<(&'a GraphFrontier, RecordId, &'static str)> {
+    let mut transitions = Vec::with_capacity(2);
+    let in_id = record_id_to_string(&edge.in_id);
+    let out_id = record_id_to_string(&edge.out_id);
+    if config.allow_outbound {
+        if let Some(state) = frontier.get(&in_id) {
+            transitions.push((state, edge.out_id.clone(), "outbound"));
+        }
+    }
+    if config.allow_inbound {
+        if let Some(state) = frontier.get(&out_id) {
+            transitions.push((state, edge.in_id.clone(), "inbound"));
+        }
+    }
+    transitions
+}
+
+/// Merge graph results by canonical record ID. Hybrid candidates keep their
+/// calibrated score while receiving graph evidence; graph-only notes enter the
+/// same final sorter as a new channel.
+fn merge_graph_hits(results: &mut Vec<ScopedSearchResult>, graph_hits: Vec<ScopedSearchResult>) {
+    let mut positions = results
+        .iter()
+        .enumerate()
+        .map(|(index, hit)| (hit.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    for graph_hit in graph_hits {
+        if let Some(index) = positions.get(&graph_hit.id).copied() {
+            results[index].graph = graph_hit.graph;
+        } else {
+            positions.insert(graph_hit.id.clone(), results.len());
+            results.push(graph_hit);
+        }
     }
 }
 
@@ -452,6 +1206,7 @@ mod tests {
     use super::*;
     use crate::context_packing::build_augment_context_from_hits;
     use crate::DeterministicEmbedder;
+    use graphrag_core::{EdgeType, Entity, EntityType, Note, SourceType};
     use graphrag_db::{compatibility::embedding_metadata, init_memory, Repository};
     use std::sync::Arc;
 
@@ -493,6 +1248,1475 @@ mod tests {
         assert!(embedding_metadata(&db).await.unwrap().is_none());
     }
 
+    #[tokio::test]
+    async fn graph_on_reaches_an_accepted_edge_and_off_preserves_baseline() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("Atlas planning overview"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("deferred migration evidence"))
+            .await
+            .unwrap();
+        let mut atlas = Entity::new("Atlas", EntityType::Project);
+        atlas.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(atlas).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.9),
+        )
+        .await
+        .unwrap();
+
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()));
+        let off = search
+            .search_with_scope_graph("Atlas", 10, SearchScope::Notes, None, None, GraphMode::Off)
+            .await
+            .unwrap();
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        assert!(off.hits.iter().all(|hit| hit.id != target_id));
+
+        let on = search
+            .search_with_scope_graph("Atlas", 10, SearchScope::Notes, None, None, GraphMode::On)
+            .await
+            .unwrap();
+        let target = on.hits.iter().find(|hit| hit.id == target_id).unwrap();
+        let evidence = target.graph.as_ref().unwrap();
+        assert_eq!(evidence.hops, 1);
+        assert_eq!(evidence.path[0].edge_type, "supports");
+        assert_eq!(evidence.path[0].direction, "outbound");
+        assert_eq!(on.summary.entities_matched, 1);
+    }
+
+    #[tokio::test]
+    async fn augment_entity_filter_applies_before_graph_candidates_consume_fetch_cap() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let graph_seed = repo
+            .create_note(Note::new("unmatched graph seed"))
+            .await
+            .unwrap();
+        let graph_neighbors = [
+            repo.create_note(Note::new("unmatched graph neighbor one"))
+                .await
+                .unwrap(),
+            repo.create_note(Note::new("unmatched graph neighbor two"))
+                .await
+                .unwrap(),
+            repo.create_note(Note::new("unmatched graph neighbor three"))
+                .await
+                .unwrap(),
+        ];
+        // This is an ordinary hybrid/full-text candidate. It must survive the
+        // four-result graph fetch budget because it is the only result linked
+        // to the requested entity filter.
+        let qualifying = repo
+            .create_note(Note::new("Graph X qualifying retrieval evidence"))
+            .await
+            .unwrap();
+
+        let mut graph_entity = Entity::new("Graph", EntityType::Project);
+        graph_entity.metadata = serde_json::json!({});
+        let graph_entity = repo.upsert_entity(graph_entity).await.unwrap();
+        let mut filter_entity = Entity::new("X", EntityType::Project);
+        filter_entity.metadata = serde_json::json!({});
+        let filter_entity = repo.upsert_entity(filter_entity).await.unwrap();
+        repo.link_note_to_entity(
+            graph_seed.id.as_ref().unwrap(),
+            graph_entity.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        repo.link_note_to_entity(
+            qualifying.id.as_ref().unwrap(),
+            filter_entity.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        for neighbor in &graph_neighbors {
+            repo.create_edge(
+                graph_seed.id.as_ref().unwrap(),
+                neighbor.id.as_ref().unwrap(),
+                EdgeType::Supports,
+                Some(1.0),
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut graph = GraphRetrievalConfig::default();
+        graph.max_seed_notes = 1;
+        graph.max_hops = 1;
+        graph.per_node_fanout = 3;
+        graph.candidate_cap = 4;
+        // Make the graph evidence decisively outrank the ordinary full-text
+        // candidate. Before filtering moved before ranking/truncation, these
+        // four non-X graph results would have left the context empty.
+        graph.seed_score = 10.0;
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(graph);
+
+        let context = search
+            .build_augmented_context_with_graph(
+                "Graph",
+                SearchScope::Notes,
+                None,
+                None,
+                Some("X".to_string()),
+                AugmentOptions {
+                    max_chunks: 1,
+                    max_total_tokens: 400,
+                    max_chunk_tokens: 100,
+                    ..Default::default()
+                },
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(context.chunks.len(), 1);
+        assert_eq!(
+            context.chunks[0].id,
+            record_id_to_string(qualifying.id.as_ref().unwrap())
+        );
+        assert_eq!(context.diagnostics.dropped_for_entity_filter, 4);
+    }
+
+    #[tokio::test]
+    async fn graph_only_notes_honor_zero_note_weight_before_all_scope_ranking() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("Weight-sensitive graph seed"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("graph-only neighboring note"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Weight seed", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_fusion_config(FusionConfig::default(), 0.0, 1.0, 1.0)
+            .search_with_scope_graph(
+                "Weight seed",
+                10,
+                SearchScope::All,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        let graph_only = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .expect("accepted neighbor should be included as a graph-only note");
+        assert!(graph_only.graph.is_some());
+        assert_eq!(graph_only.score, 0.0);
+
+        // The same all-scope final sorter must rank a positive message-channel
+        // score above the disabled graph-only note score.
+        let mut ranked = vec![
+            graph_only.clone(),
+            ScopedSearchResult {
+                hit_type: SearchHitType::Message,
+                id: "message:weighted".into(),
+                title: None,
+                content: "message result".into(),
+                created_at: None,
+                source_uri: None,
+                score: 0.01,
+                fusion: FusionEvidence {
+                    fused_score: 0.01,
+                    ..Default::default()
+                },
+                conversation_uuid: None,
+                message_index: None,
+                role: None,
+                graph: None,
+            },
+        ];
+        rank_scoped_results(&mut ranked);
+        assert_eq!(ranked[0].id, "message:weighted");
+    }
+
+    #[tokio::test]
+    async fn graph_two_hops_obeys_direction_confidence_and_cycle_bounds() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("Beacon overview"))
+            .await
+            .unwrap();
+        let middle = repo
+            .create_note(Note::new("middle evidence"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("final linked evidence"))
+            .await
+            .unwrap();
+        let low_confidence = repo.create_note(Note::new("unsafe drift")).await.unwrap();
+        let mut beacon = Entity::new("Beacon", EntityType::Project);
+        beacon.metadata = serde_json::json!({});
+        let beacon = repo.upsert_entity(beacon).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), beacon.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            middle.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.9),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            middle.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::DerivedFrom,
+            Some(0.9),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            low_confidence.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.2),
+        )
+        .await
+        .unwrap();
+        // This back edge must not reintroduce the seed as a graph result.
+        repo.create_edge(
+            target.id.as_ref().unwrap(),
+            seed.id.as_ref().unwrap(),
+            EdgeType::RelatedTo,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_hops = 2;
+        config.max_seed_notes = 1;
+        config.allowed_edge_types = vec!["supports".into(), "derived_from".into()];
+        config.allow_inbound = false;
+        config.min_confidence = 0.8;
+        let outbound = SearchAgent::new(repo.clone(), Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config.clone())
+            .search_with_scope_graph("Beacon", 10, SearchScope::Notes, None, None, GraphMode::On)
+            .await
+            .unwrap();
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        assert_eq!(
+            outbound
+                .hits
+                .iter()
+                .find(|hit| hit.id == target_id)
+                .and_then(|hit| hit.graph.as_ref())
+                .unwrap()
+                .hops,
+            2
+        );
+        assert!(outbound
+            .hits
+            .iter()
+            .find(|hit| hit.id == record_id_to_string(low_confidence.id.as_ref().unwrap()))
+            .is_none_or(|hit| hit.graph.is_none()));
+
+        config.allow_outbound = false;
+        config.allow_inbound = true;
+        let inbound_only = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph("Beacon", 10, SearchScope::Notes, None, None, GraphMode::On)
+            .await
+            .unwrap();
+        assert!(inbound_only
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .is_none_or(|hit| hit.graph.is_none()));
+    }
+
+    #[tokio::test]
+    async fn graph_two_hop_fanout_excludes_visited_back_edges_before_the_db_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("fanout cycle seed"))
+            .await
+            .unwrap();
+        let middle = repo
+            .create_note(Note::new("fanout cycle middle"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("fanout cycle target"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Fanout cycle", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        // At the middle note, the high-confidence inbound edge back to the
+        // seed sorts ahead of the viable B→C edge. A per-node fanout of one
+        // reaches C only when the already-visited seed is excluded in SQL.
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            middle.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            middle.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.2),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.max_hops = 2;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 3;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Fanout cycle",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        let evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the viable second-hop edge should survive the one-edge fanout");
+        assert_eq!(evidence.path.len(), 2);
+        assert_eq!(evidence.path[1].to_id, target_id);
+    }
+
+    #[tokio::test]
+    async fn pending_proposals_are_not_a_graph_retrieval_channel() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("Orchid overview"))
+            .await
+            .unwrap();
+        let proposed = repo
+            .create_note(Note::new("proposal-only neighbor"))
+            .await
+            .unwrap();
+        let mut orchid = Entity::new("Orchid", EntityType::Project);
+        orchid.metadata = serde_json::json!({});
+        let orchid = repo.upsert_entity(orchid).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), orchid.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.upsert_gardener_proposal(
+            seed.id.as_ref().unwrap(),
+            proposed.id.as_ref().unwrap(),
+            0.99,
+            "similarity only".into(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .search_with_scope_graph("Orchid", 10, SearchScope::Notes, None, None, GraphMode::On)
+            .await
+            .unwrap();
+        let proposed_id = record_id_to_string(proposed.id.as_ref().unwrap());
+        assert!(results
+            .hits
+            .iter()
+            .find(|hit| hit.id == proposed_id)
+            .is_none_or(|hit| hit.graph.is_none()));
+    }
+
+    #[tokio::test]
+    async fn graph_entity_alias_seeds_local_accepted_edge_retrieval() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("internal service"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("linked operational runbook"))
+            .await
+            .unwrap();
+        let mut service = Entity::new("Long service name", EntityType::Project);
+        service.metadata = serde_json::json!({"aliases": ["atlas"]});
+        let service = repo.upsert_entity(service).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), service.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .search_with_scope_graph(
+                "where is atlas deployed",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        let target_graph = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the alias seed should reach its accepted neighbor");
+        assert_eq!(target_graph.query_entities, vec!["Long service name"]);
+        assert_eq!(target_graph.path[0].edge_type, "supports");
+    }
+
+    #[tokio::test]
+    async fn graph_candidate_cap_and_fanout_bound_high_degree_seeds() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo.create_note(Note::new("hub note")).await.unwrap();
+        let mut hub = Entity::new("Hub", EntityType::Project);
+        hub.metadata = serde_json::json!({});
+        let hub = repo.upsert_entity(hub).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), hub.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        for index in 0..3 {
+            let neighbor = repo
+                .create_note(Note::new(format!("high degree neighbor {index}")))
+                .await
+                .unwrap();
+            repo.create_edge(
+                seed.id.as_ref().unwrap(),
+                neighbor.id.as_ref().unwrap(),
+                EdgeType::Supports,
+                Some(1.0),
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 2; // one entity seed plus one neighbor
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph("Hub", 10, SearchScope::Notes, None, None, GraphMode::On)
+            .await
+            .unwrap();
+
+        assert_eq!(results.summary.candidates_considered, 2);
+        assert_eq!(
+            results
+                .hits
+                .iter()
+                .filter(|hit| hit.graph.as_ref().is_some_and(|graph| graph.hops == 1))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn expanded_frontier_candidate_cap_prefers_score_before_record_id() {
+        let mut frontier = BTreeMap::new();
+        frontier.insert(
+            "note:aaa-low-score".into(),
+            GraphFrontier::seed(
+                RecordId::new("note", "aaa-low-score"),
+                "note:aaa-low-score".into(),
+                Vec::new(),
+                0.1,
+            ),
+        );
+        frontier.insert(
+            "note:zzz-high-score".into(),
+            GraphFrontier::seed(
+                RecordId::new("note", "zzz-high-score"),
+                "note:zzz-high-score".into(),
+                Vec::new(),
+                0.9,
+            ),
+        );
+
+        let retained = ranked_frontier_states(&frontier)
+            .into_iter()
+            .take(1)
+            .map(|state| state.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(retained, vec!["note:zzz-high-score"]);
+    }
+
+    #[test]
+    fn initial_frontier_candidate_cap_admits_only_ranked_seeds_for_traversal() {
+        let mut frontier = BTreeMap::new();
+        for (id, score) in [
+            ("note:aaa-low-score", 0.1),
+            ("note:mmm-middle-score", 0.5),
+            ("note:zzz-high-score", 0.9),
+        ] {
+            frontier.insert(
+                id.into(),
+                GraphFrontier::seed(
+                    RecordId::new("note", id.strip_prefix("note:").unwrap()),
+                    id.into(),
+                    vec!["Seed".into()],
+                    score,
+                ),
+            );
+        }
+
+        let mut candidates = BTreeMap::new();
+        let current = admit_initial_graph_frontier(frontier, &mut candidates, 2);
+
+        // `current` is passed directly to graph_note_edges, so the rejected
+        // low-ranked seed cannot consume first-hop traversal work.
+        assert_eq!(
+            current.keys().cloned().collect::<Vec<_>>(),
+            vec!["note:mmm-middle-score", "note:zzz-high-score"]
+        );
+        assert_eq!(
+            candidates.keys().cloned().collect::<Vec<_>>(),
+            vec!["note:mmm-middle-score", "note:zzz-high-score"]
+        );
+    }
+
+    #[test]
+    fn initial_frontier_prefers_ranked_entity_seeds_over_note_ids_and_graph_on_hybrids() {
+        let hybrid = GraphFrontier::seed(
+            RecordId::new("note", "aaa-hybrid"),
+            "note:aaa-hybrid".into(),
+            Vec::new(),
+            0.03,
+        );
+        let lower_ranked_entity = GraphFrontier::seed(
+            RecordId::new("note", "bbb-lower-ranked-entity"),
+            "note:bbb-lower-ranked-entity".into(),
+            vec!["Beacon".into()],
+            0.03,
+        )
+        .with_initial_entity_rank(1);
+        let higher_ranked_entity = GraphFrontier::seed(
+            RecordId::new("note", "zzz-higher-ranked-entity"),
+            "note:zzz-higher-ranked-entity".into(),
+            vec!["Atlas".into()],
+            0.03,
+        )
+        .with_initial_entity_rank(0);
+        let frontier = BTreeMap::from([
+            (hybrid.id.clone(), hybrid),
+            (lower_ranked_entity.id.clone(), lower_ranked_entity),
+            (higher_ranked_entity.id.clone(), higher_ranked_entity),
+        ]);
+
+        let mut candidates = BTreeMap::new();
+        let capped = admit_initial_graph_frontier(frontier.clone(), &mut candidates, 1);
+        assert!(capped.contains_key("note:zzz-higher-ranked-entity"));
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates.contains_key("note:zzz-higher-ranked-entity"));
+
+        // Explicit graph=on retains hybrid seeds as traversal anchors when
+        // capacity permits, but they never displace a ranked entity seed.
+        let mut candidates = BTreeMap::new();
+        let uncapped = admit_initial_graph_frontier(frontier, &mut candidates, 3);
+        assert!(uncapped.contains_key("note:aaa-hybrid"));
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn graph_seed_selection_preserves_ranked_atlas_beacon_coverage_at_cap() {
+        let atlas = RecordId::new("entity", "atlas");
+        let beacon = RecordId::new("entity", "beacon");
+        let seeds = vec![
+            GraphEntityNoteSeed {
+                note_id: RecordId::new("note", "atlas-a"),
+                entity_id: atlas.clone(),
+            },
+            GraphEntityNoteSeed {
+                note_id: RecordId::new("note", "atlas-b"),
+                entity_id: atlas.clone(),
+            },
+            GraphEntityNoteSeed {
+                note_id: RecordId::new("note", "beacon-a"),
+                entity_id: beacon.clone(),
+            },
+        ];
+
+        let selected = select_graph_seed_note_ids(&[atlas, beacon], &seeds, 2);
+
+        // The old global-note-order path admitted both Atlas notes and lost
+        // Beacon. One slot per ranked entity is reserved before filling more.
+        assert_eq!(
+            selected,
+            HashSet::from(["note:atlas-a".to_string(), "note:beacon-a".to_string()])
+        );
+    }
+
+    #[test]
+    fn next_hop_evicts_the_weakest_retained_state_before_expansion() {
+        let seed = GraphFrontier::seed(
+            RecordId::new("note", "seed"),
+            "note:seed".into(),
+            vec!["Seed".into()],
+            0.03,
+        );
+        let mut candidates = BTreeMap::from([("note:seed".into(), seed.evidence(None))]);
+        let mut next = BTreeMap::new();
+        for (id, score) in [("note:high", 0.9), ("note:middle", 0.8), ("note:low", 0.7)] {
+            next.insert(
+                id.into(),
+                GraphFrontier::seed(
+                    RecordId::new("note", id.strip_prefix("note:").unwrap()),
+                    id.into(),
+                    Vec::new(),
+                    score,
+                ),
+            );
+        }
+
+        let admitted = admit_graph_frontier(next, &mut candidates, 3, 1);
+        assert_eq!(
+            admitted.keys().cloned().collect::<Vec<_>>(),
+            vec!["note:high", "note:low", "note:middle"]
+        );
+        assert_eq!(candidates.len(), 3);
+        assert!(!candidates.contains_key("note:seed"));
+    }
+
+    #[test]
+    fn admitted_existing_candidate_can_replace_weaker_evidence_at_cap() {
+        let seed = GraphFrontier::seed(
+            RecordId::new("note", "seed"),
+            "note:seed".into(),
+            vec!["Seed".into()],
+            0.03,
+        );
+        let weak = GraphFrontier::seed(
+            RecordId::new("note", "target"),
+            "note:target".into(),
+            Vec::new(),
+            0.01,
+        )
+        .evidence(Some(1));
+        let mut candidates = BTreeMap::from([
+            ("note:seed".into(), seed.evidence(None)),
+            ("note:target".into(), weak),
+        ]);
+        let next = BTreeMap::from([(
+            "note:target".into(),
+            GraphFrontier::seed(
+                RecordId::new("note", "target"),
+                "note:target".into(),
+                Vec::new(),
+                0.02,
+            ),
+        )]);
+
+        let admitted = admit_graph_frontier(next, &mut candidates, 2, 2);
+        assert!(admitted.contains_key("note:target"));
+        assert_eq!(candidates["note:target"].score, 0.02);
+    }
+
+    #[test]
+    fn stronger_later_hop_novel_candidate_evicts_the_weakest_retained_evidence() {
+        let weak = GraphFrontier::seed(
+            RecordId::new("note", "weak"),
+            "note:weak".into(),
+            vec!["Seed".into()],
+            0.01,
+        )
+        .evidence(None);
+        let mut candidates = BTreeMap::from([("note:weak".into(), weak)]);
+        let next = BTreeMap::from([(
+            "note:strong".into(),
+            GraphFrontier::seed(
+                RecordId::new("note", "strong"),
+                "note:strong".into(),
+                Vec::new(),
+                0.9,
+            ),
+        )]);
+
+        let admitted = admit_graph_frontier(next, &mut candidates, 1, 1);
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates.contains_key("note:strong"));
+        assert!(!candidates.contains_key("note:weak"));
+        assert!(admitted.contains_key("note:strong"));
+    }
+
+    #[tokio::test]
+    async fn graph_fanout_is_applied_per_frontier_seed_not_as_a_global_table_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first_seed = repo.create_note(Note::new("first seed")).await.unwrap();
+        let second_seed = repo.create_note(Note::new("second seed")).await.unwrap();
+        let mut first_entity = Entity::new("Alpha", EntityType::Project);
+        first_entity.metadata = serde_json::json!({});
+        let first_entity = repo.upsert_entity(first_entity).await.unwrap();
+        let mut second_entity = Entity::new("Beta", EntityType::Project);
+        second_entity.metadata = serde_json::json!({});
+        let second_entity = repo.upsert_entity(second_entity).await.unwrap();
+        repo.link_note_to_entity(
+            first_seed.id.as_ref().unwrap(),
+            first_entity.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        repo.link_note_to_entity(
+            second_seed.id.as_ref().unwrap(),
+            second_entity.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+        // Create several first-seed edges first so a former shared LIMIT
+        // would return only these and starve the second frontier seed.
+        for index in 0..3 {
+            let neighbor = repo
+                .create_note(Note::new(format!("first-seed neighbor {index}")))
+                .await
+                .unwrap();
+            repo.create_edge(
+                first_seed.id.as_ref().unwrap(),
+                neighbor.id.as_ref().unwrap(),
+                EdgeType::Supports,
+                Some(1.0),
+            )
+            .await
+            .unwrap();
+        }
+        let second_neighbor = repo
+            .create_note(Note::new("second-seed reachable neighbor"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            second_seed.id.as_ref().unwrap(),
+            second_neighbor.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 2;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 4;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Alpha Beta",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let second_neighbor_id = record_id_to_string(second_neighbor.id.as_ref().unwrap());
+        let second_graph = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == second_neighbor_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the second seed must retain its own per-node fanout");
+        assert_eq!(second_graph.hops, 1);
+        assert_eq!(second_graph.query_entities, vec!["Beta"]);
+    }
+
+    #[tokio::test]
+    async fn graph_fanout_prefers_the_strongest_transition_across_table_and_record_order() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("ranked fanout seed"))
+            .await
+            .unwrap();
+        let low = repo
+            .create_note(Note::new("low contradicts edge"))
+            .await
+            .unwrap();
+        let middle = repo
+            .create_note(Note::new("middle supports edge"))
+            .await
+            .unwrap();
+        let strongest = repo
+            .create_note(Note::new("strongest supports edge"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Ranked fanout", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        // The earlier contradicts table and the earlier supports record are
+        // both weaker. With a fanout of one, only the later high-confidence
+        // supports edge may survive.
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            low.id.as_ref().unwrap(),
+            EdgeType::Contradicts,
+            Some(0.2),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            middle.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.6),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            strongest.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.95),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 2;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Ranked fanout",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+
+        let strongest_id = record_id_to_string(strongest.id.as_ref().unwrap());
+        let evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == strongest_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the strongest eligible edge should consume the sole fanout slot");
+        assert_eq!(evidence.path.len(), 1);
+        assert_eq!(evidence.path[0].edge_type, "supports");
+        assert_eq!(evidence.path[0].confidence, 0.95);
+    }
+
+    #[tokio::test]
+    async fn graph_edge_query_filters_direction_and_confidence_before_fanout_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo.create_note(Note::new("filter seed")).await.unwrap();
+        let low_confidence = repo
+            .create_note(Note::new("low confidence first row"))
+            .await
+            .unwrap();
+        let inbound = repo
+            .create_note(Note::new("inbound first row"))
+            .await
+            .unwrap();
+        let valid = repo
+            .create_note(Note::new("valid outbound high confidence"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Filter", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        // These earlier rows must be eliminated by the DB predicate before
+        // the source's one-edge fanout LIMIT is evaluated.
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            low_confidence.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.1),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            inbound.id.as_ref().unwrap(),
+            seed.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            valid.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 2;
+        config.allow_inbound = false;
+        config.min_confidence = 0.8;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph("Filter", 10, SearchScope::Notes, None, None, GraphMode::On)
+            .await
+            .unwrap();
+        let valid_id = record_id_to_string(valid.id.as_ref().unwrap());
+        assert!(results
+            .hits
+            .iter()
+            .find(|hit| hit.id == valid_id)
+            .is_some_and(|hit| hit.graph.as_ref().is_some_and(|graph| graph.hops == 1)));
+    }
+
+    #[tokio::test]
+    async fn graph_edge_fanout_filters_neighbor_source_and_age_before_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut scoped_import = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "scoped.md".into(),
+                "fixture://scoped.md".into(),
+                "scoped".into(),
+                "sha256:scoped".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let scoped_source_id = scoped_import.source.id.as_ref().unwrap().clone();
+        let seed = repo
+            .create_note(
+                Note::new("scoped graph seed")
+                    .with_source(scoped_source_id.clone())
+                    .with_source_generation(scoped_import.source.generation),
+            )
+            .await
+            .unwrap();
+        let eligible = repo
+            .create_note(
+                Note::new("eligible scoped neighbor")
+                    .with_source(scoped_source_id.clone())
+                    .with_source_generation(scoped_import.source.generation),
+            )
+            .await
+            .unwrap();
+        let mut stale_note = Note::new("stale scoped neighbor")
+            .with_source(scoped_source_id)
+            .with_source_generation(scoped_import.source.generation);
+        stale_note.created_at = Utc::now() - Duration::days(2);
+        stale_note.updated_at = stale_note.created_at;
+        let stale = repo.create_note(stale_note).await.unwrap();
+        repo.complete_file_import(&mut scoped_import.source)
+            .await
+            .unwrap();
+
+        let mut foreign_import = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "foreign.md".into(),
+                "fixture://foreign.md".into(),
+                "foreign".into(),
+                "sha256:foreign".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let foreign = repo
+            .create_note(
+                Note::new("strong foreign neighbor")
+                    .with_source(foreign_import.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(foreign_import.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut foreign_import.source)
+            .await
+            .unwrap();
+
+        let mut entity = Entity::new("Scoped graph", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        // Both higher-confidence rows are out of scope. They must be
+        // removed in the edge query before its one-row table limit.
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            foreign.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.95),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            stale.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.8),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            eligible.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.4),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 2;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Scoped graph",
+                10,
+                SearchScope::Notes,
+                Some(1),
+                Some("fixture://scoped.md".into()),
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let eligible_id = record_id_to_string(eligible.id.as_ref().unwrap());
+        assert!(results
+            .hits
+            .iter()
+            .find(|hit| hit.id == eligible_id)
+            .is_some_and(|hit| hit.graph.as_ref().is_some_and(|graph| graph.hops == 1)));
+    }
+
+    #[tokio::test]
+    async fn graph_candidates_replace_a_weaker_direct_path_with_a_stronger_two_hop_path() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("path priority seed"))
+            .await
+            .unwrap();
+        let intermediate = repo
+            .create_note(Note::new("path priority intermediate"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("path priority target"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Path priority", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.2),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            intermediate.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            intermediate.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.max_hops = 2;
+        config.per_node_fanout = 2;
+        // The seed, weak direct target, and intermediate exhaust the cap at
+        // hop one. Hop two must still be allowed to improve that existing
+        // target's evidence without admitting another note.
+        config.candidate_cap = 3;
+        let weak_direct_score = config.seed_score * config.per_hop_decay * 0.2;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Path priority",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        let target_evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("target should be retrieved through the graph");
+        assert_eq!(target_evidence.path.len(), 2);
+        assert_eq!(
+            target_evidence.path[0].to_id,
+            record_id_to_string(intermediate.id.as_ref().unwrap())
+        );
+        assert_eq!(target_evidence.path[1].to_id, target_id);
+        assert!(target_evidence.score > weak_direct_score);
+    }
+
+    #[tokio::test]
+    async fn graph_seed_cap_limits_distinct_notes_but_keeps_retained_entity_associations() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        for name in ["Alpha", "Beta", "Gamma"] {
+            let note = repo
+                .create_note(Note::new(format!("{name} disjoint seed")))
+                .await
+                .unwrap();
+            let mut entity = Entity::new(name, EntityType::Project);
+            entity.metadata = serde_json::json!({});
+            let entity = repo.upsert_entity(entity).await.unwrap();
+            repo.link_note_to_entity(note.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_entities = 3;
+        config.max_seed_notes = 2;
+        config.candidate_cap = 8;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Alpha Beta Gamma",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let graph_seeds = results
+            .hits
+            .iter()
+            .filter_map(|hit| hit.graph.as_ref())
+            .filter(|graph| graph.hops == 0)
+            .collect::<Vec<_>>();
+        assert_eq!(graph_seeds.len(), 2);
+        assert!(graph_seeds.iter().all(|graph| {
+            graph.query_entities.len() == 1
+                && matches!(graph.query_entities[0].as_str(), "Alpha" | "Beta" | "Gamma")
+        }));
+    }
+
+    #[tokio::test]
+    async fn graph_entity_seed_filters_apply_before_the_unique_seed_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut excluded = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "excluded.md".into(),
+                "fixture://excluded.md".into(),
+                "excluded".into(),
+                "sha256:excluded".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let excluded_note = repo
+            .create_note(
+                Note::new("excluded seed")
+                    .with_source(excluded.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(excluded.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut excluded.source)
+            .await
+            .unwrap();
+
+        let mut eligible = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "eligible.md".into(),
+                "fixture://eligible.md".into(),
+                "eligible".into(),
+                "sha256:eligible".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let eligible_note = repo
+            .create_note(
+                Note::new("eligible seed")
+                    .with_source(eligible.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(eligible.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut eligible.source)
+            .await
+            .unwrap();
+
+        let mut entity = Entity::new("Scoped", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        for note in [&excluded_note, &eligible_note] {
+            repo.link_note_to_entity(note.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+
+        let seeds = repo
+            .graph_notes_for_entities(
+                &[entity.id.as_ref().unwrap().clone()],
+                1,
+                Some(Utc::now() - Duration::hours(1)),
+                Some("fixture://eligible.md".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(
+            record_id_to_string(&seeds[0].note_id),
+            record_id_to_string(eligible_note.id.as_ref().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_entity_matching_uses_whole_tokens_or_safe_prefixes_not_substrings() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        for name in ["Chair", "Email relay", "Whatever", "Atlas"] {
+            let mut entity = Entity::new(name, EntityType::Project);
+            entity.metadata = serde_json::json!({});
+            repo.upsert_entity(entity).await.unwrap();
+        }
+        let mut atlas = Entity::new("Atlas service", EntityType::Project);
+        atlas.metadata = serde_json::json!({"aliases": ["atlas"]});
+        let atlas = repo.upsert_entity(atlas).await.unwrap();
+
+        assert!(repo.find_graph_entities("ai", 10).await.unwrap().is_empty());
+        let prefix_matches = repo
+            .find_graph_entities("atla deployment", 10)
+            .await
+            .unwrap();
+        assert!(prefix_matches
+            .iter()
+            .any(|entity| entity.id == *atlas.id.as_ref().unwrap()));
+        let alias_phrase_matches = repo
+            .find_graph_entities("where is atlas deployed", 10)
+            .await
+            .unwrap();
+        assert!(alias_phrase_matches
+            .iter()
+            .any(|entity| entity.id == *atlas.id.as_ref().unwrap()));
+
+        let sentence_matches = repo
+            .find_graph_entities("what changed in atlas", 10)
+            .await
+            .unwrap();
+        assert!(sentence_matches.iter().any(|entity| entity.name == "Atlas"));
+        assert!(sentence_matches
+            .iter()
+            .all(|entity| entity.name != "Whatever"));
+
+        let punctuated_alias_matches = repo
+            .find_graph_entities("Where is Atlas?", 10)
+            .await
+            .unwrap();
+        assert!(punctuated_alias_matches
+            .iter()
+            .any(|entity| entity.id == *atlas.id.as_ref().unwrap()));
+
+        let mut gpt = Entity::new("GPT-4", EntityType::Technology);
+        gpt.metadata = serde_json::json!({});
+        let gpt = repo.upsert_entity(gpt).await.unwrap();
+        let mut gpt_alias = Entity::new("model reference", EntityType::Technology);
+        gpt_alias.metadata = serde_json::json!({"aliases": ["GPT-4"]});
+        let gpt_alias = repo.upsert_entity(gpt_alias).await.unwrap();
+        let punctuated_model_matches = repo
+            .find_graph_entities("Where is GPT-4?", 10)
+            .await
+            .unwrap();
+        assert!(punctuated_model_matches
+            .iter()
+            .any(|entity| entity.id == *gpt.id.as_ref().unwrap()));
+        assert!(punctuated_model_matches
+            .iter()
+            .any(|entity| entity.id == *gpt_alias.id.as_ref().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn graph_entity_seed_prefers_more_specific_contained_phrase_at_cap() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let short_seed = repo
+            .create_note(Note::new("short entity seed"))
+            .await
+            .unwrap();
+        let exact_seed = repo
+            .create_note(Note::new("exact entity seed"))
+            .await
+            .unwrap();
+
+        let mut short = Entity::new("New", EntityType::Project);
+        short.metadata = serde_json::json!({});
+        let short = repo.upsert_entity(short).await.unwrap();
+        let mut exact = Entity::new("New York", EntityType::Project);
+        exact.metadata = serde_json::json!({});
+        let exact = repo.upsert_entity(exact).await.unwrap();
+        repo.link_note_to_entity(short_seed.id.as_ref().unwrap(), short.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.link_note_to_entity(exact_seed.id.as_ref().unwrap(), exact.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_entities = 1;
+        config.max_seed_notes = 2;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "status New York today",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(results.summary.entities_matched, 1);
+        let exact_seed_id = record_id_to_string(exact_seed.id.as_ref().unwrap());
+        let exact_evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == exact_seed_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("the exact entity seed should survive the one-entity cap");
+        assert_eq!(exact_evidence.query_entities, vec!["New York"]);
+        let short_seed_id = record_id_to_string(short_seed.id.as_ref().unwrap());
+        assert!(results.hits.iter().all(|hit| hit.id != short_seed_id));
+    }
+
+    #[tokio::test]
+    async fn graph_auto_requires_a_local_entity_seed_but_on_can_use_a_hybrid_seed() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("unindexed hybrid seed phrase"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("reachable only over an accepted edge"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()));
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+
+        let auto = search
+            .search_with_scope_graph(
+                "unindexed hybrid seed phrase",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert!(auto
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .is_none_or(|hit| hit.graph.is_none()));
+
+        let on = search
+            .search_with_scope_graph(
+                "unindexed hybrid seed phrase",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        assert!(on
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .is_some_and(|hit| hit.graph.is_some()));
+    }
+
     fn make_hit(id: &str, score: f32, content: &str) -> ScopedSearchResult {
         ScopedSearchResult {
             hit_type: SearchHitType::Note,
@@ -509,6 +2733,7 @@ mod tests {
             conversation_uuid: None,
             message_index: None,
             role: None,
+            graph: None,
         }
     }
 

@@ -41,6 +41,85 @@ const VISIBLE_NOTE_CONDITION: &str = "(source_id IS NONE OR source_generation IS
 // superseded generation.
 const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)) AND out IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation))";
 
+fn graph_query_normalize(query: &str) -> String {
+    // Entity canonicalization retains arbitrary Unicode text. Split only at
+    // lexical boundaries so adjacent punctuation (for example `Atlas?`) does
+    // not become part of a term, while CJK and other non-Latin letters remain
+    // intact rather than being treated as ASCII-only words.
+    Entity::canonicalize(query)
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn graph_prefix_terms(normalized_query: &str) -> Vec<String> {
+    normalized_query
+        .split_whitespace()
+        .filter(|term| term.chars().count() >= 4 && !is_graph_prefix_stop_word(term))
+        .map(str::to_string)
+        .collect()
+}
+
+fn is_graph_prefix_stop_word(term: &str) -> bool {
+    matches!(
+        term,
+        "a" | "an"
+            | "and"
+            | "are"
+            | "as"
+            | "at"
+            | "be"
+            | "by"
+            | "can"
+            | "changed"
+            | "change"
+            | "could"
+            | "did"
+            | "does"
+            | "for"
+            | "from"
+            | "had"
+            | "has"
+            | "have"
+            | "how"
+            | "in"
+            | "is"
+            | "it"
+            | "of"
+            | "on"
+            | "or"
+            | "recent"
+            | "show"
+            | "tell"
+            | "that"
+            | "the"
+            | "this"
+            | "to"
+            | "was"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "who"
+            | "why"
+            | "will"
+            | "with"
+            | "would"
+            | "you"
+    )
+}
+
+/// Match tiers for local graph-entity seeding. Keeping exact equality ahead
+/// of contained phrases means a specific entity query cannot be crowded out
+/// by a shorter entity name when the caller supplies a small seed cap.
+#[derive(Clone, Copy)]
+enum GraphEntityMatchTier {
+    Exact,
+    ContainedPhrase,
+    Prefix,
+}
+
 fn count_to_i64(count: u64) -> Result<i64> {
     i64::try_from(count)
         .map_err(|_| DbError::QueryFailed("processing count exceeds database integer range".into()))
@@ -2172,7 +2251,16 @@ impl Repository {
                 VALUES ($entity_type, $name, $canonical_name, $embedding, $metadata, time::now())
                 ON DUPLICATE KEY UPDATE 
                     name = $name,
-                    embedding = $embedding
+                    embedding = $embedding,
+                    metadata = object::extend(
+                        object::extend(metadata ?? {}, $metadata ?? {}),
+                        {
+                            aliases: array::distinct(array::concat(
+                                metadata.aliases ?? [],
+                                $metadata.aliases ?? []
+                            ))
+                        }
+                    )
             "#)
             .bind(("entity_type", entity_type.clone()))
             .bind(("name", name.clone()))
@@ -2442,6 +2530,7 @@ impl Repository {
         } else {
             note_id.to_string()
         };
+        let note_record_id = RecordId::new("note", raw);
         let normalized = entity_query.trim().to_lowercase();
 
         if normalized.is_empty() {
@@ -2454,7 +2543,7 @@ impl Repository {
                 r#"
                 SELECT count() AS count
                 FROM mentions
-                WHERE in = type::thing("note", $note_id)
+                WHERE in = $note_id
                   AND out IN (
                     SELECT VALUE id
                     FROM entity
@@ -2463,13 +2552,410 @@ impl Repository {
                 GROUP ALL
             "#,
             )
-            .bind(("note_id", raw))
+            .bind(("note_id", note_record_id))
             .bind(("entity_query", normalized))
             .await?
             .take(0)?;
 
         let count = existing.and_then(|row| row.count).unwrap_or(0);
         Ok(count > 0)
+    }
+
+    /// Find a bounded, deterministic set of canonical entities that occur in
+    /// the normalized query. Aliases are optional values stored in
+    /// `entity.metadata.aliases`; this keeps query-time matching local and
+    /// avoids requiring the extraction provider for search.
+    #[instrument(skip(self))]
+    pub async fn find_graph_entities(
+        &self,
+        normalized_query: &str,
+        limit: usize,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        let normalized_query = graph_query_normalize(normalized_query);
+        if normalized_query.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("graph entity limit exceeds database integer range".into())
+        })?;
+
+        // Whole-query canonical/alias equality is always preferred over a
+        // shorter entity phrase contained in the query. Only when neither
+        // lexical tier produces a local entity do we consider typo-style
+        // prefix seeds, preventing ordinary sentence words from crowding the
+        // cap.
+        let exact = self
+            .query_graph_entities(&normalized_query, GraphEntityMatchTier::Exact, &[], limit)
+            .await?;
+        if !exact.is_empty() {
+            return Ok(exact);
+        }
+
+        let phrases = self
+            .query_graph_entities(
+                &normalized_query,
+                GraphEntityMatchTier::ContainedPhrase,
+                &[],
+                limit,
+            )
+            .await?;
+        if !phrases.is_empty() {
+            return Ok(phrases);
+        }
+
+        // Prefixes are a narrow recovery path for partial entity terms such
+        // as `atla`. They require four characters and exclude common query
+        // words, preserving the `ai`/`chair` boundary safety while avoiding
+        // `what` -> `Whatever` false seeds.
+        let prefixes = graph_prefix_terms(&normalized_query);
+        if prefixes.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.query_graph_entities(
+            &normalized_query,
+            GraphEntityMatchTier::Prefix,
+            &prefixes,
+            limit,
+        )
+        .await
+    }
+
+    async fn query_graph_entities(
+        &self,
+        normalized_query: &str,
+        tier: GraphEntityMatchTier,
+        prefixes: &[String],
+        limit: i64,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        // Keep stored names and aliases on the exact same lexical boundary
+        // contract as `graph_query_normalize`: punctuation becomes a space,
+        // while Unicode letters and numbers remain terms. This lets `GPT-4`
+        // be found from either a punctuated or a sentence query.
+        let canonical_lexical = r#"string::trim(string::replace(string::lowercase(canonical_name), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
+        let alias_lexical = r#"string::trim(string::replace(string::lowercase($alias), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
+        let match_condition = match tier {
+            GraphEntityMatchTier::Exact => format!(
+                "{canonical_lexical} = $query OR array::any(metadata.aliases ?? [], |$alias| {alias_lexical} = $query)"
+            ),
+            GraphEntityMatchTier::ContainedPhrase => format!(
+                "string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' ')) OR array::any(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))"
+            ),
+            GraphEntityMatchTier::Prefix => prefixes
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    format!("string::starts_with({canonical_lexical}, $prefix_{index})")
+                })
+                .collect::<Vec<_>>()
+                .join(" OR "),
+        };
+        let phrase_specificity = match tier {
+            GraphEntityMatchTier::ContainedPhrase => {
+                // A sentence can contain both `New` and `New York`. Rank by
+                // the lexical phrase that actually matched (canonical or
+                // alias), rather than the stored canonical name, so aliases
+                // receive the same specificity treatment before the cap.
+                let matching_alias_lengths = format!(
+                    "array::map(array::filter(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' '))), |$alias| string::len({alias_lexical}))"
+                );
+                let phrase_specificity = format!(
+                    "array::max([IF string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' ')) THEN string::len({canonical_lexical}) ELSE 0 END, array::max({matching_alias_lengths})])"
+                );
+                Some(phrase_specificity)
+            }
+            GraphEntityMatchTier::Exact | GraphEntityMatchTier::Prefix => None,
+        };
+        let prefix_plausibility = match tier {
+            GraphEntityMatchTier::Prefix => Some(format!(
+                "array::min([{}])",
+                prefixes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, prefix)| {
+                        // Prefix recovery is for short, likely truncated
+                        // entity fragments. Prefer the shortest matching
+                        // query fragment so a context word such as
+                        // `deployed` cannot crowd out `zeta` at a small cap.
+                        format!(
+                            "IF string::starts_with({canonical_lexical}, $prefix_{index}) THEN {} ELSE 2147483647 END",
+                            prefix.chars().count()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            GraphEntityMatchTier::Exact | GraphEntityMatchTier::ContainedPhrase => None,
+        };
+        let select_specificity = phrase_specificity
+            .as_ref()
+            .map(|specificity| format!(", {specificity} AS graph_match_specificity"))
+            .unwrap_or_default();
+        let select_prefix_plausibility = prefix_plausibility
+            .as_ref()
+            .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
+            .unwrap_or_default();
+        let ordering = if phrase_specificity.is_some() {
+            "graph_match_specificity DESC, canonical_name ASC, id ASC"
+        } else if prefix_plausibility.is_some() {
+            "graph_prefix_plausibility ASC, canonical_name ASC, id ASC"
+        } else {
+            "canonical_name ASC, id ASC"
+        };
+        let query = format!(
+            r#"
+                SELECT id, name, canonical_name, metadata{select_specificity}{select_prefix_plausibility}
+                FROM entity
+                WHERE {match_condition}
+                ORDER BY {ordering}
+                LIMIT $limit
+                "#,
+        );
+        let mut query = self
+            .db
+            .query(query)
+            .bind(("query", normalized_query.to_string()))
+            .bind(("limit", limit));
+        for (index, prefix) in prefixes.iter().enumerate() {
+            query = query.bind((format!("prefix_{index}"), prefix.clone()));
+        }
+        query.await?.take(0).map_err(Into::into)
+    }
+
+    /// Fetch visible note IDs mentioned by any supplied entities in one
+    /// query. The caller owns the cap, so an entity with a high degree cannot
+    /// cause an unbounded graph seed set.
+    #[instrument(skip(self, entity_ids))]
+    pub async fn graph_notes_for_entities(
+        &self,
+        entity_ids: &[RecordId],
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityNoteSeed>> {
+        if entity_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        // Query a bounded page for every ranked entity. A single global
+        // relation `LIMIT` ordered by note ID lets a high-degree, lower-priority
+        // entity starve later matches before the caller can allocate the
+        // unique-note cap across them. `entity_ids` is itself bounded by graph
+        // configuration, so this remains bounded while preserving coverage.
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("graph note limit exceeds database integer range".into())
+        })?;
+        let since = since.map(|timestamp| timestamp.to_rfc3339());
+        let mut seeds = Vec::new();
+        for entity_id in entity_ids {
+            let mut entity_seeds: Vec<GraphEntityNoteSeed> = self
+                .db
+                .query(format!(
+                    "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_id AND in IN (SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC LIMIT $limit"
+                ))
+                .bind(("entity_id", entity_id.clone()))
+                .bind(("limit", limit))
+                .bind(("since", since.clone()))
+                .bind(("source_uri", source_uri.clone()))
+                .await?
+                .take(0)?;
+            seeds.append(&mut entity_seeds);
+        }
+        Ok(seeds)
+    }
+
+    /// Fetch accepted persisted note-edge rows for many frontier notes.
+    /// Every frontier note gets its own deterministic per-table budget; a
+    /// high-degree early note cannot consume a shared table `LIMIT` and starve
+    /// later seeds. Proposal tables are deliberately never consulted.
+    #[instrument(skip(self, note_ids, edge_types))]
+    pub async fn graph_note_edges(
+        &self,
+        note_ids: &[RecordId],
+        edge_types: &[String],
+        per_table_limit: usize,
+        allow_outbound: bool,
+        allow_inbound: bool,
+        min_confidence: f32,
+        since: Option<DateTime<Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<NoteEdgeRow>> {
+        self.graph_note_edges_excluding_visited(
+            note_ids,
+            edge_types,
+            per_table_limit,
+            allow_outbound,
+            allow_inbound,
+            min_confidence,
+            since,
+            source_uri,
+            &HashMap::new(),
+        )
+        .await
+    }
+
+    /// Fetch bounded graph edges while excluding endpoint notes already on the
+    /// path for each current source. Applying this exclusion in the database
+    /// is necessary: otherwise a high-confidence back-edge can consume the
+    /// per-source table limit before traversal rejects the cycle in memory.
+    #[allow(clippy::too_many_arguments)]
+    #[instrument(skip(self, note_ids, edge_types, visited_note_ids))]
+    pub async fn graph_note_edges_excluding_visited(
+        &self,
+        note_ids: &[RecordId],
+        edge_types: &[String],
+        per_table_limit: usize,
+        allow_outbound: bool,
+        allow_inbound: bool,
+        min_confidence: f32,
+        since: Option<DateTime<Utc>>,
+        source_uri: Option<String>,
+        visited_note_ids: &HashMap<String, Vec<RecordId>>,
+    ) -> Result<Vec<NoteEdgeRow>> {
+        if note_ids.is_empty()
+            || edge_types.is_empty()
+            || per_table_limit == 0
+            || (!allow_outbound && !allow_inbound)
+        {
+            return Ok(Vec::new());
+        }
+        let since = since.map(|timestamp| timestamp.to_rfc3339());
+        let mut rows = HashMap::<String, NoteEdgeRow>::new();
+        for table in ["supports", "contradicts", "related_to", "derived_from"] {
+            if !edge_types.iter().any(|edge_type| edge_type == table) {
+                continue;
+            }
+            let limit = i64::try_from(per_table_limit).map_err(|_| {
+                DbError::QueryFailed("graph edge limit exceeds database integer range".into())
+            })?;
+            // SurrealDB executes these per-source bounded statements in one
+            // request/response. A single global `LIMIT` is incorrect here:
+            // it can return only high-degree early sources. Keeping the
+            // statements batched avoids client round-trips while making the
+            // per-source budget exact and deterministic.
+            let eligible_notes = format!(
+                "(SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION})"
+            );
+            let query = (0..note_ids.len())
+                .map(|index| {
+                    let direction = match (allow_outbound, allow_inbound) {
+                        (true, true) => format!(
+                            "((in = $note_{index} AND out IN {eligible_notes} AND out NOT IN $visited_{index}) OR (out = $note_{index} AND in IN {eligible_notes} AND in NOT IN $visited_{index}))"
+                        ),
+                        (true, false) => {
+                            format!("in = $note_{index} AND out IN {eligible_notes} AND out NOT IN $visited_{index}")
+                        }
+                        (false, true) => {
+                            format!("out = $note_{index} AND in IN {eligible_notes} AND in NOT IN $visited_{index}")
+                        }
+                        (false, false) => "false".to_string(),
+                    };
+                    format!(
+                        "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence \
+                         FROM {table} WHERE {direction} AND (confidence = NONE OR confidence >= $min_confidence) AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} \
+                         ORDER BY graph_confidence DESC, id ASC LIMIT $limit;"
+                    )
+                })
+                .collect::<String>();
+            let mut query = self
+                .db
+                .query(query)
+                .bind(("limit", limit))
+                .bind(("min_confidence", min_confidence))
+                .bind(("since", since.clone()))
+                .bind(("source_uri", source_uri.clone()));
+            for (index, note_id) in note_ids.iter().enumerate() {
+                query = query.bind((format!("note_{index}"), note_id.clone()));
+                query = query.bind((
+                    format!("visited_{index}"),
+                    visited_note_ids
+                        .get(&record_id_to_string(note_id))
+                        .cloned()
+                        .unwrap_or_default(),
+                ));
+            }
+            let mut response = query.await?;
+            for index in 0..note_ids.len() {
+                let edges: Vec<NoteEdgeRow> = response.take(index)?;
+                for edge in edges {
+                    rows.entry(record_id_to_string(&edge.id)).or_insert(edge);
+                }
+            }
+        }
+        let mut rows = rows.into_values().collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            left.edge_type
+                .cmp(&right.edge_type)
+                .then_with(|| record_id_to_string(&left.id).cmp(&record_id_to_string(&right.id)))
+        });
+        Ok(rows)
+    }
+
+    /// Load graph-selected notes in one visibility-aware query so deleted or
+    /// superseded endpoints are silently excluded from retrieval.
+    #[instrument(skip(self, note_ids))]
+    pub async fn graph_notes_by_ids(
+        &self,
+        note_ids: &[RecordId],
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<SearchResult>> {
+        if note_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let since = since.map(|timestamp| timestamp.to_rfc3339());
+        self.db
+            .query(format!(
+                "SELECT id, title, content, note_type, tags, created_at, source_id.uri AS source_uri \
+                 FROM note WHERE id IN $note_ids AND ($since = NONE OR created_at >= <datetime>$since) \
+                 AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION} \
+                 ORDER BY id ASC"
+            ))
+            .bind(("note_ids", note_ids.to_vec()))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri))
+            .await?
+            .take(0)
+            .map_err(Into::into)
+    }
+
+    /// Return the original chat provenance record IDs for graph-selected
+    /// notes in two bounded set queries. File-backed notes retain their
+    /// source URI in [`SearchResult`]; chat-derived notes need these record
+    /// IDs to keep an augmentation citation reconstructable without loading
+    /// each note individually.
+    #[instrument(skip(self, note_ids))]
+    pub async fn graph_note_provenance_ids(
+        &self,
+        note_ids: &[RecordId],
+    ) -> Result<HashMap<String, Vec<String>>> {
+        #[derive(Deserialize, SurrealValue)]
+        struct ProvenanceRow {
+            r#in: RecordId,
+            out: RecordId,
+        }
+
+        if note_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut provenance = HashMap::<String, Vec<String>>::new();
+        for table in ["note_from_conversation", "note_from_message"] {
+            let rows: Vec<ProvenanceRow> = self
+                .db
+                .query(format!("SELECT in, out FROM {table} WHERE in IN $note_ids"))
+                .bind(("note_ids", note_ids.to_vec()))
+                .await?
+                .take(0)?;
+            for row in rows {
+                provenance
+                    .entry(record_id_to_string(&row.r#in))
+                    .or_default()
+                    .push(record_id_to_string(&row.out));
+            }
+        }
+        for ids in provenance.values_mut() {
+            ids.sort();
+            ids.dedup();
+        }
+        Ok(provenance)
     }
 
     /// List note-to-note edges across all edge tables
@@ -3550,6 +4036,26 @@ pub struct NoteEdgeRow {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Local lexical entity match used as a graph-retrieval seed. `metadata` is
+/// retained only to make alias evidence inspectable by higher layers.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+pub struct GraphEntityMatch {
+    pub id: RecordId,
+    pub name: String,
+    pub canonical_name: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+/// A visible note directly mentioned by one query-matched entity. Retaining
+/// both IDs prevents query-wide entity labels from being attached to unrelated
+/// seeds when several matched entities are present.
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+pub struct GraphEntityNoteSeed {
+    pub note_id: RecordId,
+    pub entity_id: RecordId,
+}
+
 fn normalize_note_id(note_id: &str) -> RecordId {
     RecordId::new("note", note_id.strip_prefix("note:").unwrap_or(note_id))
 }
@@ -4023,6 +4529,182 @@ mod tests {
             .take(0)
             .unwrap();
         (conversation_id, message.unwrap().id)
+    }
+
+    #[test]
+    fn graph_entity_query_normalization_keeps_unicode_terms_and_guards_prefixes() {
+        assert_eq!(graph_query_normalize("Where is Atlas?"), "where is atlas");
+        assert_eq!(graph_query_normalize("東京？"), "東京");
+        assert_eq!(
+            graph_prefix_terms("what changed in atla"),
+            vec!["atla".to_string()]
+        );
+        assert!(graph_prefix_terms("ai").is_empty());
+    }
+
+    #[tokio::test]
+    async fn graph_entity_lookup_normalizes_internal_punctuation_for_names_and_aliases() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut canonical = Entity::new("GPT-4", EntityType::Technology);
+        canonical.metadata = serde_json::json!({});
+        let canonical = repo.upsert_entity(canonical).await.unwrap();
+        let mut aliased = Entity::new("Model reference", EntityType::Technology);
+        aliased.metadata = serde_json::json!({"aliases": ["GPT-4"]});
+        let aliased = repo.upsert_entity(aliased).await.unwrap();
+
+        let matches = repo
+            .find_graph_entities("Where is GPT-4?", 10)
+            .await
+            .unwrap();
+        assert!(matches
+            .iter()
+            .any(|entity| entity.id == *canonical.id.as_ref().unwrap()));
+        assert!(matches
+            .iter()
+            .any(|entity| entity.id == *aliased.id.as_ref().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn duplicate_entity_upsert_merges_aliases_without_losing_metadata() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut original = Entity::new("Atlas service", EntityType::Project);
+        original.metadata = serde_json::json!({"aliases": ["Atlas"]});
+        let original = repo.upsert_entity(original).await.unwrap();
+
+        let mut update = Entity::new("Atlas Service", EntityType::Project);
+        update.metadata = serde_json::json!({"aliases": ["Atlas", "Atlas v2"]});
+        let updated = repo.upsert_entity(update).await.unwrap();
+
+        assert_eq!(updated.id, original.id);
+        assert_eq!(
+            updated.metadata["aliases"],
+            serde_json::json!(["Atlas", "Atlas v2"])
+        );
+
+        let original_matches = repo.find_graph_entities("Atlas", 1).await.unwrap();
+        assert_eq!(original_matches.len(), 1);
+        assert_eq!(original_matches[0].id, *original.id.as_ref().unwrap());
+        let matches = repo.find_graph_entities("Atlas v2", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *original.id.as_ref().unwrap());
+    }
+
+    #[tokio::test]
+    async fn graph_prefix_lookup_prefers_the_likely_entity_fragment_over_context_words() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut zeta = Entity::new("Zeta archive", EntityType::Project);
+        zeta.metadata = serde_json::json!({});
+        let zeta = repo.upsert_entity(zeta).await.unwrap();
+        let mut deployed = Entity::new("Deployed controller", EntityType::Project);
+        deployed.metadata = serde_json::json!({});
+        repo.upsert_entity(deployed).await.unwrap();
+
+        // Neither multi-word canonical name is contained in the sentence, so
+        // this uses prefix recovery. The four-character entity fragment must
+        // win before the eight-character context word at a one-entity cap.
+        let matches = repo.find_graph_entities("zeta deployed", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *zeta.id.as_ref().unwrap());
+
+        let mut atla = Entity::new("Atlas archive", EntityType::Project);
+        atla.metadata = serde_json::json!({});
+        repo.upsert_entity(atla).await.unwrap();
+        let atla_matches = repo
+            .find_graph_entities("atla deployment", 1)
+            .await
+            .unwrap();
+        assert_eq!(atla_matches.len(), 1);
+        assert_eq!(atla_matches[0].name, "Atlas archive");
+    }
+
+    #[tokio::test]
+    async fn graph_entity_lookup_prioritizes_whole_query_names_and_aliases_over_phrases() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut short_name = Entity::new("New", EntityType::Project);
+        short_name.metadata = serde_json::json!({});
+        repo.upsert_entity(short_name).await.unwrap();
+        let mut exact_name = Entity::new("New York", EntityType::Project);
+        exact_name.metadata = serde_json::json!({});
+        let exact_name = repo.upsert_entity(exact_name).await.unwrap();
+
+        let matches = repo.find_graph_entities("New York", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *exact_name.id.as_ref().unwrap());
+
+        let matches = repo
+            .find_graph_entities("status New York today", 1)
+            .await
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *exact_name.id.as_ref().unwrap());
+
+        let mut short_alias = Entity::new("Big", EntityType::Project);
+        short_alias.metadata = serde_json::json!({});
+        repo.upsert_entity(short_alias).await.unwrap();
+        let mut exact_alias = Entity::new("New York City", EntityType::Project);
+        exact_alias.metadata = serde_json::json!({"aliases": ["Big Apple"]});
+        let exact_alias = repo.upsert_entity(exact_alias).await.unwrap();
+
+        let matches = repo.find_graph_entities("Big Apple", 1).await.unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *exact_alias.id.as_ref().unwrap());
+
+        let matches = repo
+            .find_graph_entities("status Big Apple today", 1)
+            .await
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].id, *exact_alias.id.as_ref().unwrap());
+    }
+
+    #[tokio::test]
+    async fn graph_note_seed_query_preserves_ranked_entity_coverage_under_cap() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut atlas = Entity::new("Atlas", EntityType::Project);
+        atlas.metadata = serde_json::json!({});
+        let atlas = repo.upsert_entity(atlas).await.unwrap();
+        let mut beacon = Entity::new("Beacon", EntityType::Project);
+        beacon.metadata = serde_json::json!({});
+        let beacon = repo.upsert_entity(beacon).await.unwrap();
+
+        for id in ["atlas_a", "atlas_b", "beacon_a"] {
+            repo.db
+                .query(format!(
+                    "CREATE note:{id} SET note_type = 'raw', content = $content, embedding = NONE, tags = [], created_at = time::now(), updated_at = time::now()"
+                ))
+                .bind(("content", id.to_string()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        for id in ["atlas_a", "atlas_b"] {
+            repo.link_note_to_entity(&RecordId::new("note", id), atlas.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        repo.link_note_to_entity(
+            &RecordId::new("note", "beacon_a"),
+            beacon.id.as_ref().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let seeds = repo
+            .graph_notes_for_entities(
+                &[
+                    atlas.id.as_ref().unwrap().clone(),
+                    beacon.id.as_ref().unwrap().clone(),
+                ],
+                1,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeds.len(), 2);
+        assert_eq!(seeds[0].entity_id, *atlas.id.as_ref().unwrap());
+        assert_eq!(seeds[1].entity_id, *beacon.id.as_ref().unwrap());
     }
 
     #[tokio::test]
