@@ -716,12 +716,10 @@ impl LibrarianAgent {
             replacement.tags = tags;
         }
         replacement.updated_at = chrono::Utc::now();
-        let updated = self
+        Ok(self
             .repo
-            .update_note(&record_id_to_string(id), replacement)
-            .await?;
-        self.repo.replace_note_entities(id, entities).await?;
-        Ok(updated)
+            .update_note_and_replace_entities(&record_id_to_string(id), replacement, entities)
+            .await?)
     }
 
     /// Detach a source-generated note into a new manual note. The source id
@@ -1151,7 +1149,7 @@ impl LibrarianAgent {
                         },
                     )
                     .await?;
-                if failed > 0 {
+                if failed > 0 && completed > 0 {
                     return Err(crate::AgentError::DurablePartialFailure {
                         job_id: record_id_to_string(&job_id),
                         completed,
@@ -1159,6 +1157,11 @@ impl LibrarianAgent {
                         message: first_error
                             .unwrap_or_else(|| "one or more embedding items failed".to_string()),
                     });
+                }
+                if failed > 0 {
+                    return Err(crate::AgentError::Processing(
+                        first_error.unwrap_or_else(|| "all embedding items failed".to_string()),
+                    ));
                 }
                 return Ok(ProcessingRunResult {
                     job_id: record_id_to_string(&job_id),
@@ -1694,7 +1697,7 @@ impl LibrarianAgent {
         // Match embedding jobs: a persisted terminal failure is still an
         // invocation failure. The durable row above retains the detailed
         // failed count and first item diagnostic for `jobs show`/retry.
-        if failed > 0 {
+        if failed > 0 && completed > 0 {
             return Err(crate::AgentError::DurablePartialFailure {
                 job_id: record_id_to_string(&job_id),
                 completed,
@@ -1702,6 +1705,11 @@ impl LibrarianAgent {
                 message: first_error
                     .unwrap_or_else(|| "one or more entity extraction items failed".to_string()),
             });
+        }
+        if failed > 0 {
+            return Err(crate::AgentError::Processing(first_error.unwrap_or_else(
+                || "all entity extraction items failed".to_string(),
+            )));
         }
         Ok(ProcessingRunResult {
             job_id: record_id_to_string(&job_id),
@@ -3984,6 +3992,40 @@ mod tests {
                 .is_some_and(|error| error.contains("timeout")),
             "the success after a fallback failure must not clear diagnostics"
         );
+    }
+
+    #[tokio::test]
+    async fn fully_failed_durable_jobs_are_not_reported_as_partial_failures() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("embedding failure"))
+            .await
+            .unwrap();
+        let embeddings = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().fail_next_requests(2, "offline")),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        assert!(matches!(
+            embeddings.process_pending_embeddings().await.unwrap_err(),
+            crate::AgentError::Processing(_)
+        ));
+
+        let entity_note = repo.create_note(Note::new("entity failure")).await.unwrap();
+        let extraction = LibrarianAgent::new(
+            repo,
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().fail_next_requests(1, "offline")),
+        );
+        assert!(matches!(
+            extraction
+                .extract_entities_for_note_ids_result(
+                    &[record_id_to_string(entity_note.id.as_ref().unwrap())],
+                    false,
+                )
+                .await
+                .unwrap_err(),
+            crate::AgentError::Processing(_)
+        ));
     }
 
     #[tokio::test]

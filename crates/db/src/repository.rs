@@ -1461,6 +1461,97 @@ impl Repository {
         updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
 
+    /// Atomically replace a note's searchable payload and its complete entity
+    /// mention set. Entity upserts are completed before the transaction; the
+    /// visible note update and mention replacement then commit together, so a
+    /// failed mention write cannot expose new content with old evidence (or
+    /// vice versa).
+    #[instrument(skip(self, note, entities))]
+    pub async fn update_note_and_replace_entities(
+        &self,
+        id: &str,
+        note: Note,
+        entities: Vec<Entity>,
+    ) -> Result<Note> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        let raw_id = id.strip_prefix("note:").unwrap_or(id);
+        let note_id = RecordId::new("note", raw_id);
+        let existing = self
+            .get_note(raw_id)
+            .await?
+            .ok_or_else(|| DbError::NotFound("note".into(), id.into()))?;
+        if !self.note_is_writable(&note_id).await? {
+            return Err(DbError::NotFound(
+                "note endpoint".into(),
+                "a note update endpoint is hidden, failed, or no longer exists".into(),
+            ));
+        }
+        let entity_ids = self.replacement_entity_ids(entities).await?;
+        let search_content = search_content_for_note_update(&existing, &note);
+
+        let mut response = self
+            .db
+            .query(
+                "BEGIN TRANSACTION; \
+                 UPDATE $id SET \
+                    note_type = $note_type, title = $title, content = $content, \
+                    embedding = $embedding, chunk_key = $chunk_key, \
+                    chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
+                    source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
+                    source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
+                    chunk_overlap_chars = $chunk_overlap_chars, split_fenced_code = $split_fenced_code, \
+                    content_hash = $content_hash, \
+                    search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
+                    source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
+                    source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
+                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
+                 DELETE mentions WHERE in = $id; \
+                 FOR $entity_id IN $entity_ids { CREATE mentions SET in = $id, out = $entity_id; }; \
+                 COMMIT TRANSACTION;",
+            )
+            .bind(("id", note_id.clone()))
+            .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
+            .bind(("title", note.title.clone()))
+            .bind(("content", note.content.clone()))
+            .bind(("embedding", (!note.embedding.is_empty()).then_some(note.embedding.clone())))
+            .bind(("tags", note.tags.clone()))
+            .bind(("source_id", note.source_id.clone()))
+            .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
+            .bind(("chunk_key", note.chunk_key.clone()))
+            .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
+            .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
+            .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
+            .bind(("source_end_line", note.source_end_line.map(|value| value as i64)))
+            .bind(("source_start_byte", note.source_start_byte.map(|value| value as i64)))
+            .bind(("source_end_byte", note.source_end_byte.map(|value| value as i64)))
+            .bind(("chunk_overlap_from", note.chunk_overlap_from.clone()))
+            .bind(("chunk_overlap_chars", note.chunk_overlap_chars.map(|value| value as i64)))
+            .bind(("split_fenced_code", note.split_fenced_code))
+            .bind(("content_hash", note.content_hash.clone()))
+            .bind(("search_content", search_content))
+            .bind(("created_at", note.created_at.to_rfc3339()))
+            .bind(("updated_at", note.updated_at.to_rfc3339()))
+            .bind(("entity_ids", entity_ids))
+            .await?;
+        let errors = response.take_errors();
+        if !errors.is_empty() {
+            return Err(DbError::QueryFailed(format!(
+                "atomic note-and-mention update failed: {}",
+                errors
+                    .into_iter()
+                    .map(|(statement, error)| format!("statement {statement}: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
+
+        self.get_note(raw_id)
+            .await?
+            .ok_or_else(|| DbError::NotFound("note".into(), id.into()))
+    }
+
     /// Delete a note
     #[instrument(skip(self))]
     pub async fn delete_note(&self, id: &str) -> Result<()> {
@@ -3259,17 +3350,7 @@ impl Repository {
         // Complete all fallible inference-result persistence before replacing
         // mentions. A malformed entity therefore leaves the prior extraction
         // intact instead of clearing it first.
-        let mut entity_ids = Vec::with_capacity(entities.len());
-        let mut seen = HashSet::new();
-        for entity in entities {
-            let entity = self.upsert_entity(entity).await?;
-            let entity_id = entity.id.ok_or_else(|| {
-                DbError::CreateFailed("upserted entity did not receive an id".into())
-            })?;
-            if seen.insert(entity_id.clone()) {
-                entity_ids.push(entity_id);
-            }
-        }
+        let entity_ids = self.replacement_entity_ids(entities).await?;
 
         let previous_ids: Vec<RecordId> = self
             .db
@@ -3297,6 +3378,21 @@ impl Repository {
             return Err(error);
         }
         Ok(entity_ids.len())
+    }
+
+    async fn replacement_entity_ids(&self, entities: Vec<Entity>) -> Result<Vec<RecordId>> {
+        let mut entity_ids = Vec::with_capacity(entities.len());
+        let mut seen = HashSet::new();
+        for entity in entities {
+            let entity = self.upsert_entity(entity).await?;
+            let entity_id = entity.id.ok_or_else(|| {
+                DbError::CreateFailed("upserted entity did not receive an id".into())
+            })?;
+            if seen.insert(entity_id.clone()) {
+                entity_ids.push(entity_id);
+            }
+        }
+        Ok(entity_ids)
     }
 
     async fn link_note_to_entity_locked(
@@ -6015,6 +6111,63 @@ mod tests {
             .unwrap()
             .iter()
             .any(|result| result.id == note_id));
+    }
+
+    #[tokio::test]
+    async fn atomic_note_update_replaces_mentions_with_the_new_content() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo.create_note(Note::new("old body")).await.unwrap();
+        let note_id = record_id_to_string(note.id.as_ref().unwrap());
+        let mut old_entity = Entity::new("Old Entity", EntityType::Concept);
+        old_entity.metadata = serde_json::json!({});
+        let old_entity = repo.upsert_entity(old_entity).await.unwrap();
+        repo.link_note_to_entity(note.id.as_ref().unwrap(), old_entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        let mut replacement = note.clone();
+        replacement.content = "new body".into();
+        let mut new_entity = Entity::new("New Entity", EntityType::Concept);
+        new_entity.metadata = serde_json::json!({});
+        let updated = repo
+            .update_note_and_replace_entities(&note_id, replacement, vec![new_entity])
+            .await
+            .unwrap();
+
+        assert_eq!(updated.content, "new body");
+        let linked = repo.get_entities_for_note(&note_id).await.unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "New Entity");
+    }
+
+    #[tokio::test]
+    async fn atomic_note_update_rolls_back_before_content_change_on_entity_error() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo.create_note(Note::new("old body")).await.unwrap();
+        let note_id = record_id_to_string(note.id.as_ref().unwrap());
+        let mut old_entity = Entity::new("Prior Entity", EntityType::Concept);
+        old_entity.metadata = serde_json::json!({});
+        let old_entity = repo.upsert_entity(old_entity).await.unwrap();
+        repo.link_note_to_entity(note.id.as_ref().unwrap(), old_entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+
+        let mut replacement = note.clone();
+        replacement.content = "new body must not persist".into();
+        let mut malformed = Entity::new("Malformed Entity", EntityType::Concept);
+        malformed.metadata = serde_json::json!("not an object");
+        assert!(repo
+            .update_note_and_replace_entities(&note_id, replacement, vec![malformed])
+            .await
+            .is_err());
+
+        assert_eq!(
+            repo.get_note(&note_id).await.unwrap().unwrap().content,
+            "old body"
+        );
+        let linked = repo.get_entities_for_note(&note_id).await.unwrap();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].name, "Prior Entity");
     }
 
     #[tokio::test]
