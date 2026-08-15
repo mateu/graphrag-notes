@@ -2729,6 +2729,15 @@ async fn cmd_search(
         let results = search
             .search_with_context_filtered(&query, limit, since_days, source_uri.clone())
             .await?;
+        let related_by_note = results
+            .iter()
+            .filter_map(|result| {
+                result
+                    .related
+                    .clone()
+                    .map(|related| (record_id_to_string(&result.result.id), related))
+            })
+            .collect::<HashMap<_, _>>();
 
         if format != output::OutputFormat::Human {
             if !explain {
@@ -2763,6 +2772,7 @@ async fn cmd_search(
                         &explanations,
                         &graphrag_agents::GraphRetrievalSummary::default(),
                         filters,
+                        &related_by_note,
                     ),
                     |_| Ok(()),
                 ),
@@ -2772,6 +2782,7 @@ async fn cmd_search(
                     explain::search_pipeline(
                         &graphrag_agents::GraphRetrievalSummary::default(),
                         filters,
+                        &related_by_note,
                     ),
                 ),
                 output::OutputFormat::Human => unreachable!("handled above"),
@@ -2828,22 +2839,25 @@ async fn cmd_search(
                 graph.into(),
             )
             .await?;
+        // `--context` is part of the command result, not merely human
+        // decoration. Resolve it before either machine renderer returns so
+        // JSON and JSONL retain the same related-note data as terminal output.
+        let related_by_note = if context && scope == SearchScope::Notes {
+            let context_repo = repo.clone();
+            best_effort_related_notes(&results.hits, move |id| {
+                let repo = context_repo.clone();
+                async move {
+                    let note_id = parse_record_id(&id, Some("note"))?;
+                    Ok::<_, anyhow::Error>(repo.get_related_notes(&note_id).await?)
+                }
+            })
+            .await?
+        } else {
+            HashMap::new()
+        };
 
         if format != output::OutputFormat::Human {
             if !explain {
-                let related_by_note = if context && scope == SearchScope::Notes {
-                    let context_repo = repo.clone();
-                    best_effort_related_notes(&results.hits, move |id| {
-                        let repo = context_repo.clone();
-                        async move {
-                            let note_id = parse_record_id(&id, Some("note"))?;
-                            Ok::<_, anyhow::Error>(repo.get_related_notes(&note_id).await?)
-                        }
-                    })
-                    .await?
-                } else {
-                    HashMap::new()
-                };
                 let output = results
                     .hits
                     .iter()
@@ -2878,13 +2892,18 @@ async fn cmd_search(
                 output::OutputFormat::Json => output::print(
                     format,
                     "search",
-                    explain::search_json(&explanations, &results.summary, filters),
+                    explain::search_json(
+                        &explanations,
+                        &results.summary,
+                        filters,
+                        &related_by_note,
+                    ),
                     |_| Ok(()),
                 ),
                 output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
                     "search",
                     explanations.iter(),
-                    explain::search_pipeline(&results.summary, filters),
+                    explain::search_pipeline(&results.summary, filters, &related_by_note),
                 ),
                 output::OutputFormat::Human => unreachable!("handled above"),
             };
@@ -2908,22 +2927,6 @@ async fn cmd_search(
         // accepted-edge summary. Keep it for the default `--graph=auto`
         // path as well as explicit modes; graph evidence is additive, not a
         // replacement for get_related_notes output.
-        let related_by_note = if context && scope == SearchScope::Notes {
-            let context_repo = repo.clone();
-            best_effort_related_notes(&results.hits, move |id| {
-                let repo = context_repo.clone();
-                async move {
-                    // `best_effort_related_notes` validates the primary ID
-                    // before invoking this lookup.
-                    let note_id = parse_record_id(&id, Some("note"))?;
-                    Ok::<_, anyhow::Error>(repo.get_related_notes(&note_id).await?)
-                }
-            })
-            .await?
-        } else {
-            HashMap::new()
-        };
-
         for (i, r) in results.hits.iter().enumerate() {
             let kind = match r.hit_type {
                 SearchHitType::Note => "note",

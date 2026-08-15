@@ -1,6 +1,8 @@
 //! Narrow explainability rendering shared by future CLI output surfaces.
 
 use graphrag_agents::{AugmentDiagnostics, GraphRetrievalSummary, RetrievalExplanation};
+use graphrag_db::repository::RelatedNotes;
+use std::collections::HashMap;
 
 /// Stable JSON payload: callers own envelopes/format negotiation, while this
 /// renderer guarantees evidence comes from the shared schema.
@@ -41,17 +43,23 @@ pub fn search_json(
     explanations: &[RetrievalExplanation],
     summary: &GraphRetrievalSummary,
     filters: serde_json::Value,
+    related_by_note: &HashMap<String, RelatedNotes>,
 ) -> serde_json::Value {
     let mut output = json(explanations);
-    output["pipeline"] = search_pipeline(summary, filters);
+    output["pipeline"] = search_pipeline(summary, filters, related_by_note);
     output
 }
 
 pub fn search_pipeline(
     summary: &GraphRetrievalSummary,
     filters: serde_json::Value,
+    related_by_note: &HashMap<String, RelatedNotes>,
 ) -> serde_json::Value {
-    serde_json::json!({ "graph": summary, "filters": filters })
+    serde_json::json!({
+        "graph": summary,
+        "filters": filters,
+        "related": related_by_note,
+    })
 }
 
 /// Compact human evidence line suitable for indentation beneath a result.
@@ -178,8 +186,10 @@ mod tests {
             candidates_selected: 3,
             candidates_dropped: 2,
         };
-        let search = search_pipeline(&graph, filters.clone());
+        let related = HashMap::from([("note:atlas".to_owned(), RelatedNotes::default())]);
+        let search = search_pipeline(&graph, filters.clone(), &related);
         assert_eq!(search["graph"]["candidates_considered"], 5);
         assert_eq!(search["filters"], filters);
+        assert!(search["related"]["note:atlas"].is_object());
     }
 }
