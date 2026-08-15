@@ -395,6 +395,7 @@ impl ReindexAgent {
                 &job.item_ids,
                 &identity,
                 job.scope.as_deref() == Some("reindex:notes,messages,summaries"),
+                completed,
             )
             .await
         {
@@ -402,20 +403,6 @@ impl ReindexAgent {
                 .fail(&job_id, &owner, completed, error.to_string())
                 .await;
         }
-        self.repo
-            .update_owned_reindex_processing_job(
-                &job_id,
-                &owner,
-                ProcessingJobUpdate {
-                    status: Some(ProcessingJobStatus::Completed),
-                    completed_count: Some(completed),
-                    checkpoint: Some(None),
-                    last_error: Some(None),
-                    finish: true,
-                    ..Default::default()
-                },
-            )
-            .await?;
         Ok(ReindexResult {
             job_id: job_text,
             completed,
@@ -468,7 +455,7 @@ mod tests {
     use super::*;
     use crate::{DeterministicEmbedder, Embedder, InferenceCapabilities};
     use async_trait::async_trait;
-    use graphrag_core::{Entity, EntityType, Note};
+    use graphrag_core::{Entity, EntityType, Note, SourceType};
     use graphrag_db::{init_memory, ProcessingJobStatus};
 
     fn vector(value: f32) -> Vec<f32> {
@@ -844,6 +831,154 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_reindex_snapshots_pending_file_generation_notes() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
+            .await
+            .unwrap();
+        let pending = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "pending.md".into(),
+                "file:///pending.md".into(),
+                "pending source".into(),
+                "sha256:pending".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let hidden = repo
+            .create_note(
+                Note::new("hidden pending generation")
+                    .with_embedding(vector(0.1))
+                    .with_source(pending.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(pending.source.generation),
+            )
+            .await
+            .unwrap();
+        let hidden_id = graphrag_core::record_id_to_string(hidden.id.as_ref().unwrap());
+        let agent = ReindexAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().with_identity("new", "new-model")),
+        );
+        let preview = agent.preview(ReindexScope::all()).await.unwrap();
+        assert!(preview.item_ids.contains(&hidden_id));
+        agent
+            .start(preview, EmbeddingIdentity::new("new", "new-model", 1024))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn commit_marks_job_completed_with_its_vector_and_metadata_cutover() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("atomic completion").with_embedding(vector(0.1)))
+            .await
+            .unwrap();
+        let note_id = graphrag_core::record_id_to_string(note.id.as_ref().unwrap());
+        let target = EmbeddingIdentity::new("new", "new-model", 1024);
+        let mut fingerprints = BTreeMap::new();
+        fingerprints.insert(note_id.clone(), reindex_fingerprint("atomic completion"));
+        let job = repo
+            .create_reindex_processing_job(
+                1,
+                "reindex:notes".into(),
+                vec![note_id.clone()],
+                &target,
+                fingerprints,
+            )
+            .await
+            .unwrap();
+        let job_id = job.id.as_ref().unwrap().clone();
+        let owner = "atomic-owner";
+        repo.claim_reindex_processing_job(&job_id, owner, Utc::now() + Duration::minutes(1))
+            .await
+            .unwrap();
+        repo.stage_reindex_embedding(&note_id, vector(0.8), "atomic completion", owner)
+            .await
+            .unwrap();
+        repo.commit_reindex(&job_id, owner, &[note_id], &target, false, 1)
+            .await
+            .unwrap();
+
+        let job = repo
+            .get_processing_job(&graphrag_core::record_id_to_string(&job_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.status, ProcessingJobStatus::Completed.as_str());
+        assert_eq!(job.completed_count, 1);
+        assert_eq!(
+            repo.portable_embedding_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding,
+            target
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_allows_a_deleted_snapshot_item_to_remain_absent_at_cutover() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(&EmbeddingIdentity::new("old", "old-model", 1024), None)
+            .await
+            .unwrap();
+        let mut deleted_id = None;
+        for number in 0..(REINDEX_BATCH_SIZE + 1) {
+            let note = repo
+                .create_note(
+                    Note::new(format!("deleted snapshot {number}")).with_embedding(vector(0.1)),
+                )
+                .await
+                .unwrap();
+            if number == REINDEX_BATCH_SIZE {
+                deleted_id = Some(graphrag_core::record_id_to_string(
+                    note.id.as_ref().unwrap(),
+                ));
+            }
+        }
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let cancelled = ReindexAgent::new(
+            repo.clone(),
+            Arc::new(CancellingEmbedder {
+                cancelled: cancellation.clone(),
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }),
+        )
+        .with_cancellation_flag(cancellation);
+        let target = EmbeddingIdentity::new("new", "new-model", 1024);
+        let job = cancelled
+            .start(
+                cancelled.preview(ReindexScope::all()).await.unwrap(),
+                target.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(job.cancelled);
+        repo.delete_note(&deleted_id.unwrap()).await.unwrap();
+
+        let result = ReindexAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default().with_identity("new", "new-model")),
+        )
+        .resume(&job.job_id, target.clone())
+        .await
+        .unwrap();
+        assert!(!result.cancelled);
+        assert_eq!(result.completed, (REINDEX_BATCH_SIZE + 1) as u64);
+        assert_eq!(
+            repo.portable_embedding_metadata()
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding,
+            target
+        );
+    }
+
+    #[tokio::test]
     async fn commit_revalidates_staged_source_before_publishing_metadata() {
         let repo = Repository::new(init_memory().await.unwrap());
         let note = repo
@@ -878,7 +1013,7 @@ mod tests {
         repo.update_note(&note_id, edited).await.unwrap();
 
         assert!(repo
-            .commit_reindex(&job_id, owner, &[note_id.clone()], &target, false)
+            .commit_reindex(&job_id, owner, &[note_id.clone()], &target, false, 1)
             .await
             .is_err());
         assert_eq!(

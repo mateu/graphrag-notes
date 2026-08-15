@@ -972,12 +972,15 @@ impl Repository {
     ) -> Result<Vec<String>> {
         let mut ids = Vec::new();
         if notes {
-            ids.extend(
-                self.reindex_ids_for_query(&format!(
-                    "SELECT VALUE id FROM note WHERE {VISIBLE_NOTE_CONDITION} ORDER BY id ASC"
-                ))
-                .await?,
-            );
+            // A corpus-wide identity cutover must cover hidden/pending file
+            // generations too. Otherwise a later source promotion could make
+            // an old-model vector visible under freshly committed metadata.
+            let note_query = if messages && summaries {
+                "SELECT VALUE id FROM note ORDER BY id ASC".to_string()
+            } else {
+                format!("SELECT VALUE id FROM note WHERE {VISIBLE_NOTE_CONDITION} ORDER BY id ASC")
+            };
+            ids.extend(self.reindex_ids_for_query(&note_query).await?);
         }
         if messages {
             ids.extend(
@@ -1084,6 +1087,7 @@ impl Repository {
         item_ids: &[String],
         embedding: &EmbeddingIdentity,
         clear_entity_embeddings: bool,
+        completed_count: u64,
     ) -> Result<()> {
         let mut notes = Vec::new();
         let mut messages = Vec::new();
@@ -1104,13 +1108,17 @@ impl Repository {
         let dimension = i64::try_from(embedding.dimension).map_err(|_| {
             DbError::QueryFailed("embedding dimension exceeds database integer range".into())
         })?;
+        let completed_count = count_to_i64(completed_count)?;
         self.db
             .query(
                 "BEGIN TRANSACTION; \
                  LET $job_valid = (SELECT VALUE count() FROM processing_job WHERE id = $job_id AND job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner AND reindex_lease_expires_at >= time::now() GROUP ALL)[0] = 1; \
-                 LET $notes_valid = (SELECT VALUE count() FROM note WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_text = content AND reindex_staging_owner = $owner GROUP ALL)[0] = array::len($notes); \
-                 LET $messages_valid = (SELECT VALUE count() FROM message WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_text = content AND reindex_staging_owner = $owner GROUP ALL)[0] = array::len($messages); \
-                 LET $conversations_valid = (SELECT VALUE count() FROM conversation WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_text = summary AND reindex_staging_owner = $owner GROUP ALL)[0] = array::len($conversations); \
+                 LET $notes_expected = (SELECT VALUE count() FROM note WHERE id IN $notes GROUP ALL)[0]; \
+                 LET $messages_expected = (SELECT VALUE count() FROM message WHERE id IN $messages GROUP ALL)[0]; \
+                 LET $conversations_expected = (SELECT VALUE count() FROM conversation WHERE id IN $conversations GROUP ALL)[0]; \
+                 LET $notes_valid = (SELECT VALUE count() FROM note WHERE id IN $notes AND reindex_embedding IS NOT NONE AND reindex_source_text = content AND reindex_staging_owner = $owner GROUP ALL)[0] = $notes_expected; \
+                 LET $messages_valid = (SELECT VALUE count() FROM message WHERE id IN $messages AND reindex_embedding IS NOT NONE AND reindex_source_text = content AND reindex_staging_owner = $owner GROUP ALL)[0] = $messages_expected; \
+                 LET $conversations_valid = (SELECT VALUE count() FROM conversation WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_text = summary AND reindex_staging_owner = $owner GROUP ALL)[0] = $conversations_expected; \
                  IF !$job_valid OR !$notes_valid OR !$messages_valid OR !$conversations_valid THEN THROW 'reindex staging is stale, incomplete, or no longer owned' END; \
                  UPDATE note SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $notes; \
                  UPDATE message SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $messages; \
@@ -1121,6 +1129,8 @@ impl Repository {
                      embedding_model = $model, embedding_dimension = $dimension, \
                      generation = IF generation = NONE THEN 1 ELSE generation + 1 END, last_reindex_at = time::now(), \
                      last_reindex_status = 'completed', updated_at = time::now() WHERE key = 'active_embedding'; \
+                 UPDATE $job_id SET status = 'completed', completed_count = $completed_count, checkpoint = NONE, last_error = NONE, finished_at = time::now(), updated_at = time::now() \
+                     WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner AND reindex_lease_expires_at >= time::now(); \
                  COMMIT TRANSACTION;",
             )
             .bind(("job_id", job_id.clone()))
@@ -1133,6 +1143,7 @@ impl Repository {
             .bind(("model", embedding.model.clone()))
             .bind(("dimension", dimension))
             .bind(("clear_entity_embeddings", clear_entity_embeddings))
+            .bind(("completed_count", completed_count))
             .await?
             .check()?;
         Ok(())
