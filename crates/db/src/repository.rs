@@ -2575,6 +2575,8 @@ impl Repository {
         allow_outbound: bool,
         allow_inbound: bool,
         min_confidence: f32,
+        since: Option<DateTime<Utc>>,
+        source_uri: Option<String>,
     ) -> Result<Vec<NoteEdgeRow>> {
         if note_ids.is_empty()
             || edge_types.is_empty()
@@ -2583,6 +2585,7 @@ impl Repository {
         {
             return Ok(Vec::new());
         }
+        let since = since.map(|timestamp| timestamp.to_rfc3339());
         let mut rows = HashMap::<String, NoteEdgeRow>::new();
         for table in ["supports", "contradicts", "related_to", "derived_from"] {
             if !edge_types.iter().any(|edge_type| edge_type == table) {
@@ -2596,12 +2599,21 @@ impl Repository {
             // it can return only high-degree early sources. Keeping the
             // statements batched avoids client round-trips while making the
             // per-source budget exact and deterministic.
+            let eligible_notes = format!(
+                "(SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION})"
+            );
             let query = (0..note_ids.len())
                 .map(|index| {
                     let direction = match (allow_outbound, allow_inbound) {
-                        (true, true) => format!("(in = $note_{index} OR out = $note_{index})"),
-                        (true, false) => format!("in = $note_{index}"),
-                        (false, true) => format!("out = $note_{index}"),
+                        (true, true) => format!(
+                            "((in = $note_{index} AND out IN {eligible_notes}) OR (out = $note_{index} AND in IN {eligible_notes}))"
+                        ),
+                        (true, false) => {
+                            format!("in = $note_{index} AND out IN {eligible_notes}")
+                        }
+                        (false, true) => {
+                            format!("out = $note_{index} AND in IN {eligible_notes}")
+                        }
                         (false, false) => "false".to_string(),
                     };
                     format!(
@@ -2615,7 +2627,9 @@ impl Repository {
                 .db
                 .query(query)
                 .bind(("limit", limit))
-                .bind(("min_confidence", min_confidence));
+                .bind(("min_confidence", min_confidence))
+                .bind(("since", since.clone()))
+                .bind(("source_uri", source_uri.clone()));
             for (index, note_id) in note_ids.iter().enumerate() {
                 query = query.bind((format!("note_{index}"), note_id.clone()));
             }

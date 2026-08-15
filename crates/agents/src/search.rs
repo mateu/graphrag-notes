@@ -358,7 +358,7 @@ impl SearchAgent {
                     query,
                     embedding.clone(),
                     limit,
-                    since,
+                    since.clone(),
                     source_uri.clone(),
                     &self.fusion,
                 )
@@ -630,7 +630,7 @@ impl SearchAgent {
         }
         let mut current = frontier;
         for hop in 1..=self.graph.max_hops.min(2) {
-            if current.is_empty() || candidates.len() >= self.graph.candidate_cap {
+            if current.is_empty() {
                 break;
             }
             let ids = current
@@ -646,6 +646,8 @@ impl SearchAgent {
                     self.graph.allow_outbound,
                     self.graph.allow_inbound,
                     self.graph.min_confidence,
+                    since,
+                    source_uri.clone(),
                 )
                 .await?;
             let mut eligible = HashMap::<String, Vec<GraphFrontier>>::new();
@@ -708,12 +710,19 @@ impl SearchAgent {
             // candidate budget by score first, with the canonical ID only as
             // a deterministic tie-breaker.
             for state in ranked_frontier_states(&next) {
-                if candidates.len() >= self.graph.candidate_cap {
-                    break;
+                let existing = candidates.get(&state.id);
+                if existing.is_none() && candidates.len() >= self.graph.candidate_cap {
+                    // The candidate cap excludes novel notes, but it must not
+                    // prevent a later path from replacing weaker evidence for
+                    // an already selected note.
+                    continue;
                 }
-                candidates
-                    .entry(state.id.clone())
-                    .or_insert_with(|| state.evidence(Some(hop)));
+                let evidence = state.evidence(Some(hop));
+                if existing
+                    .is_none_or(|existing| graph_evidence_priority(&evidence, existing).is_lt())
+                {
+                    candidates.insert(state.id.clone(), evidence);
+                }
             }
             current = next;
         }
@@ -917,6 +926,29 @@ fn graph_transition_priority(left: &GraphFrontier, right: &GraphFrontier) -> std
                 .cmp(&right.path.last().map(|step| step.edge_id.as_str()))
         })
         .then_with(|| left.id.cmp(&right.id))
+}
+
+fn graph_evidence_priority(left: &GraphEvidence, right: &GraphEvidence) -> std::cmp::Ordering {
+    right
+        .score
+        .total_cmp(&left.score)
+        .then_with(|| graph_path_tie_break(&left.path, &right.path))
+        .then_with(|| left.seed_note_id.cmp(&right.seed_note_id))
+}
+
+fn graph_path_tie_break(left: &[GraphPathStep], right: &[GraphPathStep]) -> std::cmp::Ordering {
+    for (left_step, right_step) in left.iter().zip(right) {
+        let ordering = left_step
+            .edge_id
+            .cmp(&right_step.edge_id)
+            .then_with(|| left_step.from_id.cmp(&right_step.from_id))
+            .then_with(|| left_step.to_id.cmp(&right_step.to_id))
+            .then_with(|| left_step.direction.cmp(&right_step.direction));
+        if !ordering.is_eq() {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
 }
 
 fn graph_edge_transitions<'a>(
@@ -1639,6 +1671,210 @@ mod tests {
             .iter()
             .find(|hit| hit.id == valid_id)
             .is_some_and(|hit| hit.graph.as_ref().is_some_and(|graph| graph.hops == 1)));
+    }
+
+    #[tokio::test]
+    async fn graph_edge_fanout_filters_neighbor_source_and_age_before_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut scoped_import = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "scoped.md".into(),
+                "fixture://scoped.md".into(),
+                "scoped".into(),
+                "sha256:scoped".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let scoped_source_id = scoped_import.source.id.as_ref().unwrap().clone();
+        let seed = repo
+            .create_note(
+                Note::new("scoped graph seed")
+                    .with_source(scoped_source_id.clone())
+                    .with_source_generation(scoped_import.source.generation),
+            )
+            .await
+            .unwrap();
+        let eligible = repo
+            .create_note(
+                Note::new("eligible scoped neighbor")
+                    .with_source(scoped_source_id.clone())
+                    .with_source_generation(scoped_import.source.generation),
+            )
+            .await
+            .unwrap();
+        let mut stale_note = Note::new("stale scoped neighbor")
+            .with_source(scoped_source_id)
+            .with_source_generation(scoped_import.source.generation);
+        stale_note.created_at = Utc::now() - Duration::days(2);
+        stale_note.updated_at = stale_note.created_at;
+        let stale = repo.create_note(stale_note).await.unwrap();
+        repo.complete_file_import(&mut scoped_import.source)
+            .await
+            .unwrap();
+
+        let mut foreign_import = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "foreign.md".into(),
+                "fixture://foreign.md".into(),
+                "foreign".into(),
+                "sha256:foreign".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let foreign = repo
+            .create_note(
+                Note::new("strong foreign neighbor")
+                    .with_source(foreign_import.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(foreign_import.source.generation),
+            )
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut foreign_import.source)
+            .await
+            .unwrap();
+
+        let mut entity = Entity::new("Scoped graph", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        // Both higher-confidence rows are out of scope. They must be
+        // removed in the edge query before its one-row table limit.
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            foreign.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.95),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            stale.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.8),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            eligible.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.4),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.per_node_fanout = 1;
+        config.candidate_cap = 2;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Scoped graph",
+                10,
+                SearchScope::Notes,
+                Some(1),
+                Some("fixture://scoped.md".into()),
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let eligible_id = record_id_to_string(eligible.id.as_ref().unwrap());
+        assert!(results
+            .hits
+            .iter()
+            .find(|hit| hit.id == eligible_id)
+            .is_some_and(|hit| hit.graph.as_ref().is_some_and(|graph| graph.hops == 1)));
+    }
+
+    #[tokio::test]
+    async fn graph_candidates_replace_a_weaker_direct_path_with_a_stronger_two_hop_path() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let seed = repo
+            .create_note(Note::new("path priority seed"))
+            .await
+            .unwrap();
+        let intermediate = repo
+            .create_note(Note::new("path priority intermediate"))
+            .await
+            .unwrap();
+        let target = repo
+            .create_note(Note::new("path priority target"))
+            .await
+            .unwrap();
+        let mut entity = Entity::new("Path priority", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(seed.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(0.2),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            seed.id.as_ref().unwrap(),
+            intermediate.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            intermediate.id.as_ref().unwrap(),
+            target.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+
+        let mut config = GraphRetrievalConfig::default();
+        config.max_seed_notes = 1;
+        config.max_hops = 2;
+        config.per_node_fanout = 2;
+        // The seed, weak direct target, and intermediate exhaust the cap at
+        // hop one. Hop two must still be allowed to improve that existing
+        // target's evidence without admitting another note.
+        config.candidate_cap = 3;
+        let weak_direct_score = config.seed_score * config.per_hop_decay * 0.2;
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config)
+            .search_with_scope_graph(
+                "Path priority",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::On,
+            )
+            .await
+            .unwrap();
+        let target_id = record_id_to_string(target.id.as_ref().unwrap());
+        let target_evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == target_id)
+            .and_then(|hit| hit.graph.as_ref())
+            .expect("target should be retrieved through the graph");
+        assert_eq!(target_evidence.path.len(), 2);
+        assert_eq!(
+            target_evidence.path[0].to_id,
+            record_id_to_string(intermediate.id.as_ref().unwrap())
+        );
+        assert_eq!(target_evidence.path[1].to_id, target_id);
+        assert!(target_evidence.score > weak_direct_score);
     }
 
     #[tokio::test]
