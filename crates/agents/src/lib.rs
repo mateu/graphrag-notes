@@ -8,6 +8,7 @@
 pub mod chunking;
 pub mod context_packing;
 pub mod error;
+pub mod evidence;
 pub mod gardener;
 pub mod inference;
 pub mod librarian;
@@ -17,6 +18,10 @@ pub mod search;
 
 pub use chunking::{Chunk, Chunker, ChunkingConfig, MarkdownChunker};
 pub use error::{AgentError, Result};
+pub use evidence::{
+    fusion_scores, InclusionReason, ProvenanceEvidence, RetrievalExplanation, ScoreEvidence,
+    SearchHitTypeEvidence, EXPLANATION_SCHEMA_VERSION,
+};
 pub use gardener::GardenerAgent;
 pub use inference::{
     DeterministicEmbedder, Embedder, EntityExtraction, EntityExtractor, ExtractedEntity,
