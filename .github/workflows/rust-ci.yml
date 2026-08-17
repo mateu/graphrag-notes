@@ -120,5 +120,7 @@ jobs:
           shared-key: quality-gates-v1
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
+      - name: Verify scoped audit exemptions remain unreachable
+        run: scripts/check-audit-exemptions.sh
       - name: Audit Cargo.lock (cargo audit)
         run: cargo audit

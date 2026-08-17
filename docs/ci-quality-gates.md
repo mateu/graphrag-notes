@@ -12,12 +12,31 @@ service. Normal pull requests run only deterministic offline tests.
 | `offline-integration` | `cargo test --workspace --locked` | Unit tests and offline integration with deterministic doubles |
 | `persistent-round-trip` | commands shown in `.github/workflows/rust-ci.yml` | Fresh/upgrade migrations, source idempotency, resilient processing, and portable round trips |
 | `retrieval-regression` | `cargo test -p graphrag-cli eval::tests::committed_retrieval_fixture_matches_versioned_baseline --bin graphrag -- --exact --nocapture` | Committed retrieval fixture baseline |
+| `dependency-audit` | `scripts/check-audit-exemptions.sh && cargo audit` | Scheduled RustSec scan plus reachability checks for scoped exemptions |
 
 Each build job uses the same `quality-gates-v1` Cargo cache key. Compilation is
 not merged into one opaque job: a focused failure is more useful to an agent
 than a few saved incremental build minutes. The workflow cancels superseded PR
 commits, while preserving every main-branch run. The scheduled/manual audit is
 the only job allowed to install or query an advisory tool over the network.
+
+## Audit exemption policy
+
+`.cargo/audit.toml` contains two narrowly scoped advisory exemptions that are
+present in `Cargo.lock` but unreachable from the supported native dependency
+graph:
+
+- `RUSTSEC-2026-0235`: `rkyv` is an optional `rust_decimal` dependency, and the
+  archive feature is not enabled.
+- `RUSTSEC-2023-0071`: `rsa` is selected by SurrealDB's WebAssembly
+  `jsonwebtoken` path. Native builds select `aws-lc-rs`, and the advisory has no
+  fixed `rsa` release.
+
+Before `cargo audit`, CI runs `scripts/check-audit-exemptions.sh` against the
+native Linux target. The job fails if either exempted crate becomes reachable,
+forcing the exemption to be removed or reassessed instead of silently masking
+a production dependency. Revisit these exemptions whenever `surrealdb`,
+`surrealdb-types`, `rust_decimal`, or `jsonwebtoken` changes.
 
 ## Retrieval baseline policy
 
