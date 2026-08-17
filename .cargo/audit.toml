@@ -1,0 +1,8 @@
+[advisories]
+ignore = [
+    # Optional rust_decimal archive support; the rkyv feature is not enabled.
+    "RUSTSEC-2026-0235",
+    # SurrealDB selects rsa only for WebAssembly; native builds use aws-lc-rs.
+    # The advisory currently has no fixed rsa release.
+    "RUSTSEC-2023-0071",
+]
