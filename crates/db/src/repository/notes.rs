@@ -473,7 +473,7 @@ impl Repository {
                     search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
-                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
+                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at RETURN AFTER; \
                  DELETE mentions WHERE in = $id; \
                  FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
                  COMMIT TRANSACTION;"
@@ -507,10 +507,15 @@ impl Repository {
             .bind(("replacement_entity_names", entity_names))
             .await?;
         check_note_mutation_errors(response.take_errors(), "update", expected)?;
-
-        self.get_note(raw_id)
-            .await?
-            .ok_or_else(|| DbError::NotFound("note".into(), id.into()))
+        // The final response slots are UPDATE AFTER, mention deletion, the
+        // replacement mention loop, and COMMIT. Once all statements succeed,
+        // return the saved row without a fallible post-commit read that could
+        // report an already persisted edit as a failure.
+        let updated_index = response.num_statements().checked_sub(4).ok_or_else(|| {
+            DbError::QueryFailed("missing atomic note-and-mention update result".into())
+        })?;
+        let updated: Option<Note> = response.take(updated_index)?;
+        updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
 
     /// Delete a note

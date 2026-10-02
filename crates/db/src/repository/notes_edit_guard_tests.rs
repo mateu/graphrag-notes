@@ -172,6 +172,98 @@ async fn atomic_create_returns_committed_note_when_a_separate_read_would_fail() 
 }
 
 #[tokio::test]
+async fn atomic_update_returns_committed_note_when_a_separate_read_would_fail() {
+    for guarded in [false, true] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let opening = initial(&repo).await;
+        // Legacy updates legitimately read the old note before their write.
+        // Permit that and the bound atomic batch, but deliberately fail reads
+        // of the new body outside that batch. This reproduces a read failure
+        // only after the update has committed, without a test-only hook.
+        repo.db
+            .query(
+                "DEFINE TABLE OVERWRITE note SCHEMAFULL \
+                 PERMISSIONS FOR create, update FULL FOR select WHERE \
+                    IF $replacement_entities != NONE OR content = 'original editor body' { true } \
+                    ELSE { THROW 'separate updated note read unavailable'; }; \
+                 DEFINE FIELD OVERWRITE title ON note TYPE option<string> \
+                    VALUE IF $value = NONE THEN NONE ELSE string::uppercase($value) END; \
+                 DEFINE TABLE OVERWRITE entity SCHEMAFULL PERMISSIONS FULL; \
+                 DEFINE TABLE OVERWRITE mentions SCHEMAFULL PERMISSIONS FULL; \
+                 CREATE user:atomic_writer; \
+                 DEFINE ACCESS atomic_writer ON DB TYPE RECORD \
+                    SIGNIN (SELECT * FROM user:atomic_writer) DURATION FOR SESSION 1h;",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let namespace: Option<String> = repo
+            .db
+            .query("RETURN $session.ns")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        repo.db
+            .signin(surrealdb::opt::auth::Record {
+                namespace: namespace.unwrap(),
+                database: "notes".into(),
+                access: "atomic_writer".into(),
+                params: (),
+            })
+            .await
+            .unwrap();
+
+        let mut input = opening.clone();
+        input.content = "Committed updated body".into();
+        input.title = Some("Mixed case update".into());
+        input.embedding = vec![0.5; 1024];
+        input.tags = vec!["updated".into()];
+        input.updated_at = chrono::Utc::now();
+        let updated = if guarded {
+            repo.update_note_and_replace_entities_if_unchanged(
+                &id(&opening),
+                input,
+                vec![entity("Updated mention")],
+                &opening,
+            )
+            .await
+        } else {
+            repo.update_note_and_replace_entities(
+                &id(&opening),
+                input,
+                vec![entity("Updated mention")],
+            )
+            .await
+        }
+        .expect("the committed update must not depend on a separate note read");
+        assert_eq!(updated.id, opening.id);
+        assert_eq!(updated.content, "Committed updated body");
+        assert_eq!(updated.title.as_deref(), Some("MIXED CASE UPDATE"));
+        assert_eq!(
+            updated.search_content.as_deref(),
+            Some("Committed updated body")
+        );
+        assert_eq!(updated.tags, ["updated"]);
+        assert_eq!(updated.created_at, opening.created_at);
+        assert_eq!(mentions(&repo, &updated).await, ["Updated mention"]);
+        let read_error = repo.get_note(&id(&updated)).await.unwrap_err();
+        assert!(
+            read_error
+                .to_string()
+                .contains("separate updated note read unavailable"),
+            "{read_error}"
+        );
+
+        repo.db.invalidate().await.unwrap();
+        let persisted = repo.get_note(&id(&updated)).await.unwrap().unwrap();
+        assert_snapshot(&persisted, &updated);
+        assert_eq!(all_notes(&repo).await.len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn chat_provenance_blocks_guarded_updates_but_allows_detached_manual_copies() {
     for message_link in [false, true] {
         let repo = Repository::new(init_memory().await.unwrap());
