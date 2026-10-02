@@ -15,8 +15,10 @@ use std::time::Duration;
 #[test]
 #[ignore = "spawned explicitly by isolated CLI fixtures"]
 fn keyword_fixture_seed() {
-    let directory =
-        PathBuf::from(std::env::var_os("GRAPHRAG_KEYWORD_FIXTURE").expect("fixture directory"));
+    let Some(directory) = std::env::var_os("GRAPHRAG_KEYWORD_FIXTURE") else {
+        return;
+    };
+    let directory = PathBuf::from(directory);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -9,6 +9,8 @@ is used. The real CLI fixture seeds its database in a child process; this avoids
 holding the embedded datastore's native lock/cache in the test runner while
 starting the CLI against that same path. The ignored seed helper is invoked
 explicitly by each fixture and is not a skipped acceptance check.
+When run directly with the standard `--ignored` filter without a fixture
+directory, the helper returns successfully without opening a database.
 
 | Check | Evidence |
 | --- | --- |
@@ -30,6 +32,10 @@ CI while only the named integration targets execute):
 ```sh
 RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test --workspace \
   --test keyword_search --test keyword_commands --locked -- --test-threads=2
+
+# Direct ignored-test invocation without fixture environment also passes.
+RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
+  --test keyword_commands --locked -- --ignored --test-threads=1
 ```
 
 The #58 navigation baseline `9b68002` is integrated, including the Linux
