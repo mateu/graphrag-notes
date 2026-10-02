@@ -261,8 +261,19 @@ fn render_card(writer: &mut dyn Write, card: &ReviewCard) -> io::Result<()> {
     if let Some(reason) = &card.accept_blocked_reason {
         writeln!(writer, "Accept unavailable: {reason}")?;
     }
+    writeln!(writer, "Updated at: {}", card.updated_at)?;
+    if let Some(reviewed_at) = &card.reviewed_at {
+        writeln!(writer, "Reviewed at: {reviewed_at}")?;
+    }
     if let Some(reviewer) = &card.reviewer {
         writeln!(writer, "Reviewed by: {reviewer}")?;
+    }
+    if let Some(manual) = card.acceptance_is_manual {
+        writeln!(
+            writer,
+            "Manual acceptance: {}",
+            if manual { "yes" } else { "no" }
+        )?;
     }
     if let Some(reason) = &card.action_reason {
         writeln!(writer, "Decision reason: {reason}")?;

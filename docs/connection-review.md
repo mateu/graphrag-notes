@@ -61,7 +61,8 @@ graphrag garden proposals accept proposed_edge:ID --yes
 ```
 
 An accepted card includes a copyable undo command with the exact recorded edge
-ID and selected configuration/database. You can also undo in the inbox using
+ID and selected configuration/database. Human cards show update and review times,
+the reviewer and reason, and whether acceptance was manual. You can also undo using
 `garden review --status accepted --interactive`. Undo supersedes the proposal;
 neither a repeated scan nor another inbox acceptance resurrects it. The
 existing explicit command supports repeatable cleanup:
@@ -82,11 +83,11 @@ status/confidence/reason/generator/audit fields, `from` and `to` endpoints,
 `accept_allowed`, `accept_blocked_reason`, and replay commands. Endpoints expose
 `available`, title, a maximum 500-character excerpt (including any truncation
 ellipsis), provenance, revision, and warnings. JSONL uses one envelope per card
-with the card directly in `data`;
-an empty inbox produces zero lines. Machine output remains read-only and rejects
-`--interactive` with exit 2. Missing focused proposals exit 3; invalid IDs,
-limits, or incompatible options exit 2. Interactive action refusals keep the
-current card available for another decision or a read-only skip/quit.
+with the card directly in `data`; an empty inbox produces zero lines. Machine
+output remains read-only and rejects `--interactive` with exit 2. Missing
+focused proposals exit 3; invalid IDs, limits, or incompatible options exit 2.
+Interactive action refusals keep the current card available for another
+decision or a read-only skip/quit.
 
 Batch acceptance remains an independent, deliberate policy command:
 

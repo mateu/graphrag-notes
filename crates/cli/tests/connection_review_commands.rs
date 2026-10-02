@@ -98,6 +98,10 @@ fn connection_review_fixture_process() {
                 repo.update_note(id, note).await.unwrap();
                 json!({})
             }
+            "automatic_policy" => {
+                let accepted = repo.accept_gardener_proposals_above(0.7, Some("fixture automatic policy".into())).await.unwrap();
+                json!({"accepted": accepted})
+            }
             _ => panic!("unknown fixture operation"),
         }
     });
@@ -179,6 +183,33 @@ fn proposal<'a>(snapshot: &'a Value, id: &str) -> &'a Value {
         .iter()
         .find(|row| row["id"] == id)
         .unwrap()["proposal"]
+}
+
+fn assert_human_review_audit(fixture: &Fixture, id: &str) {
+    let card = fixture.card(id);
+    let output = fixture
+        .command()
+        .args(["garden", "review", "--id", id])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    for (label, field) in [("Updated at", "updated_at"), ("Reviewed at", "reviewed_at")] {
+        assert!(
+            output.contains(&format!("{label}: {}", card[field].as_str().unwrap())),
+            "missing human audit field: {label}"
+        );
+    }
+    if let Some(manual) = card["acceptance_is_manual"].as_bool() {
+        assert!(output.contains(&format!(
+            "Manual acceptance: {}",
+            if manual { "yes" } else { "no" }
+        )));
+    } else {
+        assert!(!output.contains("Manual acceptance:"));
+    }
 }
 
 #[test]
@@ -339,6 +370,7 @@ fn decisions_and_undo_keep_the_existing_audit_and_terminal_state() {
     let card = fixture.card(id);
     assert_eq!(card["accept_allowed"], false);
     assert!(card["undo_command"].as_str().unwrap().contains("--db-path"));
+    assert_human_review_audit(&fixture, id);
     fixture
         .command()
         .args(["garden", "review", "--id", id, "--interactive"])
@@ -357,6 +389,7 @@ fn decisions_and_undo_keep_the_existing_audit_and_terminal_state() {
         "connection reconsidered"
     );
     assert!(undone["edges"].as_array().unwrap().is_empty());
+    assert_human_review_audit(&fixture, id);
     fixture
         .command()
         .args(["garden", "review", "--id", id, "--interactive"])
@@ -382,6 +415,7 @@ fn decisions_and_undo_keep_the_existing_audit_and_terminal_state() {
         proposal(&rejected, lower)["action_reason"],
         "not enough evidence"
     );
+    assert_human_review_audit(&fixture, lower);
     fixture.no_inference();
 }
 
@@ -455,6 +489,10 @@ fn batch_threshold_confirmation_and_generator_boundaries_are_preserved() {
         "accepted"
     );
     assert_eq!(
+        proposal(&after, fixture.seed["pending"].as_str().unwrap())["acceptance_is_manual"],
+        true
+    );
+    assert_eq!(
         proposal(&after, fixture.seed["lower"].as_str().unwrap())["status"],
         "pending"
     );
@@ -462,6 +500,25 @@ fn batch_threshold_confirmation_and_generator_boundaries_are_preserved() {
         proposal(&after, fixture.seed["logical"].as_str().unwrap())["status"],
         "pending"
     );
+    assert_human_review_audit(&fixture, fixture.seed["pending"].as_str().unwrap());
+    let automatic = fixture_operation(
+        fixture.directory.path(),
+        json!({"operation": "automatic_policy"}),
+    );
+    assert_eq!(automatic["accepted"], 1);
+    let after_policy = fixture.snapshot();
+    let lower = fixture.seed["lower"].as_str().unwrap();
+    assert_eq!(proposal(&after_policy, lower)["status"], "accepted");
+    assert_eq!(
+        proposal(&after_policy, lower)["acceptance_is_manual"],
+        false
+    );
+    assert_eq!(
+        proposal(&after_policy, lower)["reviewer"],
+        "fixture automatic policy"
+    );
+    assert_human_review_audit(&fixture, lower);
+    assert_eq!(after_policy, fixture.snapshot());
     fixture.no_inference();
 }
 
