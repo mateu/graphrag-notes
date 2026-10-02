@@ -32,7 +32,8 @@ RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test --workspace \
   --test keyword_search --test keyword_commands --locked -- --test-threads=2
 ```
 
-The #58 navigation baseline `a0307d3` is integrated. On macOS ARM64, the
+The #58 navigation baseline `9b68002` is integrated, including the Linux
+persistent-reopen test isolation correction. On macOS ARM64, the
 all-feature workspace suite passed **454 tests**, with **5 ignored** (four
 pre-existing diagnostics/fixtures plus the new explicitly invoked seed helper).
 This includes existing hybrid retrieval/fusion regression fixtures and all
@@ -47,3 +48,23 @@ commands from another directory. It also creates and restores a real vectorless
 backup. Opener behavior is tested using a fixture executable; no personal editor
 or corpus is opened. Published `v0.1.0-rc.1` assets predate this feature, and no
 new binary release is published by this PR.
+
+## Live imported corpus on macOS
+
+An additional macOS ARM64 walkthrough used the disposable #58 corpus produced
+by actual Markdown and chat imports through the Librarian, including its
+source-written chat metadata. With a fresh HOME/current directory, explicit
+config/database paths, and both resolved inference endpoints set to
+`http://127.0.0.1:1`, **13 checks passed**. The user's running Ollama service
+was untouched.
+
+`Atlas` keyword search returned 7 notes in notes scope, 1 original message in
+messages scope, and 9 hits in all scope (7 notes, 1 message, 1 conversation
+summary). Representative hits of every kind plus a Markdown-backed note were
+inspected with revision guards. Their printed inspection commands replayed
+from another directory with matching IDs, complete stored content, and
+revisions. Chat UUID/context and Markdown heading/line provenance remained
+intact, including the original filename's spaces, apostrophe, Unicode, `#`, and
+`%`. Source-opening hints were checked for valid guarded commands and existing
+original files without launching a GUI. Explain output reported only full-text
+BM25 evidence, graph `Off`, and no embedding provider/model identity.
