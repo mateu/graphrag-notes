@@ -31,6 +31,11 @@ Query-centered preview behavior and Unicode boundaries are covered by focused
 renderer tests. These checks validate navigation and safety, rather than
 live-model retrieval quality.
 
+The persistent inspection/revision regression also uses separate seed/read
+processes. Dropping a client then waiting in the same process does not reliably
+release SurrealDB's process-wide RocksDB lock; process exit verifies a real
+close and durable reopen on both macOS and Linux CI.
+
 Run the targeted tests after compiling the current change:
 
 ```bash

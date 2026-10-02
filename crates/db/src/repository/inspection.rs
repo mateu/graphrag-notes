@@ -1040,34 +1040,74 @@ mod tests {
     #[cfg(feature = "rocksdb")]
     #[tokio::test]
     async fn inspection_and_revision_survive_persistent_reopen() {
+        const FIXTURE_ROOT: &str = "GRAPHRAG_INSPECTION_REOPEN_FIXTURE_ROOT";
+        const FIXTURE_PHASE: &str = "GRAPHRAG_INSPECTION_REOPEN_FIXTURE_PHASE";
+        if let Some(directory) = std::env::var_os(FIXTURE_ROOT) {
+            let directory = std::path::PathBuf::from(directory);
+            let repo = Repository::new(
+                crate::init_persistent(directory.join("database"))
+                    .await
+                    .unwrap(),
+            );
+            let snapshot_path = directory.join("inspection.json");
+            if std::env::var(FIXTURE_PHASE).unwrap() == "seed" {
+                let (conversation, messages) = chat(&repo, &[0, 1, 2]).await;
+                let note = repo
+                    .create_note(Note::new("Persistent derived note"))
+                    .await
+                    .unwrap();
+                repo.link_note_to_conversation(note.id.as_ref().unwrap(), &conversation)
+                    .await
+                    .unwrap();
+                repo.link_note_to_message(note.id.as_ref().unwrap(), &messages[1])
+                    .await
+                    .unwrap();
+                let before = repo
+                    .inspect_record(&record_id_to_string(note.id.as_ref().unwrap()), 2)
+                    .await
+                    .unwrap();
+                std::fs::write(
+                    snapshot_path,
+                    serde_json::to_vec(&(before, record_id_to_string(&messages[1]))).unwrap(),
+                )
+                .unwrap();
+            } else {
+                let (before, message_id): (RecordInspection, String) =
+                    serde_json::from_slice(&std::fs::read(snapshot_path).unwrap()).unwrap();
+                let after = repo.inspect_record(&before.id, 0).await.unwrap();
+                assert_eq!(before, after);
+                assert_eq!(
+                    repo.inspect_record(&message_id, 1)
+                        .await
+                        .unwrap()
+                        .messages
+                        .len(),
+                    3
+                );
+            }
+            return;
+        }
+        // SurrealDB's process-wide datastore cache may retain RocksDB locks
+        // after dropping a client/runtime. Process exit establishes a real
+        // durable close; sleeping in the same process cannot guarantee one.
         let directory = tempfile::tempdir().unwrap();
-        let repo = Repository::new(crate::init_persistent(directory.path()).await.unwrap());
-        let (conversation, messages) = chat(&repo, &[0, 1, 2]).await;
-        let note = repo
-            .create_note(Note::new("Persistent derived note"))
-            .await
-            .unwrap();
-        repo.link_note_to_conversation(note.id.as_ref().unwrap(), &conversation)
-            .await
-            .unwrap();
-        repo.link_note_to_message(note.id.as_ref().unwrap(), &messages[1])
-            .await
-            .unwrap();
-        let id = record_id_to_string(note.id.as_ref().unwrap());
-        let before = repo.inspect_record(&id, 2).await.unwrap();
-        drop(repo);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let reopened = Repository::new(crate::init_persistent(directory.path()).await.unwrap());
-        let after = reopened.inspect_record(&id, 0).await.unwrap();
-        assert_eq!(before, after);
-        assert_eq!(
-            reopened
-                .inspect_record(&record_id_to_string(&messages[1]), 1)
-                .await
-                .unwrap()
-                .messages
-                .len(),
-            3
-        );
+        for phase in ["seed", "inspect"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "repository::inspection::tests::inspection_and_revision_survive_persistent_reopen",
+                    "--nocapture",
+                ])
+                .env(FIXTURE_ROOT, directory.path())
+                .env(FIXTURE_PHASE, phase)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{phase} process failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }
