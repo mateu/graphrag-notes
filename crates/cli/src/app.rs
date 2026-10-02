@@ -620,6 +620,17 @@ pub(crate) async fn run() -> Result<()> {
         anyhow::bail!("keyword mode requires full-text-only retrieval; use --graph off (or the default auto), or select --mode hybrid for graph expansion");
     }
 
+    if matches!(
+        &cli.command,
+        Commands::Search {
+            mode: SearchModeArg::Keyword,
+            graph: GraphModeArg::On,
+            ..
+        }
+    ) {
+        anyhow::bail!("keyword mode requires full-text-only retrieval; use --graph off (or the default auto), or select --mode hybrid for graph expansion");
+    }
+
     // Verification and restore intentionally run before normal database
     // startup. Verification must not open a database at all, and restore must
     // validate an archive before creating its staged fresh target.
