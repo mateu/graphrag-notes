@@ -766,6 +766,11 @@ impl LibrarianAgent {
         let id = existing.id.as_ref().ok_or_else(|| {
             crate::AgentError::Processing("cannot edit a note without an id".into())
         })?;
+        if self.repo.note_requires_detach(existing).await? {
+            return Err(crate::AgentError::Processing(
+                "refusing to edit a source-generated note in place; use --detach to create a manual copy".into(),
+            ));
+        }
         let embedding = self.embed_text(&content).await?;
         // A content change invalidates all prior mention evidence. When
         // extraction is explicitly skipped, persist the replacement note and
@@ -5212,6 +5217,80 @@ mod tests {
             .unwrap();
         assert!(!imported.notes.is_empty());
         assert!(imported.notes.iter().all(|note| note.split_fenced_code));
+    }
+
+    #[tokio::test]
+    async fn manual_content_apis_reject_imported_ownership_before_embedding() {
+        for guarded in [false, true] {
+            for chat in [false, true] {
+                let repo = Repository::new(init_memory().await.unwrap());
+                let source = repo
+                    .create_source(Source::chat_export("Imported chat", None))
+                    .await
+                    .unwrap();
+                let mut imported = Note::new("Imported body")
+                    .with_source(source.id.unwrap())
+                    .with_tags(vec!["chat-export".into()]);
+                if !chat {
+                    imported = imported.with_source_generation(0);
+                }
+                let imported = repo.create_note(imported).await.unwrap();
+                if chat {
+                    repo.link_note_to_conversation(
+                        imported.id.as_ref().unwrap(),
+                        &surrealdb::types::RecordId::new("conversation", "missing"),
+                    )
+                    .await
+                    .unwrap();
+                }
+                let embedder = DeterministicEmbedder::default()
+                    .fail_next_requests(1, "first embedding request");
+                let librarian = LibrarianAgent::new(
+                    repo.clone(),
+                    Arc::new(embedder),
+                    Arc::new(FixtureEntityExtractor::default()),
+                );
+                let error = if guarded {
+                    librarian
+                        .update_manual_note_content_guarded(
+                            &imported,
+                            "Must not replace imported body".into(),
+                            None,
+                            None,
+                        )
+                        .await
+                        .unwrap_err()
+                } else {
+                    librarian
+                        .update_manual_note_content(
+                            &imported,
+                            "Must not replace imported body".into(),
+                            None,
+                            None,
+                        )
+                        .await
+                        .unwrap_err()
+                };
+                assert!(error.to_string().contains("refusing to edit"), "{error}");
+                let stored = repo
+                    .get_note(&record_id_to_string(imported.id.as_ref().unwrap()))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(stored.content, imported.content);
+                let manual = repo.create_note(Note::new("Manual body")).await.unwrap();
+                // The first provider failure is still pending: refusal above
+                // must not consume an embedding request.
+                let error = librarian
+                    .update_manual_note_content(&manual, "Manual replacement".into(), None, None)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    error.to_string().contains("first embedding request"),
+                    "{error}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

@@ -285,6 +285,25 @@ impl Repository {
         Ok(true)
     }
 
+    /// Whether a note is derived from a chat, including legacy notes without
+    /// a source generation. Detached manual copies retain their source ID and
+    /// tags, but do not copy these ownership relationships. Inspect the edges
+    /// themselves so missing chat records do not make an imported note writable.
+    #[instrument(skip(self))]
+    pub async fn note_has_chat_provenance(&self, note_id: &RecordId) -> Result<bool> {
+        let mut response = self
+            .db
+            .query(
+                "SELECT VALUE id FROM note_from_conversation WHERE in = $note_id LIMIT 1; \
+                 SELECT VALUE id FROM note_from_message WHERE in = $note_id LIMIT 1;",
+            )
+            .bind(("note_id", note_id.clone()))
+            .await?;
+        let conversation_links: Vec<RecordId> = response.take(0)?;
+        let message_links: Vec<RecordId> = response.take(1)?;
+        Ok(!conversation_links.is_empty() || !message_links.is_empty())
+    }
+
     /// Check whether a conversation already has any linked notes.
     #[instrument(skip(self))]
     pub async fn conversation_has_note_links(&self, conversation_id: &RecordId) -> Result<bool> {

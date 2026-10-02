@@ -89,7 +89,17 @@ Chat-derived records without a local file can be inspected or detached;
 they cannot be opened as local files. A changed `--detach --editor` session
 creates a new manual note with a new ID, preserving source provenance. The
 generated original is untouched. Detached notes retain `source_id` but have
-no `source_generation`, so subsequent manual edits remain allowed.
+no `source_generation` or chat ownership relationships, so subsequent manual
+edits remain allowed even when they keep the original chat tags and source
+type. Chat-import ownership uses stored `note_from_conversation` and
+`note_from_message` relationships, including when the linked chat record is
+missing. Refused chat edits print an `inspect` command and explicit detach
+command before any editor or inference work.
+
+Historical chat imports that have neither generation ownership nor stored
+chat relationships cannot be distinguished automatically from old detached
+manual copies. Those unlinked legacy records remain editable; current chat
+imports and existing linked imports are protected.
 
 ## Recover a draft
 

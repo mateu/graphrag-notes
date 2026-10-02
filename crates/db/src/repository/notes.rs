@@ -15,11 +15,22 @@ const EDITOR_REVISION_CONFLICT: &str = "graphrag-note-editor-revision-conflict";
 /// that changes note/entity/mention records. Timestamps alone cannot detect imports
 /// or other writers which preserve `updated_at`; every persisted Note field
 /// participates. Defaulted fields normalize older records to their domain
-/// representation, while missing/hidden rows always fail the guard.
-fn editor_snapshot_guard() -> String {
+/// representation, while missing/hidden rows always fail the guard. Guarded
+/// in-place updates additionally require manual ownership; provenance links
+/// added during editor/provider work must not turn a manual edit into an
+/// imported-note overwrite. Detach only checks the opening note snapshot.
+fn editor_snapshot_guard(require_manual: bool) -> String {
+    let ownership = if require_manual {
+        "AND source_generation IS NONE \
+         AND array::len((SELECT VALUE id FROM note_from_conversation WHERE in = $editor_source LIMIT 1)) = 0 \
+         AND array::len((SELECT VALUE id FROM note_from_message WHERE in = $editor_source LIMIT 1)) = 0 "
+    } else {
+        ""
+    };
     format!(
         "LET $editor_matches = (SELECT VALUE id FROM note WHERE id = $editor_source \
          AND {VISIBLE_NOTE_CONDITION} \
+         {ownership}\
          AND note_type = $editor_expected.note_type \
          AND title = $editor_expected.title AND content = $editor_expected.content \
          AND (embedding ?? []) = ($editor_expected.embedding ?? []) \
@@ -214,7 +225,7 @@ impl Repository {
     ) -> Result<Note> {
         let editor_source = expected.map(editor_source_id).transpose()?;
         let guard = expected
-            .map(|_| editor_snapshot_guard())
+            .map(|_| editor_snapshot_guard(false))
             .unwrap_or_default();
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let replacement_entities = replacement_entities_transaction();
@@ -299,6 +310,19 @@ impl Repository {
         Ok(note)
     }
 
+    /// Source generations and chat provenance relationships identify imported
+    /// notes. Source IDs/types and tags alone do not: detached manual copies
+    /// intentionally retain those fields without generation or chat links.
+    pub async fn note_requires_detach(&self, note: &Note) -> Result<bool> {
+        if note.source_generation.is_some() {
+            return Ok(true);
+        }
+        match &note.id {
+            Some(id) => self.note_has_chat_provenance(id).await,
+            None => Ok(false),
+        }
+    }
+
     /// Update a note
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
@@ -370,8 +394,10 @@ impl Repository {
     }
 
     /// Replace an editor draft and its mention set only while the persisted
-    /// note is still visible and matches the editor-opening snapshot. A
-    /// deleted note cannot be recreated by the subsequent UPDATE statement.
+    /// manual note is still visible and matches the editor-opening snapshot.
+    /// Generation ownership or either chat-provenance relationship rejects the
+    /// update as a NoteRevisionConflict, including links added during provider
+    /// work. A deleted note cannot be recreated by the subsequent UPDATE.
     #[instrument(skip(self, note, entities, expected))]
     pub async fn update_note_and_replace_entities_if_unchanged(
         &self,
@@ -401,7 +427,7 @@ impl Repository {
             }
             (
                 expected.clone(),
-                editor_snapshot_guard(),
+                editor_snapshot_guard(true),
                 Some(editor_source),
             )
         } else {

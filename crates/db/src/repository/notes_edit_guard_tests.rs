@@ -89,6 +89,86 @@ fn assert_conflict(result: Result<Note>) {
 }
 
 #[tokio::test]
+async fn chat_provenance_blocks_guarded_updates_but_allows_detached_manual_copies() {
+    for message_link in [false, true] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = repo
+            .create_source(Source::chat_export(
+                "Legacy chat",
+                Some("legacy-chat.json".into()),
+            ))
+            .await
+            .unwrap();
+        let initial = initial(&repo).await;
+        let mut opening = initial.clone();
+        opening.source_id = source.id;
+        opening.tags.push("chat-export".into());
+        let opening = repo.update_note(&id(&opening), opening).await.unwrap();
+        assert!(!repo.note_requires_detach(&opening).await.unwrap());
+        // Add ownership after the editor snapshot without changing any Note
+        // fields. Missing chat targets still identify the imported owner.
+        if message_link {
+            repo.link_note_to_message(
+                opening.id.as_ref().unwrap(),
+                &RecordId::new("message", "missing"),
+            )
+            .await
+            .unwrap();
+        } else {
+            repo.link_note_to_conversation(
+                opening.id.as_ref().unwrap(),
+                &RecordId::new("conversation", "missing"),
+            )
+            .await
+            .unwrap();
+        }
+        assert!(repo.note_requires_detach(&opening).await.unwrap());
+        let before_entities = entity_snapshot(&repo).await;
+        let mut replacement = opening.clone();
+        replacement.content = "Must not replace imported chat".into();
+        assert_conflict(
+            repo.update_note_and_replace_entities_if_unchanged(
+                &id(&opening),
+                replacement,
+                vec![changed_original_entity(), entity("Orphan")],
+                &opening,
+            )
+            .await,
+        );
+        assert_snapshot(
+            &repo.get_note(&id(&opening)).await.unwrap().unwrap(),
+            &opening,
+        );
+        assert_eq!(entity_snapshot(&repo).await, before_entities);
+        let mut manual = Note::new("Detached chat").with_tags(opening.tags.clone());
+        manual.source_id = opening.source_id.clone();
+        let manual = repo
+            .create_note_and_replace_entities_if_unchanged(manual, Vec::new(), &opening)
+            .await
+            .unwrap();
+        assert!(!repo.note_requires_detach(&manual).await.unwrap());
+        let mut revised = manual.clone();
+        revised.content = "Revised detached chat".into();
+        let revised = repo
+            .update_note_and_replace_entities_if_unchanged(
+                &id(&manual),
+                revised,
+                Vec::new(),
+                &manual,
+            )
+            .await
+            .unwrap();
+        assert_eq!(revised.source_id, opening.source_id);
+        assert_eq!(revised.tags, opening.tags);
+        assert_eq!(revised.content, "Revised detached chat");
+        assert_snapshot(
+            &repo.get_note(&id(&opening)).await.unwrap().unwrap(),
+            &opening,
+        );
+    }
+}
+
+#[tokio::test]
 async fn current_editor_snapshot_updates_content_and_mentions_together() {
     let repo = Repository::new(init_memory().await.unwrap());
     let expected = initial(&repo).await;

@@ -110,7 +110,9 @@ impl Provider {
                         json!({"models":[{"name":"bge-m3:latest"},{"name":"phi4-mini:latest"}]}),
                     )
                 } else if line.starts_with("POST /api/embed ") {
-                    ("200 OK", json!({"embeddings":[&vector]}))
+                    let payload: Value = serde_json::from_str(&body).unwrap();
+                    let inputs = payload["input"].as_array().map_or(1, Vec::len);
+                    ("200 OK", json!({"embeddings":vec![&vector; inputs]}))
                 } else if line.starts_with("POST /api/embeddings ") {
                     ("200 OK", json!({"embedding": &vector}))
                 } else if line.starts_with("POST /api/chat ") {
@@ -745,6 +747,113 @@ fn imported_editor_edits_offer_source_and_detach_without_editor_or_provider_call
     f.editor(&mut command, "replace", "Detached manual content");
     command.assert().success();
     assert_eq!(f.notes()["notes"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn imported_chat_notes_require_detach_and_detached_copies_remain_editable() {
+    for mode in ["message", "qa", "fallback"] {
+        let f = Fixture::new();
+        let export = f.temp.path().join("chat.json");
+        let messages = if mode == "fallback" {
+            json!([])
+        } else {
+            json!([
+                {"uuid":"question", "sender":"human", "text":"How should Atlas planning support daily use?"},
+                {"uuid":"answer", "sender":"assistant", "text":"Atlas planning should keep an explicit daily record and reusable project context."}
+            ])
+        };
+        fs::write(
+            &export,
+            json!([{
+                "uuid": format!("ownership-{mode}"), "name":"Atlas ownership chat",
+                "summary":"Atlas chat summary preserves imported conversation context.",
+                "created_at":"2026-01-01T00:00:00Z", "updated_at":"2026-01-01T00:00:00Z",
+                "chat_messages":messages
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        f.cmd()
+            .arg("import-chats")
+            .arg(&export)
+            .args([
+                "--mode",
+                if mode == "fallback" { "message" } else { mode },
+                "--skip-extraction",
+            ])
+            .assert()
+            .success();
+        let notes = f.notes();
+        let originals = notes["notes"].as_array().unwrap();
+        assert!(originals.len() >= 2, "{mode}: {notes}");
+        for hit in originals {
+            let hit: graphrag_db::repository::SearchResult =
+                serde_json::from_value(hit.clone()).unwrap();
+            let id = graphrag_core::record_id_to_string(&hit.id);
+            let before = f.show(&id);
+            assert!(before.get("source_generation").is_none());
+            let count = f.provider.count();
+            let mut command = f.cmd();
+            command.args(["notes", "edit", &id, "--format", "json"]);
+            f.editor(&mut command, "replace", "Must not overwrite imported chat");
+            let output = command.assert().code(2).get_output().clone();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(" inspect "), "{stderr}");
+            assert!(stderr.contains("--detach --editor"), "{stderr}");
+            assert!(!stderr.contains("EDITOR_DIAGNOSTIC"));
+            assert!(f.draft_paths().is_empty());
+            f.cmd()
+                .args(["notes", "edit", &id, "--title", "Must not change"])
+                .assert()
+                .code(2);
+            f.cmd()
+                .args(["notes", "edit", &id, "--stdin"])
+                .write_stdin("Must not overwrite imported chat")
+                .assert()
+                .code(2);
+            assert_eq!(f.provider.count(), count);
+            assert_eq!(f.show(&id), before);
+
+            let mut command = f.cmd();
+            command.args(["notes", "edit", &id, "--detach", "--format", "json"]);
+            f.editor(&mut command, "replace", "Detached chat manual copy");
+            let output = command.assert().success().get_output().stdout.clone();
+            let result = data(&output);
+            assert_eq!(result["detached"], true);
+            let persisted = f.notes();
+            let detached = persisted["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|note| note["id"] == result["note"]["id"])
+                .unwrap();
+            let detached: graphrag_db::repository::SearchResult =
+                serde_json::from_value(detached.clone()).unwrap();
+            let detached_id = graphrag_core::record_id_to_string(&detached.id);
+            assert_ne!(detached_id, id);
+            assert_eq!(result["note"]["source_id"], before["source_id"]);
+            assert_eq!(result["note"]["tags"], before["tags"]);
+            let inspected = data(
+                &f.cmd()
+                    .args(["inspect", &detached_id, "--format", "json"])
+                    .assert()
+                    .success()
+                    .get_output()
+                    .stdout,
+            );
+            assert!(inspected["provenance"]["conversation_id"].is_null());
+            assert_eq!(inspected["provenance"]["source_type"], "chat_export");
+            let mut command = f.cmd();
+            command.args(["notes", "edit", &detached_id, "--format", "json"]);
+            f.editor(&mut command, "replace", "Revised detached chat manual copy");
+            command.assert().success();
+            assert_eq!(
+                f.show(&detached_id)["content"],
+                "Revised detached chat manual copy"
+            );
+            assert_eq!(f.show(&id), before);
+        }
+    }
 }
 
 #[test]

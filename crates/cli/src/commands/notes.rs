@@ -148,9 +148,17 @@ pub async fn prepare_edit(
         return Ok(None);
     };
     let existing = get_visible_note(repo, id).await?;
-    if existing.source_generation.is_some() && !detach {
+    if !detach && repo.note_requires_detach(&existing).await? {
         let base = editor::base_command(config_path, database)?;
-        bail!("refusing to edit source-generated note {id} in place; open its source with {base} open {} or explicitly create a manual copy with {base} notes edit {} --detach --editor", shell_quote(id), shell_quote(id));
+        let source_action = if existing.source_generation.is_some() {
+            format!("open its source with {base} open {}", shell_quote(id))
+        } else {
+            format!(
+                "inspect its chat provenance with {base} inspect {}",
+                shell_quote(id)
+            )
+        };
+        bail!("refusing to edit source-generated note {id} in place; {source_action} or explicitly create a manual copy with {base} notes edit {} --detach --editor", shell_quote(id));
     }
     let mut draft = None;
     let mut outcome = None;
@@ -368,6 +376,9 @@ async fn edit(
     } else {
         get_visible_note(&repo, &id).await?
     };
+    if !detach && repo.note_requires_detach(&existing).await? {
+        bail!("refusing to edit source-generated note {id} in place; use --detach to create a manual note that retains source provenance");
+    }
     let content = select_edit_content(prepared_edit.as_mut(), content_file, stdin)?;
     validate_edit_request(
         &existing,
