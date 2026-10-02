@@ -184,6 +184,16 @@ applies application schema migrations. Repeating an unchanged file import is a
 no-op. Finish with `graphrag doctor` to check the initialized database and active
 embedding identity.
 
+In a source build containing the navigation commands, each result prints an
+`Inspect` command for its full content, source heading/lines, and chat context,
+plus an `Open source` command when it names a local file. Copy these commands;
+they retain the selected configuration/database and check that the result has
+not changed. Use full `note:`, `message:`, or `conversation:` IDs rather than
+display numbers. Inspection and source opening work with providers stopped.
+See [the navigation contract](cli-contract.md) for editor configuration and
+bounded neighboring messages. The published `v0.1.0-rc.1` binary predates these
+commands; they will be included in a subsequent release.
+
 You can now use `graphrag add "your note"`, `graphrag import your-notes.md`, and
 `graphrag search "your question"`. Database-only commands such as
 `graphrag notes list` and `graphrag stats` work without running inference services.

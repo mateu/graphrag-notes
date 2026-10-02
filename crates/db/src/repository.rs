@@ -6,6 +6,7 @@
 mod chats;
 mod graph;
 mod ids;
+mod inspection;
 mod jobs;
 mod metadata;
 mod models;
@@ -18,6 +19,10 @@ pub use chats::{EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEd
 pub use graph::{SourceDeleteSummary, SourceImportAction, SourceImportPlan};
 use ids::normalize_note_id;
 pub use ids::parse_record_id;
+pub use inspection::{
+    InspectedConversation, InspectedMessage, InspectionProvenance, RecordInspection,
+    MAX_INSPECTION_NEIGHBORS,
+};
 pub use jobs::{
     InferenceCacheEntry, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, ReindexItem,
@@ -208,6 +213,7 @@ fn source_content_value(source: &Source) -> Result<serde_json::Value> {
     object.remove("updated_at");
     object.remove("last_ingested_at");
     for key in [
+        "title",
         "uri",
         "content",
         "normalized_uri",
@@ -287,6 +293,49 @@ mod tests {
             .take(0)
             .unwrap();
         (conversation_id, message.unwrap().id)
+    }
+
+    #[tokio::test]
+    async fn manual_source_preserves_absent_optional_fields() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = repo.create_source(Source::manual()).await.unwrap();
+        let stored = repo
+            .get_source(&record_id_to_string(source.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.source_type, SourceType::Manual);
+        assert!(stored.title.is_none());
+        assert!(stored.uri.is_none());
+        assert!(stored.normalized_uri.is_none());
+        assert!(stored.content.is_none());
+        assert!(stored.content_hash.is_none());
+        assert!(stored.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn chat_source_round_trips_nested_metadata_without_stripping_json_nulls() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let metadata = serde_json::json!({
+            "conversation_id": "atlas-conversation",
+            "created_at": "2026-01-01T00:00:00Z",
+            "summary": "Atlas chat source metadata is preserved.",
+            "provider": {"optional_value": null, "nested": {"label": "Atlas"}},
+        });
+        let source = repo
+            .create_source(Source::chat_export("Atlas chat", None).with_metadata(metadata.clone()))
+            .await
+            .unwrap();
+        let stored = repo
+            .get_source(&record_id_to_string(source.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.source_type, SourceType::ChatExport);
+        assert_eq!(stored.title.as_deref(), Some("Atlas chat"));
+        assert!(stored.uri.is_none());
+        assert!(stored.content.is_none());
+        assert_eq!(stored.metadata, metadata);
     }
 
     #[tokio::test]

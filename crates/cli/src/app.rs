@@ -29,6 +29,7 @@ use tracing::info;
 pub(crate) struct AppContext {
     pub(crate) repo: Repository,
     pub(crate) config: RuntimeConfig,
+    pub(crate) config_path: Option<std::path::PathBuf>,
     pub(crate) tei: SharedEmbedder,
     pub(crate) tgi: SharedEntityExtractor,
     pub(crate) librarian_config: LibrarianRuntimeConfig,
@@ -436,6 +437,20 @@ impl std::error::Error for DoctorExit {}
 /// produced by Clap-adjacent handlers that intentionally use `anyhow::bail!`.
 pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
     for cause in error.chain() {
+        if cause
+            .downcast_ref::<crate::dispatch::ChatImportFailure>()
+            .is_some()
+        {
+            return output::ExitCode::PartialFailure;
+        }
+        if let Some(error) = cause.downcast_ref::<commands::navigation::NavigationError>() {
+            return match error {
+                commands::navigation::NavigationError::Validation(_) => {
+                    output::ExitCode::Validation
+                }
+                commands::navigation::NavigationError::NotFound(_) => output::ExitCode::NotFound,
+            };
+        }
         if let Some(status) = cause.downcast_ref::<DoctorExit>() {
             return match status.0 {
                 doctor::EXIT_HEALTHY => output::ExitCode::Success,
@@ -558,6 +573,15 @@ pub(crate) async fn run() -> Result<()> {
             ConfigCommand::Validate => println!("Configuration is valid."),
         }
         return Ok(());
+    }
+
+    match &cli.command {
+        Commands::Inspect { id, neighbors, .. } => {
+            commands::navigation::validate_id(id)?;
+            commands::navigation::validate_neighbors(*neighbors)?;
+        }
+        Commands::Open { id, .. } => commands::navigation::validate_id(id)?,
+        _ => {}
     }
 
     // Verification and restore intentionally run before normal database
@@ -765,6 +789,7 @@ pub(crate) async fn run() -> Result<()> {
         AppContext {
             repo,
             config,
+            config_path: commands::navigation::selected_config_path(cli.config.as_deref()),
             tei,
             tgi,
             librarian_config,
@@ -1344,6 +1369,10 @@ mod tests {
 
     #[test]
     fn documented_exit_codes_classify_typed_and_validation_errors() {
+        assert_eq!(
+            exit_code_for(&crate::dispatch::ChatImportFailure(1).into()),
+            output::ExitCode::PartialFailure
+        );
         for (status, expected) in [
             (doctor::EXIT_HEALTHY, output::ExitCode::Success),
             (doctor::EXIT_WARNING, output::ExitCode::Internal),

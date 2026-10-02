@@ -214,6 +214,34 @@ pub(crate) enum Commands {
         format: output::OutputFormat,
     },
 
+    /// Inspect a note, message, or conversation by its full search-result ID
+    Inspect {
+        /// Canonical note:ID, message:ID, or conversation:ID (never a result number)
+        id: String,
+        /// Adjacent messages on each side of a chat hit (maximum 20)
+        #[arg(long, default_value_t = 2)]
+        neighbors: usize,
+        /// Refuse a record that changed since the displayed search result
+        #[arg(long)]
+        revision: Option<String>,
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
+    },
+
+    /// Explicitly open a result's original local source file
+    Open {
+        /// Canonical note:ID, message:ID, or conversation:ID
+        id: String,
+        /// Refuse a record that changed since the displayed search result
+        #[arg(long)]
+        revision: Option<String>,
+        /// Opener executable path; configured arguments are overridden
+        #[arg(long, value_name = "PATH")]
+        opener: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
+    },
+
     /// Build prompt-ready augmentation context with citations
     Augment {
         /// Retrieval query

@@ -389,6 +389,10 @@ struct FakeOllama {
 
 impl FakeOllama {
     fn start(healthy: bool) -> Self {
+        Self::start_with_embedding_failure(healthy, None)
+    }
+
+    fn start_with_embedding_failure(healthy: bool, failure_text: Option<&'static str>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -460,6 +464,15 @@ impl FakeOllama {
                             ("200 OK", serde_json::json!({"models": models}).to_string())
                         } else if healthy && request_line.starts_with("POST /api/show ") {
                             ("200 OK", "{}".to_owned())
+                        } else if failure_text.is_some_and(|text| {
+                            (request_line.starts_with("POST /api/embed ")
+                                || request_line.starts_with("POST /api/embeddings "))
+                                && String::from_utf8_lossy(&request).contains(text)
+                        }) {
+                            (
+                                "400 Bad Request",
+                                r#"{"error":"fixture refuses this text"}"#.to_owned(),
+                            )
                         } else if healthy && request_line.starts_with("POST /api/embed ") {
                             (
                                 "200 OK",
@@ -672,6 +685,138 @@ fn fresh_install_can_check_import_search_inspect_and_reimport_sample() {
         launch["source_uri"],
         graphrag_core::normalize_file_uri(&sample_path).unwrap()
     );
+    let navigation = &launch["navigation"];
+    assert!(navigation["preview"].as_str().unwrap().contains("launch"));
+    assert_eq!(navigation["provenance"]["source_uri"], launch["source_uri"]);
+    assert!(navigation["provenance"]["start_line"].as_u64().is_some());
+    assert!(navigation["inspect_command"]
+        .as_str()
+        .unwrap()
+        .contains("--config"));
+    assert!(navigation["inspect_command"]
+        .as_str()
+        .unwrap()
+        .contains("--db-path"));
+    assert!(navigation["open_command"]
+        .as_str()
+        .unwrap()
+        .contains(" open "));
+    let requests_before = server.requests.lock().unwrap().len();
+    let inspected = configured()
+        .args([
+            "inspect",
+            launch["id"].as_str().unwrap(),
+            "--revision",
+            navigation["revision"].as_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let inspected: Value = serde_json::from_slice(&inspected).unwrap();
+    assert_eq!(inspected["data"]["content"], launch["content"]);
+    assert_eq!(inspected["data"]["provenance"], navigation["provenance"]);
+    assert_eq!(server.requests.lock().unwrap().len(), requests_before);
+
+    #[cfg(unix)]
+    {
+        // Run the exact printed command from another directory; quoted config
+        // and absolute database selection must still reach this same corpus.
+        let elsewhere = temp.path().join("another-working-directory");
+        fs::create_dir(&elsewhere).unwrap();
+        let executable = env!("CARGO_BIN_EXE_graphrag").replace('\'', "'\\''");
+        let command = navigation["inspect_command"].as_str().unwrap().replacen(
+            "graphrag ",
+            &format!("'{executable}' "),
+            1,
+        ) + " --format json";
+        let output = Command::new("/bin/sh")
+            .env_clear()
+            .env("HOME", temp.path().join("home"))
+            .current_dir(&elsewhere)
+            .args(["-c", &command])
+            .timeout(Duration::from_secs(10))
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let envelope: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(envelope["data"]["id"], launch["id"]);
+        assert_eq!(envelope["data"]["content"], launch["content"]);
+    }
+
+    // Both retrieval renderer branches and both machine formats retain
+    // navigation alongside the pre-existing evidence/context pipeline.
+    for arguments in [
+        vec![
+            "search",
+            "Atlas launch plan",
+            "--explain",
+            "--format",
+            "json",
+        ],
+        vec![
+            "search",
+            "Atlas launch plan",
+            "--explain",
+            "--format",
+            "jsonl",
+        ],
+        vec![
+            "search",
+            "Atlas launch plan",
+            "--context",
+            "--graph",
+            "off",
+            "--format",
+            "json",
+        ],
+        vec![
+            "search",
+            "Atlas launch plan",
+            "--context",
+            "--graph",
+            "off",
+            "--explain",
+            "--format",
+            "jsonl",
+        ],
+    ] {
+        let output = configured()
+            .args(&arguments)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        if arguments.contains(&"jsonl") {
+            for line in std::str::from_utf8(&output).unwrap().lines() {
+                let envelope: Value = serde_json::from_str(line).unwrap();
+                assert!(envelope["data"]["result"]["navigation"]["inspect_command"]
+                    .as_str()
+                    .unwrap()
+                    .contains("--revision"));
+                assert!(envelope["data"]["pipeline"]["filters"].is_object());
+            }
+        } else {
+            let envelope: Value = serde_json::from_slice(&output).unwrap();
+            let hit = &envelope["data"]["results"][0];
+            assert!(hit["navigation"]["inspect_command"]
+                .as_str()
+                .unwrap()
+                .contains("--revision"));
+            if arguments.contains(&"--explain") {
+                assert!(hit["final_score"].is_object());
+                assert!(envelope["data"]["pipeline"]["filters"].is_object());
+            } else {
+                assert!(hit["content"].is_string());
+            }
+        }
+    }
     let note = configured()
         .args([
             "notes",
@@ -759,4 +904,174 @@ fn failed_provider_checks_redact_credentials_in_nested_diagnostics() {
         .any(|check| check["name"] == "embedding_provider" && check["status"] == "failed"));
     assert!(!config_path.exists());
     assert!(!temp.path().join("home/.graphrag").exists());
+}
+
+#[test]
+fn real_chat_import_and_backfill_create_inspectable_search_results() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = FakeOllama::start(true);
+    let config = temp.path().join("config.toml");
+    let database = temp.path().join("database");
+    let chat = temp.path().join("chat export.json");
+    fs::write(&chat, serde_json::json!([{
+        "uuid": "atlas-navigation-chat", "name": "Atlas launch discussion",
+        "summary": "Atlas launch plan and pilot feedback.",
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:03:00Z",
+        "chat_messages": [
+            {"uuid": "atlas-message-0", "sender": "human", "text": "What is the Atlas launch plan?"},
+            {"uuid": "atlas-message-1", "sender": "assistant", "text": "Start with internal testing, then a small pilot, then open access after pilot feedback."},
+            {"uuid": "atlas-message-2", "sender": "human", "text": "Please preserve the pilot feedback with its original Atlas context."}
+        ]
+    }]).to_string()).unwrap();
+    let configured = || {
+        let mut command = graphrag(temp.path());
+        command
+            .env("TEI_URL", &server.endpoint)
+            .env("TGI_URL", &server.endpoint)
+            .arg("--config")
+            .arg(&config);
+        command
+    };
+    configured()
+        .arg("--db-path")
+        .arg(&database)
+        .args(["init", "--backend", "ollama", "--write"])
+        .assert()
+        .success();
+    configured()
+        .arg("import-chats")
+        .arg(&chat)
+        .args(["--mode", "hybrid", "--skip-extraction"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Conversations imported: 1"));
+    configured()
+        .arg("migrate-chats")
+        .arg(&chat)
+        .arg("--skip-extraction")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Conversations imported: 1"));
+    let searched = configured()
+        .args([
+            "search", "Atlas", "--scope", "all", "--limit", "20", "--format", "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let searched: Value = serde_json::from_slice(&searched).unwrap();
+    let hits = searched["data"]["results"].as_array().unwrap();
+    for kind in ["note", "message", "conversation-summary"] {
+        let hit = hits
+            .iter()
+            .find(|hit| hit["hit_type"] == kind)
+            .expect("every chat search kind is available");
+        let inspected = configured()
+            .args([
+                "inspect",
+                hit["id"].as_str().unwrap(),
+                "--revision",
+                hit["navigation"]["revision"].as_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let inspected: Value = serde_json::from_slice(&inspected).unwrap();
+        assert_eq!(inspected["data"]["hit_type"], kind);
+        assert_eq!(
+            inspected["data"]["provenance"]["conversation_uuid"],
+            "atlas-navigation-chat"
+        );
+        assert!(!inspected["data"]["messages"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn chat_import_failures_exit_five_and_keep_successful_peers_inspectable() {
+    for action in ["import-chats", "migrate-chats"] {
+        let temp = tempfile::tempdir().unwrap();
+        let server = FakeOllama::start_with_embedding_failure(true, Some("FAIL_THIS_MESSAGE"));
+        let config = temp.path().join("config.toml");
+        let database = temp.path().join("database");
+        let chat = temp.path().join("partial chat.json");
+        fs::write(&chat, serde_json::json!([
+            {
+                "uuid": "atlas-successful-peer", "name": "Atlas successful conversation",
+                "summary": "Atlas successful peer stays available.",
+                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:03:00Z",
+                "chat_messages": [{"uuid": "atlas-success-message", "sender": "human", "text": "Keep this Atlas context available."}]
+            },
+            {
+                "uuid": "atlas-partial-peer", "name": "Atlas incomplete conversation",
+                "summary": "Atlas summary was written before its message failed.",
+                "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:03:00Z",
+                "chat_messages": [{"uuid": "atlas-failing-message", "sender": "human", "text": "FAIL_THIS_MESSAGE"}]
+            }
+        ]).to_string()).unwrap();
+        let configured = || {
+            let mut command = graphrag(temp.path());
+            command
+                .env("TEI_URL", &server.endpoint)
+                .env("TGI_URL", &server.endpoint)
+                .env("GRAPHRAG_INFERENCE_RETRY_ATTEMPTS", "1")
+                .arg("--config")
+                .arg(&config);
+            command
+        };
+        configured()
+            .arg("--db-path")
+            .arg(&database)
+            .args(["init", "--backend", "ollama", "--write"])
+            .assert()
+            .success();
+        configured()
+            .arg(action)
+            .arg(&chat)
+            .arg("--skip-extraction")
+            .assert()
+            .code(5)
+            .stdout(predicates::str::contains("Conversations imported: 1"))
+            .stdout(predicates::str::contains("Conversations failed: 1"))
+            .stdout(predicates::str::contains(
+                "failed conversations may have partial writes",
+            ));
+        let output = configured()
+            .args([
+                "search", "Atlas", "--scope", "all", "--limit", "20", "--format", "json",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let searched: Value = serde_json::from_slice(&output).unwrap();
+        let hits = searched["data"]["results"].as_array().unwrap();
+        for uuid in ["atlas-successful-peer", "atlas-partial-peer"] {
+            let hit = hits
+                .iter()
+                .find(|hit| {
+                    hit["hit_type"] == "conversation-summary"
+                        && hit["navigation"]["provenance"]["conversation_uuid"] == uuid
+                })
+                .expect("successful and already-durable partial records remain available");
+            configured()
+                .args([
+                    "inspect",
+                    hit["id"].as_str().unwrap(),
+                    "--revision",
+                    hit["navigation"]["revision"].as_str().unwrap(),
+                    "--format",
+                    "json",
+                ])
+                .assert()
+                .success()
+                .stdout(predicates::str::contains(uuid));
+        }
+    }
 }

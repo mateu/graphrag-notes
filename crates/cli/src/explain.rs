@@ -74,6 +74,38 @@ pub fn search_pipeline(
     })
 }
 
+/// Navigation is additive to the explanation schema; ranking/channel evidence
+/// and JSONL pipeline metadata keep their existing shape.
+pub(crate) fn search_results_with_navigation(
+    explanations: &[RetrievalExplanation],
+    navigation: &HashMap<String, crate::commands::navigation::SearchNavigation>,
+) -> Vec<serde_json::Value> {
+    explanations
+        .iter()
+        .map(|explanation| {
+            let mut value =
+                serde_json::to_value(explanation).expect("retrieval evidence is serializable");
+            if let Some(item) = navigation.get(&explanation.result_id) {
+                value["navigation"] =
+                    serde_json::to_value(item).expect("navigation is serializable");
+            }
+            value
+        })
+        .collect()
+}
+
+pub(crate) fn search_json_with_navigation(
+    explanations: &[RetrievalExplanation],
+    summary: &GraphRetrievalSummary,
+    filters: serde_json::Value,
+    related_by_note: &HashMap<String, RelatedNotes>,
+    navigation: &HashMap<String, crate::commands::navigation::SearchNavigation>,
+) -> serde_json::Value {
+    let mut value = search_json(explanations, summary, filters, related_by_note);
+    value["results"] = serde_json::json!(search_results_with_navigation(explanations, navigation));
+    value
+}
+
 /// Compact human evidence line suitable for indentation beneath a result.
 pub fn human(explanation: &RetrievalExplanation) -> String {
     let channels = [

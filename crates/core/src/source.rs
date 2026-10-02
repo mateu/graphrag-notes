@@ -28,6 +28,7 @@ pub enum SourceType {
     /// Voice memo (future)
     Voice,
     /// Chat export (e.g., Claude Desktop)
+    #[surreal(rename = "chat_export")]
     ChatExport,
 }
 
