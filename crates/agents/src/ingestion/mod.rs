@@ -4,8 +4,8 @@
 //! modules document the stable lanes within that service so future mechanical
 //! moves do not change ingestion behavior or public constructors.
 
-pub mod librarian;
 pub mod folders;
+pub mod librarian;
 
 /// Markdown chunking, note construction, and source reconciliation lane.
 pub mod markdown {

@@ -451,7 +451,10 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
                 commands::navigation::NavigationError::NotFound(_) => output::ExitCode::NotFound,
             };
         }
-        if cause.downcast_ref::<commands::folders::SyncPartialFailure>().is_some() {
+        if cause
+            .downcast_ref::<commands::folders::SyncPartialFailure>()
+            .is_some()
+        {
             return output::ExitCode::PartialFailure;
         }
         if let Some(status) = cause.downcast_ref::<DoctorExit>() {

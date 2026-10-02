@@ -4,9 +4,9 @@
 //! variables, then explicit CLI overrides supplied by the caller.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use std::collections::BTreeMap;
 
 mod folders;
 pub use folders::{register_folder, selected_config_path, FolderConfig};

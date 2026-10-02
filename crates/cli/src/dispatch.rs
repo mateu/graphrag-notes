@@ -105,10 +105,30 @@ pub(crate) async fn execute(
         Commands::Folders { command } => {
             commands::folders::prune(&repo, &config, config_path.as_deref(), command).await?;
         }
-        Commands::Sync { name, all, dry_run, resume, format } => {
-            let cancellation = cancellation_requested.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-            let librarian = LibrarianAgent::new(repo.clone(), tei, tgi).with_runtime_config(librarian_config);
-            commands::folders::sync(&repo, &librarian, &config, config_path.as_deref(), name, all, dry_run, resume, format, cancellation).await?;
+        Commands::Sync {
+            name,
+            all,
+            dry_run,
+            resume,
+            format,
+        } => {
+            let cancellation =
+                cancellation_requested.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+            let librarian =
+                LibrarianAgent::new(repo.clone(), tei, tgi).with_runtime_config(librarian_config);
+            commands::folders::sync(
+                &repo,
+                &librarian,
+                &config,
+                config_path.as_deref(),
+                name,
+                all,
+                dry_run,
+                resume,
+                format,
+                cancellation,
+            )
+            .await?;
         }
         Commands::ImportChats { path, mode, .. } => {
             cmd_import_chats(repo, tei, tgi, librarian_config, path, mode).await?;

@@ -28,6 +28,8 @@ impl Repository {
             "UPDATE $id SET status = 'running', last_error = NONE, finished_at = NONE, updated_at = time::now() \
              WHERE job_type = 'folder_sync' AND status IN ['running', 'failed', 'cancelled'] RETURN AFTER"
         ).bind(("id", id.clone())).await?.take(0)?;
-        job.ok_or_else(|| DbError::NotFound("resumable folder sync job".into(), record_id_to_string(id)))
+        job.ok_or_else(|| {
+            DbError::NotFound("resumable folder sync job".into(), record_id_to_string(id))
+        })
     }
 }

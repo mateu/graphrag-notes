@@ -170,3 +170,9 @@ changing an existing index.
 | `embedding_metadata` missing | Start a healthy embeddings provider, then run an ingestion or vector-search command to initialize the empty corpus metadata. |
 | `embedding compatibility check failed` | Keep the prior embedding provider/model, or rebuild explicitly with `graphrag reindex --all` using the compatible 1024-dimension model. |
 | `embedding_provider` or `extraction_provider` unavailable | Start the configured local provider. Database-only commands such as `list`, `stats`, and `schema-version` remain available while it is down. |
+## Registered Markdown folders
+
+Use `graphrag folders add NAME PATH`, `graphrag sync NAME --dry-run`, then
+`graphrag sync NAME` for explicit folder ingestion. See [folder sync](folder-sync.md)
+for include/exclude rules, durable resume, missing-file previews, and confirmed
+pruning that preserves manual notes.
