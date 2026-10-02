@@ -6,6 +6,7 @@
 //! migrations; migration history remains in `crate::migrations`.
 
 use super::*;
+use surrealdb_types::ToSql;
 
 /// Tables that form the portable, logical GraphRAG data model. Runtime caches,
 /// processing-job checkpoints, and migration history are intentionally absent:
@@ -53,6 +54,41 @@ fn validate_portable_field(field: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Decode the canonical SurrealQL IDs emitted by Surreal's JSON serializer.
+/// Quoted string keys must remain strings even when they resemble a UUID or
+/// number. The CLI's unquoted-ID convenience parser cannot make that distinction.
+fn parse_portable_record_id(value: &str, expected_table: Option<&str>) -> Result<RecordId> {
+    let value = value.trim();
+    let (_, key) = value
+        .split_once(':')
+        .ok_or_else(|| DbError::QueryFailed(format!("invalid portable record id {value:?}")))?;
+    let encoded_key = key.trim_start();
+    let encoded_key = encoded_key.starts_with(['`', '⟨', '[', '{'])
+        || encoded_key.starts_with("u'")
+        || encoded_key.starts_with("u\"");
+    let id = match surrealdb::parse::value(value) {
+        // Require an exact canonical round trip: the SDK literal parser can
+        // accept a prefix, which must never truncate an archive's record key.
+        Ok(surrealdb_types::Value::RecordId(id)) if id.to_sql() == value => id,
+        _ if !encoded_key => {
+            // Older archives used the CLI's unquoted table:key convention.
+            // Preserve its UUID/numeric inference and raw string-key behavior.
+            parse_record_id(value, expected_table)?
+        }
+        _ => {
+            return Err(DbError::QueryFailed(format!(
+                "invalid canonical portable record id {value:?}"
+            )));
+        }
+    };
+    if expected_table.is_some_and(|expected| id.table.as_str() != expected) {
+        return Err(DbError::QueryFailed(format!(
+            "unexpected portable record id {value:?}"
+        )));
+    }
+    Ok(id)
 }
 
 /// Remove JSONL timestamps so their explicit Surreal datetime casts are part
@@ -135,7 +171,7 @@ fn portable_record_ids(
         })?;
         values.push((
             (*field).to_string(),
-            parse_record_id(value, *expected_table)?,
+            parse_portable_record_id(value, *expected_table)?,
         ));
     }
     Ok(values)
@@ -178,7 +214,7 @@ impl Repository {
             DbError::QueryFailed(format!("portable {table} record is missing its id"))
         })?;
         let id = if let Some(id) = id.as_str() {
-            parse_record_id(id, Some(table))?
+            parse_portable_record_id(id, Some(table))?
         } else {
             serde_json::from_value::<RecordId>(id).map_err(|error| {
                 DbError::QueryFailed(format!(
@@ -259,6 +295,148 @@ mod tests {
     use crate::init_memory;
     use graphrag_core::{record_id_to_string, Source};
 
+    fn typed_note_ids() -> Vec<RecordId> {
+        let uuid = "ab8d239c-c227-4642-a472-2672fba13f0b";
+        vec![
+            RecordId::new("note", uuid),
+            RecordId::new("note", "42"),
+            RecordId::new("note", 42_i64),
+            RecordId::new("note", -7_i64),
+            RecordId::new("note", uuid.parse::<surrealdb_types::Uuid>().unwrap()),
+            RecordId::new("note", "literal ` tick \\ slash: café and space"),
+            RecordId::new("note", "control\0\r\t\n\u{8}\u{c}characters"),
+        ]
+    }
+
+    #[test]
+    fn portable_id_decoder_preserves_canonical_key_types_and_escapes() {
+        for id in typed_note_ids() {
+            let canonical = id.to_sql();
+            assert_eq!(
+                parse_portable_record_id(&canonical, Some("note")).unwrap(),
+                id,
+                "canonical ID {canonical} must preserve its exact typed key"
+            );
+        }
+    }
+
+    #[test]
+    fn portable_id_decoder_preserves_legacy_unquoted_archive_ids() {
+        for legacy in [
+            "note:old_key",
+            "note:legacy-key with spaces",
+            "note:42",
+            "note:ab8d239c-c227-4642-a472-2672fba13f0b",
+        ] {
+            assert_eq!(
+                parse_portable_record_id(legacy, Some("note")).unwrap(),
+                parse_record_id(legacy, Some("note")).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn portable_id_decoder_rejects_malformed_encoded_keys_and_wrong_tables() {
+        for malformed in [
+            "note:`unterminated",
+            "note:`valid` trailing",
+            "note: `valid` trailing",
+            "note:u'not-a-uuid'",
+            "note:[unclosed",
+            "note:{unclosed",
+            "note:",
+            "missing-table-prefix",
+            "source:`wrong table`",
+        ] {
+            assert!(
+                parse_portable_record_id(malformed, Some("note")).is_err(),
+                "malformed ID {malformed:?} must not become a literal key"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn canonical_export_restore_preserves_typed_ids_and_references() {
+        let original = Repository::new(init_memory().await.unwrap());
+        let source_id = RecordId::new("source", "7c555ed2-cf07-4e5b-a446-5a552d2ac65e");
+        original
+            .db
+            .query(
+                "CREATE $id SET source_type = 'manual', title = 'typed-ID fixture', \
+                 metadata = {}, created_at = time::now(), updated_at = time::now()",
+            )
+            .bind(("id", source_id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let mut ids = typed_note_ids();
+        for (ordinal, id) in ids.iter().enumerate() {
+            original
+                .db
+                .query(
+                    "CREATE $id SET content = $content, note_type = 'raw', tags = [], \
+                     source_id = $source, created_at = time::now(), updated_at = time::now()",
+                )
+                .bind(("id", id.clone()))
+                .bind(("content", format!("portable typed-ID note {ordinal}")))
+                .bind(("source", source_id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        for target in &ids[1..] {
+            original
+                .create_edge(&ids[0], target, EdgeType::Supports, None)
+                .await
+                .unwrap();
+        }
+
+        let restored = Repository::new(init_memory().await.unwrap());
+        for table in ["source", "note", "supports"] {
+            let page = original.portable_records_page(table, 0, 100).await.unwrap();
+            for record in &page {
+                // Exercise the actual export serializer and JSONL decoding,
+                // rather than manufacturing raw IDs with the CLI formatter.
+                let jsonl = serde_json::to_vec(record).unwrap();
+                let record = serde_json::from_slice(&jsonl).unwrap();
+                restored
+                    .restore_portable_record(table, record)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                restored.portable_records_page(table, 0, 100).await.unwrap(),
+                page,
+                "portable {table} records must export with identical IDs and references after restore"
+            );
+        }
+        let restored_notes: Vec<Note> = restored.db.select("note").await.unwrap();
+        assert!(restored_notes
+            .iter()
+            .all(|note| note.source_id.as_ref() == Some(&source_id)));
+        let mut restored_ids = restored_notes
+            .into_iter()
+            .map(|note| note.id.unwrap())
+            .collect::<Vec<_>>();
+        ids.sort();
+        restored_ids.sort();
+        assert_eq!(restored_ids, ids);
+        let mut response = restored
+            .db
+            .query("SELECT VALUE in FROM supports; SELECT VALUE out FROM supports;")
+            .await
+            .unwrap();
+        let from_ids: Vec<RecordId> = response.take(0).unwrap();
+        let mut to_ids: Vec<RecordId> = response.take(1).unwrap();
+        assert!(from_ids.iter().all(|id| id == &typed_note_ids()[0]));
+        let mut expected_targets = typed_note_ids()[1..].to_vec();
+        expected_targets.sort();
+        to_ids.sort();
+        assert_eq!(to_ids, expected_targets);
+    }
+
     #[tokio::test]
     async fn portable_pages_preserve_canonical_record_id_order() {
         let repo = Repository::new(init_memory().await.unwrap());
@@ -273,8 +451,8 @@ mod tests {
         let second = repo.portable_records_page("source", 1, 1).await.unwrap();
         let first_id = first[0]["id"].as_str().unwrap();
         let second_id = second[0]["id"].as_str().unwrap();
-        let first_id = parse_record_id(first_id, Some("source")).unwrap();
-        let second_id = parse_record_id(second_id, Some("source")).unwrap();
+        let first_id = parse_portable_record_id(first_id, Some("source")).unwrap();
+        let second_id = parse_portable_record_id(second_id, Some("source")).unwrap();
 
         assert!(record_id_to_string(&first_id) < record_id_to_string(&second_id));
     }

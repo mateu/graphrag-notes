@@ -106,6 +106,11 @@ as a provenance anchor. The anchor has no active generated generation or
 content hash, so repeated missing/prune previews omit it. Restoring even the
 same file contents reimports under its existing source ID. Portable backups
 retain valid references for those manual notes and their source metadata.
+Portable backup's existing privacy policy redacts host-local source URIs;
+restored notes retain source IDs and content, without assuming another host's
+filesystem paths exist.
+A restored anchor cannot open its old local file and is not automatically
+mapped to a registered folder.
 Pruning also preserves terminal graph proposal history. Rejected and
 superseded proposals may retain the IDs of removed endpoints; backups keep
 those audit records without recreating deleted notes. Active proposals still
@@ -148,3 +153,6 @@ Validation errors exit **2**, missing named records exit **3**, and failed
 files or cancellation exit **5** with `success=false` and useful per-file
 results. Sync is one-shot: filesystem watching and cross-computer file
 replication are deferred. No daemon keeps RocksDB open between runs.
+
+See [folder sync validation](folder-sync-validation.md) for the offline checks
+and an isolated manual failure/recovery walkthrough.

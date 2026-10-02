@@ -4,7 +4,7 @@
 
 use assert_cmd::Command;
 use graphrag_config::RuntimeConfig;
-use graphrag_core::normalize_file_uri;
+use graphrag_core::{normalize_file_uri, record_id_to_string};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -362,6 +362,10 @@ fn assert_hint_context(hint: &str, fixture: &Fixture) {
     assert!(hint.contains(fixture.config_path.to_str().unwrap()));
     assert!(hint.contains("--db-path"));
     assert!(hint.contains(fixture.db_path.to_str().unwrap()));
+}
+
+fn canonical_id(value: &Value) -> String {
+    record_id_to_string(&serde_json::from_value(value.clone()).expect("typed record ID"))
 }
 
 #[test]
@@ -1001,6 +1005,7 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
     let original_source = fixture.source(&uri);
     let generated = fixture.notes();
     assert_eq!(generated.len(), 1);
+    let generated_id = canonical_id(&generated[0]["id"]);
     let manual_content = "My manual café annotation preserves the original source provenance.\n";
     let edit_content = fixture.directory.path().join("manual annotation.txt");
     fs::write(&edit_content, manual_content).unwrap();
@@ -1010,7 +1015,7 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
             .args([
                 "notes",
                 "edit",
-                generated[0]["id"].as_str().unwrap(),
+                &generated_id,
                 "--detach",
                 "--title",
                 "Manual provenance annotation",
@@ -1029,8 +1034,8 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
         .into_iter()
         .find(|note| note["content"] == manual_content)
         .unwrap();
-    let manual_id = manual["id"].as_str().unwrap();
-    assert_ne!(manual_id, generated[0]["id"].as_str().unwrap());
+    let manual_id = canonical_id(&manual["id"]);
+    assert_ne!(manual_id, generated_id);
     let requests_before = fixture.provider.requests().len();
     fs::remove_file(&path).unwrap();
     let preview = fixture.prune_preview();
@@ -1060,7 +1065,7 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
     let retained = envelope_data(
         fixture
             .command()
-            .args(["inspect", manual_id, "--format", "json"]),
+            .args(["inspect", &manual_id, "--format", "json"]),
         "inspect",
         0,
     );
@@ -1126,12 +1131,14 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
             .command()
             .arg("--db-path")
             .arg(&restored_db)
-            .args(["inspect", manual_id, "--format", "json"]),
+            .args(["inspect", &manual_id, "--format", "json"]),
         "inspect",
         0,
     );
     assert_eq!(restored_manual["content"], manual_content);
-    assert_eq!(restored_manual["provenance"], retained["provenance"]);
+    assert_eq!(restored_manual["provenance"]["source_id"], source_id);
+    assert!(restored_manual["provenance"]["source_uri"].is_null());
+    assert!(restored_manual["provenance"]["source_generation"].is_null());
     let restored_source = raw_json(
         fixture
             .command()
@@ -1141,6 +1148,8 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
     );
     assert_eq!(restored_source["id"], original_source["id"]);
     assert_eq!(restored_source["content"], original_source["content"]);
+    assert!(restored_source["uri"].is_null());
+    assert!(restored_source["normalized_uri"].is_null());
     let restored_preview = envelope_data(
         fixture
             .command()
@@ -1153,14 +1162,14 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
     assert!(files(&restored_preview).is_empty());
     assert_eq!(fixture.provider.requests().len(), requests_before);
 
-    // Restoring identical file contents must create generated notes again,
-    // while reusing the retained source identity and leaving the manual copy.
+    // Portable backups omit host-local paths. Restore the file on the
+    // original host database, where its retained provenance URI still binds
+    // that path. Identical contents must create generated notes again while
+    // reusing the source identity and leaving the manual copy intact.
     fixture.write_note("source.md", "originalsource");
     let reimported = envelope_data(
         fixture
             .command()
-            .arg("--db-path")
-            .arg(&restored_db)
             .args(["sync", "notes", "--format", "json"]),
         "sync",
         0,
@@ -1172,8 +1181,6 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
     let after_reimport = envelope_data(
         fixture
             .command()
-            .arg("--db-path")
-            .arg(&restored_db)
             .args(["notes", "list", "--limit", "100", "--format", "json"]),
         "notes.list",
         0,
@@ -1182,7 +1189,7 @@ fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_r
     assert_eq!(notes.len(), 2);
     assert!(notes
         .iter()
-        .any(|note| note["id"] == manual_id && note["content"] == manual_content));
+        .any(|note| note["id"] == manual["id"] && note["content"] == manual_content));
     assert!(notes
         .iter()
         .any(|note| note["content"].as_str().unwrap().contains("originalsource")));
