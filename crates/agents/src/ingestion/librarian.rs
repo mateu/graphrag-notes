@@ -674,6 +674,61 @@ impl LibrarianAgent {
         Ok(note)
     }
 
+    /// Capture a manual note only after all required provider work succeeds.
+    /// Reuse the atomic note/mention operation so failed capture creates no
+    /// partial manual source or visible note. Legacy `ingest_text` stays compatible.
+    #[instrument(skip(self, content, title, tags))]
+    pub async fn capture_manual_note(
+        &self,
+        content: String,
+        title: Option<String>,
+        tags: Vec<String>,
+    ) -> Result<Note> {
+        if content.trim().is_empty() {
+            return Err(crate::AgentError::Processing(
+                "note content cannot be empty".into(),
+            ));
+        }
+        let embedding = self.embed_text(&content).await?;
+        let entities = if self.runtime.skip_entity_extraction {
+            Vec::new()
+        } else {
+            let extraction = self
+                .extractor
+                .extract(&truncate_for_extraction(
+                    &content,
+                    self.runtime.extract_max_chars,
+                ))
+                .await?;
+            extracted_entities_to_domain(extraction.entities)
+        };
+        let title = title.or_else(|| {
+            content
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| {
+                    line.split_whitespace()
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .chars()
+                        .take(48)
+                        .collect()
+                })
+        });
+        let mut note = Note::new(content)
+            .with_type(NoteType::Raw)
+            .with_embedding(embedding)
+            .with_tags(tags);
+        if let Some(title) = title {
+            note = note.with_title(title);
+        }
+        Ok(self
+            .repo
+            .create_note_and_replace_entities(note, entities)
+            .await?)
+    }
+
     /// Reprocess edited manual-note content before replacing the persisted
     /// searchable record. Provider work happens first, so an embedding or
     /// extraction failure leaves the existing note and its mentions intact.
@@ -684,6 +739,29 @@ impl LibrarianAgent {
         content: String,
         title: Option<String>,
         tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        self.update_manual_note_content_impl(existing, content, title, tags, false)
+            .await
+    }
+
+    pub async fn update_manual_note_content_guarded(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        self.update_manual_note_content_impl(existing, content, title, tags, true)
+            .await
+    }
+
+    async fn update_manual_note_content_impl(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+        guard_snapshot: bool,
     ) -> Result<Note> {
         let id = existing.id.as_ref().ok_or_else(|| {
             crate::AgentError::Processing("cannot edit a note without an id".into())
@@ -716,10 +794,22 @@ impl LibrarianAgent {
             replacement.tags = tags;
         }
         replacement.updated_at = chrono::Utc::now();
-        Ok(self
-            .repo
-            .update_note_and_replace_entities(&record_id_to_string(id), replacement, entities)
-            .await?)
+        if guard_snapshot {
+            Ok(self
+                .repo
+                .update_note_and_replace_entities_if_unchanged(
+                    &record_id_to_string(id),
+                    replacement,
+                    entities,
+                    existing,
+                )
+                .await?)
+        } else {
+            Ok(self
+                .repo
+                .update_note_and_replace_entities(&record_id_to_string(id), replacement, entities)
+                .await?)
+        }
     }
 
     /// Detach a source-generated note into a new manual note. The source id
@@ -733,6 +823,29 @@ impl LibrarianAgent {
         content: String,
         title: Option<String>,
         tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        self.detach_note_to_manual_impl(existing, content, title, tags, false)
+            .await
+    }
+
+    pub async fn detach_note_to_manual_guarded(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        self.detach_note_to_manual_impl(existing, content, title, tags, true)
+            .await
+    }
+
+    async fn detach_note_to_manual_impl(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+        guard_snapshot: bool,
     ) -> Result<Note> {
         let embedding = self.embed_text(&content).await?;
         let entities = if self.runtime.skip_entity_extraction {
@@ -758,10 +871,17 @@ impl LibrarianAgent {
         if let Some(source_id) = existing.source_id.clone() {
             detached = detached.with_source(source_id);
         }
-        Ok(self
-            .repo
-            .create_note_and_replace_entities(detached, entities)
-            .await?)
+        if guard_snapshot {
+            Ok(self
+                .repo
+                .create_note_and_replace_entities_if_unchanged(detached, entities, existing)
+                .await?)
+        } else {
+            Ok(self
+                .repo
+                .create_note_and_replace_entities(detached, entities)
+                .await?)
+        }
     }
 
     /// Ingest from a markdown file

@@ -5,6 +5,95 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "notes_edit_guard_tests.rs"]
+mod edit_guard_tests;
+
+const EDITOR_REVISION_CONFLICT: &str = "graphrag-note-editor-revision-conflict";
+
+/// Compare the persisted editor-opening snapshot inside the same transaction
+/// that changes note/mention records. Timestamps alone cannot detect imports
+/// or other writers which preserve `updated_at`; every persisted Note field
+/// participates. Defaulted fields normalize older records to their domain
+/// representation, while missing/hidden rows always fail the guard.
+fn editor_snapshot_guard() -> String {
+    format!(
+        "LET $editor_matches = (SELECT VALUE id FROM note WHERE id = $editor_source \
+         AND {VISIBLE_NOTE_CONDITION} \
+         AND note_type = $editor_expected.note_type \
+         AND title = $editor_expected.title AND content = $editor_expected.content \
+         AND (embedding ?? []) = ($editor_expected.embedding ?? []) \
+         AND source_id = $editor_expected.source_id \
+         AND source_generation = $editor_expected.source_generation \
+         AND chunk_key = $editor_expected.chunk_key \
+         AND chunk_location_key = $editor_expected.chunk_location_key \
+         AND chunk_ordinal = $editor_expected.chunk_ordinal \
+         AND (chunk_heading_path ?? []) = $editor_expected.chunk_heading_path \
+         AND source_start_line = $editor_expected.source_start_line \
+         AND source_end_line = $editor_expected.source_end_line \
+         AND source_start_byte = $editor_expected.source_start_byte \
+         AND source_end_byte = $editor_expected.source_end_byte \
+         AND chunk_overlap_from = $editor_expected.chunk_overlap_from \
+         AND chunk_overlap_chars = $editor_expected.chunk_overlap_chars \
+         AND (split_fenced_code ?? false) = $editor_expected.split_fenced_code \
+         AND content_hash = $editor_expected.content_hash \
+         AND search_content = $editor_expected.search_content \
+         AND (tags ?? []) = $editor_expected.tags \
+         AND created_at = $editor_expected.created_at \
+         AND updated_at = $editor_expected.updated_at LIMIT 1); \
+         IF array::len($editor_matches) != 1 {{ THROW '{EDITOR_REVISION_CONFLICT}'; }}; "
+    )
+}
+
+fn editor_source_id(expected: &Note) -> Result<RecordId> {
+    expected
+        .id
+        .as_ref()
+        .filter(|id| id.table.as_str() == "note")
+        .cloned()
+        .ok_or_else(|| DbError::NoteRevisionConflict("(missing note ID)".into()))
+}
+
+fn check_note_mutation_errors(
+    errors: HashMap<usize, surrealdb::Error>,
+    operation: &str,
+    expected: Option<&Note>,
+) -> Result<()> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+    if let Some(expected) = expected {
+        if errors.values().any(|error| {
+            // The SDK preserves the engine's THROW display prefix rather
+            // than always marking it as a public `Thrown` error. Match only
+            // our fixed SQL sentinel; callers still receive a typed error.
+            (error
+                .message()
+                .strip_prefix("An error occurred: ")
+                .unwrap_or(error.message())
+                == EDITOR_REVISION_CONFLICT)
+                || matches!(
+                    error.details(),
+                    surrealdb_types::ErrorDetails::Query(Some(
+                        surrealdb_types::QueryError::TransactionConflict
+                    ))
+                )
+        }) {
+            return Err(DbError::NoteRevisionConflict(record_id_to_string(
+                &editor_source_id(expected)?,
+            )));
+        }
+    }
+    Err(DbError::QueryFailed(format!(
+        "atomic note-and-mention {operation} failed: {}",
+        errors
+            .into_iter()
+            .map(|(statement, error)| format!("statement {statement}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )))
+}
+
 impl Repository {
     #[instrument(skip(self, note))]
     pub async fn create_note(&self, note: Note) -> Result<Note> {
@@ -75,13 +164,41 @@ impl Repository {
         note: Note,
         entities: Vec<Entity>,
     ) -> Result<Note> {
+        self.create_note_and_replace_entities_guarded(note, entities, None)
+            .await
+    }
+
+    /// Create a detached manual copy only if its editor-opening source note
+    /// remains visible and exactly unchanged. The guard and note/mention
+    /// creation share a transaction, so conflicts leave no detached copy.
+    #[instrument(skip(self, note, entities, expected))]
+    pub async fn create_note_and_replace_entities_if_unchanged(
+        &self,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: &Note,
+    ) -> Result<Note> {
+        self.create_note_and_replace_entities_guarded(note, entities, Some(expected))
+            .await
+    }
+
+    async fn create_note_and_replace_entities_guarded(
+        &self,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: Option<&Note>,
+    ) -> Result<Note> {
+        let editor_source = expected.map(editor_source_id).transpose()?;
+        let guard = expected
+            .map(|_| editor_snapshot_guard())
+            .unwrap_or_default();
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let entity_ids = self.replacement_entity_ids(entities).await?;
         let note_id = RecordId::new("note", Uuid::new_v4().to_string());
         let mut response = self
             .db
-            .query(
-                "BEGIN TRANSACTION; \
+            .query(format!(
+                "BEGIN TRANSACTION; {guard}\
                  CREATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, source_id = $source_id, \
@@ -94,9 +211,11 @@ impl Repository {
                     content_hash = $content_hash, \
                     search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
-                 FOR $entity_id IN $entity_ids { CREATE mentions SET in = $id, out = $entity_id; }; \
-                 COMMIT TRANSACTION;",
-            )
+                 FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
+                 COMMIT TRANSACTION;"
+            ))
+            .bind(("editor_source", editor_source))
+            .bind(("editor_expected", expected.cloned()))
             .bind(("id", note_id.clone()))
             .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
             .bind(("title", note.title.clone()))
@@ -122,17 +241,7 @@ impl Repository {
             .bind(("updated_at", note.updated_at.to_rfc3339()))
             .bind(("entity_ids", entity_ids))
             .await?;
-        let errors = response.take_errors();
-        if !errors.is_empty() {
-            return Err(DbError::QueryFailed(format!(
-                "atomic note-and-mention create failed: {}",
-                errors
-                    .into_iter()
-                    .map(|(statement, error)| format!("statement {statement}: {error}"))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
-        }
+        check_note_mutation_errors(response.take_errors(), "create", expected)?;
         self.get_note(&record_id_to_string(&note_id))
             .await?
             .ok_or_else(|| DbError::CreateFailed("atomic note-and-mention create".into()))
@@ -229,26 +338,65 @@ impl Repository {
         note: Note,
         entities: Vec<Entity>,
     ) -> Result<Note> {
+        self.update_note_and_replace_entities_guarded(id, note, entities, None)
+            .await
+    }
+
+    /// Replace an editor draft and its mention set only while the persisted
+    /// note is still visible and matches the editor-opening snapshot. A
+    /// deleted note cannot be recreated by the subsequent UPDATE statement.
+    #[instrument(skip(self, note, entities, expected))]
+    pub async fn update_note_and_replace_entities_if_unchanged(
+        &self,
+        id: &str,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: &Note,
+    ) -> Result<Note> {
+        self.update_note_and_replace_entities_guarded(id, note, entities, Some(expected))
+            .await
+    }
+
+    async fn update_note_and_replace_entities_guarded(
+        &self,
+        id: &str,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: Option<&Note>,
+    ) -> Result<Note> {
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
         let note_id = RecordId::new("note", raw_id);
-        let existing = self
-            .get_note(raw_id)
-            .await?
-            .ok_or_else(|| DbError::NotFound("note".into(), id.into()))?;
-        if !self.note_is_writable(&note_id).await? {
-            return Err(DbError::NotFound(
-                "note endpoint".into(),
-                "a note update endpoint is hidden, failed, or no longer exists".into(),
-            ));
-        }
+        let (existing, guard, editor_source) = if let Some(expected) = expected {
+            let editor_source = editor_source_id(expected)?;
+            if editor_source != note_id {
+                return Err(DbError::NoteRevisionConflict(id.into()));
+            }
+            (
+                expected.clone(),
+                editor_snapshot_guard(),
+                Some(editor_source),
+            )
+        } else {
+            let existing = self
+                .get_note(raw_id)
+                .await?
+                .ok_or_else(|| DbError::NotFound("note".into(), id.into()))?;
+            if !self.note_is_writable(&note_id).await? {
+                return Err(DbError::NotFound(
+                    "note endpoint".into(),
+                    "a note update endpoint is hidden, failed, or no longer exists".into(),
+                ));
+            }
+            (existing, String::new(), None)
+        };
         let entity_ids = self.replacement_entity_ids(entities).await?;
         let search_content = search_content_for_note_update(&existing, &note);
 
         let mut response = self
             .db
-            .query(
-                "BEGIN TRANSACTION; \
+            .query(format!(
+                "BEGIN TRANSACTION; {guard}\
                  UPDATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \
@@ -263,9 +411,11 @@ impl Repository {
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
                  DELETE mentions WHERE in = $id; \
-                 FOR $entity_id IN $entity_ids { CREATE mentions SET in = $id, out = $entity_id; }; \
-                 COMMIT TRANSACTION;",
-            )
+                 FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
+                 COMMIT TRANSACTION;"
+            ))
+            .bind(("editor_source", editor_source))
+            .bind(("editor_expected", expected.cloned()))
             .bind(("id", note_id.clone()))
             .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
             .bind(("title", note.title.clone()))
@@ -291,17 +441,7 @@ impl Repository {
             .bind(("updated_at", note.updated_at.to_rfc3339()))
             .bind(("entity_ids", entity_ids))
             .await?;
-        let errors = response.take_errors();
-        if !errors.is_empty() {
-            return Err(DbError::QueryFailed(format!(
-                "atomic note-and-mention update failed: {}",
-                errors
-                    .into_iter()
-                    .map(|(statement, error)| format!("statement {statement}: {error}"))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
-        }
+        check_note_mutation_errors(response.take_errors(), "update", expected)?;
 
         self.get_note(raw_id)
             .await?

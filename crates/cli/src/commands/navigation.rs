@@ -207,6 +207,11 @@ fn opener_argv(explicit: Option<&Path>, configured: &[String]) -> Result<Vec<Str
     } else {
         return Err(NavigationError::Validation("Configure navigation.opener or pass --opener with an executable path on this platform.".into()).into());
     };
+    validate_argv(&argv)?;
+    Ok(argv)
+}
+
+pub(crate) fn validate_argv(argv: &[String]) -> Result<()> {
     if argv.first().is_none_or(|value| value.trim().is_empty())
         || argv.iter().any(|value| value.contains('\0'))
     {
@@ -216,7 +221,7 @@ fn opener_argv(explicit: Option<&Path>, configured: &[String]) -> Result<Vec<Str
         )
         .into());
     }
-    Ok(argv)
+    Ok(())
 }
 
 pub(crate) async fn open(
