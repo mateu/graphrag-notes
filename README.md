@@ -64,6 +64,10 @@ releases follow later.
 
 ## Architecture
 
+For daily Markdown use, [register a folder and sync explicitly](docs/folder-sync.md).
+Dry-run plans and unchanged sync work offline; missing files stay searchable
+until a separate preview and confirmation prune their generated records.
+
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                        CLI / Future Web UI                      │

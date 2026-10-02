@@ -103,6 +103,34 @@ pub(crate) async fn execute(
         Commands::Sources { command } => {
             cmd_sources(repo, tei, tgi, librarian_config, command).await?;
         }
+        Commands::Folders { command } => {
+            commands::folders::prune(&repo, &config, config_path.as_deref(), command).await?;
+        }
+        Commands::Sync {
+            name,
+            all,
+            dry_run,
+            resume,
+            format,
+        } => {
+            let cancellation =
+                cancellation_requested.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+            let librarian =
+                LibrarianAgent::new(repo.clone(), tei, tgi).with_runtime_config(librarian_config);
+            commands::folders::sync(
+                &repo,
+                &librarian,
+                &config,
+                config_path.as_deref(),
+                name,
+                all,
+                dry_run,
+                resume,
+                format,
+                cancellation,
+            )
+            .await?;
+        }
         Commands::ImportChats { path, mode, .. } => {
             cmd_import_chats(repo, tei, tgi, librarian_config, path, mode).await?;
         }
@@ -683,6 +711,10 @@ pub(crate) async fn ensure_resume_provider_health(
         }
         Some(ProcessingJobType::Reindex) => anyhow::bail!(
             "reindex jobs must be resumed with `graphrag reindex --resume {}`",
+            job.id.as_ref().map(record_id_to_string).unwrap_or_default()
+        ),
+        Some(ProcessingJobType::FolderSync) => anyhow::bail!(
+            "folder sync jobs require `graphrag sync --resume {}`",
             job.id.as_ref().map(record_id_to_string).unwrap_or_default()
         ),
         None => anyhow::bail!("Unsupported processing job type: {}", job.job_type),

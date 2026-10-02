@@ -459,6 +459,18 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
                 commands::navigation::NavigationError::NotFound(_) => output::ExitCode::NotFound,
             };
         }
+        if cause
+            .downcast_ref::<commands::folders::FolderValidationError>()
+            .is_some()
+        {
+            return output::ExitCode::Validation;
+        }
+        if cause
+            .downcast_ref::<commands::folders::SyncPartialFailure>()
+            .is_some()
+        {
+            return output::ExitCode::PartialFailure;
+        }
         if let Some(status) = cause.downcast_ref::<DoctorExit>() {
             return match status.0 {
                 doctor::EXIT_HEALTHY => output::ExitCode::Success,
@@ -590,6 +602,11 @@ pub(crate) async fn run() -> Result<()> {
         }
         Commands::Open { id, .. } => commands::navigation::validate_id(id)?,
         _ => {}
+    }
+    if let Commands::Folders { command } = &cli.command {
+        if commands::folders::run_config_command(&config, cli.config.as_deref(), command)? {
+            return Ok(());
+        }
     }
 
     if matches!(
@@ -801,6 +818,7 @@ pub(crate) async fn run() -> Result<()> {
     let cancellation_requested = matches!(
         &cli.command,
         Commands::ExtractEntities { .. }
+            | Commands::Sync { .. }
             | Commands::Reindex { .. }
             | Commands::Jobs {
                 command: JobsCommand::Resume { .. }
