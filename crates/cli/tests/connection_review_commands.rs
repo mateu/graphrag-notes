@@ -212,6 +212,17 @@ fn assert_human_review_audit(fixture: &Fixture, id: &str) {
     }
 }
 
+fn assert_equivalent_review_cards(json: &Value, jsonl: &Value) {
+    // The JSON envelope promotes f32 into Value; JSONL serializes f32 directly.
+    // Their decimal precision may differ while the stored confidence is equal.
+    let confidence = json["confidence"].as_f64().unwrap();
+    let jsonl_confidence = jsonl["confidence"].as_f64().unwrap();
+    assert!((confidence - jsonl_confidence).abs() <= f64::from(f32::EPSILON));
+    let mut normalized = jsonl.clone();
+    normalized["confidence"] = json["confidence"].clone();
+    assert_eq!(json, &normalized);
+}
+
 #[test]
 fn inbox_shows_both_notes_provenance_and_replayable_inspection_offline() {
     let fixture = Fixture::new();
@@ -280,12 +291,18 @@ fn inbox_shows_both_notes_provenance_and_replayable_inspection_offline() {
         .stdout
         .clone();
     assert_eq!(String::from_utf8_lossy(&jsonl).lines().count(), 3);
+    let mut focused_card_seen = false;
     for line in String::from_utf8_lossy(&jsonl).lines() {
         let line: Value = serde_json::from_str(line).unwrap();
         assert_eq!(line["command"], "garden.review");
         assert!(line["data"]["from"]["excerpt"].is_string());
         assert!(line["data"]["to"]["excerpt"].is_string());
+        if line["data"]["id"] == id {
+            assert_equivalent_review_cards(&card, &line["data"]);
+            focused_card_seen = true;
+        }
     }
+    assert!(focused_card_seen);
     assert_eq!(before, fixture.snapshot());
     fixture.no_inference();
 }
@@ -646,7 +663,7 @@ fn non_utf8_replay_paths_keep_the_inbox_and_interactive_decisions_available() {
         .stdout
         .clone();
     let jsonl: Value = serde_json::from_slice(&jsonl).unwrap();
-    assert_eq!(jsonl["data"], card);
+    assert_equivalent_review_cards(&card, &jsonl["data"]);
     fixture
         .command()
         .args(["garden", "review", "--id", id, "--interactive"])

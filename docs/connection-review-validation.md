@@ -13,7 +13,7 @@ explicitly by each real fixture.
 
 | Check | Evidence |
 | --- | --- |
-| Both endpoint titles/excerpts, source heading/generation, confidence, reason, generator, state; JSON/JSONL remain read-only | `inbox_shows_both_notes_provenance_and_replayable_inspection_offline` passed, including exact revision-guarded inspection commands from another directory |
+| Both endpoint titles/excerpts, source heading/generation, confidence, reason, generator, state; JSON/JSONL remain read-only | `inbox_shows_both_notes_provenance_and_replayable_inspection_offline` passed, including exact revision-guarded inspection commands from another directory and JSON/JSONL card equivalence (confidence at stored `f32` precision; all other fields exact) |
 | Skip, cancelled confirmation, EOF during reason entry, and quit preserve all proposal timestamps/reviewer/reason/edge fields | `skip_cancel_and_eof_leave_proposals_and_audit_unchanged` passed with complete before/after snapshots |
 | Accept/reject use existing reviewer/reason/manual audit; human history shows update/review times and the manual flag; accepted→undo retains original audit and retires the edge; superseded cannot be reaccepted | `decisions_and_undo_keep_the_existing_audit_and_terminal_state` passed |
 | A legacy missing endpoint remains visible as an unavailable card and cannot be accepted | `missing_endpoints_block_acceptance_without_mutating_the_proposal` passed |
