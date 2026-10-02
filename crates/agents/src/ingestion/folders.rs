@@ -203,6 +203,13 @@ pub async fn discover(repo: &Repository, folders: Vec<FolderSpec>) -> Result<Syn
         }
         let mut missing_files = Vec::new();
         for (uri, source) in &sources {
+            // Pruning may retain only a source metadata anchor for manual or
+            // detached notes. It owns no active generated corpus. Preserve
+            // that provenance without repeatedly advertising it for prune;
+            // if the file returns, normal scanning still reuses its ID.
+            if source.successful_generation == 0 && source.content_hash.is_none() {
+                continue;
+            }
             if found.contains(uri) {
                 continue;
             }

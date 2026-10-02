@@ -425,6 +425,35 @@ async fn excluded_sources_remain_retained_and_prune_preserves_manual_legacy_prov
             .len(),
         1
     );
+    let retained = repo
+        .get_source(&record_id_to_string(source.id.as_ref().unwrap()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.successful_generation, 0);
+    assert!(retained.content_hash.is_none());
+    assert!(!discover(&repo, vec![spec(dir.path())])
+        .await
+        .unwrap()
+        .files
+        .iter()
+        .any(|file| file.status == FileSyncStatus::Missing));
+    std::fs::write(&path, "# Note\nImported content.").unwrap();
+    let restored = execute(
+        &repo,
+        &librarian,
+        discover(&repo, vec![spec(dir.path())]).await.unwrap(),
+        None,
+        flag(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.files[0].status, FileSyncStatus::Updated);
+    assert_eq!(
+        restored.files[0].source_id.as_deref(),
+        Some(record_id_to_string(source.id.as_ref().unwrap()).as_str())
+    );
+    assert_eq!(repo.list_notes(100).await.unwrap().len(), 3);
 }
 
 #[tokio::test]

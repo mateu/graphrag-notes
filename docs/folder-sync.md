@@ -101,6 +101,15 @@ rejects a changed token, an incomplete scan, an unavailable root, or a file
 that has returned. It removes only source-generated notes and their dependents;
 manual, detached, and legacy notes without a source generation remain, as do
 their own relationships and provenance. Shared entity records remain.
+When retained notes still reference a source, prune keeps its source metadata
+as a provenance anchor. The anchor has no active generated generation or
+content hash, so repeated missing/prune previews omit it. Restoring even the
+same file contents reimports under its existing source ID. Portable backups
+retain valid references for those manual notes and their source metadata.
+Pruning also preserves terminal graph proposal history. Rejected and
+superseded proposals may retain the IDs of removed endpoints; backups keep
+those audit records without recreating deleted notes. Active proposals still
+require existing endpoints.
 Each source is rechecked immediately before deletion. If a later source
 returns or becomes unverifiable after earlier deletions completed, the report
 retains the actual per-file outcomes, reports failure, and provides a new

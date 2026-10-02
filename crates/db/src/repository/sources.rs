@@ -1,7 +1,7 @@
 //! Source lifecycle, staging, promotion, and generated-note ownership.
 //!
-//! Promotion and deletion retain their original transaction and proposal
-//! lifecycle ordering; no source-visible semantics are changed here.
+//! Promotion and deletion coordinate generation visibility, proposal history,
+//! and retained manual-note provenance under the same lifecycle lock.
 
 use super::graph::{
     canonicalize_note_edge, edge_dedupe_key, persisted_note_edge_type, SourceDeleteCount,
@@ -451,18 +451,47 @@ impl Repository {
         self.source_delete_summary(source_id, None, false).await
     }
 
-    /// Delete a source and the records it owns. Edges/provenance/mentions are
+    /// Delete a source's generated records. Edges/provenance/mentions are
     /// removed before notes, so no dangling graph records remain. Shared entity
     /// records are deliberately retained: without per-source entity ownership,
     /// deleting an unmentioned entity could erase a user-authored entity.
+    /// A source still referenced by a manual or legacy note remains as a
+    /// provenance record, with no active generation or imported content hash.
     #[instrument(skip(self, source))]
     pub async fn delete_source(&self, source: &Source) -> Result<SourceDeleteSummary> {
         let source_id = source
             .id
             .as_ref()
             .ok_or_else(|| DbError::NotFound("source".into(), "missing id".into()))?;
-        let summary = self.delete_source_notes(source_id, None, false).await?;
-        let _: Option<Source> = self.db.delete(source_id.clone()).await?;
+        // Keep manual-note edits and proposal acceptance outside this entire
+        // transition, including the final decision to retain provenance.
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        let summary = self
+            .delete_source_notes_locked(source_id, None, false)
+            .await?;
+        let remaining: Vec<RecordId> = self
+            .db
+            .query("SELECT VALUE id FROM note WHERE source_id = $source_id LIMIT 1")
+            .bind(("source_id", source_id.clone()))
+            .await?
+            .take(0)?;
+        if remaining.is_empty() {
+            let _: Option<Source> = self.db.delete(source_id.clone()).await?;
+        } else {
+            // Preserve identity, URI, original text and metadata for detached
+            // notes and portable backups. Clearing the hash explicitly makes
+            // even identical returning content start a fresh generation;
+            // MERGE serialization would omit None instead of clearing it.
+            self.db
+                .query(
+                    "UPDATE $source_id SET successful_generation = 0, \
+                     content_hash = NONE, status = 'ready', last_error = NONE, \
+                     updated_at = time::now()",
+                )
+                .bind(("source_id", source_id.clone()))
+                .await?
+                .check()?;
+        }
         Ok(summary)
     }
 

@@ -2213,6 +2213,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_delete_retains_referenced_provenance_and_allows_identical_reimport() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut plan = begin_markdown(&repo, "original content", false).await;
+        let source_id = plan.source.id.as_ref().unwrap().clone();
+        let generated = repo
+            .create_note(
+                Note::new("generated content")
+                    .with_source(source_id.clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("my detached edits").with_source(source_id.clone()))
+            .await
+            .unwrap();
+        repo.complete_file_import(&mut plan.source).await.unwrap();
+
+        let removed = repo.delete_source(&plan.source).await.unwrap();
+        assert_eq!(removed.notes, 1);
+        assert!(repo
+            .get_note(&record_id_to_string(generated.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_none());
+        let retained = repo
+            .get_source(&record_id_to_string(&source_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.id, plan.source.id);
+        assert_eq!(retained.source_type, plan.source.source_type);
+        assert_eq!(retained.normalized_uri, plan.source.normalized_uri);
+        assert_eq!(retained.content, plan.source.content);
+        assert_eq!(retained.metadata, plan.source.metadata);
+        assert_eq!(retained.generation, plan.source.generation);
+        assert_eq!(retained.successful_generation, 0);
+        assert_eq!(retained.content_hash, None);
+        assert_eq!(retained.status, SourceIngestionStatus::Ready);
+        assert_eq!(retained.last_error, None);
+
+        let mut returning = begin_markdown(&repo, "original content", false).await;
+        assert_eq!(returning.action, SourceImportAction::Updated);
+        assert_eq!(returning.source.id, Some(source_id.clone()));
+        assert_eq!(returning.source.generation, plan.source.generation + 1);
+        let fresh = repo
+            .create_note(
+                Note::new("regenerated content")
+                    .with_source(source_id.clone())
+                    .with_source_generation(returning.source.generation),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.complete_file_import(&mut returning.source)
+                .await
+                .unwrap()
+                .notes,
+            0
+        );
+        assert!(repo
+            .get_note(&record_id_to_string(fresh.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+        let manual = repo
+            .get_note(&record_id_to_string(manual.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(manual.content, "my detached edits");
+        assert_eq!(manual.source_id, Some(source_id));
+        assert_eq!(manual.source_generation, None);
+    }
+
+    #[tokio::test]
     async fn source_delete_preview_matches_confirmed_derived_cascade() {
         let repo = Repository::new(init_memory().await.unwrap());
         let mut plan = begin_markdown(&repo, "content", false).await;

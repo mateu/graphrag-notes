@@ -989,3 +989,201 @@ fn replacing_a_registered_root_ancestor_with_a_symlink_refuses_pruning() {
     assert_eq!(fixture.notes(), notes_before);
     assert_eq!(fixture.provider.requests().len(), requests_before);
 }
+
+#[test]
+fn pruning_a_detached_notes_source_preserves_portable_provenance_and_reimports_restored_files() {
+    let fixture = Fixture::new();
+    let path = fixture.write_note("source.md", "originalsource");
+    fixture.register();
+    let synced = fixture.sync(false, 0);
+    let source_id = files(&synced)[0]["source_id"].as_str().unwrap();
+    let uri = normalize_file_uri(&path).unwrap();
+    let original_source = fixture.source(&uri);
+    let generated = fixture.notes();
+    assert_eq!(generated.len(), 1);
+    let manual_content = "My manual café annotation preserves the original source provenance.\n";
+    let edit_content = fixture.directory.path().join("manual annotation.txt");
+    fs::write(&edit_content, manual_content).unwrap();
+    let detached = envelope_data(
+        fixture
+            .command()
+            .args([
+                "notes",
+                "edit",
+                generated[0]["id"].as_str().unwrap(),
+                "--detach",
+                "--title",
+                "Manual provenance annotation",
+                "--content-file",
+            ])
+            .arg(&edit_content)
+            .args(["--format", "json"]),
+        "notes.edit",
+        0,
+    );
+    assert_eq!(detached["detached"], true);
+    assert_eq!(detached["note"]["source_id"], original_source["id"]);
+    assert!(detached["note"]["source_generation"].is_null());
+    let manual = fixture
+        .notes()
+        .into_iter()
+        .find(|note| note["content"] == manual_content)
+        .unwrap();
+    let manual_id = manual["id"].as_str().unwrap();
+    assert_ne!(manual_id, generated[0]["id"].as_str().unwrap());
+    let requests_before = fixture.provider.requests().len();
+    fs::remove_file(&path).unwrap();
+    let preview = fixture.prune_preview();
+    assert_eq!(files(&preview).len(), 1);
+    assert_eq!(files(&preview)[0]["generated_records"]["notes"], 1);
+    let pruned = envelope_data(
+        fixture.command().args([
+            "folders",
+            "prune",
+            "notes",
+            "--yes",
+            "--revision",
+            preview["revision"].as_str().unwrap(),
+            "--format",
+            "json",
+        ]),
+        "folders.prune",
+        0,
+    );
+    assert_eq!(files(&pruned)[0]["file"]["status"], "pruned");
+    assert_eq!(fixture.notes(), vec![manual.clone()]);
+    let retained_source = fixture.source(source_id);
+    assert_eq!(retained_source["id"], original_source["id"]);
+    assert_eq!(retained_source["uri"], uri);
+    assert_eq!(retained_source["normalized_uri"], uri);
+    assert_eq!(retained_source["content"], original_source["content"]);
+    let retained = envelope_data(
+        fixture
+            .command()
+            .args(["inspect", manual_id, "--format", "json"]),
+        "inspect",
+        0,
+    );
+    assert_eq!(retained["content"], manual_content);
+    assert_eq!(retained["provenance"]["source_id"], source_id);
+    assert_eq!(retained["provenance"]["source_uri"], uri);
+    assert!(retained["provenance"]["source_generation"].is_null());
+
+    // Metadata retained for a manual note is not a new deletion candidate on
+    // every run. A second confirmed empty prune leaves provenance intact.
+    let repeated = fixture.prune_preview();
+    assert!(files(&repeated).is_empty());
+    let repeated_confirmation = envelope_data(
+        fixture.command().args([
+            "folders",
+            "prune",
+            "notes",
+            "--yes",
+            "--revision",
+            repeated["revision"].as_str().unwrap(),
+            "--format",
+            "json",
+        ]),
+        "folders.prune",
+        0,
+    );
+    assert!(files(&repeated_confirmation).is_empty());
+    assert_eq!(fixture.source(source_id), retained_source);
+
+    let archive = fixture.directory.path().join("pruned-manual-backup");
+    let created = raw_json(
+        fixture
+            .command()
+            .args(["backup", "create"])
+            .arg(&archive)
+            .args(["--format", "json"]),
+    );
+    assert_eq!(created["includes_embeddings"], false);
+    assert_eq!(created["record_counts"]["note"], 1);
+    assert_eq!(created["record_counts"]["source"], 1);
+    let verified = raw_json(
+        fixture
+            .command()
+            .args(["backup", "verify"])
+            .arg(&archive)
+            .args(["--format", "json"]),
+    );
+    assert_eq!(verified, created);
+    let restored_db = fixture.directory.path().join("fresh-restored-database");
+    let restored = raw_json(
+        fixture
+            .command()
+            .arg("--db-path")
+            .arg(&restored_db)
+            .args(["backup", "restore"])
+            .arg(&archive)
+            .args(["--format", "json"]),
+    );
+    assert_eq!(restored["includes_embeddings"], false);
+    assert_eq!(restored["record_counts"], created["record_counts"]);
+    let restored_manual = envelope_data(
+        fixture
+            .command()
+            .arg("--db-path")
+            .arg(&restored_db)
+            .args(["inspect", manual_id, "--format", "json"]),
+        "inspect",
+        0,
+    );
+    assert_eq!(restored_manual["content"], manual_content);
+    assert_eq!(restored_manual["provenance"], retained["provenance"]);
+    let restored_source = raw_json(
+        fixture
+            .command()
+            .arg("--db-path")
+            .arg(&restored_db)
+            .args(["sources", "show", source_id, "--format", "json"]),
+    );
+    assert_eq!(restored_source["id"], original_source["id"]);
+    assert_eq!(restored_source["content"], original_source["content"]);
+    let restored_preview = envelope_data(
+        fixture
+            .command()
+            .arg("--db-path")
+            .arg(&restored_db)
+            .args(["folders", "prune", "notes", "--format", "json"]),
+        "folders.prune",
+        0,
+    );
+    assert!(files(&restored_preview).is_empty());
+    assert_eq!(fixture.provider.requests().len(), requests_before);
+
+    // Restoring identical file contents must create generated notes again,
+    // while reusing the retained source identity and leaving the manual copy.
+    fixture.write_note("source.md", "originalsource");
+    let reimported = envelope_data(
+        fixture
+            .command()
+            .arg("--db-path")
+            .arg(&restored_db)
+            .args(["sync", "notes", "--format", "json"]),
+        "sync",
+        0,
+    );
+    assert_eq!(files(&reimported).len(), 1);
+    assert_eq!(files(&reimported)[0]["status"], "updated");
+    assert_eq!(files(&reimported)[0]["source_id"], source_id);
+    assert!(files(&reimported)[0]["generation"].as_u64().unwrap() > 1);
+    let after_reimport = envelope_data(
+        fixture
+            .command()
+            .arg("--db-path")
+            .arg(&restored_db)
+            .args(["notes", "list", "--limit", "100", "--format", "json"]),
+        "notes.list",
+        0,
+    );
+    let notes = after_reimport["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 2);
+    assert!(notes
+        .iter()
+        .any(|note| note["id"] == manual_id && note["content"] == manual_content));
+    assert!(notes
+        .iter()
+        .any(|note| note["content"].as_str().unwrap().contains("originalsource")));
+}

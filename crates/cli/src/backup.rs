@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use graphrag_core::{PortableBackupManifest, PortableEmbeddingIdentity, PortableRecord};
-use graphrag_db::{init_persistent, migrations, Repository, PORTABLE_TABLES};
+use graphrag_db::{init_persistent, migrations, parse_record_id, Repository, PORTABLE_TABLES};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -569,6 +569,11 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
     let object = record
         .as_object()
         .context("portable record must be a JSON object")?;
+    let historical_proposal = table == "proposed_edge"
+        && matches!(
+            object.get("status").and_then(serde_json::Value::as_str),
+            Some("rejected" | "superseded")
+        );
     let mut references = Vec::new();
     for (field, expected_table) in expected {
         let Some(value) = object.get(*field) else {
@@ -586,6 +591,16 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
                 "portable {table}.{field} must reference a {} record",
                 expected_table.expect("checked above")
             );
+        }
+        if historical_proposal && matches!(*field, "in" | "out") {
+            // Terminal proposals retain their original endpoint IDs as audit
+            // evidence after source/note cleanup. Validate their shape, but do
+            // not require the retired notes to exist or recreate them during
+            // restore. Resulting edges and every active proposal remain strict.
+            parse_record_id(&id, Some("note")).with_context(|| {
+                format!("portable {table} record has invalid reference in {field}")
+            })?;
+            continue;
         }
         references.push((format!("{table}.{field}"), id));
     }
@@ -695,7 +710,7 @@ mod tests {
     use super::*;
     use graphrag_core::{
         record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, EntityType, Note,
-        Source,
+        ProposedEdgeStatus, Source, SourceType,
     };
     use graphrag_db::{init_memory, repository::EdgeProposalDraft};
     use tempfile::tempdir;
@@ -865,6 +880,221 @@ mod tests {
         assert!(expected_endpoints.contains(&restored_proposal.from_id));
         assert!(expected_endpoints.contains(&restored_proposal.to_id));
         assert_ne!(restored_proposal.from_id, restored_proposal.to_id);
+    }
+
+    #[tokio::test]
+    async fn source_prune_preserves_terminal_proposal_history_through_backup_restore() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut plan = repo
+            .begin_file_import(
+                SourceType::Markdown,
+                "pruned.md".into(),
+                "file:///portable/pruned.md".into(),
+                "generated endpoint".into(),
+                "generated-content-hash".into(),
+                false,
+            )
+            .await
+            .unwrap();
+        let removed = repo
+            .create_note(
+                Note::new("generated endpoint")
+                    .with_source(plan.source.id.as_ref().unwrap().clone())
+                    .with_source_generation(plan.source.generation),
+            )
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        repo.complete_file_import(&mut plan.source).await.unwrap();
+
+        let mut originals = Vec::new();
+        for (status, label) in [
+            (ProposedEdgeStatus::Pending, "pending"),
+            (ProposedEdgeStatus::Accepted, "accepted"),
+            (ProposedEdgeStatus::Rejected, "rejected"),
+        ] {
+            let target = repo
+                .create_note(Note::new(format!("surviving {label} endpoint")))
+                .await
+                .unwrap()
+                .id
+                .unwrap();
+            let proposal = repo
+                .upsert_edge_proposal(EdgeProposalDraft {
+                    from_id: removed.clone(),
+                    to_id: target,
+                    edge_type: EdgeType::RelatedTo,
+                    confidence: 0.8,
+                    reason: format!("original {label} relationship evidence"),
+                    generator: "portable-lifecycle-fixture".into(),
+                    generator_version: Some("1".into()),
+                    model: Some("historical-model".into()),
+                })
+                .await
+                .unwrap();
+            let id = proposal.id.as_ref().unwrap();
+            let reviewed = match status {
+                ProposedEdgeStatus::Accepted => repo
+                    .accept_edge_proposal(
+                        id,
+                        Some("original-reviewer".into()),
+                        Some("original acceptance reason".into()),
+                        true,
+                    )
+                    .await
+                    .unwrap(),
+                ProposedEdgeStatus::Rejected => repo
+                    .reject_edge_proposal(
+                        id,
+                        Some("original-reviewer".into()),
+                        Some("original rejection reason".into()),
+                    )
+                    .await
+                    .unwrap(),
+                _ => proposal,
+            };
+            originals.push(reviewed);
+        }
+
+        let deletion = repo.delete_source(&plan.source).await.unwrap();
+        assert_eq!(deletion.notes, 1);
+        assert_eq!(deletion.note_edges, 1);
+        assert_eq!(deletion.proposals, 2);
+        let mut history = Vec::new();
+        for original in originals {
+            let audit = repo
+                .get_edge_proposal(original.id.as_ref().unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(audit.from_id, original.from_id);
+            assert_eq!(audit.to_id, original.to_id);
+            assert_eq!(audit.reason, original.reason);
+            assert_eq!(audit.reviewer, original.reviewer);
+            assert_eq!(audit.action_reason, original.action_reason);
+            assert_eq!(audit.reviewed_at, original.reviewed_at);
+            assert_eq!(audit.resulting_edge_id, None);
+            if original.status == ProposedEdgeStatus::Rejected {
+                assert_eq!(audit.status, ProposedEdgeStatus::Rejected);
+            } else {
+                assert_eq!(audit.status, ProposedEdgeStatus::Superseded);
+                assert_eq!(
+                    audit.supersession_reason.as_deref(),
+                    Some("proposal endpoint removed by source lifecycle")
+                );
+                assert!(audit.superseded_at.is_some());
+            }
+            history.push(audit);
+        }
+
+        let temp = tempdir().unwrap();
+        let backup_path = temp.path().join("pruned-source");
+        let summary = create_backup(&repo, &backup_path, false).await.unwrap();
+        assert_eq!(verify_backup(&backup_path).unwrap(), summary);
+        assert_eq!(summary.record_counts.get("note"), Some(&3));
+        assert_eq!(summary.record_counts.get("proposed_edge"), Some(&3));
+        let restored = Repository::new(init_memory().await.unwrap());
+        restore_records(&restored, &backup_path.join(RECORDS_FILE))
+            .await
+            .unwrap();
+        assert!(restored
+            .get_note(&record_id_to_string(&removed))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(restored.list_note_edges(10).await.unwrap().is_empty());
+        for audit in history {
+            let id = audit.id.as_ref().unwrap();
+            let restored_audit = restored.get_edge_proposal(id).await.unwrap().unwrap();
+            assert_eq!(
+                serde_json::to_value(restored_audit).unwrap(),
+                serde_json::to_value(&audit).unwrap()
+            );
+            assert!(restored
+                .accept_edge_proposal(id, None, None, true)
+                .await
+                .is_err());
+        }
+        let second_path = temp.path().join("restored-history");
+        assert_eq!(
+            create_backup(&restored, &second_path, false)
+                .await
+                .unwrap()
+                .record_counts,
+            summary.record_counts
+        );
+    }
+
+    #[test]
+    fn only_terminal_proposal_endpoints_may_reference_retired_notes() {
+        let surviving_ids = BTreeSet::from(["note:surviving".to_string()]);
+        for status in ["pending", "accepting", "accepted", "unknown"] {
+            let record = serde_json::json!({
+                "status": status, "in": "note:retired", "out": "note:surviving"
+            });
+            let references = record_references("proposed_edge", &record).unwrap();
+            assert!(validate_references(&surviving_ids, &references)
+                .unwrap_err()
+                .to_string()
+                .contains("dangling reference proposed_edge.in"));
+        }
+        let missing_status = serde_json::json!({
+            "in": "note:retired", "out": "note:surviving"
+        });
+        assert!(validate_references(
+            &surviving_ids,
+            &record_references("proposed_edge", &missing_status).unwrap()
+        )
+        .is_err());
+        for status in ["rejected", "superseded"] {
+            let record = serde_json::json!({
+                "status": status, "in": "note:retired", "out": "note:also-retired"
+            });
+            let original = record.clone();
+            validate_references(
+                &surviving_ids,
+                &record_references("proposed_edge", &record).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(record, original, "validation preserves the audit payload");
+        }
+    }
+
+    #[test]
+    fn terminal_proposals_still_require_valid_ids_and_existing_resulting_edges() {
+        for status in ["rejected", "superseded"] {
+            for field in ["in", "out"] {
+                for malformed in [
+                    serde_json::json!("entity:retired"),
+                    serde_json::json!("note:"),
+                    serde_json::json!("note: "),
+                    serde_json::json!("note"),
+                    serde_json::json!(42),
+                    serde_json::json!({"unexpected": "note:retired"}),
+                ] {
+                    let mut record = serde_json::json!({
+                        "status": status, "in": "note:retired", "out": "note:also-retired"
+                    });
+                    record[field] = malformed;
+                    assert!(record_references("proposed_edge", &record).is_err());
+                }
+            }
+            let record = serde_json::json!({
+                "status": status, "in": "note:retired", "out": "note:also-retired",
+                "resulting_edge_id": "related_to:missing"
+            });
+            let references = record_references("proposed_edge", &record).unwrap();
+            assert!(validate_references(&BTreeSet::new(), &references)
+                .unwrap_err()
+                .to_string()
+                .contains("dangling reference proposed_edge.resulting_edge_id"));
+            validate_references(
+                &BTreeSet::from(["related_to:missing".to_string()]),
+                &references,
+            )
+            .unwrap();
+        }
     }
 
     #[tokio::test]
