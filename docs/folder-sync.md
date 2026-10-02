@@ -48,10 +48,9 @@ job, and keeps existing note IDs and source generations. A dry run reports
 planned actions without inference, source promotion, or job writes. Normal
 database startup still applies pending schema migrations if needed.
 
-Changed files use the existing Markdown importer, embedding configuration,
-and `librarian.skip_entity_extraction` setting. Entity extraction runs unless
-that setting disables it; explicit extraction remains available through
-`extract-entities`. Each file stages a replacement source generation,
+Changed files use the existing Markdown importer and embedding configuration.
+Run `extract-entities` explicitly to extract entities from imported notes.
+Each file stages a replacement source generation,
 and its old successful generation stays searchable until replacement succeeds.
 A failed file is reported independently and does not stop successful peers.
 

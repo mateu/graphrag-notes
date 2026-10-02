@@ -22,6 +22,30 @@ impl std::fmt::Display for SyncPartialFailure {
 }
 impl std::error::Error for SyncPartialFailure {}
 
+#[derive(Debug)]
+pub(crate) struct FolderValidationError(String);
+impl std::fmt::Display for FolderValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for FolderValidationError {}
+
+async fn validated_resume_plan(
+    repo: &Repository,
+    job_id: &str,
+) -> Result<(SyncReport, graphrag_db::ProcessingJob)> {
+    let job = repo.get_processing_job(job_id).await?.ok_or_else(|| {
+        graphrag_agents::AgentError::NotFound(format!("folder sync job {job_id}"))
+    })?;
+    if job.job_type_enum() != Some(graphrag_db::ProcessingJobType::FolderSync)
+        || !matches!(job.status.as_str(), "running" | "failed" | "cancelled")
+    {
+        return Err(FolderValidationError("sync --resume requires a running, failed, or cancelled folder sync job; completed jobs need a fresh named-folder sync".into()).into());
+    }
+    Ok(folders::resume_plan(repo, job_id).await?)
+}
+
 pub(crate) fn run_config_command(
     config: &RuntimeConfig,
     explicit: Option<&Path>,
@@ -163,7 +187,7 @@ pub(crate) async fn sync(
     cancellation: Arc<AtomicBool>,
 ) -> Result<()> {
     let (plan, resumed) = if let Some(job_id) = &resume {
-        let (plan, job) = folders::resume_plan(repo, job_id).await?;
+        let (plan, job) = validated_resume_plan(repo, job_id).await?;
         (plan, Some(job))
     } else {
         (
@@ -407,6 +431,55 @@ pub(crate) async fn prune(
 mod tests {
     use super::*;
     use graphrag_core::{normalize_file_uri, normalized_content_hash, Note, SourceType};
+
+    #[tokio::test]
+    async fn resume_invocation_errors_are_validation_missing_jobs_are_not_found() {
+        use graphrag_db::{ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate};
+        let repo = Repository::new(graphrag_db::init_memory().await.unwrap());
+        let wrong = repo
+            .create_processing_job_with_scope(ProcessingJobType::Embedding, None, 0, None, vec![])
+            .await
+            .unwrap();
+        let complete = repo
+            .create_processing_job_with_scope(ProcessingJobType::FolderSync, None, 0, None, vec![])
+            .await
+            .unwrap();
+        repo.update_processing_job(
+            complete.id.as_ref().unwrap(),
+            ProcessingJobUpdate {
+                status: Some(ProcessingJobStatus::Completed),
+                finish: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        for job in [wrong, complete] {
+            let error = validated_resume_plan(
+                &repo,
+                &graphrag_core::record_id_to_string(job.id.as_ref().unwrap()),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                crate::app::exit_code_for(&error),
+                output::ExitCode::Validation
+            );
+        }
+        let error = validated_resume_plan(&repo, "processing_job:missing")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            crate::app::exit_code_for(&error),
+            output::ExitCode::NotFound
+        );
+        assert!(repo
+            .list_processing_jobs(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|job| job.failed_count == 0));
+    }
 
     #[tokio::test]
     async fn each_prune_rechecks_paths_after_prior_cascades_and_retains_restored_source() {

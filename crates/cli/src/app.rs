@@ -452,6 +452,12 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
             };
         }
         if cause
+            .downcast_ref::<commands::folders::FolderValidationError>()
+            .is_some()
+        {
+            return output::ExitCode::Validation;
+        }
+        if cause
             .downcast_ref::<commands::folders::SyncPartialFailure>()
             .is_some()
         {
