@@ -988,7 +988,23 @@ fn real_chat_import_and_backfill_create_inspectable_search_results() {
             inspected["data"]["provenance"]["conversation_uuid"],
             "atlas-navigation-chat"
         );
-        assert!(!inspected["data"]["messages"].as_array().unwrap().is_empty());
+        if kind == "note" {
+            // A summary-derived note has a direct conversation link but no
+            // message links. Tied hybrid scores can select either that note
+            // or a message-derived note, so validate their shared context.
+            assert!(inspected["data"]["conversations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(
+                    |conversation| conversation["uuid"] == "atlas-navigation-chat"
+                        && conversation["summary"]
+                            .as_str()
+                            .is_some_and(|summary| !summary.is_empty())
+                ));
+        } else {
+            assert!(!inspected["data"]["messages"].as_array().unwrap().is_empty());
+        }
     }
 }
 
