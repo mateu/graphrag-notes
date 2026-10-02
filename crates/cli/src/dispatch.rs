@@ -49,6 +49,7 @@ pub(crate) async fn execute(
     let crate::app::AppContext {
         repo,
         config,
+        config_path,
         tei,
         tgi,
         librarian_config,
@@ -146,6 +147,33 @@ pub(crate) async fn execute(
                 explain,
                 format,
                 config.search.clone(),
+                config.database.path.clone(),
+                config_path,
+            )
+            .await?;
+        }
+        Commands::Inspect {
+            id,
+            neighbors,
+            revision,
+            format,
+        } => {
+            commands::navigation::inspect(&repo, &id, neighbors, revision.as_deref(), format)
+                .await?;
+        }
+        Commands::Open {
+            id,
+            revision,
+            opener,
+            format,
+        } => {
+            commands::navigation::open(
+                &repo,
+                &id,
+                revision.as_deref(),
+                opener.as_deref(),
+                &config.navigation.opener,
+                format,
             )
             .await?;
         }
@@ -932,6 +960,7 @@ pub(crate) async fn cmd_import_chats(
     // Parse the chat export
     let export = ChatExport::from_json(&content)
         .with_context(|| format!("Failed to parse chat export from: {}", path.display()))?;
+    let source_uri = graphrag_core::normalize_file_uri(&path)?;
 
     println!(
         "Found {} conversations with {} total messages",
@@ -958,10 +987,17 @@ pub(crate) async fn cmd_import_chats(
     let librarian = LibrarianAgent::new(repo, tei, tgi).with_runtime_config(librarian_config);
     let mode = to_import_mode(mode);
     let result = librarian
-        .ingest_chat_export(export, Some(path.display().to_string()), mode)
+        .ingest_chat_export(export, Some(source_uri), mode)
         .await?;
 
-    println!("\n✓ Import complete:");
+    println!(
+        "\n{} Import finished:",
+        if result.conversations_failed == 0 {
+            "✓"
+        } else {
+            "!"
+        }
+    );
     println!(
         "  • Conversations imported: {}",
         result.conversations_imported
@@ -1024,9 +1060,12 @@ pub(crate) async fn cmd_import_chats(
     );
 
     if result.conversations_failed > 0 {
+        eprintln!("  Input totals and conversation type counts include failed conversations.");
+        eprintln!("  Creation, upsert, link, and Q&A outcome counts cover completed conversations; failed conversations may have partial writes omitted from those counts.");
         for error in &result.errors {
             println!("    - {}", error);
         }
+        return Err(ChatImportFailure(result.conversations_failed).into());
     }
 
     Ok(())
@@ -1046,6 +1085,7 @@ pub(crate) async fn cmd_migrate_chats(
         .with_context(|| format!("Failed to read file: {}", path.display()))?;
     let export = ChatExport::from_json(&content)
         .with_context(|| format!("Failed to parse chat export from: {}", path.display()))?;
+    let source_uri = graphrag_core::normalize_file_uri(&path)?;
     let mode = to_import_mode(mode);
 
     let preview = LibrarianAgent::preview_chat_export(&export, mode, with_notes);
@@ -1089,7 +1129,7 @@ pub(crate) async fn cmd_migrate_chats(
         librarian
             .ingest_chat_export_with_options(
                 export,
-                Some(path.display().to_string()),
+                Some(source_uri.clone()),
                 mode,
                 ChatIngestOptions {
                     persist_notes: true,
@@ -1099,11 +1139,18 @@ pub(crate) async fn cmd_migrate_chats(
             .await?
     } else {
         librarian
-            .backfill_chat_export_records(export, Some(path.display().to_string()))
+            .backfill_chat_export_records(export, Some(source_uri))
             .await?
     };
 
-    println!("\n✓ Migration complete:");
+    println!(
+        "\n{} Migration finished:",
+        if result.conversations_failed == 0 {
+            "✓"
+        } else {
+            "!"
+        }
+    );
     println!(
         "  • Conversations imported: {}",
         result.conversations_imported
@@ -1128,13 +1175,29 @@ pub(crate) async fn cmd_migrate_chats(
     );
 
     if result.conversations_failed > 0 {
+        eprintln!("  Input totals and conversation type counts include failed conversations.");
+        eprintln!("  Creation, upsert, link, and Q&A outcome counts cover completed conversations; failed conversations may have partial writes omitted from those counts.");
         for error in &result.errors {
             println!("    - {}", error);
         }
+        return Err(ChatImportFailure(result.conversations_failed).into());
     }
 
     Ok(())
 }
+
+/// Chat ingestion retains successful peers when an individual conversation
+/// fails. Scripts must receive the documented partial-processing status.
+#[derive(Debug)]
+pub(crate) struct ChatImportFailure(pub usize);
+
+impl std::fmt::Display for ChatImportFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} conversations failed to import; fix the reported errors and retry the same chat file", self.0)
+    }
+}
+
+impl std::error::Error for ChatImportFailure {}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn cmd_extract_entities(
@@ -1320,6 +1383,8 @@ pub(crate) struct SearchMachineResult {
     pub(crate) role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) related: Option<RelatedNotes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) navigation: Option<commands::navigation::SearchNavigation>,
 }
 
 #[derive(Serialize)]
@@ -1342,6 +1407,7 @@ impl SearchMachineResult {
             message_index: None,
             role: None,
             related: result.related.clone(),
+            navigation: None,
         }
     }
 
@@ -1361,6 +1427,7 @@ impl SearchMachineResult {
             message_index: result.message_index,
             role: result.role.clone(),
             related,
+            navigation: None,
         }
     }
 }
@@ -1453,6 +1520,8 @@ pub(crate) async fn cmd_search(
     explain: bool,
     format: output::OutputFormat,
     search_config: SearchConfig,
+    database_path: PathBuf,
+    config_path: Option<PathBuf>,
 ) -> Result<()> {
     let search = configured_search_agent(repo.clone(), tei, &search_config);
     let embedding_identity = search.embedding_identity();
@@ -1482,12 +1551,30 @@ pub(crate) async fn cmd_search(
                     .map(|related| (record_id_to_string(&result.result.id), related))
             })
             .collect::<HashMap<_, _>>();
+        let navigation = commands::navigation::enrich_search(
+            &repo,
+            results.iter().map(|result| {
+                (
+                    record_id_to_string(&result.result.id),
+                    result.result.title.clone(),
+                    result.result.content.clone(),
+                )
+            }),
+            &query,
+            &database_path,
+            config_path.as_deref(),
+        )
+        .await;
 
         if format != output::OutputFormat::Human {
             if !explain {
                 let output = results
                     .iter()
-                    .map(SearchMachineResult::from_context)
+                    .map(|result| {
+                        let mut machine = SearchMachineResult::from_context(result);
+                        machine.navigation = navigation.get(&machine.id).cloned();
+                        machine
+                    })
                     .collect::<Vec<_>>();
                 return match format {
                     output::OutputFormat::Json => output::print(
@@ -1512,17 +1599,18 @@ pub(crate) async fn cmd_search(
                 output::OutputFormat::Json => output::print(
                     format,
                     "search",
-                    explain::search_json(
+                    explain::search_json_with_navigation(
                         &explanations,
                         &graphrag_agents::GraphRetrievalSummary::default(),
                         filters,
                         &related_by_note,
+                        &navigation,
                     ),
                     |_| Ok(()),
                 ),
                 output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
                     "search",
-                    explanations.iter(),
+                    explain::search_results_with_navigation(&explanations, &navigation),
                     explain::search_pipeline(
                         &graphrag_agents::GraphRetrievalSummary::default(),
                         filters,
@@ -1542,17 +1630,24 @@ pub(crate) async fn cmd_search(
 
         for (i, result) in results.iter().enumerate() {
             let r = &result.result;
-            println!("{}. {}", i + 1, r.title.as_deref().unwrap_or("(untitled)"));
-            println!("   ID: {}", record_id_to_string(&r.id));
+            let id = record_id_to_string(&r.id);
+            println!(
+                "{}. [note] {}",
+                i + 1,
+                navigation
+                    .get(&id)
+                    .map(|item| item.title.clone())
+                    .unwrap_or_else(|| commands::navigation::readable_title(
+                        r.title.as_deref(),
+                        &r.content
+                    ))
+            );
+            println!("   ID: {}", id);
             println!("   Type: {}", r.note_type);
 
-            // Truncate content for display
-            let preview: String = r.content.chars().take(200).collect();
-            println!(
-                "   {}{}",
-                preview,
-                if r.content.len() > 200 { "..." } else { "" }
-            );
+            if let Some(item) = navigation.get(&id) {
+                commands::navigation::print_search_navigation(item);
+            }
 
             if let Some(ref related) = result.related {
                 let total =
@@ -1599,6 +1694,20 @@ pub(crate) async fn cmd_search(
         } else {
             HashMap::new()
         };
+        let navigation = commands::navigation::enrich_search(
+            &repo,
+            results.hits.iter().map(|result| {
+                (
+                    result.id.clone(),
+                    result.title.clone(),
+                    result.content.clone(),
+                )
+            }),
+            &query,
+            &database_path,
+            config_path.as_deref(),
+        )
+        .await;
 
         if format != output::OutputFormat::Human {
             if !explain {
@@ -1606,10 +1715,12 @@ pub(crate) async fn cmd_search(
                     .hits
                     .iter()
                     .map(|result| {
-                        SearchMachineResult::from_scoped(
+                        let mut machine = SearchMachineResult::from_scoped(
                             result,
                             related_by_note.get(&result.id).cloned(),
-                        )
+                        );
+                        machine.navigation = navigation.get(&machine.id).cloned();
+                        machine
                     })
                     .collect::<Vec<_>>();
                 return match format {
@@ -1636,17 +1747,18 @@ pub(crate) async fn cmd_search(
                 output::OutputFormat::Json => output::print(
                     format,
                     "search",
-                    explain::search_json(
+                    explain::search_json_with_navigation(
                         &explanations,
                         &results.summary,
                         filters,
                         &related_by_note,
+                        &navigation,
                     ),
                     |_| Ok(()),
                 ),
                 output::OutputFormat::Jsonl => output::print_jsonl_with_pipeline(
                     "search",
-                    explanations.iter(),
+                    explain::search_results_with_navigation(&explanations, &navigation),
                     explain::search_pipeline(&results.summary, filters, &related_by_note),
                 ),
                 output::OutputFormat::Human => unreachable!("handled above"),
@@ -1681,7 +1793,13 @@ pub(crate) async fn cmd_search(
                 "{}. [{}] {}",
                 i + 1,
                 kind,
-                r.title.as_deref().unwrap_or("(untitled)")
+                navigation
+                    .get(&r.id)
+                    .map(|item| item.title.clone())
+                    .unwrap_or_else(|| commands::navigation::readable_title(
+                        r.title.as_deref(),
+                        &r.content
+                    ))
             );
             println!("   ID: {}", r.id);
             println!("   Score: {:.3}", r.score);
@@ -1708,12 +1826,9 @@ pub(crate) async fn cmd_search(
                 println!("   Created/Updated: {}", created_at.to_rfc3339());
             }
 
-            let preview: String = r.content.chars().take(200).collect();
-            println!(
-                "   {}{}",
-                preview,
-                if r.content.len() > 200 { "..." } else { "" }
-            );
+            if let Some(item) = navigation.get(&r.id) {
+                commands::navigation::print_search_navigation(item);
+            }
             if explain {
                 println!("   Explain: {}", explain::human(&r.explanation()));
             }

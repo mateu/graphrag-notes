@@ -18,6 +18,7 @@ mod v011_reindex_job_identity;
 mod v012_reindex_item_fingerprints;
 mod v013_reindex_ownership;
 mod v014_reindex_input_snapshots;
+mod v015_chat_metadata;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -30,7 +31,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 14;
+pub const LATEST_SCHEMA_VERSION: u32 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -60,6 +61,7 @@ const MIGRATIONS: &[Migration] = &[
     v012_reindex_item_fingerprints::MIGRATION,
     v013_reindex_ownership::MIGRATION,
     v014_reindex_input_snapshots::MIGRATION,
+    v015_chat_metadata::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -421,7 +423,7 @@ fn migration_failed(migration: Migration, error: impl std::fmt::Display) -> DbEr
 mod tests {
     use super::*;
     use crate::Repository;
-    use graphrag_core::{record_id_to_string, EdgeType};
+    use graphrag_core::{record_id_to_string, ChatExport, EdgeType, Note, Source, SourceType};
     use surrealdb::engine::local::Mem;
     use surrealdb::types::RecordId;
     use surrealdb::Surreal;
@@ -563,6 +565,88 @@ mod tests {
         assert_eq!(notes.len(), 1);
         let migrations = load_applied_migrations(&db).await.unwrap();
         assert_eq!(migrations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn v015_preserves_existing_records_and_accepts_librarian_chat_metadata() {
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..14]).await.unwrap();
+        let repo = Repository::new(db.clone());
+        let conversation = ChatExport::from_json(
+            r#"[{
+                "uuid": "metadata-upgrade-conversation",
+                "name": "Atlas upgrade discussion",
+                "summary": "Retain the original chat while upgrading its metadata schema.",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:05:00Z",
+                "chat_messages": []
+            }]"#,
+        )
+        .unwrap()
+        .conversations
+        .remove(0);
+        let conversation_id = repo
+            .upsert_conversation(&conversation, None, serde_json::json!({}), None)
+            .await
+            .unwrap();
+        let source = repo
+            .create_source(Source::from_file("legacy-atlas.md", SourceType::Markdown).unwrap())
+            .await
+            .unwrap();
+        let source_id = source.id.unwrap();
+        let note = repo
+            .create_note(Note::new("Keep this existing note.").with_source(source_id.clone()))
+            .await
+            .unwrap();
+        // This is the same nonempty metadata written by LibrarianAgent for
+        // conversations and Source::chat_export; v014 rejects its child keys.
+        let metadata = serde_json::json!({
+            "conversation_id": &conversation.uuid,
+            "created_at": &conversation.created_at,
+            "summary": &conversation.summary,
+        });
+        assert!(repo
+            .upsert_conversation(&conversation, None, metadata.clone(), None)
+            .await
+            .is_err());
+
+        apply_all(&db).await.unwrap();
+        let upgraded_id = repo
+            .upsert_conversation(&conversation, None, metadata.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(upgraded_id, conversation_id);
+        let persisted_metadata: Vec<serde_json::Value> = db
+            .query("SELECT VALUE metadata FROM conversation WHERE id = $id")
+            .bind(("id", conversation_id))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(persisted_metadata, vec![metadata.clone()]);
+        let chat_source = repo
+            .create_source(
+                Source::chat_export(conversation.display_title(), None)
+                    .with_metadata(metadata.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chat_source.metadata, metadata);
+        let retained_source = repo
+            .get_source(&record_id_to_string(&source_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained_source.title.as_deref(), Some("legacy-atlas.md"));
+        assert_eq!(retained_source.metadata, serde_json::json!({}));
+        let retained_note = repo
+            .get_note(&record_id_to_string(note.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained_note.content, "Keep this existing note.");
+        assert_eq!(retained_note.source_id, Some(source_id));
+        assert_eq!(current_version(&db).await.unwrap(), 15);
     }
 
     #[tokio::test]

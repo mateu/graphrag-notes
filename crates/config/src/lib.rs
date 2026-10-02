@@ -38,6 +38,15 @@ pub struct RuntimeConfig {
     pub gardener: GardenerConfig,
     pub librarian: LibrarianConfig,
     pub logging: LoggingConfig,
+    pub navigation: NavigationConfig,
+}
+
+/// Original-source opener arguments. An empty command selects the platform
+/// default; configured elements are passed as argv without invoking a shell.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NavigationConfig {
+    pub opener: Vec<String>,
 }
 
 /// Tracks whether the newer chunking controls appeared in the TOML layer
@@ -450,6 +459,11 @@ impl RuntimeConfig {
     ) -> Result<(), ConfigError> {
         set_path(env, "GRAPHRAG_DB_PATH", &mut self.database.path);
         set_string(env, "GRAPHRAG_LOG_LEVEL", &mut self.logging.level);
+        // Environment configuration is one executable path, including any
+        // spaces. Argument lists belong in the typed TOML array.
+        if let Some(opener) = env("GRAPHRAG_OPENER") {
+            self.navigation.opener = vec![opener];
+        }
 
         set_string(env, "TEI_PROVIDER", &mut self.inference.embedding_provider);
         set_string(env, "TEI_URL", &mut self.inference.embedding_url);
@@ -826,6 +840,26 @@ impl RuntimeConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self
+            .navigation
+            .opener
+            .first()
+            .is_some_and(|program| program.trim().is_empty())
+        {
+            return Err(ConfigError::Validation(
+                "navigation.opener requires a non-blank executable path".into(),
+            ));
+        }
+        if self
+            .navigation
+            .opener
+            .iter()
+            .any(|argument| argument.contains('\0'))
+        {
+            return Err(ConfigError::Validation(
+                "navigation.opener executable and arguments must not contain NUL bytes".into(),
+            ));
+        }
         if self.database.path.as_os_str().is_empty() {
             return Err(ConfigError::Validation(
                 "database.path must not be empty".into(),
@@ -1190,6 +1224,87 @@ mod tests {
         assert_eq!(config.database.path, PathBuf::from("cli.db"));
         assert_eq!(config.inference.embedding_provider, "ollama");
         assert_eq!(config.inference.tei_max_batch, 8);
+    }
+
+    #[test]
+    fn navigation_defaults_preserve_existing_configs_and_round_trip_opener_arguments() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.toml");
+        fs::write(&config_path, "[logging]\nlevel = 'info'\n").unwrap();
+        let legacy = RuntimeConfig::from_file(&config_path).unwrap();
+        legacy.validate().unwrap();
+        assert!(legacy.navigation.opener.is_empty());
+
+        let mut configured = RuntimeConfig::default();
+        configured.navigation.opener = vec![
+            "/Applications/Editor With Spaces.app/bin/editor".into(),
+            "--reuse-window".into(),
+            "".into(),
+            "literal ; $(command) 日本語".into(),
+        ];
+        configured.validate().unwrap();
+        fs::write(&config_path, configured.redacted_toml().unwrap()).unwrap();
+        let reopened = RuntimeConfig::from_file(&config_path).unwrap();
+        assert_eq!(reopened.navigation, configured.navigation);
+    }
+
+    #[test]
+    fn navigation_environment_overrides_toml_with_one_unsplit_executable_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[navigation]\nopener = ['code', '--reuse-window']\n",
+        )
+        .unwrap();
+        let file_config = RuntimeConfig::load_with_env_and_default_path(
+            Some(&config_path),
+            &CliOverrides::default(),
+            &env(&[]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(file_config.navigation.opener, ["code", "--reuse-window"]);
+        let executable = "/Applications/My Editor.app/bin/editor --literal-suffix";
+        let environment_config = RuntimeConfig::load_with_env_and_default_path(
+            Some(&config_path),
+            &CliOverrides::default(),
+            &env(&[("GRAPHRAG_OPENER", executable)]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(environment_config.navigation.opener, [executable]);
+    }
+
+    #[test]
+    fn navigation_validation_rejects_blank_executables_and_nul_without_echoing_values() {
+        for opener in [
+            vec!["".to_owned()],
+            vec![" \t".to_owned(), "--reuse-window".to_owned()],
+            vec!["editor\0secret".to_owned()],
+            vec!["editor".to_owned(), "argument\0secret".to_owned()],
+        ] {
+            let mut config = RuntimeConfig::default();
+            config.navigation.opener = opener;
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("navigation.opener"));
+            assert!(!error.contains("secret"));
+        }
+        for value in ["", " \t", "editor\0secret"] {
+            let error = RuntimeConfig::load_with_env_and_default_path(
+                None,
+                &CliOverrides::default(),
+                &env(&[("GRAPHRAG_OPENER", value)]),
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("navigation.opener"));
+            assert!(!error.contains("secret"));
+        }
+        let mut config = RuntimeConfig::default();
+        config.navigation.opener = vec!["editor".into(), "".into()];
+        config.validate().unwrap();
     }
 
     #[test]

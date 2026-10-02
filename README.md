@@ -45,6 +45,13 @@ providers. `--check` adds provider checks; `--write` creates a new configuration
 and refuses to overwrite one. For an existing installation, run `graphrag init`
 without a backend preset to inspect its effective settings.
 
+The latest source build adds search-result commands to **inspect** full content
+and chat context, and to **open** an original local source file. Copy the printed command
+to retain your selected database and reject a result that changed after search.
+Result numbers are display positions; use the full record ID. See the
+[navigation contract](docs/cli-contract.md) for chat context and editor settings.
+The published `v0.1.0-rc.1` binary predates these commands.
+
 [Getting started](docs/getting-started.md) covers binary installation, default
 paths, TEI/TGI, and recovery from missing prerequisites. Existing users can go
 directly to [the operating runbooks](docs/operations.md) for database migration,
