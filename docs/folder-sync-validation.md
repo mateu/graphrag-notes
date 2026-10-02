@@ -80,3 +80,31 @@ source binary is not on PATH, replace only the leading `graphrag` executable
 in copied hints with its absolute path. Automated fixtures establish lifecycle
 and CLI behavior; they do not establish live-model quality or another platform's
 behavior.
+
+## Live evidence
+
+On 2026-10-02, the combined source-built debug binary for issues #58, #59 and
+#60 completed **25 checks** on macOS 27.0.1 ARM64, using existing local Ollama
+and `bge-m3:latest`, with entity extraction disabled. The tested integration
+commit was `66e93e78623a8f714403a4ff409cfbc5a2ddd741`, incorporating #60
+commit `538b43f6b1080769895795a6d2f78cf34108d1c4`.
+
+The walkthrough passed registration, preview, initial sync, unchanged offline
+sync, provider-free keyword retrieval and inspection, manual detachment,
+changed-file failure with exit 5, inspection of the last good revision,
+successful resume, rejection of a superseded hit with exit 3, rename preview
+and sync, confirmed prune, preservation of the manual copy, empty repeated
+prune preview, vectorless backup/verification/restore, restored manual inspection
+with saved IDs and redacted host URI, and an identical file returning to the
+original database under its retained source ID.
+
+The keyword checks require the independent #59 change; this PR does not
+include its search implementation. The folder operations and lifecycle checks
+also have standalone offline acceptance coverage. No personal corpus was
+opened and existing Ollama services/models were preserved. Linux/Intel live
+walkthroughs remain deferred.
+
+Evidence was captured in temporary `graphrag-usability-integration.vg6fp0p1`
+logs (`summary.json`, `steps.json`, per-command stdout/stderr) using the
+`graphrag-usability-integration.py` harness. The full evidence directory was
+`/private/var/folders/61/rg59jz8n7cxg8x9cdd4_9vy80000gn/T/graphrag-usability-integration.vg6fp0p1`.

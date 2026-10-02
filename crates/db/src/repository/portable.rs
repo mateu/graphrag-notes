@@ -386,10 +386,25 @@ mod tests {
                 .check()
                 .unwrap();
         }
-        for target in &ids[1..] {
+        for (ordinal, target) in ids[1..].iter().enumerate() {
+            // Seed exact typed references directly: graph helper dedupe uses
+            // user-facing IDs, where numeric and string keys can look alike.
+            // This fixture isolates portable identity preservation.
             original
-                .create_edge(&ids[0], target, EdgeType::Supports, None)
+                .db
+                .query(
+                    "CREATE $id SET in = $from, out = $to, is_manual = true, \
+                     created_at = time::now()",
+                )
+                .bind((
+                    "id",
+                    RecordId::new("supports", format!("portable-edge-{ordinal}")),
+                ))
+                .bind(("from", ids[0].clone()))
+                .bind(("to", target.clone()))
                 .await
+                .unwrap()
+                .check()
                 .unwrap();
         }
 
