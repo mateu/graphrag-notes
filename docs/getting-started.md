@@ -1,16 +1,58 @@
 # Getting started
 
-This path takes a new local installation from an installed CLI to a searchable
-fictional notebook. It uses Ollama on macOS or Linux. You need enough free memory
-and disk space for the two models, and internet access to download build
-dependencies and models. The sample contains no personal notes.
+This first-run path targets **v0.1.0-rc.1, the macOS Apple Silicon validation
+candidate**, using Ollama and its versioned prerelease assets. Linux validation
+follows later. You need enough free memory and disk space for the two
+models, and internet access for downloads. The sample contains no personal notes.
 
 ## 1. Install the CLI
 
-### Build from source today
+### Install the macOS Apple Silicon candidate
 
-Versioned release artifacts are produced by the release workflow when a release
-tag is published. Until those assets exist, use the source build below.
+This first candidate targets macOS 15 or newer on Apple Silicon. Download the
+installer from its exact tag, inspect it, and select the prerelease explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.1/scripts/install.sh \
+  -o /tmp/graphrag-install.sh
+bash /tmp/graphrag-install.sh --help
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.1
+export PATH="$HOME/.local/bin:$PATH"
+graphrag --version
+```
+
+The installer verifies the archive against the candidate's `SHA256SUMS` before
+installing the CLI and sample notes. It installs the binary to
+`~/.local/bin/graphrag` and the sample to
+`~/.local/share/graphrag-notes/samples/first-notes.md` by default; `--bin-dir` and
+`--data-dir` let you choose other destinations. Check that `graphrag --version` reports `graphrag 0.1.0-rc.1`.
+
+The installer's default latest-release lookup selects stable releases and
+excludes prereleases, so this candidate requires `--version 0.1.0-rc.1`. There
+is no default stable-binary installation path until a stable release is
+published. Find published versions in
+[GitHub Releases](https://github.com/mateu/graphrag-notes/releases).
+
+The first candidate is scoped to an Apple Silicon archive. Intel Macs and
+Linux use the source-build fallback below. The broader stable release workflow
+is configured to build macOS Apple Silicon/Intel (macOS 15+) and Linux x86_64
+(glibc 2.35+, Ubuntu 22.04 build baseline); those binary builds and Linux
+walkthroughs remain later validation work.
+
+For a manual candidate install, download
+`graphrag-notes-v0.1.0-rc.1-aarch64-apple-darwin.tar.gz` and `SHA256SUMS`. The
+archive contains the executable and `samples/first-notes.md`; configuration is
+created explicitly with `graphrag init`. Compute the archive hash with
+`shasum -a 256 ARCHIVE`, replacing `ARCHIVE` with its downloaded filename, and
+compare it with the matching line in `SHA256SUMS`. The hashes must match exactly
+before extracting and installing it.
+
+### Build from source
+
+Use this fallback for Intel Macs, Linux, unsupported binary platforms, or while
+waiting for a published binary. The commands select the same validation
+candidate tag; they become available once that tag is published. Future stable
+versions can be selected by replacing the tag with a published stable tag.
 
 Install [Rust](https://rustup.rs/) 1.97.1 or newer. The repository toolchain pins
 1.97.1. Install these native build prerequisites before running setup:
@@ -22,7 +64,7 @@ Install [Rust](https://rustup.rs/) 1.97.1 or newer. The repository toolchain pin
 | Other Linux | Install the equivalent compiler/build tools, CMake, pkg-config, OpenSSL development headers, and Clang/libclang packages for your distribution. |
 
 ```bash
-git clone https://github.com/mateu/graphrag-notes.git
+git clone --branch v0.1.0-rc.1 https://github.com/mateu/graphrag-notes.git
 cd graphrag-notes
 ./setup.sh
 export PATH="$PWD/target/release:$PATH"
@@ -33,44 +75,8 @@ graphrag --help
 does not run a package manager, install Rust, download models, or start services.
 `sccache` is optional. The PATH command above applies to the current terminal;
 add the absolute `target/release` directory to your shell configuration if you
-want to use this source build from other directories.
-
-### Install a published binary
-
-Once a binary release is published, the installer selects the matching macOS
-(Apple Silicon or Intel) or Linux x86_64 archive, verifies it against the release's
-`SHA256SUMS`, and installs the CLI plus sample notes. Download and inspect the
-installer, then run it:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/main/scripts/install.sh \
-  -o /tmp/graphrag-install.sh
-bash /tmp/graphrag-install.sh --help
-bash /tmp/graphrag-install.sh
-export PATH="$HOME/.local/bin:$PATH"
-graphrag --help
-```
-
-Release binaries target macOS 15 or newer for Apple Silicon and Intel, and
-Linux x86_64 with glibc 2.35 or newer (built on Ubuntu 22.04). For an older
-operating system or an unsupported architecture, use the source-build fallback.
-
-The installer defaults to the latest published release. To select a version,
-pass `--version` with an existing release number or `v` tag from
-[GitHub Releases](https://github.com/mateu/graphrag-notes/releases). It installs
-the binary to `~/.local/bin/graphrag` and the sample to
-`~/.local/share/graphrag-notes/samples/first-notes.md` by default; `--bin-dir` and
-`--data-dir` let you choose other destinations. Run the version you installed
-with `graphrag --version`. If no matching release is available for your platform,
-use the source build.
-
-For a manual install, each release archive is named
-`graphrag-notes-v<VERSION>-<RUST_TARGET>.tar.gz` and contains the executable and
-`samples/first-notes.md`. Create configuration explicitly with `graphrag init`.
-Download its `SHA256SUMS` alongside the archive and verify the archive before extracting it. On macOS, compute the
-archive hash with `shasum -a 256 ARCHIVE`; on Linux, use `sha256sum ARCHIVE`.
-Replace `ARCHIVE` with your downloaded filename and compare the output with its
-matching line in `SHA256SUMS`; the hashes must match exactly.
+want to use this source build from other directories. Build dependencies may
+need to be downloaded on the first build.
 
 ## 2. Preview and create configuration
 
@@ -155,17 +161,17 @@ graphrag doctor
 
 A fresh installation can report a warning that the database does not exist.
 This is expected before the first import. Once provider checks pass, import the
-bundled notes from the repository:
-
-```bash
-graphrag import samples/first-notes.md
-graphrag search "What is the Atlas project launch plan?" --limit 3
-```
-
-For the binary installer, use the installed sample path instead:
+bundled notes from the binary installation:
 
 ```bash
 graphrag import "$HOME/.local/share/graphrag-notes/samples/first-notes.md"
+graphrag search "What is the Atlas project launch plan?" --limit 3
+```
+
+For a source build, run from the repository and use its sample path instead:
+
+```bash
+graphrag import samples/first-notes.md
 graphrag search "What is the Atlas project launch plan?" --limit 3
 ```
 

@@ -4,22 +4,28 @@ A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, a
 
 ## Get your first result
 
-Use [Ollama](https://ollama.com/download) for the first local setup. Until a
-versioned binary release is published, build from source with Rust 1.97.1+
-and the native prerequisites listed in [getting started](docs/getting-started.md).
-`setup.sh` checks prerequisites and builds; it does not install packages or models.
+The first binary validation candidate is **v0.1.0-rc.1 for macOS Apple Silicon**
+(macOS 15 or newer). Use the versioned prerelease assets with the commands
+below. For Intel Macs, Linux, or other systems, use the
+[source-build fallback](docs/getting-started.md#build-from-source).
+
+Download the installer pinned to the candidate tag, inspect it, and select the
+prerelease explicitly:
 
 ```bash
-git clone https://github.com/mateu/graphrag-notes.git
-cd graphrag-notes
-./setup.sh
-export PATH="$PWD/target/release:$PATH"
+curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.1/scripts/install.sh \
+  -o /tmp/graphrag-install.sh
+bash /tmp/graphrag-install.sh --help
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.1
+export PATH="$HOME/.local/bin:$PATH"
+graphrag --version
 
 # Preview first, then create a new configuration explicitly.
 graphrag init --backend ollama
 graphrag init --backend ollama --write
 ```
 
+Use [Ollama](https://ollama.com/download) for the local inference backend.
 Start Ollama in another terminal with `ollama serve` if it is not already
 running, then download the two models and try the bundled fictional notes:
 
@@ -28,7 +34,7 @@ ollama pull bge-m3:latest
 ollama pull phi4-mini:latest
 graphrag init --check
 graphrag doctor
-graphrag import samples/first-notes.md
+graphrag import "$HOME/.local/share/graphrag-notes/samples/first-notes.md"
 graphrag search "What is the Atlas project launch plan?" --limit 3
 ```
 
@@ -43,7 +49,9 @@ without a backend preset to inspect its effective settings.
 paths, TEI/TGI, and recovery from missing prerequisites. Existing users can go
 directly to [the operating runbooks](docs/operations.md) for database migration,
 backups, reindexing, and diagnostics. [Setup validation](docs/setup-validation.md)
-records the walkthrough procedure and validation status.
+records the walkthrough procedure and validation status. The installer's default
+latest-release lookup selects stable releases; keep `--version 0.1.0-rc.1` for
+this candidate. Linux validation and broader stable binary releases follow later.
 
 ## Architecture
 
