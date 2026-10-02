@@ -52,6 +52,11 @@ Result numbers are display positions; use the full record ID. See the
 [navigation contract](docs/cli-contract.md) for chat context and editor settings.
 The published `v0.1.0-rc.1` binary predates these commands.
 
+Review proposed connections with both notes and their provenance together using
+`graphrag garden review`. Add `--interactive` for confirmed accept/reject/undo
+and read-only skip; existing proposals remain reviewable with providers offline.
+See the [connection-review guide](docs/connection-review.md).
+
 [Getting started](docs/getting-started.md) covers binary installation, default
 paths, TEI/TGI, and recovery from missing prerequisites. Existing users can go
 directly to [the operating runbooks](docs/operations.md) for database migration,

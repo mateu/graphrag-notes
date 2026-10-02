@@ -604,6 +604,26 @@ pub(crate) enum SourceOutputFormat {
 
 #[derive(Subcommand)]
 pub(crate) enum GardenCommand {
+    /// Review both notes for persisted proposals without inference providers
+    Review {
+        /// Focus a single proposal using its full proposed_edge:ID
+        #[arg(long, conflicts_with_all = ["status", "all_statuses"])]
+        id: Option<String>,
+        /// Filter the inbox; defaults to pending unless --all-statuses is set
+        #[arg(long, value_enum, conflicts_with = "all_statuses")]
+        status: Option<ProposalStatusArg>,
+        /// Include reviewed and superseded proposals in the inbox
+        #[arg(long)]
+        all_statuses: bool,
+        /// Maximum proposals to review (1–200)
+        #[arg(short, long, default_value_t = 20)]
+        limit: usize,
+        /// Walk the inbox with confirmed accept/reject/undo and read-only skip
+        #[arg(long)]
+        interactive: bool,
+        #[arg(long, value_enum, default_value_t = crate::output::OutputFormat::Human)]
+        format: crate::output::OutputFormat,
+    },
     /// Generate reviewable proposals; accepted edge tables are never mutated
     Scan {
         /// Preview candidate count without persisting proposals

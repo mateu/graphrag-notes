@@ -277,15 +277,40 @@ pub(crate) async fn execute(
             cmd_list(repo, limit).await?;
         }
         Commands::Garden { command } => {
-            cmd_garden(
-                repo,
-                command,
-                config.gardener.similarity_threshold,
-                config.gardener.auto_apply_threshold,
-                config.gardener.auto_apply,
-                config.gardener.max_suggestions,
-            )
-            .await?;
+            if let GardenCommand::Review {
+                id,
+                status,
+                all_statuses,
+                limit,
+                interactive,
+                format,
+            } = command
+            {
+                commands::connections::review(
+                    &repo,
+                    commands::connections::ReviewOptions {
+                        id,
+                        status: status.map(Into::into),
+                        all_statuses,
+                        limit,
+                        interactive,
+                        format,
+                    },
+                    &config.database.path,
+                    config_path.as_deref(),
+                )
+                .await?;
+            } else {
+                cmd_garden(
+                    repo,
+                    command,
+                    config.gardener.similarity_threshold,
+                    config.gardener.auto_apply_threshold,
+                    config.gardener.auto_apply,
+                    config.gardener.max_suggestions,
+                )
+                .await?;
+            }
         }
         Commands::Jobs { command } => {
             cmd_jobs(
@@ -2433,6 +2458,9 @@ pub(crate) async fn cmd_garden(
         .with_max_suggestions(max_suggestions);
 
     match command {
+        GardenCommand::Review { .. } => {
+            unreachable!("review is dispatched without a Gardener scan")
+        }
         GardenCommand::Scan { dry_run } => {
             let report = gardener.scan(dry_run).await?;
             if report.dry_run {
