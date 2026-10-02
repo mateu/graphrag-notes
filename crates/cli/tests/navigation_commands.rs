@@ -150,7 +150,7 @@ async fn operate_fixture(repo: Repository, request: &Value) -> Value {
                             {"uuid": "atlas-message-1", "sender": "assistant", "text": "Before: install and capture meeting decisions."},
                             {"uuid": "atlas-message-2", "sender": "human", "text": "Selected: can we find the café launch plan?"},
                             {"uuid": "atlas-message-3", "sender": "assistant", "text": "After: search the Atlas notebook and inspect the source."},
-                            {"uuid": "atlas-message-4", "sender": "human", "text": "After: keep the original Markdown."}
+                            {"sender": "human", "text": "After: keep the original Markdown."}
                         ]
                     }])
                     .to_string(),
@@ -412,6 +412,8 @@ fn message_and_conversation_inspection_preserves_bounded_original_chat_context()
     );
     assert_eq!(message["provenance"]["message_index"], 2);
     assert_eq!(message["provenance"]["role"], "human");
+    assert_eq!(message["provenance"]["message_uuid"], "atlas-message-2");
+    assert_eq!(message["provenance"]["message_key"], "atlas-message-2");
     let neighbors = message["messages"].as_array().unwrap();
     assert_eq!(neighbors.len(), 3);
     assert_eq!(neighbors[0]["id"], fixture.message_ids[1]);
@@ -420,6 +422,11 @@ fn message_and_conversation_inspection_preserves_bounded_original_chat_context()
     assert_eq!(neighbors[0]["role"], "assistant");
     assert_eq!(neighbors[1]["role"], "human");
     assert_eq!(neighbors[2]["role"], "assistant");
+    for (index, neighbor) in neighbors.iter().enumerate() {
+        let original_uuid = format!("atlas-message-{}", index + 1);
+        assert_eq!(neighbor["message_uuid"], original_uuid);
+        assert_eq!(neighbor["message_key"], original_uuid);
+    }
     assert!(neighbors
         .iter()
         .all(|neighbor| neighbor["conversation_uuid"] == "atlas-conversation-uuid"));
@@ -457,7 +464,39 @@ fn message_and_conversation_inspection_preserves_bounded_original_chat_context()
     assert_eq!(conversation["messages"].as_array().unwrap().len(), 3);
     assert_eq!(conversation["messages"][0]["id"], fixture.message_ids[0]);
     assert_eq!(conversation["messages"][2]["id"], fixture.message_ids[2]);
+    assert_eq!(
+        conversation["messages"][2]["message_uuid"],
+        "atlas-message-2"
+    );
     assert_eq!(conversation["messages_truncated"], true);
+
+    let uuidless = fixture.inspect(&fixture.message_ids[4]);
+    assert!(uuidless["provenance"]["message_uuid"].is_null());
+    assert_eq!(
+        uuidless["provenance"]["message_key"],
+        "atlas-conversation-uuid:4"
+    );
+    let selected = uuidless["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(selected["id"], fixture.message_ids[4]);
+    assert!(selected["message_uuid"].is_null());
+    assert_eq!(selected["message_key"], "atlas-conversation-uuid:4");
+    fixture
+        .command()
+        .args(["inspect", &fixture.message_ids[2], "--neighbors", "1"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Message UUID: atlas-message-2"))
+        .stdout(predicates::str::contains("Message UUID: atlas-message-1"))
+        .stdout(predicates::str::contains(&fixture.message_ids[2]));
+    fixture
+        .command()
+        .args(["inspect", &fixture.message_ids[4], "--neighbors", "0"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "Message key: atlas-conversation-uuid:4",
+        ))
+        .stdout(predicates::str::contains(&fixture.message_ids[4]));
     fixture.assert_no_provider_requests();
 }
 
@@ -469,11 +508,15 @@ fn a_derived_note_retains_original_conversation_and_message_identity() {
     assert_eq!(conversations.len(), 1);
     assert_eq!(conversations[0]["id"], fixture.conversation_id);
     assert_eq!(conversations[0]["uuid"], "atlas-conversation-uuid");
+    assert_eq!(note["provenance"]["message_uuid"], "atlas-message-2");
+    assert_eq!(note["provenance"]["message_key"], "atlas-message-2");
     assert!(note["messages"]
         .as_array()
         .unwrap()
         .iter()
         .any(|message| message["id"] == fixture.message_ids[2]
+            && message["message_uuid"] == "atlas-message-2"
+            && message["message_key"] == "atlas-message-2"
             && message["message_index"] == 2
             && message["role"] == "human"));
     fixture.assert_no_provider_requests();

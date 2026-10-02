@@ -1064,7 +1064,8 @@ pub(crate) async fn cmd_import_chats(
     );
 
     if result.conversations_failed > 0 {
-        println!("  Counts above cover completed conversations; failed conversations may have partial writes.");
+        eprintln!("  Input totals and conversation type counts include failed conversations.");
+        eprintln!("  Creation, upsert, link, and Q&A outcome counts cover completed conversations; failed conversations may have partial writes omitted from those counts.");
         for error in &result.errors {
             println!("    - {}", error);
         }
@@ -1178,7 +1179,8 @@ pub(crate) async fn cmd_migrate_chats(
     );
 
     if result.conversations_failed > 0 {
-        println!("  Counts above cover completed conversations; failed conversations may have partial writes.");
+        eprintln!("  Input totals and conversation type counts include failed conversations.");
+        eprintln!("  Creation, upsert, link, and Q&A outcome counts cover completed conversations; failed conversations may have partial writes omitted from those counts.");
         for error in &result.errors {
             println!("    - {}", error);
         }

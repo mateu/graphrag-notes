@@ -963,6 +963,23 @@ fn real_chat_import_and_backfill_create_inspectable_search_results() {
         .clone();
     let searched: Value = serde_json::from_slice(&searched).unwrap();
     let hits = searched["data"]["results"].as_array().unwrap();
+    let assert_message_identity = |message: &Value| {
+        let index = message["message_index"].as_u64().unwrap();
+        assert!(index < 3);
+        let expected = format!("atlas-message-{index}");
+        assert_eq!(message["message_uuid"], expected);
+        assert_eq!(message["message_key"], expected);
+    };
+    let message_hits = hits
+        .iter()
+        .filter(|hit| hit["hit_type"] == "message")
+        .collect::<Vec<_>>();
+    assert_eq!(message_hits.len(), 3);
+    for hit in &message_hits {
+        let provenance = &hit["navigation"]["provenance"];
+        assert_eq!(provenance["message_index"], hit["message_index"]);
+        assert_message_identity(provenance);
+    }
     for kind in ["note", "message", "conversation-summary"] {
         let hit = hits
             .iter()
@@ -988,6 +1005,21 @@ fn real_chat_import_and_backfill_create_inspectable_search_results() {
             inspected["data"]["provenance"]["conversation_uuid"],
             "atlas-navigation-chat"
         );
+        if kind == "message" {
+            let provenance = &inspected["data"]["provenance"];
+            assert_message_identity(provenance);
+            assert_eq!(
+                provenance["message_uuid"],
+                hit["navigation"]["provenance"]["message_uuid"]
+            );
+            assert_eq!(
+                provenance["message_key"],
+                hit["navigation"]["provenance"]["message_key"]
+            );
+        }
+        for message in inspected["data"]["messages"].as_array().unwrap() {
+            assert_message_identity(message);
+        }
         if kind == "note" {
             // A summary-derived note has a direct conversation link but no
             // message links. Tied hybrid scores can select either that note
@@ -1005,6 +1037,44 @@ fn real_chat_import_and_backfill_create_inspectable_search_results() {
         } else {
             assert!(!inspected["data"]["messages"].as_array().unwrap().is_empty());
         }
+    }
+
+    let jsonl = configured()
+        .args([
+            "search", "Atlas", "--scope", "messages", "--limit", "20", "--format", "jsonl",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let streamed = std::str::from_utf8(&jsonl)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(streamed.len(), 3);
+    for envelope in &streamed {
+        let hit = &envelope["data"];
+        assert_eq!(hit["hit_type"], "message");
+        assert_eq!(
+            hit["navigation"]["provenance"]["message_index"],
+            hit["message_index"]
+        );
+        assert_message_identity(&hit["navigation"]["provenance"]);
+    }
+    let human = configured()
+        .args([
+            "search", "Atlas", "--scope", "messages", "--limit", "20", "--format", "human",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human = std::str::from_utf8(&human).unwrap();
+    for index in 0..3 {
+        assert!(human.contains(&format!("Message UUID: atlas-message-{index}")));
     }
 }
 
@@ -1046,7 +1116,7 @@ fn chat_import_failures_exit_five_and_keep_successful_peers_inspectable() {
             .args(["init", "--backend", "ollama", "--write"])
             .assert()
             .success();
-        configured()
+        let imported = configured()
             .arg(action)
             .arg(&chat)
             .arg("--skip-extraction")
@@ -1054,9 +1124,24 @@ fn chat_import_failures_exit_five_and_keep_successful_peers_inspectable() {
             .code(5)
             .stdout(predicates::str::contains("Conversations imported: 1"))
             .stdout(predicates::str::contains("Conversations failed: 1"))
-            .stdout(predicates::str::contains(
-                "failed conversations may have partial writes",
+            .stdout(predicates::str::contains("Conversations total: 2"))
+            .stdout(predicates::str::contains("Conversation records upserted: 1"))
+            .stdout(predicates::str::contains("Message records upserted: 1"))
+            .stderr(predicates::str::contains(
+                "Input totals and conversation type counts include failed conversations.",
+            ))
+            .stderr(predicates::str::contains(
+                "Creation, upsert, link, and Q&A outcome counts cover completed conversations; failed conversations may have partial writes omitted from those counts.",
             ));
+        if action == "import-chats" {
+            imported
+                .stdout(predicates::str::contains("Conversations with messages: 2"))
+                .stdout(predicates::str::contains("Messages seen: 2"));
+        } else {
+            imported
+                .stdout(predicates::str::contains("With messages: 2"))
+                .stdout(predicates::str::contains("Messages total: 2"));
+        }
         let output = configured()
             .args([
                 "search", "Atlas", "--scope", "all", "--limit", "20", "--format", "json",
