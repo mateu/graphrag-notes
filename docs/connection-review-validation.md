@@ -22,6 +22,8 @@ explicitly by each real fixture.
 | Actual default backup/restore redacts source URI while preserving imported source identity/type/generation in the inbox | `restored_imported_notes_keep_source_identity_when_local_uris_are_redacted` passed |
 | JSON/JSONL excerpts preserve Unicode and stay within 500 characters including the ellipsis at input lengths 499, 500, 501, and 1,500 | `machine_excerpts_keep_unicode_and_ellipsis_within_the_character_limit` failed against the original 501-character output, then passed after the fix |
 | Changing displayed note content, rescanning proposal metadata, or deleting an endpoint cancels an obsolete decision without a new review audit | Three `commands::connections::tests` regressions passed |
+| Non-UTF-8 config/database replay contexts omit command strings with warnings; human/serialized cards and interactive accept→undo remain available | `non_utf8_replay_contexts_allow_cards_and_interactive_acceptance_undo` passed on macOS using real repository APIs |
+| A real non-UTF-8 config filename supports human/JSON/JSONL review, read-only skip, and interactive acceptance/undo | Linux-only `non_utf8_replay_paths_keep_the_inbox_and_interactive_decisions_available` exercises filesystem paths in CI |
 
 Focused commands:
 
@@ -34,12 +36,14 @@ RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
 
 On macOS ARM64, the initial full workspace/all-feature suite passed **509 tests**, with
 **5 existing ignored** diagnostics/fixtures (the keyword seeder is explicitly
-run by its fixtures). This run preceded the additional Unicode excerpt
-regression. It includes the pre-existing proposal acceptance,
+run by its fixtures). This run preceded the additional excerpt/replay-path
+regressions. It includes the pre-existing proposal acceptance,
 rejection, lifecycle locking, source refresh, idempotence, and undo recovery
 regressions. Follow-up targeted validation passed all **nine CLI tests** (eight
-acceptance scenarios and one seed-helper discovery check) and **three snapshot
-safety tests**, including the human audit display and excerpt-limit fixes.
+acceptance scenarios and one seed-helper discovery check) and **four repository
+safety tests**, including the human audit display, excerpt-limit, and replay-path
+fixes. Linux additionally runs the filesystem config-path scenario for **ten
+CLI tests** (nine scenarios and the helper).
 Workspace/all-target/all-feature Clippy passed with `-D warnings`; formatting
 and `git diff --check` also passed.
 
@@ -74,6 +78,14 @@ The revision comparison is a CLI pre-action guard, not a new atomic compare-and-
 swap repository operation. The repository's existing lifecycle lock and visible
 endpoint checks remain the authoritative write safeguards. Proposal scoring,
 confidence thresholds, and graph governance are unchanged.
+
+This macOS host's APFS filesystem rejects a non-UTF-8 filename with `Illegal
+byte sequence` before the CLI can open it, so the actual filename fixture is
+Linux-only. Raw config and database `PathBuf` contexts are covered directly
+against the repository/interactive inbox on macOS. The current SurrealDB
+RocksDB endpoint converts paths to strings; these tests do not claim that it
+preserves raw-byte database paths. The inbox never constructs a replay command
+by replacing invalid bytes.
 
 Published `v0.1.0-rc.1` assets predate this feature. Linux source behavior is
 covered by portable CLI fixtures in CI; no native Linux walkthrough or new

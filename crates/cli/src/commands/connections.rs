@@ -56,32 +56,36 @@ struct ReviewCard {
     accept_allowed: bool,
     accept_blocked_reason: Option<String>,
     undo_command: Option<String>,
-    review_command: String,
+    review_command: Option<String>,
+    warnings: Vec<String>,
     /// Snapshot of proposal metadata and both inspected endpoint revisions.
     revision: String,
 }
 
-fn base_command(database: &Path, config: Option<&Path>) -> Result<String> {
-    let absolute = |path: &Path| -> Result<String> {
+fn base_command(database: &Path, config: Option<&Path>) -> Result<Option<String>> {
+    let absolute = |path: &Path| -> Result<Option<String>> {
         let path = if path.is_absolute() {
             path.to_path_buf()
         } else {
             std::env::current_dir()?.join(path)
         };
-        Ok(path
-            .to_str()
-            .context("review follow-up paths must be valid UTF-8")?
-            .to_string())
+        Ok(path.to_str().map(str::to_owned))
     };
     let mut command = "graphrag".to_string();
     if let Some(path) = config {
-        command.push_str(&format!(" --config {}", shell_quote(&absolute(path)?)));
+        let Some(path) = absolute(path)? else {
+            return Ok(None);
+        };
+        command.push_str(&format!(" --config {}", shell_quote(&path)));
     }
-    command.push_str(&format!(" --db-path {}", shell_quote(&absolute(database)?)));
-    Ok(command)
+    let Some(database) = absolute(database)? else {
+        return Ok(None);
+    };
+    command.push_str(&format!(" --db-path {}", shell_quote(&database)));
+    Ok(Some(command))
 }
 
-async fn endpoint(repo: &Repository, id: String, base: &str) -> Result<ReviewEndpoint> {
+async fn endpoint(repo: &Repository, id: String, base: Option<&str>) -> Result<ReviewEndpoint> {
     match repo.inspect_record(&id, 0).await {
         Ok(record) => {
             let mut characters = record.content.chars();
@@ -91,11 +95,13 @@ async fn endpoint(repo: &Repository, id: String, base: &str) -> Result<ReviewEnd
                 excerpt.push('…');
             }
             Ok(ReviewEndpoint {
-                inspect_command: Some(format!(
-                    "{base} inspect {} --revision {}",
-                    shell_quote(&id),
-                    shell_quote(&record.revision)
-                )),
+                inspect_command: base.map(|base| {
+                    format!(
+                        "{base} inspect {} --revision {}",
+                        shell_quote(&id),
+                        shell_quote(&record.revision)
+                    )
+                }),
                 id,
                 available: true,
                 title: Some(readable_title(record.title.as_deref(), &record.content)),
@@ -121,7 +127,7 @@ async fn endpoint(repo: &Repository, id: String, base: &str) -> Result<ReviewEnd
     }
 }
 
-async fn card(repo: &Repository, proposal: ProposedEdge, base: &str) -> Result<ReviewCard> {
+async fn card(repo: &Repository, proposal: ProposedEdge, base: Option<&str>) -> Result<ReviewCard> {
     let id = proposal.id.as_ref().context("stored proposal has no ID")?;
     let from = endpoint(repo, record_id_to_string(&proposal.from_id), base).await?;
     let to = endpoint(repo, record_id_to_string(&proposal.to_id), base).await?;
@@ -136,7 +142,7 @@ async fn card(repo: &Repository, proposal: ProposedEdge, base: &str) -> Result<R
     let undo_command = resulting_edge_id
         .as_ref()
         .filter(|_| proposal.status == ProposedEdgeStatus::Accepted)
-        .map(|edge| format!("{base} edges undo {} --yes", shell_quote(edge)));
+        .and_then(|edge| base.map(|base| format!("{base} edges undo {} --yes", shell_quote(edge))));
     let revision = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&(
@@ -166,10 +172,17 @@ async fn card(repo: &Repository, proposal: ProposedEdge, base: &str) -> Result<R
         accept_allowed: blocked.is_none(),
         accept_blocked_reason: blocked,
         undo_command,
-        review_command: format!(
-            "{base} garden review --id {} --interactive",
-            shell_quote(&record_id_to_string(id))
-        ),
+        review_command: base.map(|base| {
+            format!(
+                "{base} garden review --id {} --interactive",
+                shell_quote(&record_id_to_string(id))
+            )
+        }),
+        warnings: if base.is_none() {
+            vec!["Replay commands omitted because a configuration or database path contains non-UTF-8 bytes; review and decisions remain available.".into()]
+        } else {
+            Vec::new()
+        },
         revision,
     })
 }
@@ -284,7 +297,12 @@ fn render_card(writer: &mut dyn Write, card: &ReviewCard) -> io::Result<()> {
     if let Some(command) = &card.undo_command {
         writeln!(writer, "Undo accepted edge: {command}")?;
     }
-    writeln!(writer, "Review interactively: {}", card.review_command)?;
+    if let Some(command) = &card.review_command {
+        writeln!(writer, "Review interactively: {command}")?;
+    }
+    for warning in &card.warnings {
+        writeln!(writer, "Warning: {warning}")?;
+    }
     writeln!(writer)
 }
 
@@ -322,11 +340,11 @@ pub(crate) async fn review(
     };
     let base = base_command(database, config)?;
     if options.interactive {
-        return interactive(repo, proposals, &base, &mut io::stdin().lock()).await;
+        return interactive(repo, proposals, base.as_deref(), &mut io::stdin().lock()).await;
     }
     let mut cards = Vec::with_capacity(proposals.len());
     for proposal in proposals {
-        cards.push(card(repo, proposal, &base).await?);
+        cards.push(card(repo, proposal, base.as_deref()).await?);
     }
     if options.format == OutputFormat::Jsonl {
         return output::print_jsonl("garden.review", cards);
@@ -343,10 +361,11 @@ pub(crate) async fn review(
                 render_card(writer, card)?;
             }
             if !cards.is_empty() {
-                writeln!(
-                    writer,
-                    "Use a printed 'Review interactively' command to accept, reject, or skip that proposal."
-                )?;
+                if base.is_some() {
+                    writeln!(writer, "Use a printed 'Review interactively' command to accept, reject, or skip that proposal.")?;
+                } else {
+                    writeln!(writer, "To accept, reject, or skip, add --interactive to the command used for this inbox.")?;
+                }
             }
             Ok(())
         },
@@ -392,7 +411,7 @@ async fn decide(
         .get_edge_proposal(&id)
         .await?
         .ok_or_else(|| DbError::NotFound("proposed_edge".into(), shown.id.clone()))?;
-    let fresh = card(repo, current, "graphrag").await?;
+    let fresh = card(repo, current, Some("graphrag")).await?;
     if shown.revision != fresh.revision {
         anyhow::bail!("proposal or a note changed during review; refusing this decision. Review the updated card before deciding again");
     }
@@ -441,13 +460,13 @@ async fn decide(
         .get_edge_proposal(&id)
         .await?
         .context("reviewed proposal disappeared")?;
-    card(repo, updated, "graphrag").await
+    card(repo, updated, Some("graphrag")).await
 }
 
 async fn interactive(
     repo: &Repository,
     proposals: Vec<ProposedEdge>,
-    base: &str,
+    base: Option<&str>,
     reader: &mut impl BufRead,
 ) -> Result<()> {
     if proposals.is_empty() {
@@ -509,7 +528,10 @@ async fn interactive(
                 eprintln!("Reject unavailable: proposal is {}.", shown.status);
                 continue;
             }
-            if matches!(decision, Decision::Undo) && shown.undo_command.is_none() {
+            if matches!(decision, Decision::Undo)
+                && (shown.status != ProposedEdgeStatus::Accepted
+                    || shown.resulting_edge_id.is_none())
+            {
                 eprintln!("Undo unavailable: this proposal has no accepted edge.");
                 continue;
             }
@@ -589,10 +611,77 @@ mod tests {
         (repo, proposal)
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn non_utf8_replay_contexts_allow_cards_and_interactive_acceptance_undo() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let non_utf8 = std::path::PathBuf::from(OsString::from_vec(b"review-\xff".to_vec()));
+        for (database, config) in [
+            (Path::new("database"), Some(non_utf8.as_path())),
+            (non_utf8.as_path(), None),
+        ] {
+            let base = base_command(database, config).unwrap();
+            assert!(base.is_none());
+            let (repo, proposal) = pending().await;
+            let id = proposal.id.as_ref().unwrap().clone();
+            let shown = card(&repo, proposal.clone(), base.as_deref())
+                .await
+                .unwrap();
+            assert!(shown.accept_allowed);
+            assert!(shown.review_command.is_none());
+            assert!(shown.from.inspect_command.is_none());
+            assert!(shown.to.inspect_command.is_none());
+            assert!(shown
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("non-UTF-8")));
+            let mut rendered = Vec::new();
+            render_card(&mut rendered, &shown).unwrap();
+            let rendered = String::from_utf8(rendered).unwrap();
+            assert!(rendered.contains("Pilot evidence before review"));
+            assert!(rendered.contains("Related context before review"));
+            assert!(rendered.contains("non-UTF-8"));
+            assert!(!rendered.contains("Review interactively:"));
+            let serialized = serde_json::to_value(&shown).unwrap();
+            assert!(serialized["review_command"].is_null());
+            assert!(serialized["from"]["inspect_command"].is_null());
+            interactive(
+                &repo,
+                vec![proposal],
+                base.as_deref(),
+                &mut io::Cursor::new(b"a\naccept\nreviewed without replay hints\n"),
+            )
+            .await
+            .unwrap();
+            let accepted = repo.get_edge_proposal(&id).await.unwrap().unwrap();
+            let edge = accepted.resulting_edge_id.as_ref().unwrap().clone();
+            let accepted_card = card(&repo, accepted.clone(), base.as_deref())
+                .await
+                .unwrap();
+            assert!(accepted_card.undo_command.is_none());
+            interactive(
+                &repo,
+                vec![accepted.clone()],
+                base.as_deref(),
+                &mut io::Cursor::new(b"u\nundo\nreconsidered without replay hints\n"),
+            )
+            .await
+            .unwrap();
+            let undone = repo.get_edge_proposal(&id).await.unwrap().unwrap();
+            assert_eq!(undone.status, ProposedEdgeStatus::Superseded);
+            assert_eq!(undone.reviewed_at, accepted.reviewed_at);
+            assert!(!repo.note_edge_exists(&edge).await.unwrap());
+        }
+    }
+
     #[tokio::test]
     async fn changing_a_displayed_note_refuses_acceptance_without_audit_writes() {
         let (repo, proposal) = pending().await;
-        let shown = card(&repo, proposal.clone(), "graphrag").await.unwrap();
+        let shown = card(&repo, proposal.clone(), Some("graphrag"))
+            .await
+            .unwrap();
         let endpoint = record_id_to_string(&proposal.from_id);
         let mut note = repo.get_note(&endpoint).await.unwrap().unwrap();
         note.content = "Changed evidence after the card was shown".into();
@@ -622,7 +711,9 @@ mod tests {
     #[tokio::test]
     async fn rescanning_a_displayed_proposal_requires_a_new_review() {
         let (repo, proposal) = pending().await;
-        let shown = card(&repo, proposal.clone(), "graphrag").await.unwrap();
+        let shown = card(&repo, proposal.clone(), Some("graphrag"))
+            .await
+            .unwrap();
         let updated = repo
             .upsert_gardener_proposal(
                 &proposal.from_id,
@@ -658,7 +749,9 @@ mod tests {
     #[tokio::test]
     async fn endpoint_deletion_cancels_a_displayed_decision_and_keeps_retirement() {
         let (repo, proposal) = pending().await;
-        let shown = card(&repo, proposal.clone(), "graphrag").await.unwrap();
+        let shown = card(&repo, proposal.clone(), Some("graphrag"))
+            .await
+            .unwrap();
         repo.delete_note(&record_id_to_string(&proposal.from_id))
             .await
             .unwrap();
@@ -669,7 +762,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(after.status, ProposedEdgeStatus::Superseded);
-        let unavailable = card(&repo, after, "graphrag").await.unwrap();
+        let unavailable = card(&repo, after, Some("graphrag")).await.unwrap();
         assert!(!unavailable.accept_allowed);
         assert!(!unavailable.from.available || !unavailable.to.available);
     }

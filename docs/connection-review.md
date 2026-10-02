@@ -17,6 +17,11 @@ bounded scope with `--limit 100` (maximum 200). Skipping leaves a proposal pendi
 for a future session. No review position is persisted as a record identity.
 For one proposal, copy its printed **Review interactively** command; it retains
 the selected configuration and database even when run from another directory.
+If a selected path contains non-UTF-8 bytes, replay hints are omitted with a
+warning. Cards and interactive decisions remain available; add `--interactive`
+to the same invocation to review without a copyable hint. No lossy replacement
+path is printed. This does not add raw-byte database-path support to the current
+SurrealDB backend.
 
 ```sh
 graphrag --config /path/to/config.toml --db-path /path/to/database \
@@ -80,7 +85,11 @@ revision guards and work offline. Reviewing does not open an editor or a file.
 For automation, JSON returns a versioned `garden.review` envelope whose
 `data.proposals` array contains cards. Each card has stable proposal `id`,
 status/confidence/reason/generator/audit fields, `from` and `to` endpoints,
-`accept_allowed`, `accept_blocked_reason`, and replay commands. Endpoints expose
+`accept_allowed`, `accept_blocked_reason`, replay commands, and card `warnings`.
+`review_command`, endpoint `inspect_command`, and `undo_command` can be null
+when the selected replay paths are not valid UTF-8; card warnings explain why.
+Interactive undo remains available for an accepted proposal with its recorded
+edge ID even when no copyable command can be printed. Endpoints expose
 `available`, title, a maximum 500-character excerpt (including any truncation
 ellipsis), provenance, revision, and warnings. JSONL uses one envelope per card
 with the card directly in `data`; an empty inbox produces zero lines. Machine

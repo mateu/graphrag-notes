@@ -600,3 +600,83 @@ fn restored_imported_notes_keep_source_identity_when_local_uris_are_redacted() {
     assert_eq!(output.matches("Source: manual/local note").count(), 1);
     fixture.no_inference();
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn non_utf8_replay_paths_keep_the_inbox_and_interactive_decisions_available() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut fixture = Fixture::new();
+    let config = fixture
+        .directory
+        .path()
+        .join(OsString::from_vec(b"review-\xff.toml".to_vec()));
+    fs::rename(&fixture.config, &config).unwrap();
+    fixture.config = config;
+    let id = fixture.seed["pending"].as_str().unwrap();
+    let before = fixture.snapshot();
+    let card = fixture.card(id);
+    assert_eq!(card["accept_allowed"], true);
+    assert!(card["review_command"].is_null());
+    for endpoint in [&card["from"], &card["to"]] {
+        assert_eq!(endpoint["available"], true);
+        assert!(endpoint["excerpt"].is_string());
+        assert!(endpoint["inspect_command"].is_null());
+    }
+    assert!(card["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| { warning.as_str().unwrap().contains("non-UTF-8") }));
+    fixture
+        .command()
+        .args(["garden", "review", "--id", id])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Pilot source note"))
+        .stdout(predicates::str::contains("Manual pilot decision"))
+        .stdout(predicates::str::contains("non-UTF-8"));
+    let jsonl = fixture
+        .command()
+        .args(["garden", "review", "--id", id, "--format", "jsonl"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let jsonl: Value = serde_json::from_slice(&jsonl).unwrap();
+    assert_eq!(jsonl["data"], card);
+    fixture
+        .command()
+        .args(["garden", "review", "--id", id, "--interactive"])
+        .write_stdin("s\n")
+        .assert()
+        .success();
+    assert_eq!(before, fixture.snapshot());
+    fixture
+        .command()
+        .args(["garden", "review", "--id", id, "--interactive"])
+        .write_stdin("a\naccept\nconfirmed without replay hints\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("is accepted"));
+    let accepted = fixture.snapshot();
+    assert_eq!(accepted["edges"].as_array().unwrap().len(), 1);
+    assert!(fixture.card(id)["undo_command"].is_null());
+    fixture
+        .command()
+        .args(["garden", "review", "--id", id, "--interactive"])
+        .write_stdin("u\nundo\nreconsidered without replay hints\n")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("is superseded"));
+    let undone = fixture.snapshot();
+    assert_eq!(proposal(&undone, id)["status"], "superseded");
+    assert_eq!(
+        proposal(&undone, id)["reviewed_at"],
+        proposal(&accepted, id)["reviewed_at"]
+    );
+    assert!(undone["edges"].as_array().unwrap().is_empty());
+    fixture.no_inference();
+}

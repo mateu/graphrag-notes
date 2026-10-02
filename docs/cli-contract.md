@@ -183,8 +183,11 @@ command on stderr. The CLI does not silently change retrieval mode.
 filter is pending; `--id proposed_edge:ID`, `--status`, and `--all-statuses`
 select an exact proposal or lifecycle states. `--limit` is bounded to 1–200.
 Human cards show both notes, bounded excerpts, provenance, confidence, reason,
-proposal state, and available undo. Printed follow-up commands preserve the
-selected config and database. See [connection review](connection-review.md).
+proposal state, audit timestamps/manual flags, and available undo. Printed
+follow-up commands preserve the selected config and database. A non-UTF-8
+replay path makes `review_command`, `inspect_command`, and `undo_command` null
+with card `warnings`; cards and interactive decisions remain available without
+lossy replacement hints. See [connection review](connection-review.md).
 
 Read-only JSON uses `command: "garden.review"` and `data.proposals`; JSONL emits
 one envelope per proposal with its card in `data`, and an empty inbox emits no
