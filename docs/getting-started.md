@@ -197,6 +197,11 @@ commands; they will be included in a subsequent release.
 You can now use `graphrag add "your note"`, `graphrag import your-notes.md`, and
 `graphrag search "your question"`. Database-only commands such as
 `graphrag notes list` and `graphrag stats` work without running inference services.
+You can also
+search already indexed content offline using
+`graphrag search "Atlas launch" --mode keyword --scope all`. This explicit mode
+searches notes, original messages, and conversation summaries without requiring
+vectors; hybrid remains the default. See [keyword search](keyword-search.md).
 
 ## Using TEI and TGI instead
 

@@ -10,7 +10,7 @@ use crate::app::{
 use crate::cli::{
     to_import_mode, BackupCommand, BackupOutputFormat, Commands, EdgesCommand, GardenCommand,
     GraphModeArg, ImportModeArg, JobOutputFormat, JobsCommand, PortableDataFormat, ProposalCommand,
-    SearchScopeArg, SourceOutputFormat, SourcesCommand,
+    SearchModeArg, SearchScopeArg, SourceOutputFormat, SourcesCommand,
 };
 use crate::eval::{
     build_baseline_comparison, evaluate_ranked_results_with_tokens, load_baseline, load_eval_cases,
@@ -50,6 +50,7 @@ pub(crate) async fn execute(
         repo,
         config,
         config_path,
+        keyword_recovery,
         tei,
         tgi,
         librarian_config,
@@ -126,6 +127,7 @@ pub(crate) async fn execute(
         }
         Commands::Search {
             query,
+            mode,
             limit,
             scope,
             since_days,
@@ -138,6 +140,7 @@ pub(crate) async fn execute(
                 repo,
                 tei,
                 query,
+                mode,
                 limit.unwrap_or(config.search.default_limit),
                 scope,
                 since_days,
@@ -149,6 +152,7 @@ pub(crate) async fn execute(
                 config.search.clone(),
                 config.database.path.clone(),
                 config_path,
+                keyword_recovery.as_deref(),
             )
             .await?;
         }
@@ -1369,6 +1373,8 @@ pub(crate) async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Re
 
 #[derive(Serialize)]
 pub(crate) struct SearchMachineResult {
+    pub(crate) mode: &'static str,
+    pub(crate) channels: &'static [&'static str],
     pub(crate) id: String,
     pub(crate) hit_type: &'static str,
     pub(crate) title: Option<String>,
@@ -1387,6 +1393,8 @@ pub(crate) struct SearchMachineResult {
 
 #[derive(Serialize)]
 struct SearchMachineOutput {
+    mode: &'static str,
+    channels: &'static [&'static str],
     results: Vec<SearchMachineResult>,
 }
 
@@ -1394,6 +1402,8 @@ impl SearchMachineResult {
     pub(crate) fn from_context(result: &graphrag_agents::search::EnrichedSearchResult) -> Self {
         let note = &result.result;
         Self {
+            mode: "hybrid",
+            channels: SearchModeArg::Hybrid.channels(),
             id: record_id_to_string(&note.id),
             hit_type: "note",
             title: note.title.clone(),
@@ -1413,7 +1423,14 @@ impl SearchMachineResult {
         result: &graphrag_agents::search::ScopedSearchResult,
         related: Option<RelatedNotes>,
     ) -> Self {
+        let mode = if result.score_kind == graphrag_agents::ScoreKind::Bm25 {
+            SearchModeArg::Keyword
+        } else {
+            SearchModeArg::Hybrid
+        };
         Self {
+            mode: mode.as_str(),
+            channels: mode.channels(),
             id: result.id.clone(),
             hit_type: search_hit_type_name(result.hit_type),
             title: result.title.clone(),
@@ -1504,11 +1521,26 @@ pub(crate) fn augment_machine_output(
     }
 }
 
+fn hybrid_recovery_message(command: Option<&str>) -> String {
+    command.map(|command| format!("Hybrid search failed. Use explicit keyword retrieval without providers:\n  {command}")).unwrap_or_else(|| "Hybrid search failed".into())
+}
+
+fn attach_search_embedding_identity(
+    mut explanation: graphrag_agents::RetrievalExplanation,
+    identity: Option<&(String, String)>,
+) -> graphrag_agents::RetrievalExplanation {
+    if let Some((provider, model)) = identity {
+        explanation = explanation.with_embedding_identity(provider, model);
+    }
+    explanation
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn cmd_search(
     repo: Repository,
     tei: SharedEmbedder,
     query: String,
+    mode: SearchModeArg,
     limit: usize,
     scope: SearchScopeArg,
     since_days: Option<u32>,
@@ -1520,10 +1552,25 @@ pub(crate) async fn cmd_search(
     search_config: SearchConfig,
     database_path: PathBuf,
     config_path: Option<PathBuf>,
+    keyword_recovery: Option<&str>,
 ) -> Result<()> {
     let search = configured_search_agent(repo.clone(), tei, &search_config);
-    let embedding_identity = search.embedding_identity();
+    let embedding_identity = (mode == SearchModeArg::Hybrid).then(|| search.embedding_identity());
+    let graph = if mode == SearchModeArg::Keyword {
+        GraphModeArg::Off
+    } else {
+        graph
+    };
+    if format == output::OutputFormat::Human {
+        println!(
+            "Search mode: {} ({})",
+            mode.as_str(),
+            mode.channels().join(", ")
+        );
+    }
     let filters = serde_json::json!({
+        "mode": mode.as_str(),
+        "channels": mode.channels(),
         "scope": format!("{scope:?}"),
         "since_days": since_days,
         "source_uri": source_uri,
@@ -1536,10 +1583,15 @@ pub(crate) async fn cmd_search(
         SearchScopeArg::All => SearchScope::All,
     };
 
-    if context && scope == SearchScope::Notes && graph == GraphModeArg::Off {
+    if mode == SearchModeArg::Hybrid
+        && context
+        && scope == SearchScope::Notes
+        && graph == GraphModeArg::Off
+    {
         let results = search
             .search_with_context_filtered(&query, limit, since_days, source_uri.clone())
-            .await?;
+            .await
+            .with_context(|| hybrid_recovery_message(keyword_recovery))?;
         let related_by_note = results
             .iter()
             .filter_map(|result| {
@@ -1578,7 +1630,11 @@ pub(crate) async fn cmd_search(
                     output::OutputFormat::Json => output::print(
                         format,
                         "search",
-                        SearchMachineOutput { results: output },
+                        SearchMachineOutput {
+                            mode: mode.as_str(),
+                            channels: mode.channels(),
+                            results: output,
+                        },
                         |_| Ok(()),
                     ),
                     output::OutputFormat::Jsonl => output::print_jsonl("search", output),
@@ -1588,9 +1644,10 @@ pub(crate) async fn cmd_search(
             let explanations = results
                 .iter()
                 .map(|result| {
-                    result
-                        .explanation()
-                        .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+                    attach_search_embedding_identity(
+                        result.explanation(),
+                        embedding_identity.as_ref(),
+                    )
                 })
                 .collect::<Vec<_>>();
             return match format {
@@ -1666,16 +1723,23 @@ pub(crate) async fn cmd_search(
             eprintln!("Context is only available for notes scope; continuing without context.");
         }
 
-        let results = search
-            .search_with_scope_graph(
-                &query,
-                limit,
-                scope,
-                since_days,
-                source_uri.clone(),
-                graph.into(),
-            )
-            .await?;
+        let results = if mode == SearchModeArg::Keyword {
+            search
+                .keyword_search_with_scope(&query, limit, scope, since_days, source_uri.clone())
+                .await?
+        } else {
+            search
+                .search_with_scope_graph(
+                    &query,
+                    limit,
+                    scope,
+                    since_days,
+                    source_uri.clone(),
+                    graph.into(),
+                )
+                .await
+                .with_context(|| hybrid_recovery_message(keyword_recovery))?
+        };
         // `--context` is part of the command result, not merely human
         // decoration. Resolve it before either machine renderer returns so
         // JSON and JSONL retain the same related-note data as terminal output.
@@ -1725,7 +1789,11 @@ pub(crate) async fn cmd_search(
                     output::OutputFormat::Json => output::print(
                         format,
                         "search",
-                        SearchMachineOutput { results: output },
+                        SearchMachineOutput {
+                            mode: mode.as_str(),
+                            channels: mode.channels(),
+                            results: output,
+                        },
                         |_| Ok(()),
                     ),
                     output::OutputFormat::Jsonl => output::print_jsonl("search", output),
@@ -1736,9 +1804,10 @@ pub(crate) async fn cmd_search(
                 .hits
                 .iter()
                 .map(|result| {
-                    result
-                        .explanation()
-                        .with_embedding_identity(&embedding_identity.0, &embedding_identity.1)
+                    attach_search_embedding_identity(
+                        result.explanation(),
+                        embedding_identity.as_ref(),
+                    )
                 })
                 .collect::<Vec<_>>();
             return match format {
