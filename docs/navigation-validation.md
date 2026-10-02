@@ -20,7 +20,8 @@ The targeted scenarios cover:
 - Complete Unicode note content, source identity/generation, headings/lines,
   and versioned JSON/JSONL envelopes.
 - Message and conversation inspection with bounded neighboring messages,
-  original IDs/UUIDs/roles/indices, and usable nested revision tokens.
+  canonical IDs, original message UUIDs (or conversation/index keys for
+  UUID-less exports), roles/indices, and usable nested revision tokens.
 - Derived-note chat provenance, canonical-ID validation, and neighbor limits.
 - Changed-record revision guards and superseded IDs after source refresh.
 - Explicit opening, missing/deleted sources, and manual/non-file refusal.
@@ -40,6 +41,23 @@ Run the targeted tests after compiling the current change:
 
 ```bash
 cargo test --locked -p graphrag-cli --test navigation_commands
+```
+
+The Balanced Copilot follow-up passed 13 repository inspection tests and 28
+CLI navigation/setup tests. Regressions verify original message UUID/key
+preservation in direct and derived inspection, neighboring messages, and
+actual imported/backfilled search results in human, JSON, and JSONL output.
+Partial chat failures distinguish input totals (including failed items) from
+completed-operation counters, with recovery guidance on stderr. All-target,
+all-feature workspace Clippy with warnings denied, formatting, and whitespace
+checks passed.
+
+```bash
+RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-db \
+  --lib repository::inspection --all-features --locked --offline -- --test-threads=2
+RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
+  --test navigation_commands --test init_commands --all-features \
+  --locked --offline -- --test-threads=2
 ```
 
 ## Manual local walkthrough

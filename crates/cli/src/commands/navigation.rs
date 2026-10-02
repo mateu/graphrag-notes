@@ -104,6 +104,11 @@ fn render_inspection(writer: &mut dyn Write, record: &RecordInspection) -> std::
     if let Some(uuid) = &record.provenance.conversation_uuid {
         writeln!(writer, "Conversation UUID: {uuid}")?;
     }
+    if let Some(uuid) = &record.provenance.message_uuid {
+        writeln!(writer, "Message UUID: {uuid}")?;
+    } else if let Some(key) = &record.provenance.message_key {
+        writeln!(writer, "Message key: {key}")?;
+    }
     if let Some(index) = record.provenance.message_index {
         writeln!(
             writer,
@@ -136,12 +141,17 @@ fn render_inspection(writer: &mut dyn Write, record: &RecordInspection) -> std::
         };
         writeln!(
             writer,
-            "  #{} [{}] {}{focus}\n{}",
+            "  #{} [{}] {}{focus}",
             message.message_index + 1,
             message.role,
             message.id,
-            message.content
         )?;
+        if let Some(uuid) = &message.message_uuid {
+            writeln!(writer, "    Message UUID: {uuid}")?;
+        } else {
+            writeln!(writer, "    Message key: {}", message.message_key)?;
+        }
+        writeln!(writer, "{}", message.content)?;
     }
     if record.messages_truncated {
         writeln!(
@@ -450,6 +460,14 @@ pub(crate) fn print_search_navigation(navigation: &SearchNavigation) {
                 "   Lines: {line}-{} (at last import)",
                 provenance.end_line.unwrap_or(line)
             );
+        }
+        if let Some(uuid) = &provenance.conversation_uuid {
+            println!("   Conversation UUID: {uuid}");
+        }
+        if let Some(uuid) = &provenance.message_uuid {
+            println!("   Message UUID: {uuid}");
+        } else if let Some(key) = &provenance.message_key {
+            println!("   Message key: {key}");
         }
     }
     println!("   {}", navigation.preview);

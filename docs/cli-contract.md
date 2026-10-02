@@ -28,8 +28,10 @@ deprecation notices, and progress belong on stderr.
 | 5 | Partial durable-processing failure |
 
 `import-chats` and `migrate-chats` exit 5 when any conversation fails. Successful
-peers remain usable. The printed counters cover completed conversations;
-failed conversations may retain records written before their failure. Fix the
+peers remain usable. Input totals, conversation type counts, and `messages_total`
+include failed conversations. Creation, upsert, link, and Q&A outcome counters
+cover completed conversations; partial writes from failed conversations may be
+omitted from those counters. Failure guidance is written to stderr. Fix the
 reported error and retry the same export.
 
 `init` supports `--format human|json`. Its default preview and explicit
@@ -111,8 +113,13 @@ Its versioned envelope has `command: "inspect"`. `data` contains `id`,
 `content`, `revision`, `provenance`, `conversations`, `messages`,
 `messages_truncated`, and `warnings`. JSONL emits one envelope for the inspected
 record. Provenance includes source ID/URI/type/generation and heading/line range
-when available; chat provenance includes conversation ID/UUID, message index,
-and role. Message indices remain zero-based in machine output.
+when available; chat provenance includes conversation ID/UUID, original
+`message_uuid`, `message_key`, message index, and role. Nested messages also
+retain their original UUID/key alongside the canonical `message:ID`. For
+exports without a message UUID, `message_uuid` is null and `message_key` is the
+importer's conversation-UUID/index fallback. Human search and inspection show
+the original UUID or fallback key. Message indices remain zero-based in machine
+output.
 
 For a message, `--neighbors` includes that many messages before and after the
 selected message, plus the selected message itself. The default is 2 and the

@@ -20,6 +20,11 @@ pub struct InspectionProvenance {
     pub end_line: Option<u64>,
     pub conversation_id: Option<String>,
     pub conversation_uuid: Option<String>,
+    /// Original export identity, or the conversation/index key for UUID-less messages.
+    #[serde(default)]
+    pub message_key: Option<String>,
+    #[serde(default)]
+    pub message_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
 }
@@ -37,6 +42,9 @@ pub struct InspectedConversation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InspectedMessage {
     pub id: String,
+    #[serde(default)]
+    pub message_key: String,
+    pub message_uuid: Option<String>,
     pub conversation_id: String,
     pub conversation_uuid: String,
     /// Zero-based index from the imported conversation.
@@ -124,6 +132,8 @@ impl MessageRow {
     fn inspection(&self, conversation: Option<&InspectedConversation>) -> Result<InspectedMessage> {
         Ok(InspectedMessage {
             id: record_id_to_string(&self.id),
+            message_key: self.message_key.clone(),
+            message_uuid: self.message_uuid.clone(),
             conversation_id: record_id_to_string(&self.conversation_id),
             conversation_uuid: self.conversation_uuid.clone(),
             message_index: self.message_index,
@@ -352,6 +362,8 @@ impl Repository {
         let primary_conversation = if let Some(message) = messages.first() {
             provenance.conversation_id = Some(message.conversation_id.clone());
             provenance.conversation_uuid = Some(message.conversation_uuid.clone());
+            provenance.message_key = Some(message.message_key.clone());
+            provenance.message_uuid = message.message_uuid.clone();
             provenance.message_index = Some(message.message_index);
             provenance.role = Some(message.role.clone());
             conversations
@@ -448,6 +460,8 @@ impl Repository {
             source_type: Some("chat_export".into()),
             conversation_id: Some(record_id_to_string(&row.conversation_id)),
             conversation_uuid: Some(row.conversation_uuid.clone()),
+            message_key: Some(row.message_key.clone()),
+            message_uuid: row.message_uuid.clone(),
             message_index: Some(row.message_index),
             role: Some(row.role.clone()),
             ..Default::default()
@@ -770,6 +784,16 @@ mod tests {
         );
         assert_eq!(inspected.provenance.message_index, Some(10));
         assert_eq!(inspected.provenance.role.as_deref(), Some("human"));
+        assert_eq!(inspected.provenance.message_uuid, None);
+        assert_eq!(
+            inspected.provenance.message_key.as_deref(),
+            Some("inspection-conversation:10")
+        );
+        assert_eq!(
+            inspected.messages[1].message_key,
+            "inspection-conversation:10"
+        );
+        assert_eq!(inspected.messages[1].message_uuid, None);
         assert!(inspected.title.unwrap().contains("Launch café 日本語"));
         let only_focus = repo.inspect_record(&id, 0).await.unwrap();
         assert_eq!(only_focus.messages.len(), 1);
@@ -800,6 +824,67 @@ mod tests {
                     .revision
             );
         }
+    }
+
+    #[tokio::test]
+    async fn exported_message_uuid_survives_direct_context_and_derived_inspection() {
+        let repo = memory().await;
+        let (conversation, _) = chat(&repo, &[0]).await;
+        let message = ChatMessage {
+            uuid: Some("original-export-message-uuid".into()),
+            role: MessageRole::Assistant,
+            content: "Original exported reply".into(),
+            content_blocks: serde_json::json!([]),
+            created_at: None,
+            updated_at: None,
+            attachments: Vec::new(),
+            files: Vec::new(),
+        };
+        let message_id = repo
+            .upsert_message(&conversation, "inspection-conversation", 1, &message, None)
+            .await
+            .unwrap();
+        let canonical_id = record_id_to_string(&message_id);
+        let inspected = repo.inspect_record(&canonical_id, 1).await.unwrap();
+        assert_eq!(inspected.id, canonical_id);
+        assert_ne!(canonical_id, "message:original-export-message-uuid");
+        assert_eq!(inspected.provenance.message_uuid, message.uuid);
+        assert_eq!(
+            inspected.provenance.message_key.as_deref(),
+            message.uuid.as_deref()
+        );
+        assert_eq!(inspected.messages[0].message_uuid, None);
+        assert_eq!(
+            inspected.messages[0].message_key,
+            "inspection-conversation:0"
+        );
+        assert_eq!(inspected.messages[1].message_uuid, message.uuid);
+        assert_eq!(
+            inspected.messages[1].message_key,
+            "original-export-message-uuid"
+        );
+
+        let note = repo
+            .create_note(Note::new("Derived original reply"))
+            .await
+            .unwrap();
+        repo.link_note_to_message(note.id.as_ref().unwrap(), &message_id)
+            .await
+            .unwrap();
+        let derived = repo
+            .inspect_record(&record_id_to_string(note.id.as_ref().unwrap()), 0)
+            .await
+            .unwrap();
+        assert_eq!(derived.provenance.message_uuid, message.uuid);
+        assert_eq!(
+            derived.provenance.message_key.as_deref(),
+            message.uuid.as_deref()
+        );
+        assert_eq!(derived.messages[0].message_uuid, message.uuid);
+        assert_eq!(
+            derived.messages[0].message_key,
+            "original-export-message-uuid"
+        );
     }
 
     #[tokio::test]
