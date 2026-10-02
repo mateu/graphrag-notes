@@ -402,16 +402,21 @@ impl FakeOllama {
             while !server_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // BSD/macOS can inherit the listener's nonblocking
+                        // mode. The request reader below requires blocking I/O
+                        // so a split POST body cannot be mistaken for EOF.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
                         let mut request = Vec::new();
                         let mut buffer = [0; 2048];
                         while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                            match stream.read(&mut buffer) {
-                                Ok(0) | Err(_) => break,
-                                Ok(count) => request.extend_from_slice(&buffer[..count]),
-                            }
+                            let count = stream
+                                .read(&mut buffer)
+                                .expect("fake Ollama must receive complete request headers");
+                            assert_ne!(count, 0, "request closed before its headers completed");
+                            request.extend_from_slice(&buffer[..count]);
                         }
                         if let Some(header_end) = request
                             .windows(4)
@@ -427,11 +432,12 @@ impl FakeOllama {
                                         .flatten()
                                 })
                                 .unwrap_or(0);
-                            while request.len() < header_end + content_length {
-                                match stream.read(&mut buffer) {
-                                    Ok(0) | Err(_) => break,
-                                    Ok(count) => request.extend_from_slice(&buffer[..count]),
-                                }
+                            let received = request.len();
+                            if received < header_end + content_length {
+                                request.resize(header_end + content_length, 0);
+                                stream
+                                    .read_exact(&mut request[received..])
+                                    .expect("fake Ollama must consume the complete request body");
                             }
                         }
                         let request_line = String::from_utf8_lossy(&request)
@@ -487,7 +493,9 @@ impl FakeOllama {
                             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
                         );
-                        let _ = stream.write_all(response.as_bytes());
+                        stream
+                            .write_all(response.as_bytes())
+                            .expect("fake Ollama must write a complete HTTP response");
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(2));
