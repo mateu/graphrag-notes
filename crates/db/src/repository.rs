@@ -32,7 +32,7 @@ pub use jobs::{
 pub use models::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };
-pub use portable::PORTABLE_TABLES;
+pub use portable::{parse_portable_record_id, PORTABLE_TABLES};
 pub use stats::DbStats;
 
 use crate::{

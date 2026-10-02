@@ -11,8 +11,8 @@ pub mod schema;
 
 pub use error::{DbError, Result};
 pub use repository::{
-    parse_record_id, InferenceCacheEntry, InspectedConversation, InspectedMessage,
-    InspectionProvenance, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
+    parse_portable_record_id, parse_record_id, InferenceCacheEntry, InspectedConversation,
+    InspectedMessage, InspectionProvenance, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, RecordInspection, Repository, SourceDeleteSummary, SourceImportAction,
     SourceImportPlan, MAX_INSPECTION_NEIGHBORS, PORTABLE_TABLES,
 };

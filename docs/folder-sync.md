@@ -15,8 +15,16 @@ when you keep several installations. Registration requires an existing config;
 create it with `graphrag init --write` first. `folders add` appends a declaration
 to the selected config (`--config`, then `GRAPHRAG_CONFIG`, then the native
 platform default). It preserves existing comments, settings, credentials, and
-file permissions. It refuses a symlinked config target, duplicate names, and
-concurrent edits. Resolve the actual config path or retry the updated file.
+file permissions. It refuses a symlinked config target and duplicate names.
+Registrations coordinate through a lock. Editor saves detected during commit
+leave registration unapplied; inspect the reported recovery file and retry
+with the updated config. Before installing a declaration, registration moves
+the previous config to a sibling `CONFIG.folders-backup-*` file, retains its
+permissions, and reports that path. Keep it until you have checked the new
+config; remove it when you no longer need it. Arbitrary editors do not share
+the registration lock, so do not edit the config during registration. The
+config name is briefly absent during capture; an interrupted registration
+can require copying the reported sibling backup back to the config path.
 An interrupted registration can leave a `.toml.folders.lock` sidecar; remove
 that lock only after verifying that another registration is not running.
 

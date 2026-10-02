@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use graphrag_core::{PortableBackupManifest, PortableEmbeddingIdentity, PortableRecord};
-use graphrag_db::{init_persistent, migrations, parse_record_id, Repository, PORTABLE_TABLES};
+use graphrag_db::{init_persistent, migrations, Repository, PORTABLE_TABLES};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -597,7 +597,7 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
             // evidence after source/note cleanup. Validate their shape, but do
             // not require the retired notes to exist or recreate them during
             // restore. Resulting edges and every active proposal remain strict.
-            parse_record_id(&id, Some("note")).with_context(|| {
+            graphrag_db::parse_portable_record_id(&id, Some("note")).with_context(|| {
                 format!("portable {table} record has invalid reference in {field}")
             })?;
             continue;
@@ -1070,6 +1070,10 @@ mod tests {
                     serde_json::json!("note:"),
                     serde_json::json!("note: "),
                     serde_json::json!("note"),
+                    serde_json::json!("note:`unterminated"),
+                    serde_json::json!("note:⟨unterminated"),
+                    serde_json::json!("note:u'not-a-uuid'"),
+                    serde_json::json!("note:`encoded` trailing"),
                     serde_json::json!(42),
                     serde_json::json!({"unexpected": "note:retired"}),
                 ] {
@@ -1094,6 +1098,70 @@ mod tests {
                 &references,
             )
             .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_and_restore_both_reject_malformed_encoded_terminal_endpoints() {
+        let repo = populated_repo().await;
+        let notes = repo.list_notes(10).await.unwrap();
+        let proposal = repo
+            .upsert_edge_proposal(EdgeProposalDraft {
+                from_id: notes[0].id.clone(),
+                to_id: notes[1].id.clone(),
+                edge_type: EdgeType::RelatedTo,
+                confidence: 0.8,
+                reason: "terminal archive validation".into(),
+                generator: "test".into(),
+                generator_version: None,
+                model: None,
+            })
+            .await
+            .unwrap();
+        repo.reject_edge_proposal(proposal.id.as_ref().unwrap(), None, None)
+            .await
+            .unwrap();
+        let temp = tempdir().unwrap();
+        let backup_path = temp.path().join("terminal-archive");
+        create_backup(&repo, &backup_path, false).await.unwrap();
+        let payload_path = backup_path.join(RECORDS_FILE);
+        let original_records = fs::read_to_string(&payload_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        let manifest_path = backup_path.join(MANIFEST_FILE);
+        let original_manifest: PortableBackupManifest =
+            serde_json::from_reader(File::open(&manifest_path).unwrap()).unwrap();
+        for status in ["rejected", "superseded"] {
+            for field in ["in", "out"] {
+                let mut records = original_records.clone();
+                let record = &mut records
+                    .iter_mut()
+                    .find(|record| record.table == "proposed_edge")
+                    .unwrap()
+                    .record;
+                record["status"] = serde_json::json!(status);
+                record[field] = serde_json::json!("note:`unterminated");
+                let payload = records
+                    .iter()
+                    .map(serde_json::to_string)
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap()
+                    .join("\n")
+                    + "\n";
+                fs::write(&payload_path, &payload).unwrap();
+                let mut manifest = original_manifest.clone();
+                manifest.payload.sha256 = format!("{:x}", Sha256::digest(payload.as_bytes()));
+                manifest.payload.bytes = payload.len() as u64;
+                fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+                assert!(verify_backup(&backup_path)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(&format!("invalid reference in {field}")));
+                let restored = Repository::new(init_memory().await.unwrap());
+                assert!(restore_records(&restored, &payload_path).await.is_err());
+            }
         }
     }
 

@@ -59,7 +59,7 @@ fn validate_portable_field(field: &str) -> Result<()> {
 /// Decode the canonical SurrealQL IDs emitted by Surreal's JSON serializer.
 /// Quoted string keys must remain strings even when they resemble a UUID or
 /// number. The CLI's unquoted-ID convenience parser cannot make that distinction.
-fn parse_portable_record_id(value: &str, expected_table: Option<&str>) -> Result<RecordId> {
+pub fn parse_portable_record_id(value: &str, expected_table: Option<&str>) -> Result<RecordId> {
     let value = value.trim();
     let (_, key) = value
         .split_once(':')

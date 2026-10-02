@@ -109,13 +109,21 @@ fn lexical_path(path: &Path) -> PathBuf {
     normalized
 }
 
-/// Register a new definition while preserving every existing byte outside the
-/// appended folder table. Never serialize redacted runtime settings to disk.
+/// Registration retains the previous config as a recoverable sibling file.
+/// Cooperating registrations are locked; external saves are detected when
+/// possible and never replace the retained previous file with staged content.
+#[derive(Debug)]
+pub struct FolderRegistration {
+    pub folder: FolderConfig,
+    pub config_backup: PathBuf,
+}
+
+/// Register a new definition without serializing redacted runtime settings.
 pub fn register_folder(
     config_path: &Path,
     name: &str,
     mut folder: FolderConfig,
-) -> Result<FolderConfig, ConfigError> {
+) -> Result<FolderRegistration, ConfigError> {
     folder.path = std::fs::canonicalize(&folder.path).map_err(|source| ConfigError::ReadFile {
         path: folder.path.clone(),
         source,
@@ -195,21 +203,25 @@ pub fn register_folder(
         .write_all(document.to_string().as_bytes())
         .map_err(io_error)?;
     temporary.as_file().sync_all().map_err(io_error)?;
-    persist_config_if_unchanged(config_path, &original, temporary)?;
-    Ok(folder)
+    let config_backup = persist_config_if_unchanged(config_path, &original, temporary)?;
+    Ok(FolderRegistration {
+        folder,
+        config_backup,
+    })
 }
 
 fn persist_config_if_unchanged(
     config_path: &Path,
     original: &[u8],
     temporary: tempfile::NamedTempFile,
-) -> Result<(), ConfigError> {
+) -> Result<PathBuf, ConfigError> {
     let io_error = |source| ConfigError::ReadFile {
         path: config_path.into(),
         source,
     };
-    // An exclusive sidecar lock coordinates concurrent registrations; the
-    // byte comparison also detects editors that do not participate in it.
+    // This lock coordinates registrations, not arbitrary text editors. Capture
+    // the old file with rename before installing the replacement so an editor
+    // save in the compare/commit window remains recoverable.
     let lock_path = config_path.with_extension("toml.folders.lock");
     let lock = std::fs::OpenOptions::new().write(true).create_new(true).open(&lock_path)
         .map_err(|error| ConfigError::Validation(format!("cannot lock config for folder registration: {error}; if no registration is running, remove {} and retry", lock_path.display())))?;
@@ -222,14 +234,74 @@ fn persist_config_if_unchanged(
                 "config changed during registration; retry with the latest file".into(),
             ));
         }
-        temporary
-            .persist(config_path)
-            .map_err(|error| io_error(error.error))?;
-        Ok(())
+        capture_and_replace_config(config_path, original, temporary)
     })();
     drop(lock);
     let _ = std::fs::remove_file(lock_path);
     result
+}
+
+fn capture_and_replace_config(
+    config_path: &Path,
+    original: &[u8],
+    temporary: tempfile::NamedTempFile,
+) -> Result<PathBuf, ConfigError> {
+    let parent = config_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let prefix = format!(
+        "{}.folders-backup-",
+        config_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+    );
+    let backup_path = tempfile::Builder::new()
+        .prefix(&prefix)
+        .tempfile_in(parent)
+        .and_then(|file| file.into_temp_path().keep().map_err(|error| error.error))
+        .map_err(|source| ConfigError::ReadFile {
+            path: config_path.into(),
+            source,
+        })?;
+    if let Err(source) = std::fs::rename(config_path, &backup_path) {
+        let _ = std::fs::remove_file(&backup_path);
+        return Err(ConfigError::ReadFile {
+            path: config_path.into(),
+            source,
+        });
+    }
+    persist_captured_config(config_path, original, temporary, backup_path)
+}
+
+fn persist_captured_config(
+    config_path: &Path,
+    original: &[u8],
+    temporary: tempfile::NamedTempFile,
+    backup_path: PathBuf,
+) -> Result<PathBuf, ConfigError> {
+    let result = (|| {
+        // The rename captures the actual file at commit time, including a save
+        // made after the earlier snapshot comparison. Open editor descriptors
+        // also continue to point at this retained file instead of lost content.
+        if std::fs::read(&backup_path)? != original {
+            return Err(std::io::Error::other("config changed during registration"));
+        }
+        // An editor may recreate the config name after capture. Never clobber
+        // that save; both it and the captured version remain available.
+        temporary
+            .persist_noclobber(config_path)
+            .map_err(|error| error.error)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        // Restore the captured inode only while the name is absent. A new
+        // editor-created file has priority, and the recovery file stays intact.
+        let _ = std::fs::hard_link(&backup_path, config_path);
+        return Err(ConfigError::Validation(format!("{error}; registration was not saved. Previous config retained at {}; inspect it and retry with the current config", backup_path.display())));
+    }
+    Ok(backup_path)
 }
 
 #[cfg(test)]

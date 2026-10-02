@@ -75,13 +75,20 @@ pub(crate) fn run_config_command(
                 folder.include = include.clone();
             }
             folder.exclude.extend(exclude.iter().cloned());
-            let folder = graphrag_config::register_folder(&config_path, name, folder)?;
+            let registration = graphrag_config::register_folder(&config_path, name, folder)?;
+            let folder = registration.folder;
+            let config_backup = registration.config_backup;
             output::print(
                 *format,
                 "folders.add",
-                serde_json::json!({"name":name,"config_path":config_path,"folder":folder}),
+                serde_json::json!({"name":name,"config_path":config_path,"config_backup":config_backup,"folder":folder}),
                 |writer| {
                     writeln!(writer, "Registered {name}: {}", folder.path.display())?;
+                    writeln!(
+                        writer,
+                        "Previous config retained: {}",
+                        config_backup.display()
+                    )?;
                     writeln!(
                         writer,
                         "Preview: {} sync {} --dry-run",

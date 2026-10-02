@@ -251,6 +251,7 @@ impl Fixture {
     }
 
     fn register(&self) {
+        let original = fs::read(&self.config_path).unwrap();
         let data = envelope_data(
             self.command()
                 .args(["folders", "add", "notes"])
@@ -261,6 +262,9 @@ impl Fixture {
         );
         assert_eq!(data["name"], "notes");
         assert_eq!(data["folder"]["path"], json!(&self.root));
+        let backup = PathBuf::from(data["config_backup"].as_str().unwrap());
+        assert_eq!(backup.parent(), self.config_path.parent());
+        assert_eq!(fs::read(backup).unwrap(), original);
     }
 
     fn write_note(&self, name: &str, marker: &str) -> PathBuf {

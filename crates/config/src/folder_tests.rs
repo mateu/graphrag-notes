@@ -25,7 +25,12 @@ fn registration_preserves_comments_credentials_other_settings_and_permissions() 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
     }
     let previous = std::fs::read_to_string(&path).unwrap();
-    let registered = register_folder(&path, "work", folder).unwrap();
+    let registration = register_folder(&path, "work", folder).unwrap();
+    let registered = registration.folder;
+    assert_eq!(
+        std::fs::read(&registration.config_backup).unwrap(),
+        previous.as_bytes()
+    );
     let saved = std::fs::read_to_string(&path).unwrap();
     assert!(saved.starts_with(&previous));
     assert!(saved.contains("fake-secret"));
@@ -41,6 +46,14 @@ fn registration_preserves_comments_credentials_other_settings_and_permissions() 
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(
+            std::fs::metadata(registration.config_backup)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o640
         );
     }
@@ -89,7 +102,7 @@ fn registration_supports_empty_and_existing_inline_folder_maps_without_losing_se
         };
         let original = format!("# Keep inline style\nfolders = {folders} # folder comment\n[inference]\nembedding_url = 'http://user:fake-secret@localhost:8081/?token=literal-credential' # preserve credentials\n");
         std::fs::write(&path, original).unwrap();
-        let added = register_folder(&path, "work", folder).unwrap();
+        let added = register_folder(&path, "work", folder).unwrap().folder;
         let saved = std::fs::read_to_string(&path).unwrap();
         assert!(saved.contains("# folder comment"));
         assert!(saved.contains("# preserve credentials"));
@@ -122,7 +135,8 @@ fn symlink_config_is_rejected_and_symlink_root_alias_is_canonicalized() {
             ..Default::default()
         },
     )
-    .unwrap();
+    .unwrap()
+    .folder;
     assert_eq!(
         registered.path,
         std::fs::canonicalize(&folder.path).unwrap()
@@ -155,4 +169,64 @@ fn concurrent_external_edit_is_preserved_when_atomic_commit_checks_snapshot() {
     assert!(persist_config_if_unchanged(&path, &original, temporary).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), edited);
     assert!(!path.with_extension("toml.folders.lock").exists());
+}
+
+#[test]
+fn an_editor_save_after_the_snapshot_check_is_captured_and_restored() {
+    let (_directory, path, _) = fixture();
+    let original = std::fs::read(&path).unwrap();
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+    temporary.write_all(b"staged registration").unwrap();
+    // Simulate the previously unprotected window between the snapshot check
+    // and commit. Capture must inspect the file actually moved, not old bytes.
+    let edited = b"# Saved after snapshot check\n[logging]\nlevel = 'debug'\n";
+    std::fs::write(&path, edited).unwrap();
+    let error = capture_and_replace_config(&path, &original, temporary).unwrap_err();
+    assert!(error.to_string().contains("config changed"));
+    assert_eq!(std::fs::read(&path).unwrap(), edited);
+    let backup = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|candidate| {
+            candidate
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(".folders-backup-")
+        })
+        .unwrap();
+    assert_eq!(std::fs::read(&backup).unwrap(), edited);
+    assert!(error.to_string().contains(backup.to_str().unwrap()));
+}
+
+#[test]
+fn an_editor_recreating_the_config_during_commit_wins_without_losing_either_version() {
+    let (_directory, path, _) = fixture();
+    let original = std::fs::read(&path).unwrap();
+    let backup = path.with_extension("captured-config");
+    std::fs::rename(&path, &backup).unwrap();
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+    temporary.write_all(b"staged registration").unwrap();
+    let edited = b"# Editor created a new config during commit\n";
+    std::fs::write(&path, edited).unwrap();
+    let error = persist_captured_config(&path, &original, temporary, backup.clone()).unwrap_err();
+    assert_eq!(std::fs::read(&path).unwrap(), edited);
+    assert_eq!(std::fs::read(&backup).unwrap(), original);
+    assert!(error.to_string().contains(backup.to_str().unwrap()));
+}
+
+#[test]
+fn an_editor_holding_the_old_file_can_save_to_the_retained_backup_after_commit() {
+    let (_directory, path, _) = fixture();
+    let original = std::fs::read(&path).unwrap();
+    let mut editor = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+    temporary.write_all(b"staged registration").unwrap();
+    let backup = persist_config_if_unchanged(&path, &original, temporary).unwrap();
+    let edited = b"# Saved through an already-open editor descriptor\n";
+    editor.set_len(0).unwrap();
+    editor.write_all(edited).unwrap();
+    editor.sync_all().unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"staged registration");
+    assert_eq!(std::fs::read(backup).unwrap(), edited);
 }

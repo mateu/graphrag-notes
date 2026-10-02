@@ -30,9 +30,13 @@ manual/legacy/detached notes, source identity/content through vectorless backup
 and restore with host-local URI redaction, and identical files returning to
 the original database reusing the retained source ID. Symlink
 cycles, nested directory replacements, redirected root ancestors, unavailable
-roots, incomplete scans, overlapping definitions, and atomic config edits
-have focused regressions. Backup tests preserve terminal proposal audit
-history while requiring live proposal endpoints and resulting edges to exist.
+roots, incomplete scans, overlapping definitions, and recoverable config edits
+have focused regressions. Config tests cover saves after the snapshot check,
+editors recreating the config during commit, writes through an already open
+file descriptor, and preservation of backup bytes and permissions. Backup
+tests preserve terminal proposal audit history while requiring live proposal
+endpoints and resulting edges to exist; checksum-valid malformed encoded
+terminal references are rejected by both verification and restore.
 
 ## Manual local walkthrough
 

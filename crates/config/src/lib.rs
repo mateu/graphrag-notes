@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 mod folders;
-pub use folders::{register_folder, selected_config_path, FolderConfig};
+pub use folders::{register_folder, selected_config_path, FolderConfig, FolderRegistration};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
