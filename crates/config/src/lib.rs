@@ -417,6 +417,32 @@ impl RuntimeConfig {
         )
     }
 
+    /// Resolve a complete serialized configuration before creating its file.
+    /// Every field is present in `redacted_toml`, so endpoint and chunking
+    /// fallbacks must behave exactly as they will when that file is reopened.
+    /// This lets setup preview normal precedence without writing a temp config.
+    pub fn resolve_file_template(
+        &self,
+        overrides: &CliOverrides,
+        env: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, ConfigError> {
+        let mut config = self.clone();
+        config.inference.embedding_url_from_file = true;
+        config.inference.extraction_url_from_file = true;
+        config.apply_env_with_librarian_control_presence(
+            env,
+            LibrarianChunkingControlPresence {
+                target_chunk_size: true,
+                chunk_overlap: true,
+            },
+        )?;
+        if let Some(path) = &overrides.database_path {
+            config.database.path = path.clone();
+        }
+        config.validate()?;
+        Ok(config)
+    }
+
     fn apply_env_with_librarian_control_presence(
         &mut self,
         env: &impl Fn(&str) -> Option<String>,

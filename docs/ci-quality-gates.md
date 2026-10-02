@@ -6,7 +6,7 @@ service. Normal pull requests run only deterministic offline tests.
 
 | Job | Exact local-equivalent command | What it protects |
 | --- | --- | --- |
-| `format` | `cargo fmt --all -- --check` | Formatting drift |
+| `format` | `bash scripts/test-install.sh`, then `cargo fmt --all -- --check` | Offline installer/setup behavior and formatting drift |
 | `clippy` | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Warnings and lint regressions |
 | `msrv` | `cargo +1.97.1 check --workspace --locked` | Declared Rust 1.97.1 MSRV |
 | `offline-integration` | `cargo test --workspace --locked` | Unit tests and offline integration with deterministic doubles |

@@ -33,6 +33,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt
+      - name: Verify installer and source setup offline
+        run: bash scripts/test-install.sh
       - name: Check formatting (cargo fmt --all -- --check)
         run: cargo fmt --all -- --check
 

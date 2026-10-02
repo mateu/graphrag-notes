@@ -27,6 +27,12 @@ deprecation notices, and progress belong on stderr.
 | 4 | Embedding/model compatibility failure |
 | 5 | Partial durable-processing failure |
 
+`init` supports `--format human|json`. Its default preview and explicit
+`--write` do not open the database or contact providers. Adding `--check`
+returns provider diagnostics in the setup report: exit 0 means healthy, 1 means
+warnings, and 2 means a failed check. JSON retains the setup data on diagnostic
+failure, sets `success` to false, and includes warning/error summaries.
+
 ## Notes commands
 
 `graphrag notes list [--tag TAG] [--source-uri URI]` lists visible notes.

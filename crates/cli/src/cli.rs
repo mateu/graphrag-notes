@@ -17,7 +17,7 @@ use std::path::PathBuf;
 #[command(author, version, about, long_about = None)]
 pub(crate) struct Cli {
     /// Configuration file. Defaults to GRAPHRAG_CONFIG, then
-    /// ~/.config/graphrag/config.toml when that file exists.
+    /// the platform config directory's graphrag/config.toml when it exists.
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) config: Option<PathBuf>,
 
@@ -56,6 +56,20 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// Preview first-run settings; explicitly create a new config or check providers
+    Init {
+        /// Preset for a NEW config; environment overrides still apply at runtime.
+        #[arg(long, value_enum)]
+        backend: Option<SetupBackend>,
+        /// Create the selected config file; never overwrite an existing file.
+        #[arg(long)]
+        write: bool,
+        /// Check inference providers without opening or creating a database.
+        #[arg(long)]
+        check: bool,
+        #[arg(long, value_enum, default_value_t = DoctorFormat::Human)]
+        format: DoctorFormat,
+    },
     /// Create, verify, or restore a portable logical backup
     Backup {
         #[command(subcommand)]
@@ -406,6 +420,12 @@ pub(crate) enum Commands {
         #[arg(short, long)]
         db_path: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum SetupBackend {
+    Ollama,
+    TeiTgi,
 }
 
 #[derive(Subcommand)]

@@ -186,7 +186,15 @@ pub async fn run(
         }
     }
 
-    inspect_providers(&mut checks, provider_config, diagnostic_db.as_ref()).await;
+    inspect_providers(&mut checks, provider_config, diagnostic_db.as_ref(), false).await;
+    DoctorReport::from_checks(checks)
+}
+
+/// First-run diagnostics deliberately omit the database, including read-only
+/// opens that would take a RocksDB lock. Provider probes never install models.
+pub(crate) async fn run_setup(provider_config: &InferenceProviderConfig) -> DoctorReport {
+    let mut checks = Vec::new();
+    inspect_providers(&mut checks, provider_config, None, true).await;
     DoctorReport::from_checks(checks)
 }
 
@@ -351,6 +359,7 @@ async fn inspect_providers(
     checks: &mut Vec<Check>,
     config: &InferenceProviderConfig,
     db: Option<&DbConnection>,
+    setup: bool,
 ) {
     let providers = InferenceProviders::from_config(config);
     let embedder = providers.embedder;
@@ -364,6 +373,13 @@ async fn inspect_providers(
             .await
         {
             Ok(vector) => {
+                if setup && vector.len() != graphrag_db::schema::EMBEDDING_DIMENSION {
+                    checks.push(Check::failed(
+                        "embedding_dimension",
+                        "Embedding model cannot use the current index",
+                        format!("Expected 1024 dimensions, got {}; choose a compatible model before import.", vector.len()),
+                    ));
+                }
                 checks.push(Check::healthy(
                     "embedding_provider",
                     format!(
@@ -400,7 +416,11 @@ async fn inspect_providers(
             Err(error) => checks.push(Check::failed(
                 "embedding_provider",
                 "Embedding provider cannot produce a dimension probe",
-                error.to_string(),
+                if setup {
+                    setup_embedding_error(error)
+                } else {
+                    error.to_string()
+                },
             )),
         },
         Ok(false) | Err(_) => checks.push(Check::warning(
@@ -426,6 +446,52 @@ async fn inspect_providers(
             "Extraction provider is unavailable",
             redact_endpoint(&extraction_capabilities.endpoint),
         )),
+    }
+    if setup && config.extraction_provider == "ollama" {
+        // A responding Ollama service does not mean the selected generation
+        // model exists. Query metadata only; never generate or pull a model.
+        let client = reqwest::Client::new();
+        match client
+            .post(format!(
+                "{}/api/show",
+                config.extraction_url.trim_end_matches('/')
+            ))
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .json(&serde_json::json!({"model": config.extraction_model}))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => checks.push(Check::healthy(
+                "extraction_model",
+                format!("{} is installed", config.extraction_model),
+            )),
+            Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
+                checks.push(Check::failed(
+                    "extraction_model",
+                    "Selected extraction model is not installed",
+                    format!(
+                        "On the Ollama host, run: ollama pull '{}'",
+                        config.extraction_model.replace('\'', "'\\''")
+                    ),
+                ))
+            }
+            _ => checks.push(Check::warning(
+                "extraction_model",
+                "Cannot verify the selected extraction model",
+                "Start the configured Ollama service and retry init --check.",
+            )),
+        }
+    }
+}
+
+fn setup_embedding_error(error: graphrag_agents::AgentError) -> String {
+    match error {
+        // Status errors can contain the full request URL (including query
+        // credentials). Keep the status, but never render that URL in setup.
+        graphrag_agents::AgentError::Http(error) => error.without_url().to_string(),
+        graphrag_agents::AgentError::Processing(message)
+            if message.starts_with("Embedding dimension ") => message,
+        _ => "The selected embedding model returned an invalid response. Check its installation and 1024-dimension compatibility.".into(),
     }
 }
 
@@ -482,7 +548,7 @@ async fn table_info(
         })
 }
 
-fn redact_endpoint(endpoint: &str) -> String {
+pub(crate) fn redact_endpoint(endpoint: &str) -> String {
     let without_credentials = endpoint
         .split_once("://")
         .map(|(scheme, remainder)| {
@@ -494,9 +560,10 @@ fn redact_endpoint(endpoint: &str) -> String {
         })
         .unwrap_or_else(|| endpoint.to_string());
     without_credentials
-        .split_once('?')
-        .map(|(value, _)| value.to_string())
-        .unwrap_or(without_credentials)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -505,6 +572,10 @@ mod tests {
 
     #[test]
     fn json_contract_is_stable_and_redacts_credentials() {
+        assert_eq!(
+            redact_endpoint("https://user:secret@example.test/path#token=secret"),
+            "https://example.test/path"
+        );
         let report = DoctorReport::from_checks(vec![Check::warning(
             "provider",
             "offline",

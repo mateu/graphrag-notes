@@ -42,7 +42,7 @@ use crate::cli::{
     JobsCommand, SourcesCommand,
 };
 use crate::dispatch::print_backup_summary;
-fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig {
+pub(crate) fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig {
     InferenceProviderConfig {
         embedding_provider: config.inference.embedding_provider.clone(),
         embedding_url: config.inference.embedding_url.clone(),
@@ -418,11 +418,38 @@ async fn run_archive_only_command(cli: &Cli) -> Result<bool> {
     Ok(false)
 }
 
+/// A rendered diagnostic outcome, including a healthy report. Returning it
+/// lets the runtime close embedded database workers before process termination.
+#[derive(Debug)]
+pub(crate) struct DoctorExit(pub i32);
+
+impl std::fmt::Display for DoctorExit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "doctor completed with status {}", self.0)
+    }
+}
+
+impl std::error::Error for DoctorExit {}
+
 /// Convert expected command failures into the documented automation contract.
 /// Typed errors take precedence; message fallbacks cover validation failures
 /// produced by Clap-adjacent handlers that intentionally use `anyhow::bail!`.
 pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
     for cause in error.chain() {
+        if let Some(status) = cause.downcast_ref::<DoctorExit>() {
+            return match status.0 {
+                doctor::EXIT_HEALTHY => output::ExitCode::Success,
+                doctor::EXIT_FAILED => output::ExitCode::Validation,
+                _ => output::ExitCode::Internal,
+            };
+        }
+        if let Some(error) = cause.downcast_ref::<crate::init::InitCheckError>() {
+            return if error.0 == doctor::EXIT_FAILED {
+                output::ExitCode::Validation
+            } else {
+                output::ExitCode::Internal
+            };
+        }
         if cause
             .downcast_ref::<commands::notes::NotesEditValidationError>()
             .is_some()
@@ -496,6 +523,9 @@ pub(crate) async fn run() -> Result<()> {
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+    if matches!(&cli.command, Commands::Init { .. }) {
+        return crate::init::run(&cli).await;
+    }
     if run_archive_only_command(&cli).await? {
         return Ok(());
     }
@@ -511,7 +541,7 @@ pub(crate) async fn run() -> Result<()> {
         Err(error) if doctor_format.is_some() => {
             let report = doctor::DoctorReport::configuration_error(error);
             print_doctor_report(&report, doctor_format.expect("doctor format is present"))?;
-            std::process::exit(report.exit_code);
+            return Err(DoctorExit(report.exit_code).into());
         }
         Err(error) => return Err(error).context("failed to resolve runtime configuration"),
     };
@@ -519,7 +549,7 @@ pub(crate) async fn run() -> Result<()> {
     if let Commands::Doctor { format } = &cli.command {
         let report = doctor::run(&config, &inference_provider_config(&config), cli.memory).await;
         print_doctor_report(&report, *format)?;
-        std::process::exit(report.exit_code);
+        return Err(DoctorExit(report.exit_code).into());
     }
 
     if let Commands::Config { command } = &cli.command {
@@ -1314,6 +1344,13 @@ mod tests {
 
     #[test]
     fn documented_exit_codes_classify_typed_and_validation_errors() {
+        for (status, expected) in [
+            (doctor::EXIT_HEALTHY, output::ExitCode::Success),
+            (doctor::EXIT_WARNING, output::ExitCode::Internal),
+            (doctor::EXIT_FAILED, output::ExitCode::Validation),
+        ] {
+            assert_eq!(exit_code_for(&DoctorExit(status).into()), expected);
+        }
         let not_found = anyhow::Error::new(graphrag_db::DbError::NotFound(
             "note".into(),
             "note:missing".into(),

@@ -2,6 +2,59 @@
 
 A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, and graph/provenance links.
 
+## Get your first result
+
+The first binary validation candidate is **v0.1.0-rc.1 for macOS Apple Silicon**
+(macOS 15 or newer). Use the versioned prerelease assets with the commands
+below. For Intel Macs, Linux, or other systems, use the
+[source-build fallback](docs/getting-started.md#build-from-source).
+
+Download the installer pinned to the candidate tag, inspect it, and select the
+prerelease explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.1/scripts/install.sh \
+  -o /tmp/graphrag-install.sh
+bash /tmp/graphrag-install.sh --help
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.1
+export PATH="$HOME/.local/bin:$PATH"
+graphrag --version
+
+# Preview first, then create a new configuration explicitly.
+graphrag init --backend ollama
+graphrag init --backend ollama --write
+```
+
+Use [Ollama](https://ollama.com/download) for the local inference backend.
+Start Ollama in another terminal with `ollama serve` if it is not already
+running, then download the two models and try the bundled fictional notes:
+
+```bash
+ollama pull bge-m3:latest
+ollama pull phi4-mini:latest
+graphrag init --check
+graphrag doctor
+graphrag import "$HOME/.local/share/graphrag-notes/samples/first-notes.md"
+graphrag search "What is the Atlas project launch plan?" --limit 3
+```
+
+Expect a result containing the Atlas launch plan. Before the first import,
+`doctor` can warn that the database does not exist yet; the import creates it.
+`init` previews configuration without opening the database or contacting
+providers. `--check` adds provider checks; `--write` creates a new configuration
+and refuses to overwrite one. For an existing installation, run `graphrag init`
+without a backend preset to inspect its effective settings.
+
+[Getting started](docs/getting-started.md) covers binary installation, default
+paths, TEI/TGI, and recovery from missing prerequisites. Existing users can go
+directly to [the operating runbooks](docs/operations.md) for database migration,
+backups, reindexing, and diagnostics. [Setup validation](docs/setup-validation.md)
+records the walkthrough procedure and validation status. The installer's default
+latest-release lookup selects stable releases; keep `--version 0.1.0-rc.1` for
+this candidate. Linux and Intel macOS release validation follows in
+[#66](https://github.com/mateu/graphrag-notes/issues/66); broader stable binary
+releases follow later.
+
 ## Architecture
 
 ```text
@@ -129,227 +182,7 @@ Defaults:
 - Embedding model: `bge-m3:latest` (matches the repo's 1024-dim schema)
 - Extraction model: `phi4-mini:latest`
 
-## Quick Start
-
-### Prerequisites
-
-- Rust 1.97.1+ (install via [rustup](https://rustup.rs/)); this is the
-  workspace MSRV and is checked in CI
-- Running local inference backends:
-  - either **TEI + TGI**
-  - or **Ollama**
-- [sccache](https://github.com/mozilla/sccache) optional but recommended for fast builds
-
-### SurrealDB 2.x → 3.x migration (embedded RocksDB)
-
-If you already have a persistent v2 database, do **not** point the v3 app at it directly. The safe path is:
-
-1. stop anything using the live DB
-2. make a full copy of the v2 RocksDB directory
-3. export that copy with a v2 Surreal binary using `--v3`
-4. import into a fresh v3 RocksDB directory
-5. validate with `stats`, `list`, and `search`
-
-Example dry-run commands:
-
-```bash
-# 1) copy the old DB
-cp -a ~/.graphrag/data ~/.graphrag-migration-backups/data-v2-copy-$(date +%Y%m%d-%H%M%S)
-
-# 2) start SurrealDB 2.6.5 against the copied DB
-/tmp/surreal2-binary/surreal2.6.5 start \
-  rocksdb:~/.graphrag-migration-backups/data-v2-copy-YYYYMMDD-HHMMSS \
-  --bind 127.0.0.1:8102 --unauthenticated
-
-# 3) export in v3-compatible format
-/tmp/surreal2-binary/surreal2.6.5 export \
-  --endpoint http://127.0.0.1:8102 \
-  --namespace graphrag \
-  --database notes \
-  /tmp/graphrag-v3-export.surql \
-  --v3
-
-# 4) start a fresh v3 target
-~/.local/bin/surreal3.0.5 start \
-  rocksdb:/tmp/graphrag-v3-restore \
-  --bind 127.0.0.1:8103 --unauthenticated
-
-# 5) import into v3
-~/.local/bin/surreal3.0.5 import \
-  --endpoint http://127.0.0.1:8103 \
-  --namespace graphrag \
-  --database notes \
-  /tmp/graphrag-v3-export.surql
-
-# 6) validate with the app (run one command at a time; RocksDB locks)
-cargo run -q -p graphrag-cli -- --db-path /tmp/graphrag-v3-restore stats
-cargo run -q -p graphrag-cli -- --db-path /tmp/graphrag-v3-restore list --limit 3
-TEI_PROVIDER=ollama TGI_PROVIDER=ollama TEI_URL=http://127.0.0.1:11434 TGI_URL=http://127.0.0.1:11434 \
-  cargo run -q -p graphrag-cli -- --db-path /tmp/graphrag-v3-restore search "migration" --limit 3
-```
-
-Notes:
-- Use `rocksdb:/path/to/db`, not a plain filesystem path, with the Surreal CLI.
-- Avoid concurrent access to the same DB path; overlapping processes will fail on the RocksDB `LOCK` file.
-- Validate on a copied DB before doing a real cutover.
-
-### Portable logical backups
-
-`graphrag backup` is the application-level recovery format. It writes a
-versioned `manifest.json` and streaming `records.jsonl` payload, then validates
-the completed archive before publishing it. It preserves logical record IDs and
-the graph/provenance references that use them; it does not copy a live RocksDB
-directory.
-
-```bash
-# The destination must not already exist.
-graphrag --db-path ~/.graphrag/data backup create /safe/backups/notes-2026-08-14
-graphrag backup verify /safe/backups/notes-2026-08-14 --format json
-
-# Verify first, then restore only into a fresh, nonexistent target.
-graphrag backup restore /safe/backups/notes-2026-08-14 \
-  --db-path /tmp/graphrag-restore --dry-run
-graphrag backup restore /safe/backups/notes-2026-08-14 \
-  --db-path /tmp/graphrag-restore
-
-# JSONL transport has the same checksum-manifest contract. Import always
-# names a fresh destination and can be validated without creating it.
-graphrag export /safe/notes.jsonl --format jsonl --output json
-graphrag import-data /safe/notes.jsonl --db-path /tmp/graphrag-import --dry-run --format json
-graphrag import-data /safe/notes.jsonl --db-path /tmp/graphrag-import
-```
-
-Restore stages a sibling database, applies the current application migrations,
-loads and validates the logical records, and only then renames the staged DB
-into the requested target. It never overwrites an existing directory. A locked
-or otherwise inaccessible directory is reported by the underlying RocksDB
-open, leaving the requested target untouched.
-
-Embeddings and inference caches are excluded by default. `--include-embeddings`
-is accepted only when the archive can record the active provider, model, and
-dimension. Configuration files, runtime caches, common secret fields, and local
-absolute file URIs are not exported. Restoring a default archive preserves
-searchable source text and graph structure, but vectors must be rebuilt with a
-subsequent reindex operation before vector search is used.
-
-This is distinct from the SurrealDB 2.x → 3.x engine migration above: use the
-engine-specific Surreal export/import procedure to cross that engine boundary.
-It is also distinct from reindexing/model migration, which rebuilds derived
-vectors for an existing logical corpus rather than recovering its source and
-graph data.
-
-### Reindexing after an embedding-model change
-
-Use `reindex` when intentionally changing embedding provider or model. It
-probes the active provider first and rejects dimensions other than the current
-1024-dimension index. `--dry-run` reports the immutable item count, target
-identity, and provider-neutral input-character cost estimate without creating
-a job or writing vectors.
-
-```bash
-graphrag reindex --all --dry-run --format json
-graphrag reindex --all
-# Resume the exact persisted job after an interruption or provider failure.
-graphrag reindex --resume processing_job:... --format json
-```
-
-Reindex uses the normal durable inference cache in bounded batches, but writes
-new vectors into inactive staging fields. Search continues with the prior model
-until every selected item validates; one final transaction publishes all
-vectors and advances embedding metadata. Failed or cancelled jobs therefore
-leave the prior indexed generation intact.
-
-### Application schema migrations
-
-On startup, GraphRAG Notes applies its own numbered schema migrations and records
-them in the `schema_migration` table. This history is for application schema
-changes only: it does not upgrade a SurrealDB 2.x data directory to 3.x. Use the
-preceding export/import runbook for that engine upgrade.
-
-To inspect the version that the running binary supports, use `graphrag
-schema-version`. A database with a schema version newer than the binary is
-rejected with a clear error; do not manually edit migration records. New
-application migrations must be additive, immutable, and committed as a new
-numbered migration rather than editing one that may already have run.
-
-### Doctor and embedding compatibility
-
-Run the read-only local-stack diagnostic before changing providers or
-troubleshooting a database:
-
-```bash
-graphrag doctor
-graphrag doctor --format json
-```
-
-`doctor` never applies migrations, repairs data, deletes records, or rebuilds
-indexes. Its JSON contract has a stable `schema_version`, overall `status`,
-`exit_code`, and a list of named checks. Exit code `0` is healthy, `1` is
-warning-only, and `2` is a failed diagnostic.
-
-Every vector write and vector query records or verifies the active embedding
-provider, model, and dimension against the database metadata. A different
-dimension or a different model with the same dimension is rejected before
-vector work begins. Reindexing is deliberately not automatic; the diagnostic
-prints the future command `graphrag reindex --all` rather than silently
-changing an existing index.
-
-| Doctor diagnostic | Corrective action |
-| --- | --- |
-| `database_open`: RocksDB lock | Stop the other GraphRAG process using the reported database path, then retry. |
-| `application_schema` or `schema_objects` failed | Use a binary that supports the database or run one normal GraphRAG command to apply pending migrations; never edit migration rows manually. |
-| `embedding_metadata` missing | Start a healthy embeddings provider, then run an ingestion or vector-search command to initialize the empty corpus metadata. |
-| `embedding compatibility check failed` | Keep the prior embedding provider/model, or rebuild explicitly with `graphrag reindex --all` when that command is available. |
-| `embedding_provider` or `extraction_provider` unavailable | Start the configured local provider. Database-only commands such as `list`, `stats`, and `schema-version` remain available while it is down. |
-
-### 1. Start inference backends
-
-#### Option A: TEI + TGI via Docker Compose
-
-```bash
-docker compose up -d
-```
-
-This starts:
-- TEI embeddings on `http://localhost:8081`
-- TGI extraction on `http://localhost:8082`
-
-#### Option B: Ollama
-
-Make sure Ollama is running, then set:
-
-```bash
-export TEI_PROVIDER=ollama
-export TGI_PROVIDER=ollama
-```
-
-Recommended local models:
-
-```bash
-export TEI_URL=http://localhost:11434
-export TGI_URL=http://localhost:11434
-export TEI_MODEL=bge-m3:latest
-export TGI_MODEL=phi4-mini:latest
-```
-
-You can verify the embedding model matches the schema with:
-
-```bash
-cargo run -q -p graphrag-cli -- embedding-dim
-```
-
-Expected output:
-
-```text
-Embedding dimension: 1024
-```
-
-### 2. Build and Run the CLI
-
-```bash
-cargo build --release
-cargo run --release -p graphrag-cli -- --help
-```
+## Configuration and daily use
 
 ### Runtime configuration
 
@@ -362,17 +195,24 @@ defaults.
 | Layer | How it is selected |
 | --- | --- |
 | Defaults | Built into `graphrag` |
-| TOML | `--config PATH`, otherwise `GRAPHRAG_CONFIG`, otherwise `~/.config/graphrag/config.toml` if it exists |
+| TOML | `--config PATH`, otherwise `GRAPHRAG_CONFIG`, otherwise the OS configuration path if it exists |
 | Environment | `GRAPHRAG_*`, plus the established `TEI_*`, `TGI_*`, and `OLLAMA_URL` variables |
 | CLI | Explicit flags such as `--db-path`, `search --limit`, or `augment --max-tokens` |
 
+The default configuration path is
+`~/Library/Application Support/graphrag/config.toml` on macOS, or
+`$XDG_CONFIG_HOME/graphrag/config.toml` on Linux (falling back to
+`~/.config/graphrag/config.toml` when XDG_CONFIG_HOME is unset). `graphrag init`
+prints the exact selected path. The database remains `~/.graphrag/data-v3` on
+both platforms unless overridden.
+
 The checked-in [`config.toml`](config.toml) is a complete template, but it is
-not auto-loaded from the current directory. Copy it to the XDG location or pass
-it explicitly:
+not auto-loaded from the current directory. Use `init` to create a new
+configuration at the OS location, or pass the template explicitly:
 
 ```bash
-mkdir -p ~/.config/graphrag
-cp config.toml ~/.config/graphrag/config.toml
+graphrag init --backend ollama
+graphrag init --backend ollama --write
 graphrag config validate
 graphrag config show
 graphrag --config ./config.toml search "configuration precedence"
@@ -460,7 +300,7 @@ either committed before its checkpoint advances or left pending for the next
 resume; source lifecycle generations remain searchable until their staged
 import is promoted.
 
-### 3. Add Some Notes
+### Add notes
 
 ```bash
 graphrag add "Machine learning models learn patterns from data"
@@ -495,7 +335,7 @@ which protects manual and legacy records even when they reference an imported
 source. Entity records are shared graph vocabulary, so unreferenced entities
 are retained rather than risking deletion of a user-authored entity.
 
-### 4. Search Your Notes
+### Search your notes
 
 ```bash
 graphrag search "how do neural networks work"
@@ -514,7 +354,7 @@ versioned evidence object for machine output. It reports final/fused rank,
 vector distance or BM25 score when available, accepted graph paths, provenance,
 and context token/span decisions; it does not change retrieval or packing.
 
-### 5. Run the Gardener
+### Review suggested connections
 
 ```bash
 # Preview candidates without writing proposals or accepted edges.
@@ -538,7 +378,7 @@ are never inferred from embedding similarity. Gardener auto-apply is disabled
 by default: enable it only with both `[gardener].auto_apply = true` and an
 appropriate `auto_apply_threshold` (or `GRAPHRAG_GARDENER_AUTO_APPLY=true`).
 
-### 6. Interactive Mode
+### Interactive mode
 
 ```bash
 graphrag interactive
@@ -548,6 +388,9 @@ graphrag interactive
 
 | Command | Description |
 |---------|-------------|
+| `init [--backend ollama\|tei-tgi]` | Preview setup; `--write` creates new config, `--check` checks providers |
+| `config show/validate` | Inspect or validate the resolved runtime configuration |
+| `doctor` | Diagnose configuration, database compatibility, and providers without changing data |
 | `add <content>` | Add a new note |
 | `import <file>` | Import notes from a markdown file (idempotent by normalized path and content hash) |
 | `sources list/show/delete/reimport` | Inspect and safely manage imported file sources |

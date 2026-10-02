@@ -329,6 +329,7 @@ pub(crate) async fn execute(
             // Handled before database init.
         }
         Commands::Config { .. } => unreachable!("configuration commands return before startup"),
+        Commands::Init { .. } => unreachable!("setup returns before database initialization"),
         Commands::ResetDb { .. } => {
             // Handled before database init.
         }
