@@ -15,11 +15,12 @@ explicitly by each real fixture.
 | --- | --- |
 | Both endpoint titles/excerpts, source heading/generation, confidence, reason, generator, state; JSON/JSONL remain read-only | `inbox_shows_both_notes_provenance_and_replayable_inspection_offline` passed, including exact revision-guarded inspection commands from another directory |
 | Skip, cancelled confirmation, EOF during reason entry, and quit preserve all proposal timestamps/reviewer/reason/edge fields | `skip_cancel_and_eof_leave_proposals_and_audit_unchanged` passed with complete before/after snapshots |
-| Accept/reject use existing reviewer/reason/manual audit, accepted→undo retains original audit and retires the edge; superseded cannot be reaccepted | `decisions_and_undo_keep_the_existing_audit_and_terminal_state` passed |
+| Accept/reject use existing reviewer/reason/manual audit; human history shows update/review times and the manual flag; accepted→undo retains original audit and retires the edge; superseded cannot be reaccepted | `decisions_and_undo_keep_the_existing_audit_and_terminal_state` passed |
 | A legacy missing endpoint remains visible as an unavailable card and cannot be accepted | `missing_endpoints_block_acceptance_without_mutating_the_proposal` passed |
-| Batch still requires confirmation and finite threshold; weaker Gardener and logical/manual proposals remain pending | `batch_threshold_confirmation_and_generator_boundaries_are_preserved` passed |
+| Batch still requires confirmation and finite threshold; proposals below the selected threshold and logical/manual proposals remain pending; human history distinguishes manual CLI batch acceptance from automatic policy acceptance | `batch_threshold_confirmation_and_generator_boundaries_are_preserved` passed |
 | Interactive JSON/JSONL, invalid IDs/limits, and missing focused proposal have clear failure outcomes and no prompts on machine stdout | `invalid_review_options_are_clear_and_machine_stdout_has_no_prompts` passed |
 | Actual default backup/restore redacts source URI while preserving imported source identity/type/generation in the inbox | `restored_imported_notes_keep_source_identity_when_local_uris_are_redacted` passed |
+| JSON/JSONL excerpts preserve Unicode and stay within 500 characters including the ellipsis at input lengths 499, 500, 501, and 1,500 | `machine_excerpts_keep_unicode_and_ellipsis_within_the_character_limit` failed against the original 501-character output, then passed after the fix |
 | Changing displayed note content, rescanning proposal metadata, or deleting an endpoint cancels an obsolete decision without a new review audit | Three `commands::connections::tests` regressions passed |
 
 Focused commands:
@@ -31,12 +32,14 @@ RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
   commands::connections::tests --locked --offline -- --test-threads=2
 ```
 
-On macOS ARM64, the full workspace/all-feature suite passed **509 tests**, with
+On macOS ARM64, the initial full workspace/all-feature suite passed **509 tests**, with
 **5 existing ignored** diagnostics/fixtures (the keyword seeder is explicitly
-run by its fixtures). This includes the pre-existing proposal acceptance,
+run by its fixtures). This run preceded the additional Unicode excerpt
+regression. It includes the pre-existing proposal acceptance,
 rejection, lifecycle locking, source refresh, idempotence, and undo recovery
-regressions. The new inbox adds seven CLI acceptance scenarios, one seed-helper
-discovery check, and three snapshot safety tests.
+regressions. Follow-up targeted validation passed all **nine CLI tests** (eight
+acceptance scenarios and one seed-helper discovery check) and **three snapshot
+safety tests**, including the human audit display and excerpt-limit fixes.
 Workspace/all-target/all-feature Clippy passed with `-D warnings`; formatting
 and `git diff --check` also passed.
 
