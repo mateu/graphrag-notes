@@ -249,12 +249,13 @@ pub fn print_editor_noop(prepared: &mut PreparedEdit, command: &NotesCommand) ->
     };
     let cancelled = outcome == EditorOutcome::Cancelled;
     let draft = prepared.draft.as_mut().expect("editor session has a draft");
+    let retained = cancelled || !draft.discard(Some(id));
     output::print(
         *format,
         "notes.edit",
         serde_json::json!({
             "status": if cancelled { "cancelled" } else { "unchanged" }, "id": id,
-            "detached": false, "draft_path": cancelled.then_some(&draft.path),
+            "detached": false, "draft_path": retained.then_some(&draft.path),
             "recovery_command": if cancelled { draft.recoverable_command() } else { None },
         }),
         |writer| {
@@ -265,9 +266,6 @@ pub fn print_editor_noop(prepared: &mut PreparedEdit, command: &NotesCommand) ->
             )
         },
     )?;
-    if !cancelled {
-        draft.discard(Some(id));
-    }
     Ok(true)
 }
 

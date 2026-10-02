@@ -116,10 +116,11 @@ struct CaptureOutput<'a> {
 
 pub fn print_noop(prepared: &mut PreparedCapture, format: OutputFormat) -> Result<()> {
     let cancelled = prepared.outcome == EditorOutcome::Cancelled;
+    let retained = cancelled || !prepared.draft.discard(None);
     let data = CaptureOutput {
         status: if cancelled { "cancelled" } else { "unchanged" },
         id: None,
-        draft_path: cancelled.then_some(prepared.draft.path.as_path()),
+        draft_path: retained.then_some(prepared.draft.path.as_path()),
         recovery_command: if cancelled {
             prepared.draft.recoverable_command()
         } else {
@@ -133,9 +134,6 @@ pub fn print_noop(prepared: &mut PreparedCapture, format: OutputFormat) -> Resul
             if cancelled { "cancelled" } else { "unchanged" }
         )
     })?;
-    if !cancelled {
-        prepared.draft.discard(None);
-    }
     Ok(())
 }
 

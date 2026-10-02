@@ -179,7 +179,7 @@ impl Fixture {
         settings.logging.level = "error".into();
         fs::write(&config, settings.redacted_toml().unwrap()).unwrap();
         let editor = temp.path().join("blocking editor café.sh");
-        fs::write(&editor, "#!/bin/sh\nmode=$1\npayload=$2\ndraft=$3\nprintf 'EDITOR_DIAGNOSTIC\\n'\ncase \"$mode\" in\n unchanged) exit 0 ;;\n cancel) printf '%s' \"$payload\" > \"$draft\"; exit 7 ;;\n binary) printf '\\377' > \"$draft\"; exit 0 ;;\n symlink) rm \"$draft\"; ln -s \"$payload\" \"$draft\" ;;\n directory) rm \"$draft\"; mkdir \"$draft\" ;;\n missing) rm \"$draft\" ;;\n replace) printf '%s' \"$payload\" > \"$draft.replacement\"; mv \"$draft.replacement\" \"$draft\" ;;\nesac\n").unwrap();
+        fs::write(&editor, "#!/bin/sh\nmode=$1\npayload=$2\ndraft=$3\nprintf 'EDITOR_DIAGNOSTIC\\n'\ncase \"$mode\" in\n unchanged) exit 0 ;;\n unchanged-cleanup-failure) chmod 500 \"${draft%/*}\"; exit 0 ;;\n cancel) printf '%s' \"$payload\" > \"$draft\"; exit 7 ;;\n binary) printf '\\377' > \"$draft\"; exit 0 ;;\n symlink) rm \"$draft\"; ln -s \"$payload\" \"$draft\" ;;\n directory) rm \"$draft\"; mkdir \"$draft\" ;;\n missing) rm \"$draft\" ;;\n replace) printf '%s' \"$payload\" > \"$draft.replacement\"; mv \"$draft.replacement\" \"$draft\" ;;\nesac\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -329,6 +329,80 @@ fn unchanged_capture_editor_is_offline_and_does_not_open_a_database() {
     assert!(!f.db.exists());
     assert_eq!(f.provider.count(), 0);
     assert!(f.draft_paths().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn unchanged_session_machine_output_reports_cleanup_success_and_retained_draft_warnings() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    struct RestorePermissions(PathBuf);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+        }
+    }
+    for format in ["json", "jsonl"] {
+        for editing in [false, true] {
+            for cleanup_failure in [false, true] {
+                let f = Fixture::new();
+                // Privileged root bypasses directory permissions and cannot
+                // exercise this POSIX permission-denied cleanup scenario.
+                if cleanup_failure && fs::metadata(f.temp.path()).unwrap().uid() == 0 {
+                    continue;
+                }
+                let _restore_permissions = RestorePermissions(f.drafts.clone());
+                let body = "Unchanged body retained exactly";
+                let id = editing.then(|| f.capture(body));
+                let before = id.as_deref().map(|id| f.show(id));
+                let count = f.provider.count();
+                let mut command = f.cmd();
+                if let Some(id) = &id {
+                    command.args(["notes", "edit", id, "--detach", "--title", "Ignored"]);
+                } else {
+                    command.args(["capture", body]);
+                }
+                command.args(["--format", format]);
+                f.editor(
+                    &mut command,
+                    if cleanup_failure {
+                        "unchanged-cleanup-failure"
+                    } else {
+                        "unchanged"
+                    },
+                    "",
+                );
+                let output = command.assert().success().get_output().clone();
+                let result = data(&output.stdout);
+                assert_eq!(result["status"], "unchanged");
+                assert!(result["recovery_command"].is_null());
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(!stderr.contains("Recover:"));
+                if cleanup_failure {
+                    let path = PathBuf::from(result["draft_path"].as_str().unwrap());
+                    assert_eq!(path.parent(), Some(f.drafts.as_path()));
+                    assert_eq!(fs::read_to_string(path).unwrap(), body);
+                    assert!(stderr.contains("cleanup failed"));
+                } else {
+                    assert!(result["draft_path"].is_null());
+                    assert!(f.draft_paths().is_empty());
+                    assert!(!stderr.contains("cleanup failed"));
+                }
+                if let Some(id) = &id {
+                    assert_eq!(f.show(id), before.unwrap());
+                    assert_eq!(f.notes()["notes"].as_array().unwrap().len(), 1);
+                    assert_eq!(result["id"], *id);
+                    assert_eq!(result["detached"], false);
+                } else {
+                    assert!(result["id"].is_null());
+                    assert!(!f.db.exists());
+                }
+                assert_eq!(f.provider.count(), count);
+                if format == "jsonl" {
+                    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+                }
+            }
+        }
+    }
 }
 
 #[test]

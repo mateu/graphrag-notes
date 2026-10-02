@@ -131,6 +131,10 @@ path, and capture JSON includes that path with no recovery command. Inspect
 the saved note and remove the leftover draft; retrying that capture could
 create another note. A draft cannot be retained if an editor itself deletes
 it or input cannot be read in the first place.
+Unchanged editor sessions also attempt cleanup before printing their result.
+If cleanup fails, JSON/JSONL keeps `status: "unchanged"`, includes the retained
+`draft_path`, and leaves `recovery_command` null. No note was created or
+changed; inspect/remove the leftover working draft when convenient.
 
 ## Reuse clean prompt context
 

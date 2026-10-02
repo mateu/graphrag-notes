@@ -4,11 +4,14 @@ Validation targets macOS and Linux. All fixtures use a disposable HOME,
 configuration, database, draft directory, and localhost provider endpoint.
 They never read the user's corpus or require live models.
 
-On 2026-10-02, the Apple Silicon macOS 27.0.1 run passed 18 focused CLI
-subprocess tests and the full workspace suite (527 passed, 5 ignored live or
-fixture-only cases). A separate macOS walkthrough passed 14 recorded command
-steps, including atomic editor saves, retry from another directory, source
-detach, and raw context reuse. Inference used deterministic localhost doubles.
+On 2026-10-02, the latest focused Apple Silicon macOS 27.0.1 run passed 19 CLI
+subprocess tests, including unchanged-session cleanup success and warning
+output for JSON and JSONL. The preceding review-fix run passed the full
+workspace suite (527 passed, 5 ignored live or fixture-only cases); that
+standalone full-suite count predates the cleanup-output follow-up. A separate
+macOS walkthrough passed 14 recorded command steps, including atomic editor
+saves, retry from another directory, source detach, and raw context reuse.
+Inference used deterministic localhost doubles.
 
 ## Automated checks
 
@@ -18,9 +21,9 @@ stdin, JSON/JSONL IDs, editor rename saves, literal argv/Unicode paths,
 unchanged and cancelled sessions, private persistent recovery drafts,
 option-like metadata, retry from another working directory, invalid UTF-8,
 empty input, editor launch failure, offline/provider failures, source-owned
-edit guidance, explicit detach, previous-note safety, post-commit cleanup
-warnings, invalid UTF-8 recovery pathname rejection, symlink/non-file recovery
-suppression, memory-mode rejection, and clean raw augmentation with stderr
+edit guidance, explicit detach, previous-note safety, post-commit and unchanged
+session cleanup warnings, invalid UTF-8 recovery pathname rejection,
+symlink/non-file recovery suppression, memory-mode rejection, and clean raw augmentation with stderr
 explanations and round-trip JSON citation escaping.
 
 The CLI unit regression passes an opening snapshot through the complete
