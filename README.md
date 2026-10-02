@@ -351,6 +351,8 @@ are retained rather than risking deletion of a user-authored entity.
 ```bash
 graphrag search "how do neural networks work"
 graphrag search "machine learning" --context
+# Explicit full-text retrieval works with providers stopped or without vectors.
+graphrag search "Atlas launch" --mode keyword --scope all
 # Compare the hybrid baseline with bounded accepted-edge retrieval.
 graphrag search "Atlas" --graph=off
 graphrag search "Atlas" --graph=on
@@ -359,6 +361,13 @@ graphrag augment "Atlas" --graph=auto
 graphrag --explain search "Atlas" --format json
 graphrag augment "Atlas" --explain --format jsonl
 ```
+
+`search --mode hybrid|keyword` defaults to `hybrid`. Keyword mode uses only
+full-text indexes across the selected scope, keeps source/time filters, and
+reports BM25 evidence without provider calls or embedding compatibility checks.
+It disables graph expansion; `--graph on` requires hybrid mode. Hybrid failures
+suggest a copyable keyword command and keep their failure status. See
+[offline keyword search](docs/keyword-search.md) for ranking and output contracts.
 
 `--explain` adds compact evidence lines to human output and emits the same
 versioned evidence object for machine output. It reports final/fused rank,

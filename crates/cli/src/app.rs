@@ -30,6 +30,7 @@ pub(crate) struct AppContext {
     pub(crate) repo: Repository,
     pub(crate) config: RuntimeConfig,
     pub(crate) config_path: Option<std::path::PathBuf>,
+    pub(crate) keyword_recovery: Option<String>,
     pub(crate) tei: SharedEmbedder,
     pub(crate) tgi: SharedEntityExtractor,
     pub(crate) librarian_config: LibrarianRuntimeConfig,
@@ -40,7 +41,7 @@ use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
 use crate::cli::{
     notes_edit_requires_inference, BackupCommand, Cli, Commands, ConfigCommand, DoctorFormat,
-    JobsCommand, SourcesCommand,
+    GraphModeArg, JobsCommand, SearchModeArg, SourcesCommand,
 };
 use crate::dispatch::print_backup_summary;
 pub(crate) fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig {
@@ -254,7 +255,15 @@ fn provider_requirements(
         ),
         _ => false,
     };
-    let embedder = augment_needs_embeddings
+    let hybrid_search = matches!(
+        command,
+        Commands::Search {
+            mode: SearchModeArg::Hybrid,
+            ..
+        }
+    );
+    let embedder = hybrid_search
+        || augment_needs_embeddings
         || notes_edit_reprocesses
         || matches!(
             command,
@@ -265,7 +274,6 @@ fn provider_requirements(
                 }
                 | Commands::ImportChats { .. }
                 | Commands::MigrateChats { .. }
-                | Commands::Search { .. }
                 | Commands::EvalAugment { .. }
                 | Commands::Reindex { .. }
                 | Commands::Interactive
@@ -601,6 +609,17 @@ pub(crate) async fn run() -> Result<()> {
         }
     }
 
+    if matches!(
+        &cli.command,
+        Commands::Search {
+            mode: SearchModeArg::Keyword,
+            graph: GraphModeArg::On,
+            ..
+        }
+    ) {
+        anyhow::bail!("keyword mode requires full-text-only retrieval; use --graph off (or the default auto), or select --mode hybrid for graph expansion");
+    }
+
     // Verification and restore intentionally run before normal database
     // startup. Verification must not open a database at all, and restore must
     // validate an archive before creating its staged fresh target.
@@ -767,6 +786,7 @@ pub(crate) async fn run() -> Result<()> {
 
     // Check inference services only when needed.
     let requirements = provider_requirements(&cli.command, cli.explain, &config, skip_extraction);
+    let keyword_recovery = crate::search_recovery::keyword_command(&cli, &config);
 
     if requirements.embedder {
         let tei_ok = tei.health().await.unwrap_or(false);
@@ -774,6 +794,9 @@ pub(crate) async fn run() -> Result<()> {
             eprintln!("Error: embeddings service is not reachable.");
             eprintln!("  TEI (embeddings): {}", tei.capabilities().endpoint);
             eprintln!("Start it with: docker compose up -d");
+            if let Some(command) = &keyword_recovery {
+                eprintln!("Use explicit keyword retrieval without providers:\n  {command}");
+            }
             anyhow::bail!("Embeddings service unavailable");
         }
     }
@@ -808,6 +831,7 @@ pub(crate) async fn run() -> Result<()> {
             repo,
             config,
             config_path: commands::navigation::selected_config_path(cli.config.as_deref()),
+            keyword_recovery,
             tei,
             tgi,
             librarian_config,
@@ -1256,6 +1280,7 @@ mod tests {
 
         let search = Commands::Search {
             query: "query".into(),
+            mode: SearchModeArg::Hybrid,
             limit: None,
             scope: SearchScopeArg::Notes,
             since_days: None,
@@ -1269,6 +1294,25 @@ mod tests {
             ProviderRequirements {
                 embedder: true,
                 extractor: false,
+            }
+        );
+
+        let offline_search = Commands::Search {
+            query: "query".into(),
+            mode: SearchModeArg::Keyword,
+            limit: None,
+            scope: SearchScopeArg::All,
+            since_days: None,
+            source_uri: None,
+            context: true,
+            graph: GraphModeArg::Auto,
+            format: output::OutputFormat::Json,
+        };
+        assert_eq!(
+            provider_requirements(&offline_search, true, &config, false),
+            ProviderRequirements {
+                embedder: false,
+                extractor: false
             }
         );
 

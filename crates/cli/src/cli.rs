@@ -206,6 +206,10 @@ pub(crate) enum Commands {
         /// Search query
         query: String,
 
+        /// Retrieval mode: hybrid uses vectors and full text; keyword is offline full text only.
+        #[arg(long, value_enum, default_value_t = SearchModeArg::Hybrid)]
+        mode: SearchModeArg,
+
         /// Maximum results
         #[arg(short, long)]
         limit: Option<usize>,
@@ -727,6 +731,30 @@ pub(crate) enum ImportModeArg {
     Qa,
     Message,
     Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum SearchModeArg {
+    Hybrid,
+    Keyword,
+}
+
+impl SearchModeArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::Keyword => "keyword",
+        }
+    }
+
+    /// Base retrieval channels. Accepted-edge graph contributions retain
+    /// their separate evidence and summary in hybrid mode.
+    pub(crate) fn channels(self) -> &'static [&'static str] {
+        match self {
+            Self::Hybrid => &["vector", "full_text"],
+            Self::Keyword => &["full_text"],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]

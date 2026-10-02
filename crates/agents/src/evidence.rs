@@ -182,8 +182,9 @@ pub fn fusion_scores(
                 ScoreKind::ReciprocalRankFusion => "reciprocal-rank fusion score",
                 ScoreKind::WeightedFusion => "weighted vector-distance and BM25 fusion score",
                 ScoreKind::GraphTraversal => "accepted-edge graph traversal score",
-                ScoreKind::VectorDistance | ScoreKind::Bm25 => {
-                    unreachable!("only fusion score kinds are valid for fused evidence")
+                ScoreKind::Bm25 => "full-text BM25 score; higher is better",
+                ScoreKind::VectorDistance => {
+                    unreachable!("vector distance is channel evidence, not a final rank score")
                 }
             },
             rank: None,
