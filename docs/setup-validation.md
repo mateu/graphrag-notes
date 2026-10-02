@@ -1,6 +1,10 @@
 # First-run validation record
 
-This record belongs to [issue #57](https://github.com/mateu/graphrag-notes/issues/57).
+This record covers the initial macOS Apple Silicon acceptance for
+[issue #57](https://github.com/mateu/graphrag-notes/issues/57). Its platform scope
+was narrowed on October 2, 2026 at the user's request. Linux and Intel macOS
+native builds, installation from published assets, and live walkthroughs are
+tracked in [follow-up #66](https://github.com/mateu/graphrag-notes/issues/66).
 The sample and commands are documented in [getting started](getting-started.md).
 Use isolated temporary configuration and database paths for walkthroughs; do
 not substitute an existing personal notes database.
@@ -60,11 +64,11 @@ Validation date: October 2, 2026.
 | Documentation and script-help checks | Passed | Relative Markdown links resolve; source/installer script help and debug CLI `init`, `doctor`, `import`, and `search` help match the documented commands; `git diff --check` passes. |
 | Offline installer/source setup | Passed | Deterministic platform/download fixtures validate macOS ARM/Intel and Linux x86_64 selection, checksum verification/refusal, explicit overwrite, sample preservation, unsupported/missing releases, archive safety, and optional sccache/missing prerequisites. No network download or native compilation occurs in these tests. |
 | Native Apple Silicon release build | Passed | `./setup.sh` built `0.1.0-rc.1` with Rust 1.97.1, `OPENSSL_STATIC=1`, and `MACOSX_DEPLOYMENT_TARGET=15.0`. The ARM64 executable links only Apple/system libraries and declares macOS 15.0 as its minimum. The candidate tag is `b25df8d`; its application sources match the live-tested `d22386b` build. |
-| Full release workflow matrix | Deferred | Stable tags build macOS ARM/Intel and Linux x86_64; candidate tags require explicit dispatch after the workflow reaches the default branch. This candidate was built and packaged locally. Intel and Linux native builds have not been validated. |
+| Full release workflow matrix | Deferred to [#66](https://github.com/mateu/graphrag-notes/issues/66) | Stable tags build macOS ARM/Intel and Linux x86_64; candidate tags require explicit dispatch after the workflow reaches the default branch. This candidate was built and packaged locally. Intel and Linux native builds have not been validated. |
 | macOS source prerequisite recovery | Passed | Initial setup reported missing CMake/pkg-config. Installed only CMake 4.4.3 and pkgconf 3.0.7 with Homebrew updates/upgrades disabled, then built successfully. Existing LLVM/OpenSSL installations and Ollama models were retained. |
 | macOS source release and live Ollama walkthrough | Passed | macOS 27.0.1 ARM64, Ollama 0.35.0: all 19 isolated steps passed with downloaded `bge-m3:latest` (1024 dimensions) and `phi4-mini:latest`. Imported four sample chunks with zero failures; the launch plan ranked first among four results; reimport was unchanged; existing-config inspection/refusal, unavailable/missing-model diagnostics, and healthy recovery preserved config bytes and database file sizes/mtimes. |
 | Live entity extraction | Passed | `extract-entities --note-id` exercised local phi4-mini generation with both source-built and downloaded binaries. Entity inspection and final doctor completed successfully; the source-built run linked 12 entities. Model-dependent entity counts are not a fixed acceptance assertion. |
-| Linux native build and live Ollama import/search | Deferred | Deferred by request while completing macOS first. Linux offline CI is separate evidence and does not establish a live-model walkthrough or published Linux binary. |
+| Linux native build and live Ollama import/search | Deferred to [#66](https://github.com/mateu/graphrag-notes/issues/66) | Deferred by request while completing macOS first; #57 and epic #55 now explicitly use macOS Apple Silicon for U1's initial acceptance. Linux offline CI is separate evidence and does not establish a live-model walkthrough or published Linux binary. |
 | Published Apple Silicon asset installation | Passed | Published [v0.1.0-rc.1](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.1) as a prerelease, excluded from latest-stable lookup. Downloaded the tag-pinned installer and installed with explicit `--version 0.1.0-rc.1` into a fresh temporary HOME using only `/usr/bin:/bin:/usr/sbin:/sbin` in PATH. The installer verified the archive checksum; installed binary and sample hashes matched the published `BUILDINFO.json`. Existing-binary refusal and explicit reinstallation preserving edited sample notes passed. |
 | Downloaded binary live walkthrough | Passed | Repeated all 19 steps against the installed executable and installed sample: four notes, four results, launch plan at rank 1, unchanged reimport, config/database safety, diagnostics and recovery. Explicit local phi4-mini extraction and final healthy doctor also passed. |
 

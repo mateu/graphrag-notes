@@ -1,8 +1,10 @@
 # Getting started
 
 This first-run path targets **v0.1.0-rc.1, the macOS Apple Silicon validation
-candidate**, using Ollama and its versioned prerelease assets. Linux validation
-follows later. You need enough free memory and disk space for the two
+candidate**, using Ollama and its versioned prerelease assets. Linux and Intel
+macOS release validation is tracked in
+[follow-up #66](https://github.com/mateu/graphrag-notes/issues/66).
+You need enough free memory and disk space for the two
 models, and internet access for downloads. The sample contains no personal notes.
 
 ## 1. Install the CLI
@@ -36,8 +38,8 @@ published. Find published versions in
 The first candidate is scoped to an Apple Silicon archive. Intel Macs and
 Linux use the source-build fallback below. The broader stable release workflow
 is configured to build macOS Apple Silicon/Intel (macOS 15+) and Linux x86_64
-(glibc 2.35+, Ubuntu 22.04 build baseline); those binary builds and Linux
-walkthroughs remain later validation work.
+(glibc 2.35+, Ubuntu 22.04 build baseline); Intel/Linux native builds,
+published-asset installation, and live walkthroughs remain tracked in #66.
 
 For a manual candidate install, download
 `graphrag-notes-v0.1.0-rc.1-aarch64-apple-darwin.tar.gz` and `SHA256SUMS`. The

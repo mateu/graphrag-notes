@@ -51,7 +51,9 @@ directly to [the operating runbooks](docs/operations.md) for database migration,
 backups, reindexing, and diagnostics. [Setup validation](docs/setup-validation.md)
 records the walkthrough procedure and validation status. The installer's default
 latest-release lookup selects stable releases; keep `--version 0.1.0-rc.1` for
-this candidate. Linux validation and broader stable binary releases follow later.
+this candidate. Linux and Intel macOS release validation follows in
+[#66](https://github.com/mateu/graphrag-notes/issues/66); broader stable binary
+releases follow later.
 
 ## Architecture
 

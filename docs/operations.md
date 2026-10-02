@@ -64,9 +64,15 @@ the completed archive before publishing it. It preserves logical record IDs and
 the graph/provenance references that use them; it does not copy a live RocksDB
 directory.
 
+Backup creation uses the resolved configured database path, which defaults to
+`~/.graphrag/data-v3`. Inspect that path with `graphrag init` or
+`graphrag config show` before creating a backup. If you select a configuration
+with `--config PATH`, use the same flag for inspection and backup. Use
+`--db-path PATH` only when deliberately backing up a different database.
+
 ```bash
 # The destination must not already exist.
-graphrag --db-path ~/.graphrag/data backup create /safe/backups/notes-2026-08-14
+graphrag backup create /safe/backups/notes-2026-08-14
 graphrag backup verify /safe/backups/notes-2026-08-14 --format json
 
 # Verify first, then restore only into a fresh, nonexistent target.
