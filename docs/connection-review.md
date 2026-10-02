@@ -80,8 +80,9 @@ For automation, JSON returns a versioned `garden.review` envelope whose
 `data.proposals` array contains cards. Each card has stable proposal `id`,
 status/confidence/reason/generator/audit fields, `from` and `to` endpoints,
 `accept_allowed`, `accept_blocked_reason`, and replay commands. Endpoints expose
-`available`, title, a maximum 500-character excerpt, provenance, revision, and
-warnings. JSONL uses one envelope per card with the card directly in `data`;
+`available`, title, a maximum 500-character excerpt (including any truncation
+ellipsis), provenance, revision, and warnings. JSONL uses one envelope per card
+with the card directly in `data`;
 an empty inbox produces zero lines. Machine output remains read-only and rejects
 `--interactive` with exit 2. Missing focused proposals exit 3; invalid IDs,
 limits, or incompatible options exit 2. Interactive action refusals keep the

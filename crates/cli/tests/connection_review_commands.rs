@@ -91,6 +91,13 @@ fn connection_review_fixture_process() {
                 db.query("DELETE $id").bind(("id", id)).await.unwrap().check().unwrap();
                 json!({})
             }
+            "replace_manual_content" => {
+                let id = request["note_id"].as_str().unwrap();
+                let mut note = repo.get_note(id).await.unwrap().unwrap();
+                note.content = request["content"].as_str().unwrap().into();
+                repo.update_note(id, note).await.unwrap();
+                json!({})
+            }
             _ => panic!("unknown fixture operation"),
         }
     });
@@ -249,6 +256,47 @@ fn inbox_shows_both_notes_provenance_and_replayable_inspection_offline() {
         assert!(line["data"]["to"]["excerpt"].is_string());
     }
     assert_eq!(before, fixture.snapshot());
+    fixture.no_inference();
+}
+
+#[test]
+fn machine_excerpts_keep_unicode_and_ellipsis_within_the_character_limit() {
+    let fixture = Fixture::new();
+    let id = fixture.seed["pending"].as_str().unwrap();
+    let note_id = fixture.seed["manual_note"].as_str().unwrap();
+    for length in [499, 500, 501, 1_500] {
+        let content = "🦀".repeat(length);
+        fixture_operation(
+            fixture.directory.path(),
+            json!({"operation": "replace_manual_content", "note_id": note_id, "content": content}),
+        );
+        let before = fixture.snapshot();
+        let expected = if length > 500 {
+            format!("{}…", "🦀".repeat(499))
+        } else {
+            content.clone()
+        };
+        let card = fixture.card(id);
+        let jsonl = fixture
+            .command()
+            .args(["garden", "review", "--id", id, "--format", "jsonl"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let jsonl: Value = serde_json::from_slice(&jsonl).unwrap();
+        for card in [&card, &jsonl["data"]] {
+            let endpoint = [&card["from"], &card["to"]]
+                .into_iter()
+                .find(|endpoint| endpoint["id"] == note_id)
+                .unwrap();
+            let excerpt = endpoint["excerpt"].as_str().unwrap();
+            assert_eq!(excerpt.chars().count(), length.min(500));
+            assert_eq!(excerpt, expected, "input length {length}");
+        }
+        assert_eq!(before, fixture.snapshot());
+    }
     fixture.no_inference();
 }
 

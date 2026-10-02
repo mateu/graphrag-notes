@@ -84,12 +84,12 @@ fn base_command(database: &Path, config: Option<&Path>) -> Result<String> {
 async fn endpoint(repo: &Repository, id: String, base: &str) -> Result<ReviewEndpoint> {
     match repo.inspect_record(&id, 0).await {
         Ok(record) => {
-            let excerpt = record.content.chars().take(500).collect::<String>();
-            let excerpt = if record.content.chars().count() > 500 {
-                format!("{excerpt}…")
-            } else {
-                excerpt
-            };
+            let mut characters = record.content.chars();
+            let mut excerpt = characters.by_ref().take(500).collect::<String>();
+            if characters.next().is_some() {
+                excerpt.pop();
+                excerpt.push('…');
+            }
             Ok(ReviewEndpoint {
                 inspect_command: Some(format!(
                     "{base} inspect {} --revision {}",
