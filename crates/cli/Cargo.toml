@@ -24,9 +24,10 @@ tracing-subscriber.workspace = true
 dotenvy = "0.15"
 sha2.workspace = true
 chrono.workspace = true
+tempfile.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 chrono.workspace = true

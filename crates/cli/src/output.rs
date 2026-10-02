@@ -45,15 +45,25 @@ pub fn print<T: Serialize>(
     data: T,
     human: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> Result<()> {
+    print_envelope(format, &OutputEnvelope::success(command, data), human)
+}
+
+/// Render a report whose diagnostics may signal warning/failure while still
+/// returning useful structured data (for example first-run provider checks).
+pub(crate) fn print_envelope<T: Serialize>(
+    format: OutputFormat,
+    envelope: &OutputEnvelope<T>,
+    human: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+) -> Result<()> {
     let mut stdout = io::stdout().lock();
     match format {
         OutputFormat::Human => human(&mut stdout)?,
         OutputFormat::Json => {
-            serde_json::to_writer_pretty(&mut stdout, &OutputEnvelope::success(command, data))?;
+            serde_json::to_writer_pretty(&mut stdout, envelope)?;
             writeln!(stdout)?;
         }
         OutputFormat::Jsonl => {
-            serde_json::to_writer(&mut stdout, &OutputEnvelope::success(command, data))?;
+            serde_json::to_writer(&mut stdout, envelope)?;
             writeln!(stdout)?;
         }
     }

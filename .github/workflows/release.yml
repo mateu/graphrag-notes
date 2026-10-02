@@ -1,0 +1,187 @@
+name: Versioned CLI releases
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag matching workspace.package.version (for example v0.1.0)
+        required: true
+        type: string
+      publish:
+        description: Publish a GitHub release after all platform builds pass
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUSTC_WRAPPER: ''
+  CARGO_BUILD_JOBS: '2'
+  CARGO_TERM_COLOR: always
+  # Avoid requiring Homebrew/OpenSSL shared libraries on the installed machine.
+  OPENSSL_STATIC: '1'
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require an existing version tag matching every workspace package
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', tag):
+              raise SystemExit('Release tag must be v followed by a semantic version')
+          workspace = tomllib.loads(Path('Cargo.toml').read_text())['workspace']
+          version = workspace['package']['version']
+          if tag != f'v{version}':
+              raise SystemExit(f'{tag} does not match workspace version {version}')
+          for member in workspace['members']:
+              package = tomllib.loads(Path(member, 'Cargo.toml').read_text())['package']
+              if package.get('version') != {'workspace': True}:
+                  raise SystemExit(f'{member} must inherit the workspace version')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\nversion={version}\n')
+          PY
+
+  build:
+    needs: validate
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang libclang-dev cmake pkg-config libssl-dev
+      - name: Configure macOS build prerequisites
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake pkg-config openssl@3 llvm
+          printf 'LIBCLANG_PATH=%s/lib\n' "$(brew --prefix llvm)" >> "$GITHUB_ENV"
+          printf 'OPENSSL_DIR=%s\n' "$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          printf 'MACOSX_DEPLOYMENT_TARGET=15.0\n' >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - name: Verify installer and source setup offline
+        run: bash scripts/test-install.sh
+      - name: Build locked CLI
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: cargo build --locked --release -p graphrag-cli --bin graphrag --target "$BUILD_TARGET"
+      - name: Smoke test binary and check runtime dependencies
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          binary="target/$BUILD_TARGET/release/graphrag"
+          "$binary" --version | grep -Fx "graphrag $RELEASE_VERSION"
+          "$binary" init --backend ollama
+          if [ "$RUNNER_OS" = macOS ]; then
+            otool -L "$binary" > runtime-libraries.txt
+            if grep -E '/(opt/homebrew|usr/local)/' runtime-libraries.txt; then
+              echo 'Release binary unexpectedly requires a Homebrew shared library' >&2
+              exit 1
+            fi
+          else
+            ldd "$binary" > runtime-libraries.txt
+            if grep -E 'not found|lib(ssl|crypto)\.so' runtime-libraries.txt; then
+              echo 'Release binary has missing or non-bundled OpenSSL dependencies' >&2
+              exit 1
+            fi
+          fi
+      - name: Package binary with starter notes
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          mkdir -p staging/samples dist
+          cp "target/$BUILD_TARGET/release/graphrag" staging/graphrag
+          cp samples/first-notes.md staging/samples/first-notes.md
+          tar -czf "dist/graphrag-notes-$RELEASE_TAG-$BUILD_TARGET.tar.gz" -C staging graphrag samples/first-notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  assemble:
+    needs: [validate, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - name: Produce SHA-256 manifest
+        working-directory: dist
+        run: sha256sum *.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ needs.validate.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, assemble]
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ needs.validate.outputs.tag }}
+          path: dist
+      - name: Create release from verified version tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes \
+            --title "GraphRAG Notes $RELEASE_TAG" "${flags[@]}"

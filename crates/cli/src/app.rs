@@ -42,7 +42,7 @@ use crate::cli::{
     JobsCommand, SourcesCommand,
 };
 use crate::dispatch::print_backup_summary;
-fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig {
+pub(crate) fn inference_provider_config(config: &RuntimeConfig) -> InferenceProviderConfig {
     InferenceProviderConfig {
         embedding_provider: config.inference.embedding_provider.clone(),
         embedding_url: config.inference.embedding_url.clone(),
@@ -423,6 +423,13 @@ async fn run_archive_only_command(cli: &Cli) -> Result<bool> {
 /// produced by Clap-adjacent handlers that intentionally use `anyhow::bail!`.
 pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
     for cause in error.chain() {
+        if let Some(error) = cause.downcast_ref::<crate::init::InitCheckError>() {
+            return if error.0 == doctor::EXIT_FAILED {
+                output::ExitCode::Validation
+            } else {
+                output::ExitCode::Internal
+            };
+        }
         if cause
             .downcast_ref::<commands::notes::NotesEditValidationError>()
             .is_some()
@@ -496,6 +503,9 @@ pub(crate) async fn run() -> Result<()> {
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+    if matches!(&cli.command, Commands::Init { .. }) {
+        return crate::init::run(&cli).await;
+    }
     if run_archive_only_command(&cli).await? {
         return Ok(());
     }

@@ -10,12 +10,18 @@ implementation by responsibility:
   checks, and constructs the small `AppContext` passed to dispatch.
 - `dispatch.rs` maps parsed commands to command handlers and contains the
   cohesive non-notes command families plus their renderers.
+- `init.rs` owns setup previews, explicit new-config creation, and optional
+  provider checks using the doctor diagnostic without opening a database.
 - `commands/notes.rs` owns the safe note CRUD handlers.
 - `output.rs` owns the shared human/JSON/JSONL envelope contract.
 - `interactive.rs` owns only the interactive REPL.
 
 Bootstrap intentionally returns before opening the database for configuration,
-doctor, verification, import/restore, reset, and embedding-dimension command
+init, doctor, verification, import/restore, reset, and embedding-dimension command
 paths where the prior behavior required it. Provider requirements are computed
 from the parsed command in `app.rs`, so read-only and metadata-only operations
 do not contact unnecessary inference providers.
+
+The user-facing install/configure/import/search path lives in
+[`docs/getting-started.md`](../../docs/getting-started.md); advanced database
+operations are in [`docs/operations.md`](../../docs/operations.md).

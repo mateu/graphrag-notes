@@ -8,6 +8,7 @@ mod dispatch;
 mod doctor;
 mod eval;
 mod explain;
+mod init;
 mod interactive;
 mod output;
 
