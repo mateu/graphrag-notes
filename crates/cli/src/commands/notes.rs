@@ -255,7 +255,7 @@ pub fn print_editor_noop(prepared: &mut PreparedEdit, command: &NotesCommand) ->
         serde_json::json!({
             "status": if cancelled { "cancelled" } else { "unchanged" }, "id": id,
             "detached": false, "draft_path": cancelled.then_some(&draft.path),
-            "recovery_command": cancelled.then_some(&draft.recovery_command),
+            "recovery_command": if cancelled { draft.recoverable_command() } else { None },
         }),
         |writer| {
             writeln!(

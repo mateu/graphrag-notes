@@ -2091,12 +2091,15 @@ pub(crate) async fn cmd_augment(
         }
         println!("{}", ctx.render_prompt_block());
         for chunk in &ctx.chunks {
-            let mut provenance = format!("id={}", chunk.id);
+            let mut provenance = format!("id={}", raw_citation_string(&chunk.id)?);
             if let Some(uri) = &chunk.source_uri {
-                provenance.push_str(&format!(", source_uri={uri}"));
+                provenance.push_str(&format!(", source_uri={}", raw_citation_string(uri)?));
             }
             if let Some(uuid) = &chunk.conversation_uuid {
-                provenance.push_str(&format!(", conversation_uuid={uuid}"));
+                provenance.push_str(&format!(
+                    ", conversation_uuid={}",
+                    raw_citation_string(uuid)?
+                ));
             }
             if let Some(index) = chunk.message_index {
                 provenance.push_str(&format!(", message_index={}", index + 1));
@@ -2222,6 +2225,22 @@ pub(crate) async fn cmd_augment(
     }
 
     Ok(())
+}
+
+fn raw_citation_string(value: &str) -> Result<String> {
+    let encoded = serde_json::to_string(value)?;
+    let mut escaped = String::with_capacity(encoded.len());
+    for character in encoded.chars() {
+        // JSON already escapes ASCII controls. Escape the remaining Unicode
+        // controls and line separators too so one citation stays one line in
+        // terminal, editor, and prompt displays while retaining JSON decoding.
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            escaped.push_str(&format!("\\u{:04x}", character as u32));
+        } else {
+            escaped.push(character);
+        }
+    }
+    Ok(escaped)
 }
 
 /// Keep terminal graph evidence reconstructable even when multiple edges share

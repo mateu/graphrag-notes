@@ -12,7 +12,7 @@ mod edit_guard_tests;
 const EDITOR_REVISION_CONFLICT: &str = "graphrag-note-editor-revision-conflict";
 
 /// Compare the persisted editor-opening snapshot inside the same transaction
-/// that changes note/mention records. Timestamps alone cannot detect imports
+/// that changes note/entity/mention records. Timestamps alone cannot detect imports
 /// or other writers which preserve `updated_at`; every persisted Note field
 /// participates. Defaulted fields normalize older records to their domain
 /// representation, while missing/hidden rows always fail the guard.
@@ -52,6 +52,30 @@ fn editor_source_id(expected: &Note) -> Result<RecordId> {
         .filter(|id| id.table.as_str() == "note")
         .cloned()
         .ok_or_else(|| DbError::NoteRevisionConflict("(missing note ID)".into()))
+}
+
+/// Keep the entity upsert semantics aligned with `Repository::upsert_entity`:
+/// canonical names identify rows, existing type/creation time survive, and
+/// metadata aliases merge distinctly. Running these writes after the snapshot
+/// guard and inside the note transaction prevents failed edits from changing
+/// shared entities or leaving unused rows behind. Resolve IDs after all
+/// upserts so repeated canonical names create only one mention.
+fn replacement_entities_transaction() -> &'static str {
+    "FOR $entity IN $replacement_entities { \
+        INSERT INTO entity (entity_type, name, canonical_name, embedding, metadata, created_at) \
+        VALUES ($entity.entity_type, $entity.name, $entity.canonical_name, \
+                $entity.embedding ?? [], $entity.metadata, time::now()) \
+        ON DUPLICATE KEY UPDATE \
+            name = $entity.name, embedding = $entity.embedding ?? [], \
+            metadata = object::extend( \
+                object::extend(metadata ?? {}, $entity.metadata ?? {}), \
+                { aliases: array::distinct(array::concat( \
+                    metadata.aliases ?? [], $entity.metadata.aliases ?? [] \
+                )) } \
+            ); \
+     }; \
+     LET $entity_ids = (SELECT VALUE id FROM entity \
+                       WHERE canonical_name IN $replacement_entity_names); "
 }
 
 fn check_note_mutation_errors(
@@ -154,10 +178,10 @@ impl Repository {
         created.ok_or_else(|| DbError::QueryFailed("create_note".into()))
     }
 
-    /// Atomically create a manual note and its complete mention set. A
-    /// detached copy is never visible without its extraction result; if a
-    /// mention write fails, the note creation rolls back as well, so retrying
-    /// cannot leave duplicate manual copies behind.
+    /// Atomically create a manual note, upsert its extracted entities, and
+    /// write its complete mention set. Failed note/entity/mention writes roll
+    /// back together, so a retry cannot leave partial extraction records or
+    /// duplicate manual copies behind.
     #[instrument(skip(self, note, entities))]
     pub async fn create_note_and_replace_entities(
         &self,
@@ -193,12 +217,16 @@ impl Repository {
             .map(|_| editor_snapshot_guard())
             .unwrap_or_default();
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
-        let entity_ids = self.replacement_entity_ids(entities).await?;
+        let replacement_entities = replacement_entities_transaction();
+        let entity_names: Vec<String> = entities
+            .iter()
+            .map(|entity| entity.canonical_name.clone())
+            .collect();
         let note_id = RecordId::new("note", Uuid::new_v4().to_string());
         let mut response = self
             .db
             .query(format!(
-                "BEGIN TRANSACTION; {guard}\
+                "BEGIN TRANSACTION; {guard}{replacement_entities}\
                  CREATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, source_id = $source_id, \
@@ -239,7 +267,8 @@ impl Repository {
             .bind(("tags", note.tags.clone()))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
-            .bind(("entity_ids", entity_ids))
+            .bind(("replacement_entities", entities))
+            .bind(("replacement_entity_names", entity_names))
             .await?;
         check_note_mutation_errors(response.take_errors(), "create", expected)?;
         self.get_note(&record_id_to_string(&note_id))
@@ -326,11 +355,9 @@ impl Repository {
         updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
 
-    /// Atomically replace a note's searchable payload and its complete entity
-    /// mention set. Entity upserts are completed before the transaction; the
-    /// visible note update and mention replacement then commit together, so a
-    /// failed mention write cannot expose new content with old evidence (or
-    /// vice versa).
+    /// Atomically replace a note's searchable payload, extracted entities, and
+    /// complete mention set. Any failure rolls back shared entity changes as
+    /// well as note content and mentions.
     #[instrument(skip(self, note, entities))]
     pub async fn update_note_and_replace_entities(
         &self,
@@ -390,13 +417,17 @@ impl Repository {
             }
             (existing, String::new(), None)
         };
-        let entity_ids = self.replacement_entity_ids(entities).await?;
+        let replacement_entities = replacement_entities_transaction();
+        let entity_names: Vec<String> = entities
+            .iter()
+            .map(|entity| entity.canonical_name.clone())
+            .collect();
         let search_content = search_content_for_note_update(&existing, &note);
 
         let mut response = self
             .db
             .query(format!(
-                "BEGIN TRANSACTION; {guard}\
+                "BEGIN TRANSACTION; {guard}{replacement_entities}\
                  UPDATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \
@@ -439,7 +470,8 @@ impl Repository {
             .bind(("search_content", search_content))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
-            .bind(("entity_ids", entity_ids))
+            .bind(("replacement_entities", entities))
+            .bind(("replacement_entity_names", entity_names))
             .await?;
         check_note_mutation_errors(response.take_errors(), "update", expected)?;
 

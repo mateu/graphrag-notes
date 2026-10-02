@@ -14,11 +14,13 @@ fn id(note: &Note) -> String {
 }
 
 async fn initial(repo: &Repository) -> Note {
+    let mut original_entity = entity("Original mention").with_embedding(vec![0.25; 1024]);
+    original_entity.metadata = serde_json::json!({"aliases": ["original alias"]});
     repo.create_note_and_replace_entities(
         Note::new("original editor body")
             .with_title("Original title")
             .with_tags(vec!["original".into()]),
-        vec![entity("Original mention")],
+        vec![original_entity],
     )
     .await
     .unwrap()
@@ -26,6 +28,36 @@ async fn initial(repo: &Repository) -> Note {
 
 async fn all_notes(repo: &Repository) -> Vec<Note> {
     repo.db.select("note").await.unwrap()
+}
+
+async fn entity_snapshot(repo: &Repository) -> serde_json::Value {
+    let mut entities: Vec<Entity> = repo.db.select("entity").await.unwrap();
+    entities.sort_by(|left, right| left.canonical_name.cmp(&right.canonical_name));
+    serde_json::Value::Array(
+        entities
+            .into_iter()
+            .map(|entity| {
+                let mut value = serde_json::to_value(&entity).unwrap();
+                // Entity serialization intentionally omits creation time;
+                // failed writes must preserve that persisted field too.
+                value["created_at"] = serde_json::json!(entity.created_at);
+                value
+            })
+            .collect(),
+    )
+}
+
+fn changed_original_entity() -> Entity {
+    changed_entity("Original mention")
+}
+
+fn changed_entity(name: &str) -> Entity {
+    let mut incoming = Entity::new(format!(" {} ", name.to_uppercase()), EntityType::Person)
+        .with_embedding(vec![0.5; 1024]);
+    incoming.metadata = serde_json::json!({
+        "aliases": ["new uncommitted alias"],
+    });
+    incoming
 }
 
 async fn mentions(repo: &Repository, note: &Note) -> Vec<String> {
@@ -119,13 +151,14 @@ async fn same_timestamp_content_metadata_and_ownership_changes_refuse_editor_wri
         // that every writer advances a clock field.
         let current = repo.update_note(&id(&expected), changed).await.unwrap();
         assert_eq!(current.updated_at, expected.updated_at);
+        let entities_before = entity_snapshot(&repo).await;
         let mut draft = expected.clone();
         draft.content = "stale draft must never overwrite current state".into();
         assert_conflict(
             repo.update_note_and_replace_entities_if_unchanged(
                 &id(&expected),
                 draft,
-                vec![entity("Stale mention")],
+                vec![entity("Stale mention"), changed_original_entity()],
                 &expected,
             )
             .await,
@@ -134,6 +167,7 @@ async fn same_timestamp_content_metadata_and_ownership_changes_refuse_editor_wri
         assert_snapshot(&actual, &current);
         assert_eq!(mentions(&repo, &actual).await, vec!["Original mention"]);
         assert_eq!(all_notes(&repo).await.len(), 1);
+        assert_eq!(entity_snapshot(&repo).await, entities_before);
     }
 }
 
@@ -160,10 +194,11 @@ async fn detached_creation_checks_source_snapshot_and_preserves_source_mentions(
     let mut replacement = expected.clone();
     replacement.content = "source changed with its timestamp preserved".into();
     let current = repo.update_note(&id(&expected), replacement).await.unwrap();
+    let entities_before = entity_snapshot(&repo).await;
     assert_conflict(
         repo.create_note_and_replace_entities_if_unchanged(
             Note::new("stale detached copy"),
-            vec![entity("Stale detached mention")],
+            vec![entity("Stale detached mention"), changed_original_entity()],
             &expected,
         )
         .await,
@@ -174,6 +209,7 @@ async fn detached_creation_checks_source_snapshot_and_preserves_source_mentions(
         &current,
     );
     assert_eq!(mentions(&repo, &expected).await, vec!["Original mention"]);
+    assert_eq!(entity_snapshot(&repo).await, entities_before);
 }
 
 #[tokio::test]
@@ -181,13 +217,14 @@ async fn deleted_editor_source_is_never_recreated_or_detached() {
     let repo = Repository::new(init_memory().await.unwrap());
     let expected = initial(&repo).await;
     repo.delete_note(&id(&expected)).await.unwrap();
+    let entities_before = entity_snapshot(&repo).await;
     let mut replacement = expected.clone();
     replacement.content = "must not recreate deleted note".into();
     assert_conflict(
         repo.update_note_and_replace_entities_if_unchanged(
             &id(&expected),
             replacement,
-            vec![entity("Recreated mention")],
+            vec![entity("Recreated mention"), changed_original_entity()],
             &expected,
         )
         .await,
@@ -195,13 +232,17 @@ async fn deleted_editor_source_is_never_recreated_or_detached() {
     assert_conflict(
         repo.create_note_and_replace_entities_if_unchanged(
             Note::new("must not detach deleted note"),
-            Vec::new(),
+            vec![
+                entity("Deleted detached mention"),
+                changed_original_entity(),
+            ],
             &expected,
         )
         .await,
     );
     assert!(repo.get_note(&id(&expected)).await.unwrap().is_none());
     assert!(all_notes(&repo).await.is_empty());
+    assert_eq!(entity_snapshot(&repo).await, entities_before);
 }
 
 #[tokio::test]
@@ -227,11 +268,15 @@ async fn hidden_or_staged_generation_refuses_editor_writes_and_detachment() {
         )
         .await
         .unwrap();
+    let entities_before = entity_snapshot(&repo).await;
     assert!(repo.get_visible_note(&id(&staged)).await.unwrap().is_none());
     assert_conflict(
         repo.create_note_and_replace_entities_if_unchanged(
             Note::new("staged draft"),
-            Vec::new(),
+            vec![
+                entity("Staged detached orphan"),
+                changed_entity("Generated mention"),
+            ],
             &staged,
         )
         .await,
@@ -240,11 +285,15 @@ async fn hidden_or_staged_generation_refuses_editor_writes_and_detachment() {
         repo.update_note_and_replace_entities_if_unchanged(
             &id(&staged),
             staged.clone(),
-            Vec::new(),
+            vec![
+                entity("Staged update orphan"),
+                changed_entity("Generated mention"),
+            ],
             &staged,
         )
         .await,
     );
+    assert_eq!(entity_snapshot(&repo).await, entities_before);
 
     repo.complete_file_import(&mut plan.source).await.unwrap();
     let expected = repo.get_visible_note(&id(&staged)).await.unwrap().unwrap();
@@ -261,7 +310,10 @@ async fn hidden_or_staged_generation_refuses_editor_writes_and_detachment() {
     assert_conflict(
         repo.create_note_and_replace_entities_if_unchanged(
             Note::new("hidden draft"),
-            Vec::new(),
+            vec![
+                entity("Hidden detached orphan"),
+                changed_entity("Generated mention"),
+            ],
             &expected,
         )
         .await,
@@ -270,7 +322,10 @@ async fn hidden_or_staged_generation_refuses_editor_writes_and_detachment() {
         repo.update_note_and_replace_entities_if_unchanged(
             &id(&expected),
             expected.clone(),
-            Vec::new(),
+            vec![
+                entity("Hidden update orphan"),
+                changed_entity("Generated mention"),
+            ],
             &expected,
         )
         .await,
@@ -281,6 +336,7 @@ async fn hidden_or_staged_generation_refuses_editor_writes_and_detachment() {
         &expected,
     );
     assert_eq!(mentions(&repo, &expected).await, vec!["Generated mention"]);
+    assert_eq!(entity_snapshot(&repo).await, entities_before);
 }
 
 #[tokio::test]
@@ -288,6 +344,7 @@ async fn guarded_note_and_detached_transactions_roll_back_on_mention_failure() {
     let repo = Repository::new(init_memory().await.unwrap());
     let expected = initial(&repo).await;
     let blocked = repo.upsert_entity(entity("Blocked mention")).await.unwrap();
+    let entities_before = entity_snapshot(&repo).await;
     repo.db
         .query(format!(
             "DEFINE FIELD OVERWRITE out ON mentions TYPE record<entity> ASSERT $value != {}",
@@ -303,7 +360,11 @@ async fn guarded_note_and_detached_transactions_roll_back_on_mention_failure() {
         .update_note_and_replace_entities_if_unchanged(
             &id(&expected),
             replacement,
-            vec![entity("Blocked mention")],
+            vec![entity("New rejected mention"), changed_original_entity(), {
+                let mut incoming = entity("Blocked mention");
+                incoming.metadata = serde_json::json!({"aliases": ["uncommitted blocked alias"]});
+                incoming
+            }],
             &expected,
         )
         .await;
@@ -311,15 +372,26 @@ async fn guarded_note_and_detached_transactions_roll_back_on_mention_failure() {
         matches!(failed_update, Err(DbError::QueryFailed(_))),
         "{failed_update:?}"
     );
+    assert!(failed_update.unwrap_err().to_string().contains("mentions"));
     assert_snapshot(
         &repo.get_note(&id(&expected)).await.unwrap().unwrap(),
         &expected,
     );
     assert_eq!(mentions(&repo, &expected).await, vec!["Original mention"]);
+    assert_eq!(entity_snapshot(&repo).await, entities_before);
     let failed_detach = repo
         .create_note_and_replace_entities_if_unchanged(
             Note::new("must roll back detached note"),
-            vec![entity("Blocked mention")],
+            vec![
+                entity("New rejected detached mention"),
+                changed_original_entity(),
+                {
+                    let mut incoming = entity("Blocked mention");
+                    incoming.metadata =
+                        serde_json::json!({"aliases": ["uncommitted blocked alias"]});
+                    incoming
+                },
+            ],
             &expected,
         )
         .await;
@@ -327,12 +399,188 @@ async fn guarded_note_and_detached_transactions_roll_back_on_mention_failure() {
         matches!(failed_detach, Err(DbError::QueryFailed(_))),
         "{failed_detach:?}"
     );
+    assert!(failed_detach.unwrap_err().to_string().contains("mentions"));
     assert_eq!(all_notes(&repo).await.len(), 1);
     assert_snapshot(
         &repo.get_note(&id(&expected)).await.unwrap().unwrap(),
         &expected,
     );
     assert_eq!(mentions(&repo, &expected).await, vec!["Original mention"]);
+    assert_eq!(entity_snapshot(&repo).await, entities_before);
+}
+
+#[tokio::test]
+async fn atomic_note_entity_schema_failure_rolls_back_every_entity_write() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let expected = initial(&repo).await;
+    let entities_before = entity_snapshot(&repo).await;
+    for guarded in [true, false] {
+        for detached in [true, false] {
+            let mut malformed = entity("Malformed metadata");
+            malformed.metadata = serde_json::json!("not an object");
+            let entities = vec![
+                entity("New entity before schema failure"),
+                changed_original_entity(),
+                malformed,
+            ];
+            let mut replacement = expected.clone();
+            replacement.content = "must not survive entity storage failure".into();
+            let result = match (guarded, detached) {
+                (true, true) => {
+                    repo.create_note_and_replace_entities_if_unchanged(
+                        Note::new("must not create a failed detached copy"),
+                        entities,
+                        &expected,
+                    )
+                    .await
+                }
+                (true, false) => {
+                    repo.update_note_and_replace_entities_if_unchanged(
+                        &id(&expected),
+                        replacement,
+                        entities,
+                        &expected,
+                    )
+                    .await
+                }
+                (false, true) => {
+                    repo.create_note_and_replace_entities(
+                        Note::new("must not create a failed manual capture"),
+                        entities,
+                    )
+                    .await
+                }
+                (false, false) => {
+                    repo.update_note_and_replace_entities(&id(&expected), replacement, entities)
+                        .await
+                }
+            };
+            assert!(matches!(result, Err(DbError::QueryFailed(_))), "{result:?}");
+            let message = result.unwrap_err().to_string();
+            assert!(message.contains("object"), "{message}");
+            assert_eq!(entity_snapshot(&repo).await, entities_before);
+            assert_eq!(all_notes(&repo).await.len(), 1);
+            assert_snapshot(
+                &repo.get_note(&id(&expected)).await.unwrap().unwrap(),
+                &expected,
+            );
+            assert_eq!(mentions(&repo, &expected).await, vec!["Original mention"]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn guarded_note_storage_failure_rolls_back_entities_before_note_write() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let expected = initial(&repo).await;
+    let entities_before = entity_snapshot(&repo).await;
+    repo.db
+        .query(
+            "DEFINE FIELD OVERWRITE content ON note TYPE string ASSERT $value != 'rejected body'",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    for detached in [false, true] {
+        let entities = vec![
+            entity("Entity before rejected note"),
+            changed_original_entity(),
+        ];
+        let mut replacement = expected.clone();
+        replacement.content = "rejected body".into();
+        let result = if detached {
+            repo.create_note_and_replace_entities_if_unchanged(
+                Note::new("rejected body"),
+                entities,
+                &expected,
+            )
+            .await
+        } else {
+            repo.update_note_and_replace_entities_if_unchanged(
+                &id(&expected),
+                replacement,
+                entities,
+                &expected,
+            )
+            .await
+        };
+        assert!(matches!(result, Err(DbError::QueryFailed(_))), "{result:?}");
+        assert!(result.unwrap_err().to_string().contains("content"));
+        assert_eq!(entity_snapshot(&repo).await, entities_before);
+        assert_eq!(all_notes(&repo).await.len(), 1);
+        assert_snapshot(
+            &repo.get_note(&id(&expected)).await.unwrap().unwrap(),
+            &expected,
+        );
+        assert_eq!(mentions(&repo, &expected).await, vec!["Original mention"]);
+    }
+}
+
+#[tokio::test]
+async fn atomic_note_transaction_preserves_entity_upsert_and_duplicate_alias_semantics() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    repo.db
+        .query("DEFINE FIELD metadata.preserved ON entity TYPE option<string>; DEFINE FIELD metadata.updated ON entity TYPE option<string>;")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let mut original = entity("Atlas Project").with_embedding(vec![0.25; 1024]);
+    original.metadata = serde_json::json!({
+        "aliases": ["prior alias", "shared alias"],
+        "preserved": "original metadata",
+        "updated": "old value",
+    });
+    let original = repo.upsert_entity(original).await.unwrap();
+    let expected = initial(&repo).await;
+    let mut first =
+        Entity::new("ATLAS PROJECT", EntityType::Organization).with_embedding(vec![0.75; 1024]);
+    first.metadata = serde_json::json!({
+        "aliases": ["shared alias", "first alias"],
+        "updated": "first value",
+    });
+    let mut second = Entity::new(" Atlas   Project ", EntityType::Person);
+    second.metadata = serde_json::json!({
+        "aliases": ["second alias", "first alias"],
+        "updated": "second value",
+    });
+    let mut replacement = expected.clone();
+    replacement.content = "Atlas project has its updated mentions".into();
+    let updated = repo
+        .update_note_and_replace_entities_if_unchanged(
+            &id(&expected),
+            replacement,
+            vec![first, second],
+            &expected,
+        )
+        .await
+        .unwrap();
+    let linked = repo.get_entities_for_note(&id(&updated)).await.unwrap();
+    assert_eq!(
+        linked.len(),
+        1,
+        "canonical duplicates must have one mention"
+    );
+    let stored = &linked[0];
+    assert_eq!(stored.id, original.id);
+    assert_eq!(stored.name, " Atlas   Project ");
+    assert_eq!(stored.canonical_name, "atlas project");
+    assert_eq!(stored.entity_type, original.entity_type);
+    assert_eq!(stored.created_at, original.created_at);
+    assert!(
+        stored.embedding.is_empty(),
+        "last upsert replaces embedding"
+    );
+    assert_eq!(stored.metadata["preserved"], "original metadata");
+    assert_eq!(stored.metadata["updated"], "second value");
+    let mut aliases: Vec<String> =
+        serde_json::from_value(stored.metadata["aliases"].clone()).unwrap();
+    aliases.sort();
+    assert_eq!(
+        aliases,
+        vec!["first alias", "prior alias", "second alias", "shared alias"]
+    );
 }
 
 #[tokio::test]

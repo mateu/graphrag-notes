@@ -729,6 +729,25 @@ pub(crate) async fn run() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
+    let recoverable_command = match &cli.command {
+        Commands::Capture { .. } => true,
+        Commands::Notes {
+            command:
+                commands::notes::NotesCommand::Edit {
+                    editor,
+                    content_file,
+                    stdin,
+                    ..
+                },
+        } => editor.editor || content_file.is_some() || *stdin,
+        _ => false,
+    };
+    if cli.memory && recoverable_command {
+        return Err(commands::capture::CaptureValidationError(
+            "recoverable capture and note content/editor edits require a persistent database; remove --memory".into(),
+        ).into());
+    }
+
     // Capture input and durable editor drafts before database/provider startup.
     // An unchanged or cancelled new-note editor never opens the corpus.
     let selected_config = commands::navigation::selected_config_path(cli.config.as_deref());

@@ -150,16 +150,25 @@ impl Draft {
             }
         }
     }
+
+    pub fn recoverable_command(&self) -> Option<&str> {
+        // Never advertise a retry that would follow a rejected editor symlink
+        // or attempt to read a directory/device as note content.
+        std::fs::symlink_metadata(&self.path)
+            .is_ok_and(|metadata| metadata.file_type().is_file())
+            .then_some(self.recovery_command.as_str())
+    }
 }
 
 impl Drop for Draft {
     fn drop(&mut self) {
         if self.retained {
-            eprintln!(
-                "Draft retained: {}\nRecover: {}",
-                self.path.display(),
-                self.recovery_command
-            );
+            eprintln!("Draft retained: {}", self.path.display());
+            if let Some(command) = self.recoverable_command() {
+                eprintln!("Recover: {command}");
+            } else {
+                eprintln!("Recovery command withheld: draft path is missing or is not a regular file. Inspect the path, remove any symlink or non-file replacement, and restore the intended draft before retrying.");
+            }
         }
     }
 }

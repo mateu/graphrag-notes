@@ -120,7 +120,11 @@ pub fn print_noop(prepared: &mut PreparedCapture, format: OutputFormat) -> Resul
         status: if cancelled { "cancelled" } else { "unchanged" },
         id: None,
         draft_path: cancelled.then_some(prepared.draft.path.as_path()),
-        recovery_command: cancelled.then_some(prepared.draft.recovery_command.as_str()),
+        recovery_command: if cancelled {
+            prepared.draft.recoverable_command()
+        } else {
+            None
+        },
     };
     output::print(format, "capture", data, |writer| {
         writeln!(

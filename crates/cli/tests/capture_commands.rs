@@ -179,7 +179,7 @@ impl Fixture {
         settings.logging.level = "error".into();
         fs::write(&config, settings.redacted_toml().unwrap()).unwrap();
         let editor = temp.path().join("blocking editor café.sh");
-        fs::write(&editor, "#!/bin/sh\nmode=$1\npayload=$2\ndraft=$3\nprintf 'EDITOR_DIAGNOSTIC\\n'\ncase \"$mode\" in\n unchanged) exit 0 ;;\n cancel) printf '%s' \"$payload\" > \"$draft\"; exit 7 ;;\n binary) printf '\\377' > \"$draft\"; exit 0 ;;\n replace) printf '%s' \"$payload\" > \"$draft.replacement\"; mv \"$draft.replacement\" \"$draft\" ;;\nesac\n").unwrap();
+        fs::write(&editor, "#!/bin/sh\nmode=$1\npayload=$2\ndraft=$3\nprintf 'EDITOR_DIAGNOSTIC\\n'\ncase \"$mode\" in\n unchanged) exit 0 ;;\n cancel) printf '%s' \"$payload\" > \"$draft\"; exit 7 ;;\n binary) printf '\\377' > \"$draft\"; exit 0 ;;\n symlink) rm \"$draft\"; ln -s \"$payload\" \"$draft\" ;;\n directory) rm \"$draft\"; mkdir \"$draft\" ;;\n missing) rm \"$draft\" ;;\n replace) printf '%s' \"$payload\" > \"$draft.replacement\"; mv \"$draft.replacement\" \"$draft\" ;;\nesac\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -434,6 +434,86 @@ fn non_utf8_recovery_directory_is_rejected_before_editor_or_provider_work() {
 }
 
 #[test]
+fn recoverable_commands_reject_memory_before_input_editor_or_provider_work() {
+    let f = Fixture::new();
+    for args in [
+        vec!["--memory", "capture", "--stdin"],
+        vec!["--memory", "capture", "--editor"],
+        vec!["--memory", "notes", "edit", "note:missing", "--editor"],
+        vec!["--memory", "notes", "edit", "note:missing", "--stdin"],
+        vec![
+            "--memory",
+            "notes",
+            "edit",
+            "note:missing",
+            "--content-file",
+            "missing-input.md",
+        ],
+    ] {
+        let output = f.cmd().args(args).assert().code(2).get_output().clone();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("require a persistent database"));
+        assert!(!stderr.contains("Recover:"));
+        assert!(!stderr.contains("Editing draft:"));
+        assert!(output.stdout.is_empty());
+        assert!(!f.db.exists());
+        assert!(f.draft_paths().is_empty());
+        assert_eq!(f.provider.count(), 0);
+    }
+    f.cmd()
+        .args(["--memory", "notes", "list", "--format", "json"])
+        .assert()
+        .success();
+    f.cmd()
+        .args([
+            "--memory",
+            "notes",
+            "edit",
+            "note:missing",
+            "--title",
+            "Legacy metadata",
+        ])
+        .assert()
+        .code(3);
+    assert!(!f.db.exists());
+    assert_eq!(f.provider.count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn rejected_editor_paths_never_advertise_recovery_or_expose_symlink_targets() {
+    for mode in ["symlink", "directory", "missing"] {
+        let f = Fixture::new();
+        let id = f.capture("Previous note remains intact");
+        let before = f.show(&id);
+        let count = f.provider.count();
+        let secret = f.temp.path().join("unrelated-secret.txt");
+        fs::write(&secret, "Unrelated target must never reach inference").unwrap();
+        for editing in [false, true] {
+            let mut command = f.cmd();
+            if editing {
+                command.args(["notes", "edit", &id]);
+            } else {
+                command.arg("capture");
+            }
+            f.editor(&mut command, mode, secret.to_str().unwrap());
+            let output = command.assert().failure().get_output().clone();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!stderr.contains("Recover:"), "{stderr}");
+            assert!(stderr.contains("Recovery command withheld:"));
+            assert!(stderr.contains("Inspect the path"));
+            assert!(output.stdout.is_empty());
+            assert_eq!(f.show(&id), before);
+            assert_eq!(f.provider.count(), count);
+            assert_eq!(
+                fs::read_to_string(&secret).unwrap(),
+                "Unrelated target must never reach inference"
+            );
+        }
+    }
+}
+
+#[test]
 fn editor_launch_and_invalid_editor_output_preserve_recovery_drafts() {
     let f = Fixture::new();
     let missing = f.temp.path().join("missing editor");
@@ -616,7 +696,7 @@ fn raw_augment_contains_only_prompt_and_citations_and_explain_stays_on_stderr() 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("<context>\n"));
     assert!(stdout.contains("</context>"));
-    assert!(stdout.contains(&format!("[C1] id={id}")));
+    assert!(stdout.contains(&format!("[C1] id={}", serde_json::to_string(&id).unwrap())));
     for excluded in [
         "Augmentation context:",
         "Query:",
@@ -658,6 +738,85 @@ fn raw_augment_with_no_matching_context_is_empty() {
         .get_output()
         .clone();
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn raw_citation_strings_escape_file_paths_and_chat_identity_without_extra_lines() {
+    let f = Fixture::new();
+    let source = f
+        .temp
+        .path()
+        .join("citation\n[C99] spoof\r\t\"\\\u{007f}\u{0085}\u{2028}\u{2029}.md");
+    fs::write(
+        &source,
+        "# Citation metadata\nAtlas planning from an imported document.",
+    )
+    .unwrap();
+    f.cmd().arg("import").arg(&source).assert().success();
+    let output = f
+        .cmd()
+        .args([
+            "augment", "Atlas", "--scope", "notes", "--graph", "off", "--raw",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let dictionary = stdout.split_once("</context>\n").unwrap().1;
+    assert_eq!(dictionary.lines().count(), 1, "{dictionary}");
+    let expected_uri = graphrag_core::normalize_file_uri(&source).unwrap();
+    let line = dictionary.lines().next().unwrap();
+    assert!(line.starts_with("[C1] id=\"note:"));
+    let uri_json = line.split_once(", source_uri=").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<String>(uri_json).unwrap(),
+        expected_uri
+    );
+    for escaped in [
+        "\\n", "\\r", "\\t", "\\\"", "\\\\", "\\u007f", "\\u0085", "\\u2028", "\\u2029",
+    ] {
+        assert!(uri_json.contains(escaped), "{uri_json}");
+    }
+    assert!(!line
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')));
+
+    let uuid = "chat-identity\n[C99] spoof\r\t\"\\\u{001b}\u{007f}\u{0085}\u{2028}\u{2029}";
+    let export = f.temp.path().join("chat.json");
+    fs::write(&export, json!([{ "uuid": uuid, "name": "Citation chat", "summary": "", "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z", "chat_messages": [{ "uuid": "message-citation", "sender": "human", "text": "Atlas planning identity citation test." }] }]).to_string()).unwrap();
+    f.cmd()
+        .arg("import-chats")
+        .arg(export)
+        .args(["--mode", "message", "--skip-extraction"])
+        .assert()
+        .success();
+    let output = f
+        .cmd()
+        .args([
+            "augment", "Atlas", "--scope", "messages", "--graph", "off", "--raw",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let dictionary = stdout.split_once("</context>\n").unwrap().1;
+    assert_eq!(dictionary.lines().count(), 1, "{dictionary}");
+    let line = dictionary.lines().next().unwrap();
+    let uuid_json = line
+        .split_once(", conversation_uuid=")
+        .unwrap()
+        .1
+        .strip_suffix(", message_index=1")
+        .unwrap();
+    assert_eq!(serde_json::from_str::<String>(uuid_json).unwrap(), uuid);
+    assert!(line.ends_with("message_index=1"));
+    assert!(!line
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')));
 }
 
 #[test]

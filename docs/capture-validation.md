@@ -4,8 +4,8 @@ Validation targets macOS and Linux. All fixtures use a disposable HOME,
 configuration, database, draft directory, and localhost provider endpoint.
 They never read the user's corpus or require live models.
 
-On 2026-10-02, the Apple Silicon macOS 27.0.1 run passed 15 focused CLI
-subprocess tests and the full workspace suite (521 passed, 5 ignored live or
+On 2026-10-02, the Apple Silicon macOS 27.0.1 run passed 18 focused CLI
+subprocess tests and the full workspace suite (527 passed, 5 ignored live or
 fixture-only cases). A separate macOS walkthrough passed 14 recorded command
 steps, including atomic editor saves, retry from another directory, source
 detach, and raw context reuse. Inference used deterministic localhost doubles.
@@ -19,13 +19,17 @@ unchanged and cancelled sessions, private persistent recovery drafts,
 option-like metadata, retry from another working directory, invalid UTF-8,
 empty input, editor launch failure, offline/provider failures, source-owned
 edit guidance, explicit detach, previous-note safety, post-commit cleanup
-warnings, invalid UTF-8 recovery pathname rejection, and clean raw augmentation
-with stderr explanations.
+warnings, invalid UTF-8 recovery pathname rejection, symlink/non-file recovery
+suppression, memory-mode rejection, and clean raw augmentation with stderr
+explanations and round-trip JSON citation escaping.
 
 The CLI unit regression passes an opening snapshot through the complete
 guarded Librarian edit path after a concurrent same-timestamp change. DB
 regressions verify the transaction-level current/stale/missing/hidden and
-detach cases, including rollback of note and entity changes.
+detach cases, including rollback of note and entity changes. Ten DB regressions
+cover existing-entity metadata and complete entity-set rollback for rejected
+snapshots and mention, note, and entity storage failures; successful duplicate
+alias merging retains existing entity identity/type/creation time.
 
 Run checks from an isolated worktree with its own target directory:
 

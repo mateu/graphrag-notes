@@ -28,10 +28,14 @@ graphrag capture --content-file ./meeting.md
 
 A successful capture prints the canonical `note:ID` and an inspection command
 that preserves the selected configuration and database. Capture creates a
-manual note and atomically stores its entity mentions after embedding and
+manual note and atomically stores its entities and mentions after embedding and
 required extraction succeed. It creates no source record. A provider failure
 creates no note or partial source; the input remains in a recovery draft.
 The existing `add` command and its output keep their previous behavior.
+Recoverable `capture` and note content/editor edits require a persistent
+database. `--memory` is rejected before input, editor launch, or database work
+because a later recovery process cannot reopen the same ephemeral corpus.
+Other legacy commands keep their existing memory behavior.
 
 ## Use a blocking editor
 
@@ -96,6 +100,9 @@ to choose another location. Newly created directories use permissions 0700
 and draft files use 0600 on macOS/Linux. Files saved by editor rename are
 read from their pathname and returned to private permissions after exit.
 The editor must leave a regular file, not a symlink.
+If it leaves a symlink, directory, or missing pathname, GraphRAG reports the
+rejected path and withholds all recovery commands. Inspect the path, remove
+the replacement if needed, and restore the intended draft before retrying.
 
 Empty content, invalid UTF-8, editor launch failures, provider failures,
 storage failures, and stale editor conflicts retain the draft. Invalid
@@ -135,6 +142,15 @@ graphrag augment "Atlas launch plan" --raw --explain > atlas-context.txt
 Raw stdout contains only the existing packed prompt block and its `[C1]`,
 `[C2]`, … citation dictionary with canonical IDs and available source/chat
 provenance. It omits query headings, scores, progress, and packing summaries.
+Each dictionary record occupies one line, for example
+`[C1] id="note:ID", source_uri="file:///path/notes.md"`. All string values
+(`id`, `source_uri`, and `conversation_uuid`) use JSON string quoting:
+newlines, carriage returns, and tabs become `\n`, `\r`, and `\t`; quotes and
+backslashes become `\"` and `\\`; remaining control characters use JSON
+escapes such as `\u001b`. Unicode controls and line separators are also escaped,
+including `\u007f`, `\u0085`, `\u2028`, and `\u2029`. Decoding each quoted
+value as a JSON string recovers the exact original value. `message_index`
+remains a one-based numeric value.
 `--explain` writes diagnostic details to stderr. No selected context produces
 empty stdout. Existing scope, source/entity filters, graph selection, deduping,
 packing, and token budgets remain available. Budgets bound the existing
