@@ -2,16 +2,22 @@ name: Versioned CLI releases
 
 on:
   push:
+    # Stable version tags build and publish the complete supported matrix.
     tags:
       - 'v*'
+      # Candidates can publish a verified local asset without starting the
+      # remaining platform builds. Dispatch a candidate explicitly when ready.
+      - '!v*-*'
   workflow_dispatch:
+    # After this workflow reaches the default branch, an existing candidate
+    # tag can be dispatched to build the complete matrix without publishing.
     inputs:
       tag:
         description: Existing tag matching workspace.package.version (for example v0.1.0)
         required: true
         type: string
       publish:
-        description: Publish a GitHub release after all platform builds pass
+        description: Publish the tagged stable/prerelease after all platform builds pass
         default: false
         type: boolean
 
@@ -182,6 +188,6 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: |
           flags=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease --latest=false); fi
           gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes \
             --title "GraphRAG Notes $RELEASE_TAG" "${flags[@]}"
