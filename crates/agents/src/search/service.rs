@@ -447,6 +447,70 @@ impl SearchAgent {
         Ok(results)
     }
 
+    /// Provider-free full-text retrieval across the same scopes and filters as
+    /// hybrid search. Native BM25 scores retain the configured hit-type
+    /// multipliers; graph expansion, vectors, and embedding metadata are never
+    /// consulted by this explicit retrieval path.
+    #[instrument(skip(self))]
+    pub async fn keyword_search_with_scope(
+        &self,
+        query: &str,
+        limit: usize,
+        scope: SearchScope,
+        since_days: Option<u32>,
+        source_uri: Option<String>,
+    ) -> Result<GraphSearchResults> {
+        let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
+        let mut hits = Vec::new();
+        if matches!(scope, SearchScope::Notes | SearchScope::All) {
+            let notes = self
+                .repo
+                .fulltext_search_notes(query, limit, since, source_uri.clone())
+                .await?;
+            hits.extend(notes.into_iter().enumerate().map(|(index, mut result)| {
+                result.fusion = keyword_evidence(result.fts_score, index + 1);
+                let mut hit = self.from_note_result(result);
+                hit.score_kind = crate::ScoreKind::Bm25;
+                hit
+            }));
+        }
+        if matches!(scope, SearchScope::Messages | SearchScope::All) {
+            let messages = self
+                .repo
+                .fulltext_search_messages(query, limit, since, source_uri.clone())
+                .await?;
+            hits.extend(messages.into_iter().enumerate().map(|(index, mut result)| {
+                result.fusion = keyword_evidence(result.fts_score, index + 1);
+                let mut hit = self.from_message_result(result);
+                hit.score_kind = crate::ScoreKind::Bm25;
+                hit
+            }));
+        }
+        if matches!(scope, SearchScope::All) {
+            let conversations = self
+                .repo
+                .fulltext_search_conversation_summaries(query, limit, since, source_uri)
+                .await?;
+            hits.extend(
+                conversations
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, mut result)| {
+                        result.fusion = keyword_evidence(result.fts_score, index + 1);
+                        let mut hit = self.from_conversation_result(result);
+                        hit.score_kind = crate::ScoreKind::Bm25;
+                        hit
+                    }),
+            );
+        }
+        rank_scoped_results(&mut hits);
+        hits.truncate(limit);
+        Ok(GraphSearchResults {
+            hits,
+            summary: GraphRetrievalSummary::default(),
+        })
+    }
+
     #[instrument(skip(self))]
     pub async fn search_with_scope(
         &self,
@@ -1381,6 +1445,15 @@ fn hit_type_order(hit_type: SearchHitType) -> usize {
         SearchHitType::Note => 0,
         SearchHitType::Message => 1,
         SearchHitType::ConversationSummary => 2,
+    }
+}
+
+fn keyword_evidence(score: Option<f32>, rank: usize) -> FusionEvidence {
+    FusionEvidence {
+        fulltext_rank: Some(rank),
+        fulltext_score: score,
+        fused_score: score.unwrap_or_default(),
+        ..Default::default()
     }
 }
 

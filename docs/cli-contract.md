@@ -168,3 +168,11 @@ Successful machine output has `command: "open"` and `data` containing `id`,
 reports that the configured opener succeeded; it does not confirm that a GUI
 editor finished loading the document. Opening uses the same revision guard as
 inspection and validates it before launching the opener.
+
+## Keyword retrieval
+
+`search --mode hybrid|keyword` defaults to hybrid. The selected mode and base
+channels are additive machine metadata; see [keyword search](keyword-search.md)
+for the JSON/JSONL field contracts, filters, ranking, and provider-free behavior.
+Hybrid failures preserve their exit code and print a copyable explicit keyword
+command on stderr. The CLI does not silently change retrieval mode.
