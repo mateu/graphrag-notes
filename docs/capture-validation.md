@@ -5,11 +5,12 @@ configuration, database, draft directory, and localhost provider endpoint.
 They never read the user's corpus or require live models.
 
 On 2026-10-02, the latest Apple Silicon macOS 27.0.1 run passed 20 CLI
-subprocess tests and the full workspace suite (531 passed, 5 ignored live or
-fixture-only cases), including unchanged-session cleanup output for JSON/JSONL
-and chat-import ownership protection. A separate macOS walkthrough passed 14
-recorded command steps before the chat-ownership follow-up, including atomic editor
-saves, retry from another directory, source detach, and raw context reuse.
+subprocess tests and the full workspace suite (532 passed, 5 ignored live or
+fixture-only cases), including unchanged-session cleanup output for JSON/JSONL,
+chat-import ownership protection, and creation success without a separate read.
+A separate macOS walkthrough passed 14 recorded command steps before the
+chat-ownership follow-up, including atomic editor saves, retry from another
+directory, source detach, and raw context reuse.
 Inference used deterministic localhost doubles.
 
 ## Automated checks
@@ -29,7 +30,7 @@ explanations and round-trip JSON citation escaping.
 The CLI unit regression passes an opening snapshot through the complete
 guarded Librarian edit path after a concurrent same-timestamp change. DB
 regressions verify the transaction-level current/stale/missing/hidden and
-detach cases, including rollback of note and entity changes. Eleven DB regressions
+detach cases, including rollback of note and entity changes. Twelve DB regressions
 cover existing-entity metadata and complete entity-set rollback for rejected
 snapshots and mention, note, and entity storage failures; successful duplicate
 alias merging retains existing entity identity/type/creation time. Ownership
@@ -37,6 +38,12 @@ relationships added after the editor snapshot reject an in-place transaction
 without changing notes or entities, while guarded detach remains permitted.
 The Librarian service also refuses imported edits before embedding, for both
 legacy and guarded manual-content API calls.
+
+Atomic creation returns the schema-normalized note from its committing query,
+after checking every transaction result. A record-permission fault regression
+permits the creation batch but rejects a separate note read, proving capture
+and guarded detach return success with one committed note and its mentions.
+The regression fails against the old post-commit read implementation.
 
 Run checks from an isolated worktree with its own target directory:
 

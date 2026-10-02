@@ -89,6 +89,89 @@ fn assert_conflict(result: Result<Note>) {
 }
 
 #[tokio::test]
+async fn atomic_create_returns_committed_note_when_a_separate_read_would_fail() {
+    for guarded in [false, true] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let opening = initial(&repo).await;
+        // CREATE returns schema-normalized values, not merely the input Note.
+        // The permission predicate permits the atomic batch (which binds its
+        // extracted entities) but deliberately fails any separate note read.
+        // This exposes a post-commit SELECT without a repository test hook.
+        repo.db
+            .query(
+                "DEFINE TABLE OVERWRITE note SCHEMAFULL \
+                 PERMISSIONS FOR create, update FULL FOR select WHERE \
+                    IF $replacement_entities = NONE { THROW 'separate note read unavailable'; } ELSE { true }; \
+                 DEFINE FIELD OVERWRITE title ON note TYPE option<string> \
+                    VALUE IF $value = NONE THEN NONE ELSE string::uppercase($value) END; \
+                 DEFINE TABLE OVERWRITE entity SCHEMAFULL PERMISSIONS FULL; \
+                 DEFINE TABLE OVERWRITE mentions SCHEMAFULL PERMISSIONS FULL; \
+                 CREATE user:atomic_writer; \
+                 DEFINE ACCESS atomic_writer ON DB TYPE RECORD \
+                    SIGNIN (SELECT * FROM user:atomic_writer) DURATION FOR SESSION 1h;",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let namespace: Option<String> = repo
+            .db
+            .query("RETURN $session.ns")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        repo.db
+            .signin(surrealdb::opt::auth::Record {
+                namespace: namespace.unwrap(),
+                database: "notes".into(),
+                access: "atomic_writer".into(),
+                params: (),
+            })
+            .await
+            .unwrap();
+
+        let input = Note::new("Committed manual body")
+            .with_title("Mixed case title")
+            .with_embedding(vec![0.5; 1024])
+            .with_tags(vec!["manual".into()]);
+        let created = if guarded {
+            repo.create_note_and_replace_entities_if_unchanged(
+                input,
+                vec![entity("Returned mention")],
+                &opening,
+            )
+            .await
+        } else {
+            repo.create_note_and_replace_entities(input, vec![entity("Returned mention")])
+                .await
+        }
+        .expect("the committed create must not depend on a separate note read");
+        assert_eq!(created.content, "Committed manual body");
+        assert_eq!(created.title.as_deref(), Some("MIXED CASE TITLE"));
+        assert_eq!(
+            created.search_content.as_deref(),
+            Some("Committed manual body")
+        );
+        assert_eq!(mentions(&repo, &created).await, ["Returned mention"]);
+        let read_error = repo.get_note(&id(&created)).await.unwrap_err();
+        assert!(
+            read_error
+                .to_string()
+                .contains("separate note read unavailable"),
+            "{read_error}"
+        );
+
+        // Restore the anonymous embedded-owner session and verify the returned
+        // row was committed exactly once, including defaults and timestamps.
+        repo.db.invalidate().await.unwrap();
+        let persisted = repo.get_note(&id(&created)).await.unwrap().unwrap();
+        assert_snapshot(&persisted, &created);
+        assert_eq!(all_notes(&repo).await.len(), 2);
+    }
+}
+
+#[tokio::test]
 async fn chat_provenance_blocks_guarded_updates_but_allows_detached_manual_copies() {
     for message_link in [false, true] {
         let repo = Repository::new(init_memory().await.unwrap());

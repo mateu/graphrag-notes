@@ -282,9 +282,16 @@ impl Repository {
             .bind(("replacement_entity_names", entity_names))
             .await?;
         check_note_mutation_errors(response.take_errors(), "create", expected)?;
-        self.get_note(&record_id_to_string(&note_id))
-            .await?
-            .ok_or_else(|| DbError::CreateFailed("atomic note-and-mention create".into()))
+        // The final response slots are CREATE, the mention loop, and COMMIT.
+        // Read the authoritative, schema-normalized CREATE result only after
+        // every statement (including COMMIT) succeeds. A separate read here
+        // could fail after persistence and incorrectly encourage a retry that
+        // creates another manual note or detached copy.
+        let created_index = response.num_statements().checked_sub(3).ok_or_else(|| {
+            DbError::CreateFailed("missing atomic note-and-mention create result".into())
+        })?;
+        let created: Option<Note> = response.take(created_index)?;
+        created.ok_or_else(|| DbError::CreateFailed("atomic note-and-mention create".into()))
     }
 
     /// Get a note by ID
