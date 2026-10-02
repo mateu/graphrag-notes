@@ -1606,6 +1606,7 @@ version = "0.1.0-rc.1"
 dependencies = [
  "async-trait",
  "chrono",
+ "glob",
  "graphrag-config",
  "graphrag-core",
  "graphrag-db",
@@ -1652,11 +1653,13 @@ name = "graphrag-config"
 version = "0.1.0-rc.1"
 dependencies = [
  "dirs",
+ "glob",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
@@ -4761,6 +4764,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

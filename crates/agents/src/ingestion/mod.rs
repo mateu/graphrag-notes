@@ -5,6 +5,7 @@
 //! moves do not change ingestion behavior or public constructors.
 
 pub mod librarian;
+pub mod folders;
 
 /// Markdown chunking, note construction, and source reconciliation lane.
 pub mod markdown {

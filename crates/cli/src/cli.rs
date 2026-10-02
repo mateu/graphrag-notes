@@ -108,6 +108,27 @@ pub(crate) enum Commands {
         command: ConfigCommand,
     },
 
+    /// Register host-local Markdown folders or preview missing-file pruning
+    Folders {
+        #[command(subcommand)]
+        command: FolderCommand,
+    },
+
+    /// Explicit one-shot Markdown folder sync; never starts a watcher
+    #[command(group(clap::ArgGroup::new("target").required(true).args(["name", "all", "resume"])))]
+    Sync {
+        name: Option<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        dry_run: bool,
+        /// Resume only the pinned roots and file identities of this job
+        #[arg(long, value_name = "JOB_ID")]
+        resume: Option<String>,
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
+    },
+
     /// Safely list, show, edit, or delete notes
     Notes {
         #[command(subcommand)]
@@ -447,6 +468,39 @@ pub(crate) enum Commands {
         /// Database path (defaults to ~/.graphrag/data-v3)
         #[arg(short, long)]
         db_path: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum FolderCommand {
+    /// Append a new folder declaration to the selected existing TOML config
+    Add {
+        name: String,
+        path: PathBuf,
+        #[arg(long)]
+        no_recursive: bool,
+        /// Include glob relative to the root; repeat to replace default includes
+        #[arg(long)]
+        include: Vec<String>,
+        /// Additional exclude glob relative to the root; repeat as needed
+        #[arg(long)]
+        exclude: Vec<String>,
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
+    },
+    List {
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
+    },
+    /// Preview missing generated sources; confirmation requires the preview token
+    Prune {
+        name: String,
+        #[arg(long, requires = "revision")]
+        yes: bool,
+        #[arg(long, requires = "yes")]
+        revision: Option<String>,
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
     },
 }
 

@@ -12,6 +12,7 @@ pub enum ProcessingJobType {
     Embedding,
     EntityExtraction,
     Reindex,
+    FolderSync,
 }
 
 impl ProcessingJobType {
@@ -20,6 +21,7 @@ impl ProcessingJobType {
             Self::Embedding => "embedding",
             Self::EntityExtraction => "entity_extraction",
             Self::Reindex => "reindex",
+            Self::FolderSync => "folder_sync",
         }
     }
 
@@ -28,6 +30,7 @@ impl ProcessingJobType {
             "embedding" => Some(Self::Embedding),
             "entity_extraction" => Some(Self::EntityExtraction),
             "reindex" => Some(Self::Reindex),
+            "folder_sync" => Some(Self::FolderSync),
             _ => None,
         }
     }

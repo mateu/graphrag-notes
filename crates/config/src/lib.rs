@@ -6,6 +6,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use std::collections::BTreeMap;
+
+mod folders;
+pub use folders::{register_folder, selected_config_path, FolderConfig};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -39,6 +43,8 @@ pub struct RuntimeConfig {
     pub librarian: LibrarianConfig,
     pub logging: LoggingConfig,
     pub navigation: NavigationConfig,
+    /// Explicit host-local Markdown roots. Folder sync never runs implicitly.
+    pub folders: BTreeMap<String, FolderConfig>,
 }
 
 /// Original-source opener arguments. An empty command selects the platform
@@ -860,6 +866,7 @@ impl RuntimeConfig {
                 "navigation.opener executable and arguments must not contain NUL bytes".into(),
             ));
         }
+        folders::validate_folders(&self.folders)?;
         if self.database.path.as_os_str().is_empty() {
             return Err(ConfigError::Validation(
                 "database.path must not be empty".into(),

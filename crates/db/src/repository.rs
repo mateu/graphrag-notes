@@ -4,6 +4,7 @@
 // ownership below; transaction-sensitive cross-domain paths stay documented
 // at their owning domain rather than introducing a second data-access layer.
 mod chats;
+mod folder_sync;
 mod graph;
 mod ids;
 mod inspection;
@@ -16,6 +17,7 @@ mod sources;
 mod stats;
 
 pub use chats::{EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEdgeRow};
+pub use folder_sync::FileSourceSnapshot;
 pub use graph::{SourceDeleteSummary, SourceImportAction, SourceImportPlan};
 use ids::normalize_note_id;
 pub use ids::parse_record_id;

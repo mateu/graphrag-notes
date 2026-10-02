@@ -951,6 +951,11 @@ impl LibrarianAgent {
                 job.job_type
             ))
         })?;
+        if job_type == ProcessingJobType::FolderSync {
+            return Err(crate::AgentError::Processing(format!(
+                "folder sync jobs require the folder worker; resume with graphrag sync --resume {job_id}"
+            )));
+        }
         if job.item_ids.is_empty() {
             return Err(crate::AgentError::Processing(
                 "processing job has no persisted item set; create a new job instead of resuming an ambiguous legacy job".into(),
@@ -979,6 +984,7 @@ impl LibrarianAgent {
             ProcessingJobType::Reindex => Err(crate::AgentError::Processing(
                 "reindex jobs must be resumed with the reindex worker".into(),
             )),
+            ProcessingJobType::FolderSync => unreachable!("folder jobs rejected before transition"),
         }
     }
 
