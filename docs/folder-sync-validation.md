@@ -83,6 +83,19 @@ behavior.
 
 ## Live evidence
 
+Final standalone #60 verification passed **482 workspace tests**, with 4
+existing ignored tests, using all features and the locked dependency graph.
+The 12 real CLI folder scenarios, 11 folder engine tests, 6 config tests,
+portable ID round trips and proposal-history regressions all passed. Formatting,
+whitespace checks, all-target/all-feature Clippy with warnings denied, the exact
+MSRV declaration check, and 9 offline installer/source-setup checks passed.
+
+The combined #58/#59/#60 integration at
+`7fe7a49ba75fa5ab2843ca4b181a88a7723f208f` passed **493 workspace tests**,
+with 5 existing ignored tests, plus formatting, whitespace checks and
+all-target/all-feature Clippy with warnings denied. This combines independent
+feature branches rather than adding keyword retrieval to #60.
+
 On 2026-10-02, the combined source-built debug binary for issues #58, #59 and
 #60 completed **25 checks** on macOS 27.0.1 ARM64, using existing local Ollama
 and `bge-m3:latest`, with entity extraction disabled. The tested integration
