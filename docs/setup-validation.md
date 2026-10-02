@@ -59,12 +59,39 @@ Validation date: October 2, 2026.
 | Deterministic first-result fixture | Passed | A deterministic HTTP provider fixture executes the real CLI: init preview/write/check, config validation, sample import/search/show/reimport, and doctor. It verifies the command/data workflow, config and database safety, and actionable failure states; it does not measure live-model retrieval quality. |
 | Documentation and script-help checks | Passed | Relative Markdown links resolve; source/installer script help and debug CLI `init`, `doctor`, `import`, and `search` help match the documented commands; `git diff --check` passes. |
 | Offline installer/source setup | Passed | Deterministic platform/download fixtures validate macOS ARM/Intel and Linux x86_64 selection, checksum verification/refusal, explicit overwrite, sample preservation, unsupported/missing releases, archive safety, and optional sccache/missing prerequisites. No network download or native compilation occurs in these tests. |
-| Native release workflow builds | Pending | Requires deliberately running the workflow/tag on its macOS and Ubuntu runners; fixture tests do not prove the packaged binary builds. |
-| macOS source prerequisite recovery | Passed | Actual `./setup.sh` on macOS 27.0.1 ARM64 stopped because CMake and pkg-config were missing and printed the Homebrew recovery command. No packages or models were installed. |
-| macOS source release build and live Ollama import/search | Pending | The prerequisite and debug CLI checks above passed; a completed source release build and import/search with `bge-m3:latest` and `phi4-mini:latest` remain pending. |
-| Linux source build and live Ollama import/search | Pending | Requires a Linux host; a release build or mocked provider test alone is not a live walkthrough. |
-| Published binary install with checksum verification | Pending | No release assets were published when checked; requires published assets matching the target platform. |
+| Native Apple Silicon release build | Passed | `./setup.sh` built `0.1.0-rc.1` with Rust 1.97.1, `OPENSSL_STATIC=1`, and `MACOSX_DEPLOYMENT_TARGET=15.0`. The ARM64 executable links only Apple/system libraries and declares macOS 15.0 as its minimum. The candidate tag is `b25df8d`; its application sources match the live-tested `d22386b` build. |
+| Full release workflow matrix | Deferred | Stable tags build macOS ARM/Intel and Linux x86_64; candidate tags require explicit dispatch after the workflow reaches the default branch. This candidate was built and packaged locally. Intel and Linux native builds have not been validated. |
+| macOS source prerequisite recovery | Passed | Initial setup reported missing CMake/pkg-config. Installed only CMake 4.4.3 and pkgconf 3.0.7 with Homebrew updates/upgrades disabled, then built successfully. Existing LLVM/OpenSSL installations and Ollama models were retained. |
+| macOS source release and live Ollama walkthrough | Passed | macOS 27.0.1 ARM64, Ollama 0.35.0: all 19 isolated steps passed with downloaded `bge-m3:latest` (1024 dimensions) and `phi4-mini:latest`. Imported four sample chunks with zero failures; the launch plan ranked first among four results; reimport was unchanged; existing-config inspection/refusal, unavailable/missing-model diagnostics, and healthy recovery preserved config bytes and database file sizes/mtimes. |
+| Live entity extraction | Passed | `extract-entities --note-id` exercised local phi4-mini generation with both source-built and downloaded binaries. Entity inspection and final doctor completed successfully; the source-built run linked 12 entities. Model-dependent entity counts are not a fixed acceptance assertion. |
+| Linux native build and live Ollama import/search | Deferred | Deferred by request while completing macOS first. Linux offline CI is separate evidence and does not establish a live-model walkthrough or published Linux binary. |
+| Published Apple Silicon asset installation | Passed | Published [v0.1.0-rc.1](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.1) as a prerelease, excluded from latest-stable lookup. Downloaded the tag-pinned installer and installed with explicit `--version 0.1.0-rc.1` into a fresh temporary HOME using only `/usr/bin:/bin:/usr/sbin:/sbin` in PATH. The installer verified the archive checksum; installed binary and sample hashes matched the published `BUILDINFO.json`. Existing-binary refusal and explicit reinstallation preserving edited sample notes passed. |
+| Downloaded binary live walkthrough | Passed | Repeated all 19 steps against the installed executable and installed sample: four notes, four results, launch plan at rank 1, unchanged reimport, config/database safety, diagnostics and recovery. Explicit local phi4-mini extraction and final healthy doctor also passed. |
 
 Keep pending items explicit until their walkthrough has been performed. This
 record should distinguish live provider behavior from offline tests and build
 verification.
+
+## Candidate provenance and CI corrections
+
+The published archive contains the executable and starter Markdown; configuration
+is still created explicitly. [BUILDINFO.json](https://github.com/mateu/graphrag-notes/releases/download/v0.1.0-rc.1/BUILDINFO.json)
+records the source commit, toolchain, deployment target, and hashes. The executable
+SHA-256 is `4c2e8de9366d35890ffce0f2aff5bbf4b9eeb119ecea523e3b676ddd7c169917`.
+The macOS 15 minimum comes from the binary's load commands; this walkthrough
+ran on macOS 27.0.1, not on macOS 15 or Intel hardware.
+
+The first Linux onboarding CI run aborted during native RocksDB teardown after
+a successful import. Normal commands and doctor now return their status through
+Tokio runtime shutdown instead of immediately exiting the process. The existing
+typed-status test covers doctor exit codes 0/1/2, and [the corrected Linux CI
+run](https://github.com/mateu/graphrag-notes/actions/runs/37041287733) passed all
+applicable quality, workspace, retrieval, and persistence jobs.
+
+A subsequent macOS offline fixture run exposed incomplete request reads on
+accepted sockets inheriting nonblocking mode. The fixture now explicitly uses
+blocking I/O and consumes complete HTTP request bodies. All 14 onboarding
+integration tests passed after that correction, including four focused
+round-trip runs; the final CLI suite passed 96 tests and workspace Clippy
+with warnings denied passed. These fixture corrections do not change the
+application or published executable.
