@@ -6,6 +6,8 @@ Validated on Apple Silicon macOS on 2026-10-03 using isolated in-memory or dispo
 
 The final integrated workspace/all-feature run passed **697 tests**, with zero failures and five existing ignored tests across 25 nonempty targets (32 including empty and documentation targets). All-target/all-feature Clippy with warnings denied, formatting, whitespace checks, all 18 Python helper tests, and a fresh all-feature CLI build passed. The executable SHA-256 is `ff64eeddbfaa47ba6c5181876a5e661bcb9d5d2689817352fc62a2cf24590362`.
 
+The subsequent stack rebase onto foundation `44b1d4` / mutations `67794d1` moves the same capture-recovery helper into the foundation PR. Compared with the tested candidate, all crate sources, dependency manifests/lockfile, and scripts remain byte-identical. The differences are a separately passing standalone capture HTTP regression and foundation documentation. The 697-test count continues to identify its recorded checkpoint.
+
 The historical `d4f541e` gate passed 681 Rust tests and 15 Python tests. The preceding combined gate passed 667 Rust tests; the earlier standalone gate passed 638 across 22 nonempty targets. All these Rust runs had the same five existing ignored tests. These historical counts describe their own checkpoints, rather than later additions to the suite.
 
 The installed OpenClaw 2026.9.7 and Hermes 0.21.2 runtimes also exercised capture, revision-checked edit/delete, upload admission, cancellation/resume, owner isolation, cross-client reads, and replay after service restart against this combined candidate. That smoke uses one Mac and a synthetic corpus; its reproducible harness and sanitized evidence are tracked in #78.
