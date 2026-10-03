@@ -496,6 +496,22 @@ async fn response_and_argument_bounds_and_errors_are_actionable_and_sanitized() 
         error(&fixture.tool(TOKEN_READ, "search_notes", request).await)["code"],
         "invalid_input"
     );
+    let mut request = search();
+    request["since_days"] = json!(u32::MAX);
+    assert_eq!(
+        error(
+            &fixture
+                .tool(TOKEN_READ, "search_notes", request.clone())
+                .await
+        )["code"],
+        "invalid_input"
+    );
+    request.as_object_mut().unwrap().remove("mode");
+    request.as_object_mut().unwrap().remove("limit");
+    assert_eq!(
+        error(&fixture.tool(TOKEN_READ, "build_context", request).await)["code"],
+        "invalid_input"
+    );
     assert_eq!(fixture.application.searches.load(Ordering::SeqCst), 1);
     let mut request = search();
     request["query"] = json!("provider-error");

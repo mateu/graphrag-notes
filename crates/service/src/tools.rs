@@ -360,10 +360,13 @@ impl ServerHandler for ToolService {
                     Err(error) => return Ok(error.into()),
                 };
                 if !query_valid(&input.query)
+                    || input
+                        .since_days
+                        .is_some_and(|days| days > graphrag_application::MAX_REMOTE_SINCE_DAYS)
                     || !(1..=200).contains(&input.limit)
                     || !string_bound(input.source_uri.as_deref(), 2048)
                 {
-                    return Ok(failure("invalid_input", "Query must contain 1–1024 characters, limit 1–200, and source_uri at most 2048 characters.", false).into());
+                    return Ok(failure("invalid_input", "Query must contain 1–1024 characters, limit 1–200, since_days at most 365000, and source_uri at most 2048 characters.", false).into());
                 }
                 let request = SearchRequest {
                     query: input.query,
@@ -440,6 +443,9 @@ impl ServerHandler for ToolService {
                     Err(error) => return Ok(error.into()),
                 };
                 if !query_valid(&input.query)
+                    || input
+                        .since_days
+                        .is_some_and(|days| days > graphrag_application::MAX_REMOTE_SINCE_DAYS)
                     || !string_bound(input.source_uri.as_deref(), 2048)
                     || !string_bound(input.entity_filter.as_deref(), 512)
                     || !bounded(input.max_chunks, 200)
