@@ -4,7 +4,11 @@ Validated on Apple Silicon macOS on 2026-10-03 using isolated in-memory or dispo
 
 ## Automated acceptance
 
-The final job-recovery Rust checkpoint `f6af11e3d3ed541dfc9bfde62be6eab9a8c42148` passed **715 tests**, with zero failures and five existing provider tests ignored across 33 targets. Workspace/all-target/all-feature Clippy with warnings denied, formatting and a fresh all-feature CLI build passed. Its immutable executable SHA-256 is `a861e61249f8e2e2882c26cc64bb5b19765b4f8ee61bd92750c9802013af7d7e`.
+The queue-review Rust checkpoint `24b2d0c095c7b5c3158e8ce954cdd8e7cb6eef19` passed **721 tests**, with zero failures and five existing provider tests ignored across 33 targets (26 nonempty). Workspace/all-target/all-feature Clippy with warnings denied, formatting and a fresh all-feature CLI build passed. Its immutable executable SHA-256 is `60d349c33df481e16fd747ccdf77341f5deb887c7657c585710eba17d483f35f`.
+
+Admissions for the same instance and document now stay queued behind their earlier job through generation preparation and promotion. The scheduler selects eligible document heads before applying its bounded scan, so unrelated documents remain runnable. Claim ordering and the stale-source fence share the same total precedence rule, including legacy admissions, equal timestamps and clock rollback. Explicit resume still refuses an older failed job while another job for that document is running. All 26 database job tests and four upload HTTP tests pass, including an actual two-worker fixture that holds the first embedding call, leaves the second version queued, completes an unrelated document, then promotes the original versions in order with exact receipt replay. Independent Codex review of the final fix found no actionable concern.
+
+The preceding job-recovery Rust checkpoint `f6af11e3d3ed541dfc9bfde62be6eab9a8c42148` passed **715 tests**, with zero failures and five existing provider tests ignored across 33 targets. Workspace/all-target/all-feature Clippy with warnings denied, formatting and a fresh all-feature CLI build passed. Its immutable executable SHA-256 is `a861e61249f8e2e2882c26cc64bb5b19765b4f8ee61bd92750c9802013af7d7e`.
 
 This adds owner-scoped status views that remain readable and cancellable when saved execution input is malformed. Claim, worker execution, source history and resume still require strictly decoded input; cancelling a validation-quarantined job does not resume or repair it. Both provider endpoints now contribute domain-separated SHA-256 identities to the durable compatibility snapshot. Changed endpoints and legacy snapshots lacking those identities fail before inference; completed exact receipts remain replayable. All 21 database job tests and 11 application job tests pass. An independent Codex review found no actionable concern.
 
@@ -12,7 +16,7 @@ The publication Rust checkpoint `02a49a2449153d9b1f3ec67bab2907ab4c610bd6` passe
 
 This checkpoint adds atomic exclusive restoration of replacement draft paths, including directories and symlinks, and fixes an existing portable-export inconsistency: raw unembedded entities store `embedding: []`, while the portable entity representation omits that field. The exporter now omits only that empty top-level entity array. Nonempty vectors still undergo strict dimension validation; opaque caller metadata is unchanged. All 24 backup regressions passed, including a real vector-inclusive archive/verify/fresh restore and rejection of a checksum-correct wrong-dimension archive before target creation.
 
-A real two-computer walkthrough used shiva as the sole corpus owner and clawd Linux as an OpenClaw client through encrypted SSH forwarding. Actual conversational OpenClaw sessions on both hosts and Hermes on shiva shared the canonical note and trusted actor provenance. Real host inference, credential revocation/rotation, lost acknowledgements, tunnel failure/reconnection, durable cancellation/resume, service restart and source refresh were exercised. Both vectorless and vector-inclusive portable archives restored successfully. The final three conversational sessions used the publication executable against the vector-inclusive restored corpus and confirmed exact retry receipts, current record revisions, cited context and the refreshed source. See [the two-host evidence PR](https://github.com/mateu/graphrag-notes/pull/82) for #78 for session IDs, version/hash attribution and the distinction between host-orchestrated RPC and native agent calls.
+A real two-computer walkthrough used shiva as the sole corpus owner and clawd Linux as an OpenClaw client through encrypted SSH forwarding. Actual conversational OpenClaw sessions on both hosts and Hermes on shiva shared the canonical note and trusted actor provenance. Real host inference, credential revocation/rotation, lost acknowledgements, tunnel failure/reconnection, durable cancellation/resume, service restart and source refresh were exercised. Both vectorless and vector-inclusive portable archives restored successfully. The three conversational sessions at that checkpoint used the publication executable against the vector-inclusive restored corpus and confirmed exact retry receipts, current record revisions, cited context and the refreshed source. See [the two-host evidence PR](https://github.com/mateu/graphrag-notes/pull/82) for #78 for session IDs, version/hash attribution and the distinction between host-orchestrated RPC and native agent calls.
 
 The following records describe earlier checkpoints and retain their original attribution.
 
@@ -53,10 +57,15 @@ git diff --check
 
 Retained local evidence:
 
-- `/tmp/graphrag-56-recovery-tests.log` — 715-test final job-recovery Rust checkpoint.
-- `/tmp/graphrag-56-recovery-clippy.log` — final workspace/all-target/all-feature Clippy.
-- `/tmp/graphrag-56-recovery-fmt.log` — final formatting.
-- `/tmp/graphrag-56-recovery-build.log` — final all-feature CLI build.
+- `/tmp/graphrag-56-queue-tests.log` — 721-test queue-review Rust checkpoint.
+- `/tmp/graphrag-56-queue-clippy.log` — queue-review workspace/all-target/all-feature Clippy.
+- `/tmp/graphrag-56-queue-fmt.log` — queue-review formatting.
+- `/tmp/graphrag-56-queue-build.log` — queue-review all-feature CLI build.
+
+- `/tmp/graphrag-56-recovery-tests.log` — 715-test preceding job-recovery Rust checkpoint.
+- `/tmp/graphrag-56-recovery-clippy.log` — preceding job-recovery workspace/all-target/all-feature Clippy.
+- `/tmp/graphrag-56-recovery-fmt.log` — preceding job-recovery formatting.
+- `/tmp/graphrag-56-recovery-build.log` — preceding job-recovery all-feature CLI build.
 
 - `/tmp/graphrag-56-publication-tests.log` — 710-test publication Rust checkpoint.
 - `/tmp/graphrag-56-publication-clippy.log` — publication workspace/all-target/all-feature Clippy.
