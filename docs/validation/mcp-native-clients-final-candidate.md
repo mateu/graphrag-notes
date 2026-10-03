@@ -8,12 +8,18 @@ used throughout the run had SHA-256
 Its version label is `graphrag 0.1.0-rc.2`; this is an MCP-enabled source
 candidate, while published rc.2 predates MCP. Wire schema was 1 and the host
 backup manifest reported database schema 18.
+Published PR #81 head `58b8b7d` has byte-identical production sources,
+manifests, lock and scripts to the tested builder tree; its remaining changes
+are a standalone HTTP test and documentation. The file comparison was verified
+before the final harness rebase.
 
 The [sanitized JSON proof](mcp-native-clients-final-candidate.json) preserves
 catalogs, exact outcomes, binary attribution and coverage limits. Earlier
 foundation, #76/#77 and integrated review checkpoints remain separate evidence.
-This run used harness revision `f4295a6`, including installed-runtime containment,
-linked/special-log rejection, forced-descendant detection and bounded shutdown.
+This run used harness revision `9b6bbf8`, including installed-runtime containment,
+linked/special-log rejection, forced-descendant detection, bounded shutdown and
+bounded macOS parent reaping after process-group signal denial. An unconfirmed
+group remains a failed run even after parent reaping succeeds.
 
 OpenClaw 2026.9.7 (Node v26.7.0) and Hermes 0.21.2 (Python 3.11.15, MCP SDK
 2.0.0) completed thirty recorded extended tool calls plus five restart-batch
@@ -36,8 +42,11 @@ requests. All private subprocess groups, service and provider stopped cleanly,
 with no forced descendant cleanup or cleanup error. No personal profiles,
 personal notes, external host or conversational LLM session were used.
 
-The focused harness gate passed twenty native tests on both the local Python
-and installed Hermes Python, plus Node syntax, Python compilation and diff checks.
+After the final ancestor rebase and exit-race fix, forty stacked Python tests
+passed, including twenty-two native tests; those native tests also passed under
+the installed Hermes Python. Node syntax, Python compilation and diff checks
+passed. Real-process fault injection covers denied TERM/KILL exit races and
+ensures a successful parent cannot hide an unconfirmed residual group.
 The builder separately reported 697 Rust tests passing, five ignored, workspace
 Clippy/format/build passing and eighteen pre-harness Python tests. These are
 attributed observations, not a live test inventory.

@@ -689,15 +689,15 @@
     ],
     "mutations": {
       "id": "note:d041e06675fccde0b30148adcbc2d360a522a95419300ae640772e77841bb41e",
-      "original_revision": "035d038a10850e57525e1ae1f7c19b6148a91e4ad7fa395dbb6e0de8f772742b",
-      "deleted_revision": "04d309141092d81c14ac2f77eba97d135b0c974b26371906905a71b619e35a09",
+      "original_revision": "5828d4a7447a9c4cddce6cd9ea4f2361ed7057e954d379f209021bd8d23b1ae8",
+      "deleted_revision": "9e86100e599819635fa1f344daed3135f381103e2c47f67a646b82605f6fd8a7",
       "openclaw_edit": {
         "outcome": {
           "actor": "mcp:writer",
           "cascade": null,
           "id": "note:d041e06675fccde0b30148adcbc2d360a522a95419300ae640772e77841bb41e",
           "operation": "edit",
-          "previous_revision": "035d038a10850e57525e1ae1f7c19b6148a91e4ad7fa395dbb6e0de8f772742b",
+          "previous_revision": "5828d4a7447a9c4cddce6cd9ea4f2361ed7057e954d379f209021bd8d23b1ae8",
           "resulting_edge_id": null,
           "status": "edited"
         },
@@ -710,7 +710,7 @@
           "cascade": null,
           "id": "note:d041e06675fccde0b30148adcbc2d360a522a95419300ae640772e77841bb41e",
           "operation": "edit",
-          "previous_revision": "7ab9b58af73f7595d1cbb155a472c3ba083ee4d55520314e61b1d0ade68c7d79",
+          "previous_revision": "ca5a1f36c1d29b7053cb62dace94a07bba377f85500b65b6f6e55f729f13e7b7",
           "resulting_edge_id": null,
           "status": "edited"
         },
@@ -730,7 +730,7 @@
           },
           "id": "note:d041e06675fccde0b30148adcbc2d360a522a95419300ae640772e77841bb41e",
           "operation": "delete",
-          "previous_revision": "04d309141092d81c14ac2f77eba97d135b0c974b26371906905a71b619e35a09",
+          "previous_revision": "9e86100e599819635fa1f344daed3135f381103e2c47f67a646b82605f6fd8a7",
           "resulting_edge_id": null,
           "status": "deleted"
         },
@@ -753,7 +753,7 @@
         "cancellation_requested": true,
         "checkpoint": null,
         "completed": 0,
-        "created_at": "2026-10-03T16:46:47.218068+00:00",
+        "created_at": "2026-10-03T16:57:52.751799+00:00",
         "error_code": "cancelled",
         "failed": 0,
         "generation": 1,
@@ -765,13 +765,13 @@
         "source_id": "source:06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082",
         "status": "cancelled",
         "total": 0,
-        "updated_at": "2026-10-03T16:46:48.080788+00:00"
+        "updated_at": "2026-10-03T16:57:53.659914+00:00"
       },
       "completed_job": {
         "cancellation_requested": false,
         "checkpoint": null,
         "completed": 1,
-        "created_at": "2026-10-03T16:46:47.218068+00:00",
+        "created_at": "2026-10-03T16:57:52.751799+00:00",
         "error_code": null,
         "failed": 0,
         "generation": 1,
@@ -792,7 +792,7 @@
         "source_id": "source:06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082",
         "status": "completed",
         "total": 1,
-        "updated_at": "2026-10-03T16:46:49.154811+00:00"
+        "updated_at": "2026-10-03T16:57:54.628411+00:00"
       },
       "source": {
         "content": "# Native upload atlas\n\nnativeuploadatlas is a fictional project shared by native MCP clients.\n",
@@ -854,7 +854,7 @@
     ],
     "record": {
       "content": "nativeclientatlas synthetic shared client runtime note.",
-      "created_at": "2026-10-03T16:46:37.859781+00:00",
+      "created_at": "2026-10-03T16:57:44.829514+00:00",
       "id": "note:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
       "provenance": {
         "conversation_id": null,
@@ -879,12 +879,12 @@
         "source_uri": "mcp://capture/b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
         "start_line": null
       },
-      "revision": "9e55742d3131e5e8cf49a3a650dd25c194c50045110519999afaba372f3a26f6",
+      "revision": "582f9ef995b243a3922530536485e6e3d8d7fafc069d2a0e693f52d0f21ff64f",
       "tags": [
         "native-client-walkthrough"
       ],
       "title": "Synthetic native clients",
-      "updated_at": "2026-10-03T16:46:37.859781+00:00"
+      "updated_at": "2026-10-03T16:57:44.829514+00:00"
     },
     "second_record_id": "note:5229e7ac1c82c8ea24685a7b85c336e2031850ceb2b335a8e8feeb80489c4841"
   },
@@ -968,7 +968,7 @@
     "note_count": 3,
     "record": {
       "content": "nativeclientatlas synthetic shared client runtime note.",
-      "created_at": "2026-10-03T16:46:37.859781+00:00",
+      "created_at": "2026-10-03T16:57:44.829514+00:00",
       "id": "note:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
       "provenance": {
         "conversation_id": null,
@@ -993,12 +993,12 @@
         "source_uri": "mcp://capture/b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
         "start_line": null
       },
-      "revision": "9e55742d3131e5e8cf49a3a650dd25c194c50045110519999afaba372f3a26f6",
+      "revision": "582f9ef995b243a3922530536485e6e3d8d7fafc069d2a0e693f52d0f21ff64f",
       "tags": [
         "native-client-walkthrough"
       ],
       "title": "Synthetic native clients",
-      "updated_at": "2026-10-03T16:46:37.859781+00:00"
+      "updated_at": "2026-10-03T16:57:44.829514+00:00"
     }
   },
   "durable_receipt_count": 4,
@@ -1013,18 +1013,24 @@
   "database_schema_version": 18,
   "database_schema_evidence": "host portable-backup manifest",
   "evidence_kind": "Final integrated source candidate; same-host native runtime smoke",
-  "observed_at": "2026-10-03T16:50:21.375905+00:00",
+  "observed_at": "2026-10-03T17:00:35.292873+00:00",
   "source_revision_reported_by_builder": "a1bcef17b05994a1de0a951e5c686bb437b2ac80",
-  "harness_source_revision_at_run": "f4295a692bb0f848617912479511e323830b0502",
+  "harness_source_revision_at_run": "9b6bbf86877659eaa181655babcfcd992291e152",
+  "production_source_equivalence": {
+    "published_pr81_head": "58b8b7d42cf5d3f3c2f2ee54ef8ca3c009e97bcb",
+    "comparison_to_builder_source": "No differences in crate source/manifests, workspace manifest/lock or scripts; standalone test and documentation changes only",
+    "verified_by_git_diff": true
+  },
   "native_harness_regression_gate": {
-    "scope": "Focused gate observed before the candidate run; excludes ancestor test inventory",
-    "native_harness_tests": 20,
-    "hermes_python_native_tests": 20,
+    "scope": "Observed after final ancestor rebase and macOS exit-race fix; excludes a live inventory claim",
+    "stacked_python_tests": 40,
+    "native_harness_tests": 22,
+    "hermes_python_native_tests": 22,
     "node_syntax": true,
     "python_compilation": true,
     "diff_check": true,
-    "harness_sha256": "6fc2a1a25f8eaba13f70f54df3d10dbaca41cf10ad3af40dd58d5393f1233e1c",
-    "test_suite_sha256": "b1c3f8da6a28bc44090dfd4088aac69717507b5781bc9700d0cbd5019a8edf0a"
+    "harness_sha256": "e12b31117dfb3fab4194b49154dbe6e08077206c923915fc1d340e2a056c61cb",
+    "test_suite_sha256": "19b73f1752c39b7f9bb090f1b8eb7114ba6115cbd80ef6569cce1e565a804952"
   },
   "builder_reported_gate": {
     "rust_tests_passed": 697,
@@ -1038,9 +1044,10 @@
     "python_tests_before_native_harness": 18
   },
   "review_status_at_run": {
-    "request_head": "f4295a692bb0f848617912479511e323830b0502",
+    "last_request_head": "f4295a692bb0f848617912479511e323830b0502",
     "copilot_review": "Unavailable: requesting account review quota exhausted",
     "prior_agreed_findings_fixed": true,
+    "independent_cleanup_audit_revision": "9b6bbf86877659eaa181655babcfcd992291e152",
     "independent_cleanup_audit": "No actionable finding"
   }
 }
