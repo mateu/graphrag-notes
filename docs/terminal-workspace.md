@@ -7,8 +7,11 @@ graphrag workspace
 graphrag --config /path/to/config.toml workspace
 ```
 
-`interactive` remains an alias. The published `v0.1.0-rc.1` binary predates this
-workspace. macOS and Linux are supported.
+`interactive` remains an alias. Use current source until the forthcoming
+Apple Silicon `0.1.0-rc.2` candidate is published; `v0.1.0-rc.1` predates this
+workspace. See the [daily workflow](daily-workflow.md) for the connected practice
+run. Native Linux and Intel macOS release acceptance is tracked in
+[#66](https://github.com/mateu/graphrag-notes/issues/66).
 
 The workspace keeps one database connection open until you quit. It starts
 without contacting inference providers. Browse notes, inspect chats, search by

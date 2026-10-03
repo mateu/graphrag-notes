@@ -1,8 +1,11 @@
 # Capture, revise, and reuse context
 
-These commands are available in the latest source build. The published
-`v0.1.0-rc.1` candidate predates them. [Getting started](getting-started.md)
-covers installation and providers; this guide covers daily macOS and Linux use.
+These commands are available in current source and the forthcoming Apple
+Silicon `0.1.0-rc.2` candidate. Use source until its assets are published;
+`v0.1.0-rc.1` predates them. [Getting started](getting-started.md) covers
+installation and providers; the [daily workflow](daily-workflow.md) connects
+capture to refresh, retrieval, review, and recovery. Native Linux and Intel
+macOS release acceptance remains in [#66](https://github.com/mateu/graphrag-notes/issues/66).
 
 ## Capture multiline notes
 
