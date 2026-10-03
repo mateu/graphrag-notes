@@ -4,6 +4,18 @@ Validated on Apple Silicon macOS on 2026-10-03 using isolated in-memory or dispo
 
 ## Automated acceptance
 
+The final job-recovery Rust checkpoint `f6af11e3d3ed541dfc9bfde62be6eab9a8c42148` passed **715 tests**, with zero failures and five existing provider tests ignored across 33 targets. Workspace/all-target/all-feature Clippy with warnings denied, formatting and a fresh all-feature CLI build passed. Its immutable executable SHA-256 is `a861e61249f8e2e2882c26cc64bb5b19765b4f8ee61bd92750c9802013af7d7e`.
+
+This adds owner-scoped status views that remain readable and cancellable when saved execution input is malformed. Claim, worker execution, source history and resume still require strictly decoded input; cancelling a validation-quarantined job does not resume or repair it. Both provider endpoints now contribute domain-separated SHA-256 identities to the durable compatibility snapshot. Changed endpoints and legacy snapshots lacking those identities fail before inference; completed exact receipts remain replayable. All 21 database job tests and 11 application job tests pass. An independent Codex review found no actionable concern.
+
+The publication Rust checkpoint `02a49a2449153d9b1f3ec67bab2907ab4c610bd6` passed **710 tests**, with zero failures and five existing provider tests ignored across 33 targets, including empty and documentation targets. Workspace/all-target/all-feature Clippy with warnings denied, formatting and a fresh all-feature CLI build passed. The immutable executable SHA-256 is `3a99eb0eb6d324e3903e8f119f4f3656cad7544b1930f747df6742f6ebdb942b`.
+
+This checkpoint adds atomic exclusive restoration of replacement draft paths, including directories and symlinks, and fixes an existing portable-export inconsistency: raw unembedded entities store `embedding: []`, while the portable entity representation omits that field. The exporter now omits only that empty top-level entity array. Nonempty vectors still undergo strict dimension validation; opaque caller metadata is unchanged. All 24 backup regressions passed, including a real vector-inclusive archive/verify/fresh restore and rejection of a checksum-correct wrong-dimension archive before target creation.
+
+A real two-computer walkthrough used shiva as the sole corpus owner and clawd Linux as an OpenClaw client through encrypted SSH forwarding. Actual conversational OpenClaw sessions on both hosts and Hermes on shiva shared the canonical note and trusted actor provenance. Real host inference, credential revocation/rotation, lost acknowledgements, tunnel failure/reconnection, durable cancellation/resume, service restart and source refresh were exercised. Both vectorless and vector-inclusive portable archives restored successfully. The final three conversational sessions used the publication executable against the vector-inclusive restored corpus and confirmed exact retry receipts, current record revisions, cited context and the refreshed source. See [the two-host evidence PR](https://github.com/mateu/graphrag-notes/pull/82) for #78 for session IDs, version/hash attribution and the distinction between host-orchestrated RPC and native agent calls.
+
+The following records describe earlier checkpoints and retain their original attribution.
+
 The Codex-reviewed Rust checkpoint `d146db2` passed **705 tests**, with zero failures and five existing provider tests ignored across 26 nonempty targets (33 including empty and documentation targets). Workspace/all-target/all-feature Clippy with warnings denied, formatting, whitespace checks and a fresh all-feature CLI build passed. Its binary SHA-256 is `896e081973977236150240aa9de21ff8e4648ebd07647772a9ef8a974ee86d6d`. The #78 harness checkpoint `6217f07` has identical Rust sources/manifests and passed all 44 Python checks on macOS, with one Linux-only check skipped; that native target also passed all 26 checks on clawd Linux.
 
 This checkpoint includes final-content draft pinning for capture/edit/upload, a real held-admission HTTP regression that preserves later draft edits, portable path-like uploaded-title preservation across archive/JSONL round trips, durable malformed-input quarantine, and the standalone foundation's bounded body-ingress/provenance credential checks. These are code changes after the 697-test checkpoint; the historical binary and counts below do not identify the current candidate.
@@ -40,6 +52,16 @@ git diff --check
 ```
 
 Retained local evidence:
+
+- `/tmp/graphrag-56-recovery-tests.log` — 715-test final job-recovery Rust checkpoint.
+- `/tmp/graphrag-56-recovery-clippy.log` — final workspace/all-target/all-feature Clippy.
+- `/tmp/graphrag-56-recovery-fmt.log` — final formatting.
+- `/tmp/graphrag-56-recovery-build.log` — final all-feature CLI build.
+
+- `/tmp/graphrag-56-publication-tests.log` — 710-test publication Rust checkpoint.
+- `/tmp/graphrag-56-publication-clippy.log` — publication workspace/all-target/all-feature Clippy.
+- `/tmp/graphrag-56-publication-fmt.log` — publication formatting.
+- `/tmp/graphrag-56-publication-build.log` — publication all-feature CLI build.
 
 - `/tmp/graphrag-56-codex-combined-tests.log` — 705-test Codex-reviewed combined Rust checkpoint.
 - `/tmp/graphrag-56-codex-combined-clippy.log` — combined workspace Clippy.
