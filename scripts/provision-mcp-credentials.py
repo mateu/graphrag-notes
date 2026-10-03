@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Provision private per-instance MCP credentials without printing bearer tokens."""
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -24,6 +25,11 @@ def private_write(path, text):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
@@ -51,6 +57,16 @@ def rotate(directory, identity):
     metadata = directory.lstat()
     if not directory.is_dir() or directory.is_symlink() or metadata.st_mode & 0o077:
         raise ValueError("credential directory must be a private regular directory (mode 0700)")
+    # Serialize rotations so each pending record refers to one policy generation.
+    lock_fd = os.open(directory / ".rotation.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        _rotate_locked(directory, identity)
+    finally:
+        os.close(lock_fd)
+
+
+def _rotate_locked(directory, identity):
     policy_path = directory / "credentials.json"
     if policy_path.is_symlink() or not policy_path.is_file():
         raise ValueError("credential policy must be a regular file")
@@ -58,10 +74,32 @@ def rotate(directory, identity):
     entries = [entry for entry in policy["credentials"] if entry["instance_id"] == identity]
     if policy.get("schema_version") != 1 or len(entries) != 1:
         raise ValueError("rotation requires exactly one existing instance in schema version 1")
-    token = secrets.token_urlsafe(32)
-    entries[0]["token_sha256"] = hashlib.sha256(token.encode()).hexdigest()
-    private_write(directory / f"{identity}.env", f"GRAPHRAG_TOKEN='{token}'\n")
+    pending_path = directory / f"{identity}.rotation.json"
+    if pending_path.exists():
+        if pending_path.is_symlink() or pending_path.stat().st_mode & 0o077:
+            raise ValueError("rotation recovery must be a private regular file")
+        pending = json.loads(pending_path.read_text())
+        token = pending["token"]
+        if (pending.get("instance_id") != identity
+                or entries[0]["token_sha256"] not in (pending["old_hash"], pending["new_hash"])
+                or hashlib.sha256(token.encode()).hexdigest() != pending["new_hash"]):
+            raise ValueError("rotation recovery does not match the current credential")
+    else:
+        token = secrets.token_urlsafe(32)
+        pending = {"instance_id": identity, "old_hash": entries[0]["token_sha256"],
+                   "new_hash": hashlib.sha256(token.encode()).hexdigest(), "token": token}
+        # Persist the replacement token before revoking the old one. A crash
+        # at any later step can finish with this exact token on the next run.
+        private_write(pending_path, json.dumps(pending) + "\n")
+    entries[0]["token_sha256"] = pending["new_hash"]
     private_write(policy_path, json.dumps(policy, indent=2) + "\n")
+    private_write(directory / f"{identity}.env", f"GRAPHRAG_TOKEN='{token}'\n")
+    pending_path.unlink()
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def main():
@@ -79,7 +117,7 @@ def main():
         else:
             provision(args.directory, args.client, args.read_only)
     except (OSError, ValueError, KeyError, TypeError):
-        parser.exit(1, "Credential setup failed; check private directory, unique client IDs and existing policy. No tokens are printed.\n")
+        parser.exit(1, "Credential setup failed; check private directory, unique client IDs and existing policy. Retry the same --rotate command to recover an interrupted rotation. No tokens are printed.\n")
     print(f"Private credential files ready in {args.directory}; transfer only each client's own .env file.")
 
 

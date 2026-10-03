@@ -30,6 +30,15 @@ fn validate_text(name: &str, value: &str, maximum: usize, required: bool) -> App
     Ok(())
 }
 
+pub(crate) fn validate_since_days(days: Option<u32>) -> ApplicationResult<()> {
+    if days.is_some_and(|days| days > MAX_REMOTE_SINCE_DAYS) {
+        return Err(ApplicationError::Validation(format!(
+            "since_days must be at most {MAX_REMOTE_SINCE_DAYS}"
+        )));
+    }
+    Ok(())
+}
+
 fn credential_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
     matches!(
@@ -144,6 +153,7 @@ impl RemoteApplicationOperations for EmbeddedApplication {
         cancellation: ActionCancellation,
     ) -> ApplicationResult<ContextResponse> {
         validate_text("query", &request.query, MAX_REMOTE_QUERY_CHARS, true)?;
+        validate_since_days(request.since_days)?;
         if let Some(uri) = &request.source_uri {
             validate_text("source URI", uri, 2048, false)?;
         }

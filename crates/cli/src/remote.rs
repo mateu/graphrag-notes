@@ -114,6 +114,12 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
     });
     let mut draft = Draft::save(&bytes, &directory, |path| {
         let mut command = format!("graphrag --server {} --credential-env {} --request-id {} capture --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(format));
+        if let Some(directory) = &options.draft_dir {
+            command.push_str(&format!(
+                " --draft-dir {}",
+                shell_quote(&directory.to_string_lossy())
+            ));
+        }
         if let Some(title) = title {
             command.push_str(&format!(" --title={}", shell_quote(title)));
         }

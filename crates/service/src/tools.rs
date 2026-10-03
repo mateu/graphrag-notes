@@ -68,6 +68,7 @@ struct SearchInput {
     limit: usize,
     #[serde(default = "auto")]
     graph: GraphPolicy,
+    #[schemars(range(min = 0, max = 365000))]
     since_days: Option<u32>,
     #[schemars(length(max = 2048))]
     source_uri: Option<String>,
@@ -109,6 +110,7 @@ struct ContextInput {
     scope: Scope,
     #[serde(default = "auto")]
     graph: GraphPolicy,
+    #[schemars(range(min = 0, max = 365000))]
     since_days: Option<u32>,
     #[schemars(length(max = 2048))]
     source_uri: Option<String>,
@@ -125,9 +127,12 @@ struct ContextInput {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct CaptureInput {
-    /// Persist this stable identifier and reuse it for uncertain/retried writes.
+    /// Persist this identifier and reuse it for uncertain/retried writes. Maximum
+    /// 128 Unicode characters and 256 UTF-8 bytes; byte limits are checked semantically.
     #[schemars(length(min = 1, max = 128))]
     request_id: String,
+    /// Nonempty text, at most 65536 UTF-8 bytes (checked semantically).
+    /// JSON Schema maxLength counts Unicode characters, rather than bytes.
     #[schemars(length(min = 1, max = 65536))]
     content: String,
     #[schemars(length(max = 512))]

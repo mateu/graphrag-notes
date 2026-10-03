@@ -73,7 +73,7 @@ Load only your own token into the process environment:
 
 ```bash
 set -a
-. "$HOME/.graphrag/openclaw-a.env"
+. "$HOME/.graphrag/mcp-private/openclaw-a.env"
 set +a
 graphrag --server http://127.0.0.1:3300/mcp \
   search 'synthetic shared note' --mode keyword --format json
@@ -205,6 +205,10 @@ Rotate one instance while retaining its identity and capabilities:
 python3 scripts/provision-mcp-credentials.py "$HOME/.graphrag/mcp-private" \
   --rotate openclaw-a
 ```
+
+Rotation stages a private recovery record before updating the policy and client
+file. If interrupted, rerun the same `--rotate` command to finish that rotation;
+it retains the staged token and creates no additional credential.
 
 Replace that instance's private token through the encrypted transfer channel and
 refresh its process environment. Every HTTP request reloads the private policy,

@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 
 pub const MAX_REMOTE_CAPTURE_BYTES: usize = 64 * 1024;
 pub const MAX_REMOTE_QUERY_CHARS: usize = 1024;
+/// A bounded lookback avoids overflowing Chrono date arithmetic.
+pub const MAX_REMOTE_SINCE_DAYS: u32 = 365_000;
 pub const MAX_CONTEXT_TOKENS: usize = 32 * 1024;
 pub const MAX_CONTEXT_CHUNK_TOKENS: usize = 8 * 1024;
 

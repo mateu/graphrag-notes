@@ -60,7 +60,8 @@ fn failed_capture_keeps_private_draft_and_original_request_identity() {
         .assert()
         .failure()
         .stderr(contains("--request-id 'capture-replay-001'"))
-        .stderr(contains("--content-file"));
+        .stderr(contains("--content-file"))
+        .stderr(contains(format!("--draft-dir '{}'", drafts.display())));
     let paths = fs::read_dir(&drafts)
         .unwrap()
         .map(|entry| entry.unwrap().path())

@@ -255,6 +255,7 @@ impl ApplicationOperations for EmbeddedApplication {
         cancel: ActionCancellation,
     ) -> ApplicationResult<Vec<RecordSummary>> {
         validate_limit(request.limit)?;
+        crate::remote_operations::validate_since_days(request.since_days)?;
         if request.query.trim().is_empty() {
             return Err(ApplicationError::Validation(
                 "search query cannot be empty".into(),

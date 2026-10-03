@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("mcp_credentials", Path(__file__).parents[1] / "provision-mcp-credentials.py")
 credentials = importlib.util.module_from_spec(spec)
@@ -29,6 +30,33 @@ class CredentialProvisioning(unittest.TestCase):
                 self.assertEqual(path.stat().st_mode & 0o777, 0o700)
                 for file in path.iterdir():
                     self.assertEqual(file.stat().st_mode & 0o777, 0o600)
+
+    def test_interrupted_rotation_recovers_the_same_staged_token(self):
+        for failed_step in ["credentials.json", "openclaw-a.env"]:
+            with self.subTest(failed_step=failed_step), tempfile.TemporaryDirectory() as base:
+                path = Path(base) / "private"
+                credentials.provision(path, ["openclaw-a"], ["hermes"])
+                original_policy = json.loads((path / "credentials.json").read_text())
+                original_env = (path / "openclaw-a.env").read_text()
+                write = credentials.private_write
+                def interrupted(target, text):
+                    if target.name == failed_step:
+                        raise OSError("synthetic interrupted write")
+                    write(target, text)
+                with patch.object(credentials, "private_write", side_effect=interrupted):
+                    with self.assertRaises(OSError):
+                        credentials.rotate(path, "openclaw-a")
+                pending = json.loads((path / "openclaw-a.rotation.json").read_text())
+                self.assertEqual((path / "openclaw-a.env").read_text(), original_env)
+                if failed_step == "credentials.json":
+                    self.assertEqual(json.loads((path / "credentials.json").read_text()), original_policy)
+                with patch.object(credentials.secrets, "token_urlsafe", side_effect=AssertionError("must reuse staged token")):
+                    credentials.rotate(path, "openclaw-a")
+                policy = json.loads((path / "credentials.json").read_text())
+                self.assertEqual(policy["credentials"][0]["token_sha256"], pending["new_hash"])
+                self.assertEqual(policy["credentials"][1], original_policy["credentials"][1])
+                self.assertIn(pending["token"], (path / "openclaw-a.env").read_text())
+                self.assertFalse((path / "openclaw-a.rotation.json").exists())
 
     def test_refuses_overwrite_and_invalid_ids_before_writing(self):
         with tempfile.TemporaryDirectory() as base:

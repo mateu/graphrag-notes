@@ -403,3 +403,32 @@ async fn remote_context_preserves_existing_packing_citations_and_budget() {
         serde_json::from_value(serde_json::to_value(&actual).unwrap()).unwrap();
     assert_eq!(decoded.total_tokens, actual.total_tokens);
 }
+
+#[tokio::test]
+async fn excessive_date_filters_fail_before_inference_or_date_arithmetic() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let app = offline(&repo);
+    for mode in [SearchMode::Keyword, SearchMode::Hybrid] {
+        let result = app
+            .search(
+                SearchRequest {
+                    query: "synthetic".into(),
+                    mode,
+                    scope: Scope::All,
+                    limit: 10,
+                    graph: GraphPolicy::Off,
+                    since_days: Some(u32::MAX),
+                    source_uri: None,
+                },
+                ActionCancellation::new(),
+            )
+            .await;
+        assert!(matches!(result, Err(ApplicationError::Validation(_))));
+    }
+    let mut request = context_request();
+    request.since_days = Some(u32::MAX);
+    assert!(matches!(
+        app.build_context(request, ActionCancellation::new()).await,
+        Err(ApplicationError::Validation(_))
+    ));
+}
