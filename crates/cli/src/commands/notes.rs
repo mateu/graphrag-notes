@@ -1,3 +1,5 @@
+use super::editor::{self, Draft, EditorOptions, EditorOutcome};
+use super::navigation::shell_quote;
 use crate::output::{self, OutputFormat};
 use anyhow::{bail, Result};
 use clap::Subcommand;
@@ -7,7 +9,7 @@ use graphrag_db::{repository::SearchResult, Repository, SourceDeleteSummary};
 use serde::Serialize;
 use std::fmt;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Explicit validation failure for local edit input. This is deliberately
 /// distinct from provider/database I/O so the top-level CLI can honor the
@@ -64,6 +66,8 @@ pub enum NotesCommand {
         content_file: Option<PathBuf>,
         #[arg(long, conflicts_with = "content_file")]
         stdin: bool,
+        #[command(flatten)]
+        editor: EditorOptions,
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
         /// Create a new manual note instead of changing a source-generated chunk.
@@ -109,6 +113,15 @@ struct NoteDeleteOutput<'a> {
 #[derive(Debug)]
 pub struct PreparedEdit {
     content: Option<String>,
+    draft: Option<Draft>,
+    outcome: Option<EditorOutcome>,
+    expected: Option<Note>,
+}
+
+impl PreparedEdit {
+    pub fn needs_inference(&self, command: &NotesCommand) -> bool {
+        self.content.is_some() || matches!(command, NotesCommand::Edit { detach: true, .. })
+    }
 }
 
 /// Validate an edit's local inputs before any embedding/extraction preflight.
@@ -117,21 +130,108 @@ pub struct PreparedEdit {
 pub async fn prepare_edit(
     repo: &Repository,
     command: &NotesCommand,
+    config_path: Option<&Path>,
+    database: &Path,
 ) -> Result<Option<PreparedEdit>> {
     let NotesCommand::Edit {
         id,
         title,
         content_file,
         stdin,
+        editor: options,
         tags,
         detach,
+        format,
         ..
     } = command
     else {
         return Ok(None);
     };
     let existing = get_visible_note(repo, id).await?;
-    let content = read_edit_content(content_file.clone(), *stdin)?;
+    if !detach && repo.note_requires_detach(&existing).await? {
+        let base = editor::base_command(config_path, database)?;
+        let source_action = if existing.source_generation.is_some() {
+            format!("open its source with {base} open {}", shell_quote(id))
+        } else {
+            format!(
+                "inspect its chat provenance with {base} inspect {}",
+                shell_quote(id)
+            )
+        };
+        bail!("refusing to edit source-generated note {id} in place; {source_action} or explicitly create a manual copy with {base} notes edit {} --detach --editor", shell_quote(id));
+    }
+    let mut draft = None;
+    let mut outcome = None;
+    let content = if options.editor || content_file.is_some() || *stdin {
+        let base = editor::base_command(config_path, database)?;
+        let directory = editor::directory(options, database)?;
+        let bytes = if options.editor {
+            existing.content.as_bytes().to_vec()
+        } else if let Some(path) = content_file {
+            std::fs::read(path).map_err(|source| {
+                NotesEditValidationError::UnreadableContentFile {
+                    path: path.clone(),
+                    source,
+                }
+            })?
+        } else {
+            let mut bytes = Vec::new();
+            io::stdin().read_to_end(&mut bytes)?;
+            bytes
+        };
+        let saved = Draft::save(&bytes, &directory, |path| {
+            let mut command = format!(
+                "{base} notes edit {} --content-file {}",
+                shell_quote(id),
+                shell_quote(&path.to_string_lossy())
+            );
+            if *detach {
+                command.push_str(" --detach");
+            }
+            if let Some(title) = title {
+                command.push_str(&format!(" --title={}", shell_quote(title)));
+            }
+            if let Some(tags) = tags {
+                command.push_str(&format!(" --tags={}", shell_quote(&tags.join(","))));
+            }
+            command.push_str(&format!(" --format {}", editor::format_flag(*format)));
+            if options.draft_dir.is_some() {
+                command.push_str(&format!(
+                    " --draft-dir={}",
+                    shell_quote(&directory.to_string_lossy())
+                ));
+            }
+            command
+        })?;
+        let original = saved.read()?;
+        let (editor_outcome, content) = if options.editor {
+            saved.edit(options, &original)?
+        } else {
+            (EditorOutcome::Changed, original)
+        };
+        draft = Some(saved);
+        if options.editor && editor_outcome == EditorOutcome::Cancelled {
+            outcome = Some(editor_outcome);
+            None
+        } else if options.editor && editor_outcome == EditorOutcome::Unchanged {
+            // Opening and leaving an editor unchanged is always a no-op,
+            // including explicit metadata and detach flags on this invocation.
+            outcome = Some(editor_outcome);
+            None
+        } else {
+            Some(content)
+        }
+    } else {
+        None
+    };
+    if outcome.is_some() {
+        return Ok(Some(PreparedEdit {
+            content,
+            draft,
+            outcome,
+            expected: options.editor.then_some(existing),
+        }));
+    }
     validate_edit_request(
         &existing,
         id,
@@ -140,7 +240,41 @@ pub async fn prepare_edit(
         content.as_deref(),
         *detach,
     )?;
-    Ok(Some(PreparedEdit { content }))
+    Ok(Some(PreparedEdit {
+        content,
+        draft,
+        outcome,
+        expected: options.editor.then_some(existing),
+    }))
+}
+
+pub fn print_editor_noop(prepared: &mut PreparedEdit, command: &NotesCommand) -> Result<bool> {
+    let Some(outcome) = prepared.outcome else {
+        return Ok(false);
+    };
+    let NotesCommand::Edit { id, format, .. } = command else {
+        return Ok(false);
+    };
+    let cancelled = outcome == EditorOutcome::Cancelled;
+    let draft = prepared.draft.as_mut().expect("editor session has a draft");
+    let retained = cancelled || !draft.discard(Some(id));
+    output::print(
+        *format,
+        "notes.edit",
+        serde_json::json!({
+            "status": if cancelled { "cancelled" } else { "unchanged" }, "id": id,
+            "detached": false, "draft_path": retained.then_some(&draft.path),
+            "recovery_command": if cancelled { draft.recoverable_command() } else { None },
+        }),
+        |writer| {
+            writeln!(
+                writer,
+                "Editor {}; note {id} retained.",
+                if cancelled { "cancelled" } else { "unchanged" }
+            )
+        },
+    )?;
+    Ok(true)
 }
 
 pub async fn run(
@@ -162,6 +296,7 @@ pub async fn run(
             title,
             content_file,
             stdin,
+            editor: _,
             tags,
             detach,
             format,
@@ -228,10 +363,23 @@ async fn edit(
     tags: Option<Vec<String>>,
     detach: bool,
     format: OutputFormat,
-    prepared_edit: Option<PreparedEdit>,
+    mut prepared_edit: Option<PreparedEdit>,
 ) -> Result<()> {
-    let existing = get_visible_note(&repo, &id).await?;
-    let content = select_edit_content(prepared_edit, content_file, stdin)?;
+    let guarded = prepared_edit
+        .as_ref()
+        .is_some_and(|prepared| prepared.expected.is_some());
+    let existing = if let Some(expected) = prepared_edit
+        .as_ref()
+        .and_then(|prepared| prepared.expected.as_ref())
+    {
+        expected.clone()
+    } else {
+        get_visible_note(&repo, &id).await?
+    };
+    if !detach && repo.note_requires_detach(&existing).await? {
+        bail!("refusing to edit source-generated note {id} in place; use --detach to create a manual note that retains source provenance");
+    }
+    let content = select_edit_content(prepared_edit.as_mut(), content_file, stdin)?;
     validate_edit_request(
         &existing,
         &id,
@@ -242,18 +390,26 @@ async fn edit(
     )?;
 
     let updated = if detach {
-        librarian
-            .detach_note_to_manual(
-                &existing,
-                content.unwrap_or_else(|| existing.content.clone()),
-                title,
-                tags,
-            )
-            .await?
+        let content = content.unwrap_or_else(|| existing.content.clone());
+        if guarded {
+            librarian
+                .detach_note_to_manual_guarded(&existing, content, title, tags)
+                .await?
+        } else {
+            librarian
+                .detach_note_to_manual(&existing, content, title, tags)
+                .await?
+        }
     } else if let Some(content) = content {
-        librarian
-            .update_manual_note_content(&existing, content, title, tags)
-            .await?
+        if guarded {
+            librarian
+                .update_manual_note_content_guarded(&existing, content, title, tags)
+                .await?
+        } else {
+            librarian
+                .update_manual_note_content(&existing, content, title, tags)
+                .await?
+        }
     } else {
         let mut replacement = existing;
         if let Some(title) = title {
@@ -265,6 +421,13 @@ async fn edit(
         replacement.updated_at = chrono::Utc::now();
         repo.update_note(&id, replacement).await?
     };
+
+    if let Some(draft) = prepared_edit
+        .as_mut()
+        .and_then(|prepared| prepared.draft.as_mut())
+    {
+        draft.discard(updated.id.as_ref().map(record_id_to_string).as_deref());
+    }
 
     output::print(
         format,
@@ -362,12 +525,12 @@ fn read_edit_content(content_file: Option<PathBuf>, stdin: bool) -> Result<Optio
 }
 
 fn select_edit_content(
-    prepared_edit: Option<PreparedEdit>,
+    prepared_edit: Option<&mut PreparedEdit>,
     content_file: Option<PathBuf>,
     stdin: bool,
 ) -> Result<Option<String>> {
     match prepared_edit {
-        Some(prepared) => Ok(prepared.content),
+        Some(prepared) => Ok(prepared.content.take()),
         None => read_edit_content(content_file, stdin),
     }
 }
@@ -421,8 +584,68 @@ fn print_delete_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::{has_edit_action, select_edit_content, validate_edit_request, PreparedEdit};
-    use graphrag_core::Note;
+    use super::{edit, has_edit_action, select_edit_content, validate_edit_request, PreparedEdit};
+    use crate::commands::editor::Draft;
+    use crate::output::{ExitCode, OutputFormat};
+    use graphrag_agents::{DeterministicEmbedder, FixtureEntityExtractor, LibrarianAgent};
+    use graphrag_core::{record_id_to_string, Note};
+    use graphrag_db::{init_memory, Repository};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn stale_editor_snapshot_preserves_concurrent_change_and_recovery_draft() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let opening = repo.create_note(Note::new("opening body")).await.unwrap();
+        let id = record_id_to_string(opening.id.as_ref().unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        let draft = Draft::save(b"editor replacement", directory.path(), |_| {
+            "recover draft".into()
+        })
+        .unwrap();
+        let draft_path = draft.path.clone();
+        let prepared = PreparedEdit {
+            content: Some("editor replacement".into()),
+            draft: Some(draft),
+            outcome: None,
+            expected: Some(opening.clone()),
+        };
+        let mut concurrent = opening.clone();
+        concurrent.content = "concurrently updated body".into();
+        concurrent.title = Some("another client".into());
+        // A content change must be detected even if an external writer reused
+        // the original timestamp rather than advancing it.
+        repo.update_note(&id, concurrent.clone()).await.unwrap();
+        let librarian = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        );
+        let error = edit(
+            repo.clone(),
+            librarian,
+            id.clone(),
+            None,
+            None,
+            false,
+            None,
+            false,
+            OutputFormat::Json,
+            Some(prepared),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(crate::app::exit_code_for(&error), ExitCode::Validation);
+        assert!(error.to_string().contains("changed"));
+        let stored = repo.get_visible_note(&id).await.unwrap().unwrap();
+        assert_eq!(stored.content, concurrent.content);
+        assert_eq!(stored.title, concurrent.title);
+        assert_eq!(stored.updated_at, opening.updated_at);
+        assert_eq!(
+            std::fs::read_to_string(draft_path).unwrap(),
+            "editor replacement"
+        );
+        assert_eq!(repo.list_notes(10).await.unwrap().len(), 1);
+    }
 
     #[test]
     fn detach_alone_is_an_edit_action() {
@@ -457,10 +680,14 @@ mod tests {
 
     #[test]
     fn prepared_edit_content_is_reused_without_reading_the_original_input_again() {
+        let mut prepared = PreparedEdit {
+            content: Some("already read".into()),
+            draft: None,
+            outcome: None,
+            expected: None,
+        };
         let content = select_edit_content(
-            Some(PreparedEdit {
-                content: Some("already read".into()),
-            }),
+            Some(&mut prepared),
             Some(std::path::PathBuf::from(
                 "definitely-missing-content-file.md",
             )),

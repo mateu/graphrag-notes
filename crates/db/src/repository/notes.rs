@@ -5,6 +5,130 @@
 
 use super::*;
 
+#[cfg(test)]
+#[path = "notes_edit_guard_tests.rs"]
+mod edit_guard_tests;
+
+const EDITOR_REVISION_CONFLICT: &str = "graphrag-note-editor-revision-conflict";
+
+/// Compare the persisted editor-opening snapshot inside the same transaction
+/// that changes note/entity/mention records. Timestamps alone cannot detect imports
+/// or other writers which preserve `updated_at`; every persisted Note field
+/// participates. Defaulted fields normalize older records to their domain
+/// representation, while missing/hidden rows always fail the guard. Guarded
+/// in-place updates additionally require manual ownership; provenance links
+/// added during editor/provider work must not turn a manual edit into an
+/// imported-note overwrite. Detach only checks the opening note snapshot.
+fn editor_snapshot_guard(require_manual: bool) -> String {
+    let ownership = if require_manual {
+        "AND source_generation IS NONE \
+         AND array::len((SELECT VALUE id FROM note_from_conversation WHERE in = $editor_source LIMIT 1)) = 0 \
+         AND array::len((SELECT VALUE id FROM note_from_message WHERE in = $editor_source LIMIT 1)) = 0 "
+    } else {
+        ""
+    };
+    format!(
+        "LET $editor_matches = (SELECT VALUE id FROM note WHERE id = $editor_source \
+         AND {VISIBLE_NOTE_CONDITION} \
+         {ownership}\
+         AND note_type = $editor_expected.note_type \
+         AND title = $editor_expected.title AND content = $editor_expected.content \
+         AND (embedding ?? []) = ($editor_expected.embedding ?? []) \
+         AND source_id = $editor_expected.source_id \
+         AND source_generation = $editor_expected.source_generation \
+         AND chunk_key = $editor_expected.chunk_key \
+         AND chunk_location_key = $editor_expected.chunk_location_key \
+         AND chunk_ordinal = $editor_expected.chunk_ordinal \
+         AND (chunk_heading_path ?? []) = $editor_expected.chunk_heading_path \
+         AND source_start_line = $editor_expected.source_start_line \
+         AND source_end_line = $editor_expected.source_end_line \
+         AND source_start_byte = $editor_expected.source_start_byte \
+         AND source_end_byte = $editor_expected.source_end_byte \
+         AND chunk_overlap_from = $editor_expected.chunk_overlap_from \
+         AND chunk_overlap_chars = $editor_expected.chunk_overlap_chars \
+         AND (split_fenced_code ?? false) = $editor_expected.split_fenced_code \
+         AND content_hash = $editor_expected.content_hash \
+         AND search_content = $editor_expected.search_content \
+         AND (tags ?? []) = $editor_expected.tags \
+         AND created_at = $editor_expected.created_at \
+         AND updated_at = $editor_expected.updated_at LIMIT 1); \
+         IF array::len($editor_matches) != 1 {{ THROW '{EDITOR_REVISION_CONFLICT}'; }}; "
+    )
+}
+
+fn editor_source_id(expected: &Note) -> Result<RecordId> {
+    expected
+        .id
+        .as_ref()
+        .filter(|id| id.table.as_str() == "note")
+        .cloned()
+        .ok_or_else(|| DbError::NoteRevisionConflict("(missing note ID)".into()))
+}
+
+/// Keep the entity upsert semantics aligned with `Repository::upsert_entity`:
+/// canonical names identify rows, existing type/creation time survive, and
+/// metadata aliases merge distinctly. Running these writes after the snapshot
+/// guard and inside the note transaction prevents failed edits from changing
+/// shared entities or leaving unused rows behind. Resolve IDs after all
+/// upserts so repeated canonical names create only one mention.
+fn replacement_entities_transaction() -> &'static str {
+    "FOR $entity IN $replacement_entities { \
+        INSERT INTO entity (entity_type, name, canonical_name, embedding, metadata, created_at) \
+        VALUES ($entity.entity_type, $entity.name, $entity.canonical_name, \
+                $entity.embedding ?? [], $entity.metadata, time::now()) \
+        ON DUPLICATE KEY UPDATE \
+            name = $entity.name, embedding = $entity.embedding ?? [], \
+            metadata = object::extend( \
+                object::extend(metadata ?? {}, $entity.metadata ?? {}), \
+                { aliases: array::distinct(array::concat( \
+                    metadata.aliases ?? [], $entity.metadata.aliases ?? [] \
+                )) } \
+            ); \
+     }; \
+     LET $entity_ids = (SELECT VALUE id FROM entity \
+                       WHERE canonical_name IN $replacement_entity_names); "
+}
+
+fn check_note_mutation_errors(
+    errors: HashMap<usize, surrealdb::Error>,
+    operation: &str,
+    expected: Option<&Note>,
+) -> Result<()> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+    if let Some(expected) = expected {
+        if errors.values().any(|error| {
+            // The SDK preserves the engine's THROW display prefix rather
+            // than always marking it as a public `Thrown` error. Match only
+            // our fixed SQL sentinel; callers still receive a typed error.
+            (error
+                .message()
+                .strip_prefix("An error occurred: ")
+                .unwrap_or(error.message())
+                == EDITOR_REVISION_CONFLICT)
+                || matches!(
+                    error.details(),
+                    surrealdb_types::ErrorDetails::Query(Some(
+                        surrealdb_types::QueryError::TransactionConflict
+                    ))
+                )
+        }) {
+            return Err(DbError::NoteRevisionConflict(record_id_to_string(
+                &editor_source_id(expected)?,
+            )));
+        }
+    }
+    Err(DbError::QueryFailed(format!(
+        "atomic note-and-mention {operation} failed: {}",
+        errors
+            .into_iter()
+            .map(|(statement, error)| format!("statement {statement}: {error}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )))
+}
+
 impl Repository {
     #[instrument(skip(self, note))]
     pub async fn create_note(&self, note: Note) -> Result<Note> {
@@ -65,23 +189,69 @@ impl Repository {
         created.ok_or_else(|| DbError::QueryFailed("create_note".into()))
     }
 
-    /// Atomically create a manual note and its complete mention set. A
-    /// detached copy is never visible without its extraction result; if a
-    /// mention write fails, the note creation rolls back as well, so retrying
-    /// cannot leave duplicate manual copies behind.
+    /// Atomically create a manual note, upsert its extracted entities, and
+    /// write its complete mention set. Failed note/entity/mention writes roll
+    /// back together, so a retry cannot leave partial extraction records or
+    /// duplicate manual copies behind.
     #[instrument(skip(self, note, entities))]
     pub async fn create_note_and_replace_entities(
         &self,
         note: Note,
         entities: Vec<Entity>,
     ) -> Result<Note> {
+        self.create_note_and_replace_entities_guarded(note, entities, None, None)
+            .await
+    }
+
+    /// Create a chat-derived note and its conversation ownership together.
+    /// A note is never visible without the relationship that distinguishes it
+    /// from a detached manual copy, even if later extraction or message linking
+    /// fails. Source-generation and source-lifecycle semantics stay unchanged.
+    #[instrument(skip(self, note))]
+    pub async fn create_chat_note(&self, note: Note, conversation_id: &RecordId) -> Result<Note> {
+        self.create_note_and_replace_entities_guarded(note, Vec::new(), None, Some(conversation_id))
+            .await
+    }
+
+    /// Create a detached manual copy only if its editor-opening source note
+    /// remains visible and exactly unchanged. The guard and note/mention
+    /// creation share a transaction, so conflicts leave no detached copy.
+    #[instrument(skip(self, note, entities, expected))]
+    pub async fn create_note_and_replace_entities_if_unchanged(
+        &self,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: &Note,
+    ) -> Result<Note> {
+        self.create_note_and_replace_entities_guarded(note, entities, Some(expected), None)
+            .await
+    }
+
+    async fn create_note_and_replace_entities_guarded(
+        &self,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: Option<&Note>,
+        conversation_id: Option<&RecordId>,
+    ) -> Result<Note> {
+        let editor_source = expected.map(editor_source_id).transpose()?;
+        let guard = expected
+            .map(|_| editor_snapshot_guard(false))
+            .unwrap_or_default();
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
-        let entity_ids = self.replacement_entity_ids(entities).await?;
+        let replacement_entities = replacement_entities_transaction();
+        let entity_names: Vec<String> = entities
+            .iter()
+            .map(|entity| entity.canonical_name.clone())
+            .collect();
         let note_id = RecordId::new("note", Uuid::new_v4().to_string());
         let mut response = self
             .db
-            .query(
-                "BEGIN TRANSACTION; \
+            .query(format!(
+                "BEGIN TRANSACTION; {guard}{replacement_entities}\
+                 IF $chat_conversation != NONE {{ \
+                    CREATE note_from_conversation SET in = $id, out = $chat_conversation; \
+                 }}; \
                  CREATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, source_id = $source_id, \
@@ -94,9 +264,12 @@ impl Repository {
                     content_hash = $content_hash, \
                     search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
-                 FOR $entity_id IN $entity_ids { CREATE mentions SET in = $id, out = $entity_id; }; \
-                 COMMIT TRANSACTION;",
-            )
+                 FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
+                 COMMIT TRANSACTION;"
+            ))
+            .bind(("editor_source", editor_source))
+            .bind(("editor_expected", expected.cloned()))
+            .bind(("chat_conversation", conversation_id.cloned()))
             .bind(("id", note_id.clone()))
             .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
             .bind(("title", note.title.clone()))
@@ -120,22 +293,20 @@ impl Repository {
             .bind(("tags", note.tags.clone()))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
-            .bind(("entity_ids", entity_ids))
+            .bind(("replacement_entities", entities))
+            .bind(("replacement_entity_names", entity_names))
             .await?;
-        let errors = response.take_errors();
-        if !errors.is_empty() {
-            return Err(DbError::QueryFailed(format!(
-                "atomic note-and-mention create failed: {}",
-                errors
-                    .into_iter()
-                    .map(|(statement, error)| format!("statement {statement}: {error}"))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
-        }
-        self.get_note(&record_id_to_string(&note_id))
-            .await?
-            .ok_or_else(|| DbError::CreateFailed("atomic note-and-mention create".into()))
+        check_note_mutation_errors(response.take_errors(), "create", expected)?;
+        // The final response slots are CREATE, the mention loop, and COMMIT.
+        // Read the authoritative, schema-normalized CREATE result only after
+        // every statement (including COMMIT) succeeds. A separate read here
+        // could fail after persistence and incorrectly encourage a retry that
+        // creates another manual note or detached copy.
+        let created_index = response.num_statements().checked_sub(3).ok_or_else(|| {
+            DbError::CreateFailed("missing atomic note-and-mention create result".into())
+        })?;
+        let created: Option<Note> = response.take(created_index)?;
+        created.ok_or_else(|| DbError::CreateFailed("atomic note-and-mention create".into()))
     }
 
     /// Get a note by ID
@@ -159,6 +330,19 @@ impl Repository {
             .await?
             .take(0)?;
         Ok(note)
+    }
+
+    /// Source generations and chat provenance relationships identify imported
+    /// notes. Source IDs/types and tags alone do not: detached manual copies
+    /// intentionally retain those fields without generation or chat links.
+    pub async fn note_requires_detach(&self, note: &Note) -> Result<bool> {
+        if note.source_generation.is_some() {
+            return Ok(true);
+        }
+        match &note.id {
+            Some(id) => self.note_has_chat_provenance(id).await,
+            None => Ok(false),
+        }
     }
 
     /// Update a note
@@ -217,11 +401,9 @@ impl Repository {
         updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
 
-    /// Atomically replace a note's searchable payload and its complete entity
-    /// mention set. Entity upserts are completed before the transaction; the
-    /// visible note update and mention replacement then commit together, so a
-    /// failed mention write cannot expose new content with old evidence (or
-    /// vice versa).
+    /// Atomically replace a note's searchable payload, extracted entities, and
+    /// complete mention set. Any failure rolls back shared entity changes as
+    /// well as note content and mentions.
     #[instrument(skip(self, note, entities))]
     pub async fn update_note_and_replace_entities(
         &self,
@@ -229,26 +411,71 @@ impl Repository {
         note: Note,
         entities: Vec<Entity>,
     ) -> Result<Note> {
+        self.update_note_and_replace_entities_guarded(id, note, entities, None)
+            .await
+    }
+
+    /// Replace an editor draft and its mention set only while the persisted
+    /// manual note is still visible and matches the editor-opening snapshot.
+    /// Generation ownership or either chat-provenance relationship rejects the
+    /// update as a NoteRevisionConflict, including links added during provider
+    /// work. A deleted note cannot be recreated by the subsequent UPDATE.
+    #[instrument(skip(self, note, entities, expected))]
+    pub async fn update_note_and_replace_entities_if_unchanged(
+        &self,
+        id: &str,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: &Note,
+    ) -> Result<Note> {
+        self.update_note_and_replace_entities_guarded(id, note, entities, Some(expected))
+            .await
+    }
+
+    async fn update_note_and_replace_entities_guarded(
+        &self,
+        id: &str,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: Option<&Note>,
+    ) -> Result<Note> {
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
         let note_id = RecordId::new("note", raw_id);
-        let existing = self
-            .get_note(raw_id)
-            .await?
-            .ok_or_else(|| DbError::NotFound("note".into(), id.into()))?;
-        if !self.note_is_writable(&note_id).await? {
-            return Err(DbError::NotFound(
-                "note endpoint".into(),
-                "a note update endpoint is hidden, failed, or no longer exists".into(),
-            ));
-        }
-        let entity_ids = self.replacement_entity_ids(entities).await?;
+        let (existing, guard, editor_source) = if let Some(expected) = expected {
+            let editor_source = editor_source_id(expected)?;
+            if editor_source != note_id {
+                return Err(DbError::NoteRevisionConflict(id.into()));
+            }
+            (
+                expected.clone(),
+                editor_snapshot_guard(true),
+                Some(editor_source),
+            )
+        } else {
+            let existing = self
+                .get_note(raw_id)
+                .await?
+                .ok_or_else(|| DbError::NotFound("note".into(), id.into()))?;
+            if !self.note_is_writable(&note_id).await? {
+                return Err(DbError::NotFound(
+                    "note endpoint".into(),
+                    "a note update endpoint is hidden, failed, or no longer exists".into(),
+                ));
+            }
+            (existing, String::new(), None)
+        };
+        let replacement_entities = replacement_entities_transaction();
+        let entity_names: Vec<String> = entities
+            .iter()
+            .map(|entity| entity.canonical_name.clone())
+            .collect();
         let search_content = search_content_for_note_update(&existing, &note);
 
         let mut response = self
             .db
-            .query(
-                "BEGIN TRANSACTION; \
+            .query(format!(
+                "BEGIN TRANSACTION; {guard}{replacement_entities}\
                  UPDATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \
@@ -261,11 +488,13 @@ impl Repository {
                     search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
-                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
+                    created_at = <datetime>$created_at, updated_at = <datetime>$updated_at RETURN AFTER; \
                  DELETE mentions WHERE in = $id; \
-                 FOR $entity_id IN $entity_ids { CREATE mentions SET in = $id, out = $entity_id; }; \
-                 COMMIT TRANSACTION;",
-            )
+                 FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
+                 COMMIT TRANSACTION;"
+            ))
+            .bind(("editor_source", editor_source))
+            .bind(("editor_expected", expected.cloned()))
             .bind(("id", note_id.clone()))
             .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
             .bind(("title", note.title.clone()))
@@ -289,23 +518,19 @@ impl Repository {
             .bind(("search_content", search_content))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
-            .bind(("entity_ids", entity_ids))
+            .bind(("replacement_entities", entities))
+            .bind(("replacement_entity_names", entity_names))
             .await?;
-        let errors = response.take_errors();
-        if !errors.is_empty() {
-            return Err(DbError::QueryFailed(format!(
-                "atomic note-and-mention update failed: {}",
-                errors
-                    .into_iter()
-                    .map(|(statement, error)| format!("statement {statement}: {error}"))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
-        }
-
-        self.get_note(raw_id)
-            .await?
-            .ok_or_else(|| DbError::NotFound("note".into(), id.into()))
+        check_note_mutation_errors(response.take_errors(), "update", expected)?;
+        // The final response slots are UPDATE AFTER, mention deletion, the
+        // replacement mention loop, and COMMIT. Once all statements succeed,
+        // return the saved row without a fallible post-commit read that could
+        // report an already persisted edit as a failure.
+        let updated_index = response.num_statements().checked_sub(4).ok_or_else(|| {
+            DbError::QueryFailed("missing atomic note-and-mention update result".into())
+        })?;
+        let updated: Option<Note> = response.take(updated_index)?;
+        updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
 
     /// Delete a note

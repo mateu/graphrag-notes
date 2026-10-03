@@ -56,6 +56,7 @@ pub(crate) async fn execute(
         librarian_config,
         cancellation_requested,
         prepared_notes_edit,
+        prepared_capture,
     } = context;
 
     match command {
@@ -91,6 +92,16 @@ pub(crate) async fn execute(
             tags,
         } => {
             cmd_add(repo, tei, tgi, librarian_config, content, title, tags).await?;
+        }
+        Commands::Capture { args } => {
+            let librarian =
+                LibrarianAgent::new(repo.clone(), tei, tgi).with_runtime_config(librarian_config);
+            commands::capture::run(
+                &librarian,
+                args,
+                prepared_capture.expect("capture input prepared before provider startup"),
+            )
+            .await?;
         }
         Commands::Notes { command } => {
             let librarian =
@@ -251,6 +262,7 @@ pub(crate) async fn execute(
             max_tokens,
             max_chunk_tokens,
             graph,
+            raw,
             format,
         } => {
             cmd_augment(
@@ -269,6 +281,7 @@ pub(crate) async fn execute(
                 config.augment.clone(),
                 explain,
                 format,
+                raw,
             )
             .await?;
         }
@@ -1997,9 +2010,13 @@ pub(crate) async fn cmd_augment(
     augment_config: AugmentConfig,
     explain: bool,
     format: output::OutputFormat,
+    raw: bool,
 ) -> Result<()> {
     if entity.is_some() && scope != SearchScopeArg::Notes {
         anyhow::bail!("--entity currently requires --scope notes");
+    }
+    if raw && format != output::OutputFormat::Human {
+        anyhow::bail!("raw augmentation requires the default human format; remove --format");
     }
 
     let filters = serde_json::json!({
@@ -2051,6 +2068,46 @@ pub(crate) async fn cmd_augment(
             None,
         )
     };
+
+    if raw {
+        if explain {
+            eprintln!(
+                "Query: {}\nPacking diagnostics: {}",
+                ctx.query,
+                packing_diagnostics_text(&ctx.diagnostics)
+            );
+            for exclusion in &ctx.exclusions {
+                eprintln!("Excluded: {}", explain::human(exclusion));
+            }
+            for chunk in &ctx.chunks {
+                eprintln!(
+                    "Explain: {}",
+                    explain::human(&chunk.explanation(chunk.citation))
+                );
+            }
+        }
+        if ctx.chunks.is_empty() {
+            return Ok(());
+        }
+        println!("{}", ctx.render_prompt_block());
+        for chunk in &ctx.chunks {
+            let mut provenance = format!("id={}", raw_citation_string(&chunk.id)?);
+            if let Some(uri) = &chunk.source_uri {
+                provenance.push_str(&format!(", source_uri={}", raw_citation_string(uri)?));
+            }
+            if let Some(uuid) = &chunk.conversation_uuid {
+                provenance.push_str(&format!(
+                    ", conversation_uuid={}",
+                    raw_citation_string(uuid)?
+                ));
+            }
+            if let Some(index) = chunk.message_index {
+                provenance.push_str(&format!(", message_index={}", index + 1));
+            }
+            println!("[C{}] {provenance}", chunk.citation);
+        }
+        return Ok(());
+    }
 
     if format != output::OutputFormat::Human {
         if !explain {
@@ -2168,6 +2225,22 @@ pub(crate) async fn cmd_augment(
     }
 
     Ok(())
+}
+
+fn raw_citation_string(value: &str) -> Result<String> {
+    let encoded = serde_json::to_string(value)?;
+    let mut escaped = String::with_capacity(encoded.len());
+    for character in encoded.chars() {
+        // JSON already escapes ASCII controls. Escape the remaining Unicode
+        // controls and line separators too so one citation stays one line in
+        // terminal, editor, and prompt displays while retaining JSON decoding.
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            escaped.push_str(&format!("\\u{:04x}", character as u32));
+        } else {
+            escaped.push(character);
+        }
+    }
+    Ok(escaped)
 }
 
 /// Keep terminal graph evidence reconstructable even when multiple edges share
