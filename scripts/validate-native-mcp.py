@@ -166,6 +166,14 @@ def terminate_group(process, timeout=5):
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        except PermissionError as denied:
+            # macOS can deny a signal during exit before poll has reaped the
+            # parent. Confirm exit with the bounded emergency reap; a parent
+            # that still lives is a cleanup failure, never a clean result.
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                raise denied
         try:
             process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
@@ -191,11 +199,13 @@ def terminate_group(process, timeout=5):
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    except PermissionError:
-        # macOS can return EPERM while an exited group's zombies are being
-        # reaped. A live owning process must still report cleanup failure.
-        if process.poll() is None:
-            raise
+    except PermissionError as denied:
+        # Resolve the same exit race without treating an unconfirmed group as
+        # clean: intervened remains true even when parent reaping succeeds.
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            raise denied
     # Deadline expiry must still reap a killed child. This fixed emergency
     # allowance is independent of (and never restarts) the work budget.
     process.wait(timeout=max(1, deadline - time.monotonic()))
@@ -216,8 +226,8 @@ def run_child(command, payload, directory, label, environment, tokens, timeout):
                                              timeout=max(0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         timed_out = True
-        forced_cleanup = terminate_group(process, timeout=0)
         cleanup_performed = True
+        forced_cleanup = terminate_group(process, timeout=0)
         stdout, stderr = process.communicate(timeout=1)
     finally:
         try:

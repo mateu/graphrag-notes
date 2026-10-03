@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import sys
@@ -174,6 +175,52 @@ class NativeRuntimeHarness(unittest.TestCase):
         self.assertLess(server.process.returncode, 0)
         self.assertTrue(all(stream.closed for stream in server.streams))
         self.assert_process_stopped(server.process.pid)
+
+    def test_timeout_cleanup_reaps_signalled_parent_after_eperm_exit_race(self):
+        actual_killpg = os.killpg
+        for denied_signal in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(denied_signal=denied_signal):
+                injected = []
+                label = "denied-signal-" + str(denied_signal)
+                binary = self.executable(label,
+                    "import signal,time\n"
+                    + "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+                    + "print('partial evidence before timeout',flush=True)\ntime.sleep(30)\n")
+                def deny_after_exit_begins(pid, sent_signal):
+                    if sent_signal == denied_signal:
+                        # Use a real subprocess exit, then report the Darwin
+                        # group-signal race before the caller has reaped it.
+                        actual_killpg(pid, signal.SIGKILL)
+                        injected.append(pid)
+                        raise PermissionError("synthetic group exit race")
+                    return actual_killpg(pid, sent_signal)
+                with mock.patch.object(HARNESS.os, "killpg", side_effect=deny_after_exit_begins):
+                    with self.assertRaisesRegex(HARNESS.ValidationError, "bounded deadline"):
+                        self.run_child(binary, label=label, timeout=0.2)
+                self.assertTrue(injected)
+                self.assert_process_stopped(injected[0])
+                self.assertIn("partial evidence", (self.directory / (label + ".stdout")).read_text())
+
+    def test_uncertain_residual_group_cannot_make_successful_runtime_clean(self):
+        child = self.executable("uncertain-child", "import time\ntime.sleep(30)\n")
+        pid_path = self.directory / "uncertain.pid"
+        binary = self.executable("uncertain-successful-parent",
+            "import pathlib,subprocess\n"
+            + f"child=subprocess.Popen([{str(child)!r}],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            + f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid))\n")
+        actual_killpg = os.killpg
+        injected = []
+        def deny_after_group_exit_begins(pid, sent_signal):
+            result = actual_killpg(pid, sent_signal)
+            if sent_signal == signal.SIGKILL:
+                injected.append(pid)
+                raise PermissionError("synthetic uncertain residual group")
+            return result
+        with mock.patch.object(HARNESS.os, "killpg", side_effect=deny_after_group_exit_begins):
+            with self.assertRaisesRegex(HARNESS.ValidationError, "forced cleanup was required"):
+                self.run_child(binary)
+        self.assertTrue(injected)
+        self.assert_process_stopped(int(pid_path.read_text()))
 
     def test_invalid_deadlines_are_rejected_before_starting_runtimes(self):
         required = ["--binary", "/absent", "--openclaw-root", "/absent", "--hermes-root", "/absent"]
