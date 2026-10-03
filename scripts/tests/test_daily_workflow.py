@@ -167,6 +167,30 @@ class DailyWorkflowContracts(unittest.TestCase):
                 self.assertEqual(error.exception.code, 2)
                 provider.assert_not_called()
 
+    def test_rc10_impostor_is_rejected_before_onboarding_or_corpus_mutation(self):
+        mutation_marker = self.directory / "unexpected-mutation"
+        self.binary.write_text(
+            "#!" + sys.executable + "\n"
+            "import pathlib,sys\n"
+            "if '--version' in sys.argv:\n"
+            " print('graphrag 0.1.0-rc.10')\n"
+            "elif '--help' in sys.argv:\n"
+            " print('fixture help')\n"
+            "else:\n"
+            " pathlib.Path(" + repr(str(mutation_marker)) + ").touch()\n"
+        )
+        workflow = self.workflow()
+        with self.assertRaisesRegex(RuntimeError, "actual published 0.1.0-rc.1 baseline"):
+            workflow.execute(candidate=False)
+        self.assertEqual(
+            [command["label"] for command in workflow.commands],
+            ["binary-version", "binary-help"],
+        )
+        self.assertEqual(workflow.result()["cli_subprocess_count"], 2)
+        self.assertFalse(mutation_marker.exists())
+        self.assertFalse(workflow.db.exists())
+        self.assertFalse(workflow.steps[0]["success"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -147,7 +147,7 @@ The before/after walkthrough uses these public operations:
 
 | Task | Published rc.1 | Candidate rc.2 | Offline/live outcome |
 | --- | --- | --- | --- |
-| Install | Actual HTTPS asset install, one installer invocation, 1.702 seconds excluding script download | Native package and unchanged installer with local transport fixture; published candidate download pending | rc.1 checksum/version passed; rc.2 package result below |
+| Install | Actual HTTPS asset install, one installer invocation, 1.702 seconds excluding script download | Native package and unchanged installer with local transport fixture, one fresh install invocation, 0.288 seconds; published candidate download pending | Both checksum/version passed; transports differ, so elapsed times are not a network speedup comparison |
 | Capture/edit | `add`, then `notes list` to obtain the ID; `notes edit/show` | `capture --stdin --format json`, guarded edit/show; recoverable provider-failure draft | Both saved exact edited text; rc.2 replayed its printed Recover command, retained private input, and preserved previous content |
 | Folder refresh | Import one file, repeat import, `sources reimport` after change | Register three-file folder, initial/unchanged/changed `sync` | Both refreshed; rc.2 preserved IDs on unchanged sync, made no offline provider requests, refreshed exactly one source, and refused stale inspection |
 | Find a source | Hybrid `search`, copy canonical ID to `notes show`; source-open absent | Provider-free keyword search, revision-bound `inspect`, literal-argv `open` | Both located the expected source; rc.2 opened the exact file without shell interpolation |
@@ -155,6 +155,13 @@ The before/after walkthrough uses these public operations:
 | Review a link | Proposal list/show, accept, inspect graph edge, undo | Inbox cards, inspect both endpoints, confirmed accept with reason, audited undo | Both applied and removed the edge; rc.2 retained the original reviewed timestamp and retired the proposal |
 | Interrupted work | No folder-sync/resume equivalent | SIGINT during an actual import, inspect durable job, run reported `sync --resume`, inspect completion | rc.2 exited 5 with pending files and a next-action hint, completed the same job, and subsequent sync was unchanged |
 | Terminal selection | No U7 selection workspace | Six lines: keyword search, select 1, inspect, open, copy, quit | rc.2 used one CLI process, six supplied workspace lines, and zero canonical-ID transfers |
+
+The local install measurement above records the clean preflight commit. The
+final package is regenerated from the final clean commit, installed again, and
+sealed with passed source/offline/live/local-install evidence. Its archive hash
+and source commit are kept in external `BUILDINFO.json` to avoid a circular
+relationship between a tracked hash and the commit containing it. Final and
+preflight output directories are never overwritten.
 
 Legacy equivalents have narrower coverage: the baseline folder task imports one
 file, whereas the candidate registers three and checks additional guards. The
@@ -165,9 +172,9 @@ and folder-job interruption/resume; these are reported unavailable, not passed.
 | --- | --- | --- |
 | Combined deterministic workflow and comparison | Passed | Nine candidate scenarios and available baseline equivalents; exact reports and command evidence above. |
 | Existing lifecycle, safe CRUD, backup/restore, schema/model compatibility and retrieval checks | Passed | `cargo test --workspace --all-features --locked --offline`: 576 passed, zero failures, five existing ignored tests; 22 test targets. Retrieval fixture/baseline unchanged. |
-| Source quality and installer regressions | Passed | Clippy with all targets/features and `-D warnings`, formatting, exact MSRV declaration, and nine existing offline installer checks. |
+| Source quality and installer regressions | Passed | Clippy with all targets/features and `-D warnings`, formatting, exact MSRV declaration, and nine existing offline installer checks. Twelve new release checks and eight harness contract tests validate evidence, isolation, bounded failure and no overwrite. |
 | Native Apple Silicon candidate build | Passed | Locked release build, version/help, architecture, deployment and system-library checks; sealed build record. Build host 27.0.1 does not establish a live macOS 15 walkthrough. |
-| Native package and local asset installation | Pending final clean source commit | Deterministic archive and existing-installer checks run separately; final archive must bind the final commit and same sealed binary. |
+| Native package and local asset installation | Passed locally | Preflight package at `75d072a13b4b42f1c59adbe28b16339e9099a990` installed the sealed binary in 0.288 seconds with local transport; overwrite refusal, force reinstall, and edited sample preservation passed. Final source/archive identity is recorded separately in `BUILDINFO.json`. |
 | Live Ollama daily workflow | Passed | Nine candidate scenarios and available rc.1 equivalents, including actual provider failure/recovery and SIGINT checkpoint/resume. |
 | Published candidate asset install and repeat smoke | Pending publication | Validate the downloaded artifact after publication, separately from source/package checks. |
 | Linux and Intel macOS native/live acceptance | Deferred to [#66](https://github.com/mateu/graphrag-notes/issues/66) | Offline Linux CI is separate evidence. |

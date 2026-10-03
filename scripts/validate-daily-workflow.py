@@ -389,7 +389,7 @@ opener = {json.dumps([sys.executable, str(self.opener), str(self.open_log), "lit
             help_text = self.run("binary-help", ["--help"]).stdout
             self.steps[-1]["version"] = version
             if not candidate:
-                require("0.1.0-rc.1" in version, "--before-binary must be the actual published 0.1.0-rc.1 baseline")
+                require(version == "graphrag 0.1.0-rc.1", "--before-binary must be the actual published 0.1.0-rc.1 baseline")
             self.run("onboarding-preview", ["init", "--format", "json"])
             if candidate:
                 require(all(re.search(r"^\s+" + command + r"\s", help_text, re.M) for command in ("capture", "folders", "sync", "inspect", "open", "workspace")), "candidate CLI is missing a required U2-U7 command")
