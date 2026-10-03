@@ -10,8 +10,10 @@ transport, remote credentials, or remote CLI configuration.
 
 `graphrag-application` exposes typed requests, results, errors, and an
 `ApplicationOperations` interface. `EmbeddedApplication` receives the existing
-`Repository`, configured search and librarian agents, and shared inference
-providers. It delegates domain work to those agents and the repository. It
+`Repository`, configured search agent, shared inference providers, and librarian
+runtime configuration. Each capture constructs a librarian over those shared
+resources with a fresh cancellation flag. It delegates domain work to the
+existing agents and repository. It
 does not open a database, parse command-line arguments, print output, resolve
 filesystem paths, launch programs, or run database queries of its own.
 
@@ -37,7 +39,8 @@ and transport negotiation belong to #56 rather than this local implementation.
 The initial typed interface supports bounded keyword/hybrid search, recent
 visible notes, record inspection, capture, source status, proposal inspection
 and deliberate decisions, and corpus statistics. Search requests carry query,
-scope, retrieval mode, graph mode, entity filter, and a bounded result limit.
+scope, retrieval mode, graph mode, optional age/source filters, and a bounded
+result limit.
 Inspection carries the canonical record reference and a bounded neighboring
 message count. Capture carries content, optional title, and tags, rather than
 a file pathname or editor command.
@@ -49,8 +52,9 @@ The repository remains authoritative for visibility, source generations,
 record revisions, and proposal lifecycle. The boundary adds validation and
 orchestration rather than a second implementation of those policies.
 
-Requests and operation errors are versioned with application contract version
-1. DTOs use canonical string IDs, content, provenance, bounded collections,
+Application contract version 1 identifies this local typed interface. Remote
+wire envelopes, error serialization, and version negotiation are #56 work.
+DTOs use canonical string IDs, content, provenance, bounded collections,
 and primitive options. Existing domain results may be retained internally
 without publishing database connection types, query access, filesystem paths,
 or provider objects as remote capabilities. The CLI continues to adapt these

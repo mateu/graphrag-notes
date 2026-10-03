@@ -73,7 +73,21 @@ pub async fn init_persistent(path: impl AsRef<Path>) -> Result<DbConnection> {
 /// callers: `graphrag doctor` reports that state without creating a store.
 #[cfg(feature = "rocksdb")]
 pub async fn connect_persistent(path: impl AsRef<Path>) -> Result<DbConnection> {
-    let db = DbConnection::new(Surreal::new::<RocksDb>(path.as_ref()).await?);
+    let path = path.as_ref();
+    let client = Surreal::new::<RocksDb>(path).await.map_err(|error| {
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("lock")
+            && (message.contains("resource temporarily unavailable")
+                || message.contains("lock hold by")
+                || message.contains("already held")
+                || message.contains("held by another"))
+        {
+            DbError::DatabaseBusy(path.display().to_string())
+        } else {
+            DbError::Surreal(error)
+        }
+    })?;
+    let db = DbConnection::new(client);
     db.use_ns("graphrag").use_db("notes").await?;
     Ok(db)
 }

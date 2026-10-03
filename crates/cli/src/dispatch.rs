@@ -57,6 +57,7 @@ pub(crate) async fn execute(
         cancellation_requested,
         prepared_notes_edit,
         prepared_capture,
+        memory,
     } = context;
 
     match command {
@@ -370,18 +371,20 @@ pub(crate) async fn execute(
             // Handled immediately after database initialization.
         }
         Commands::Interactive => {
-            cmd_interactive(
-                repo,
+            let application = graphrag_application::EmbeddedApplication::new(
+                repo.clone(),
+                configured_search_agent(repo.clone(), tei.clone(), &config.search),
                 tei,
                 tgi,
                 librarian_config,
-                config.search.default_limit,
-                config.search.clone(),
-                config.gardener.similarity_threshold,
-                config.gardener.auto_apply_threshold,
-                config.gardener.auto_apply,
-                config.gardener.max_suggestions,
-            )
+            );
+            cmd_interactive(commands::workspace::WorkspaceContext {
+                application: Arc::new(application),
+                repo,
+                config,
+                config_path,
+                memory,
+            })
             .await?;
         }
         Commands::ExtractEntities {

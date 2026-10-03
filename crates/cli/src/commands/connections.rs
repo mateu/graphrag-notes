@@ -9,7 +9,6 @@ use graphrag_db::{
     DbError, Repository,
 };
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
@@ -143,14 +142,11 @@ async fn card(repo: &Repository, proposal: ProposedEdge, base: Option<&str>) -> 
         .as_ref()
         .filter(|_| proposal.status == ProposedEdgeStatus::Accepted)
         .and_then(|edge| base.map(|base| format!("{base} edges undo {} --yes", shell_quote(edge))));
-    let revision = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&(
-            &proposal,
-            &from.revision,
-            &to.revision,
-        ))?)
-    );
+    let revision = graphrag_application::proposal_revision(
+        &proposal,
+        from.revision.as_deref(),
+        to.revision.as_deref(),
+    )?;
     Ok(ReviewCard {
         id: record_id_to_string(id),
         status: proposal.status,
@@ -407,55 +403,23 @@ async fn decide(
     reason: Option<String>,
 ) -> Result<ReviewCard> {
     let id = parse_record_id(&shown.id, Some("proposed_edge"))?;
-    let current = repo
-        .get_edge_proposal(&id)
-        .await?
-        .ok_or_else(|| DbError::NotFound("proposed_edge".into(), shown.id.clone()))?;
-    let fresh = card(repo, current, Some("graphrag")).await?;
-    if shown.revision != fresh.revision {
-        anyhow::bail!("proposal or a note changed during review; refusing this decision. Review the updated card before deciding again");
-    }
-    match decision {
-        Decision::Accept => {
-            if !fresh.accept_allowed {
-                anyhow::bail!(
-                    "refusing acceptance: {}",
-                    fresh
-                        .accept_blocked_reason
-                        .as_deref()
-                        .unwrap_or("proposal unavailable")
-                );
-            }
-            repo.accept_edge_proposal(&id, Some("cli interactive review".into()), reason, true)
-                .await?;
-        }
-        Decision::Reject => {
-            if fresh.status != ProposedEdgeStatus::Pending {
-                anyhow::bail!(
-                    "refusing rejection: proposal is {}, not pending",
-                    fresh.status
-                );
-            }
-            repo.reject_edge_proposal(&id, Some("cli interactive review".into()), reason)
-                .await?;
-        }
-        Decision::Undo => {
-            if fresh.status != ProposedEdgeStatus::Accepted {
-                anyhow::bail!("refusing undo: proposal is {}, not accepted", fresh.status);
-            }
-            let edge = fresh.resulting_edge_id.as_deref().context("accepted proposal has no edge ID; use the existing proposals accept command to recover acceptance first")?;
-            let edge = parse_record_id(edge, None)?;
-            repo.undo_edge(
-                &edge,
-                Some(
-                    reason.unwrap_or_else(|| {
-                        "accepted edge undone through interactive review".into()
-                    }),
-                ),
-            )
-            .await?;
-        }
-    }
+    let action = match decision {
+        Decision::Accept => graphrag_application::ProposalAction::Accept,
+        Decision::Reject => graphrag_application::ProposalAction::Reject,
+        Decision::Undo => graphrag_application::ProposalAction::Undo,
+    };
+    graphrag_application::decide_proposal(
+        repo,
+        graphrag_application::ProposalDecisionRequest {
+            id: shown.id.clone(),
+            revision: shown.revision.clone(),
+            action,
+            reason,
+            confirmed: true,
+            reviewer: "cli interactive review".into(),
+        },
+    )
+    .await?;
     let updated = repo
         .get_edge_proposal(&id)
         .await?

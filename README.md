@@ -75,6 +75,17 @@ graphrag capture --editor
 graphrag augment "Atlas launch plan" --raw > atlas-context.txt
 ```
 
+The latest source build also provides a [daily terminal workspace](docs/terminal-workspace.md):
+
+```bash
+graphrag workspace
+# Inside: keyword Atlas → select 1 → inspect / open / copy
+```
+
+Browsing, keyword search, source status, and saved proposal review work offline.
+The workspace holds the embedded database until you quit; other commands using
+that database must wait for the workspace to exit.
+
 ## Architecture
 
 For daily Markdown use, [register a folder and sync explicitly](docs/folder-sync.md).
@@ -411,11 +422,14 @@ are never inferred from embedding similarity. Gardener auto-apply is disabled
 by default: enable it only with both `[gardener].auto_apply = true` and an
 appropriate `auto_apply_threshold` (or `GRAPHRAG_GARDENER_AUTO_APPLY=true`).
 
-### Interactive mode
+### Terminal workspace
 
 ```bash
-graphrag interactive
+graphrag workspace
 ```
+
+`interactive` remains an alias. Use `help` inside for selection, navigation,
+capture, source status, proposal review, history, and keyboard completion.
 
 ## CLI Commands
 
@@ -436,7 +450,7 @@ graphrag interactive
 | `garden scan` / `garden proposals` | Persist, inspect, and review auditable Gardener proposals |
 | `edges delete` / `edges undo` | Safely delete an accepted edge with `--dry-run` or `--yes` |
 | `stats` | Show database statistics |
-| `interactive` | Interactive REPL mode |
+| `workspace` / `interactive` | Persistent terminal browsing, capture, and connection review |
 | `embedding-dim` | Show embedding dimension for the active provider |
 | `extract-entities` | Extract entities for notes missing entity links |
 | `jobs list/show/resume/cancel` | Inspect and control durable local inference work |

@@ -19,6 +19,10 @@ pub enum AgentError {
     #[error("Processing error: {0}")]
     Processing(String),
 
+    /// Cancellation observed before an atomic mutation has started.
+    #[error("Action cancelled before persistence")]
+    Cancelled,
+
     /// A durable processing job reached its persisted failed terminal state
     /// after completing some of its scoped items. Keeping this distinct from
     /// ordinary processing errors lets CLI callers report the documented

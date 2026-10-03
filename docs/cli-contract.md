@@ -206,3 +206,21 @@ stderr. Accept/reject/undo require a matching typed confirmation followed by an
 optional audit reason. Skip, cancellation, EOF, and quit do not write a decision.
 Existing `garden proposals accept --all` still requires `--min-confidence` and
 `--yes` and retains its Gardener/related-to restrictions.
+
+## Terminal workspace
+
+`workspace` retains `interactive` as an alias. Its human/session output is not
+a JSON API; ordinary non-interactive commands keep their existing envelopes,
+formats, and exit codes. Piped workspace commands use plain line input.
+
+Workspace selections store a displayed canonical ID plus its inspection
+revision. Inspect, open, copy, and proposal decisions recheck those references;
+new result lists clear the previous selection. Startup and read-only actions
+do not probe inference providers. Capture reuses private drafts and the atomic
+ingestion operation; proposal decisions reuse the same governed policy as
+`garden review`. Shared typed operation contract version 1 is a local adapter
+boundary, not an implemented remote protocol.
+
+See [terminal workspace](terminal-workspace.md) for commands, keyboard support,
+safe cancellation, content-copy semantics, and database ownership, and the
+[application boundary](application-boundary.md) for future remote integration.

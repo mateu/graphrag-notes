@@ -140,15 +140,25 @@ pub fn print_noop(prepared: &mut PreparedCapture, format: OutputFormat) -> Resul
 pub async fn run(
     librarian: &LibrarianAgent,
     args: CaptureArgs,
-    mut prepared: PreparedCapture,
+    prepared: PreparedCapture,
 ) -> Result<()> {
     let note = librarian
         .capture_manual_note(prepared.content.clone(), args.title, args.tags)
         .await?;
+    finish(args.format, prepared, note)
+}
+
+/// Render a committed capture and retire its private draft. Both CLI and
+/// terminal adapters use this after the shared ingestion operation succeeds.
+pub(crate) fn finish(
+    format: OutputFormat,
+    mut prepared: PreparedCapture,
+    note: graphrag_core::Note,
+) -> Result<()> {
     let id = record_id_to_string(note.id.as_ref().expect("persisted note has id"));
     let removed = prepared.draft.discard(Some(&id));
     output::print(
-        args.format,
+        format,
         "capture",
         CaptureOutput {
             status: "created",
