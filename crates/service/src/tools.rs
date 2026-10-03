@@ -335,6 +335,29 @@ impl ServerHandler for ToolService {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let id = context.id.clone();
+        let result = self.dispatch_tool(request, context).await?;
+        // Serialize the exact SDK response model, including the echoed RPC ID.
+        // The HTTP transport adds no further JSON body fields.
+        let response = rmcp::model::JsonRpcResponse {
+            jsonrpc: rmcp::model::JsonRpcVersion2_0,
+            id,
+            result: rmcp::model::ServerResult::from(result.clone()),
+        };
+        match serde_json::to_vec(&response) {
+            Ok(bytes) if bytes.len() <= 2 * 1024 * 1024 => Ok(result),
+            Ok(_) => Ok(failure("response_too_large", "The complete response exceeds the service's 2 MiB output limit. Narrow the query or budgets, and use a shorter protocol request ID.", false).into()),
+            Err(_) => Ok(failure("internal", "Cannot encode the response; contact the service owner.", false).into()),
+        }
+    }
+}
+
+impl ToolService {
+    async fn dispatch_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
         let principal = principal(&context)?.clone();
         let Some((required, _)) = catalog()
             .into_iter()

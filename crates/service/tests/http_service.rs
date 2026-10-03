@@ -30,6 +30,7 @@ struct TestApplication {
     searches: AtomicUsize,
     slow: bool,
     huge: bool,
+    near_limit: bool,
     started: Notify,
     release: Notify,
 }
@@ -58,6 +59,8 @@ impl ApplicationOperations for TestApplication {
             title: Some("Shared corpus".into()),
             content: if self.huge {
                 "x".repeat(2 * 1024 * 1024)
+            } else if self.near_limit {
+                "x".repeat(1_000_000)
             } else {
                 request.query
             },
@@ -590,4 +593,31 @@ fn bind_policy_requires_encryption_and_explicit_hosts_before_corpus_open() {
         .unwrap_err()
         .to_string()
         .contains("explicit allowed hosts"));
+}
+
+#[tokio::test]
+async fn complete_rpc_body_size_includes_large_echoed_request_ids() {
+    let fixture = Fixture::new(TestApplication {
+        near_limit: true,
+        ..Default::default()
+    })
+    .await;
+    let normal = fixture.tool(TOKEN_READ, "search_notes", search()).await;
+    assert_eq!(
+        normal["result"]["structuredContent"]["data"]["records"][0]["content"]
+            .as_str()
+            .unwrap()
+            .len(),
+        1_000_000
+    );
+    let id = "rpc-id".repeat(20_000);
+    let response = fixture.request(TOKEN_READ, json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"search_notes","arguments":search()}}))
+        .send().await.unwrap();
+    assert!(response.status().is_success());
+    let bytes = response.bytes().await.unwrap();
+    assert!(bytes.len() <= 2 * 1024 * 1024);
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["id"], id);
+    assert_eq!(error(&value)["code"], "response_too_large");
+    fixture.stop().await;
 }
