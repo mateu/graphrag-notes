@@ -9,6 +9,10 @@ use super::*;
 #[path = "notes_edit_guard_tests.rs"]
 mod edit_guard_tests;
 
+#[cfg(test)]
+#[path = "title_ranking_tests.rs"]
+mod title_ranking_tests;
+
 const EDITOR_REVISION_CONFLICT: &str = "graphrag-note-editor-revision-conflict";
 
 /// Compare the persisted editor-opening snapshot inside the same transaction
@@ -858,6 +862,7 @@ impl Repository {
             if incoming.fts_score.is_some() {
                 existing.fts_score = incoming.fts_score;
             }
+            existing.exact_title_match |= incoming.exact_title_match;
         });
         if results.len() > limit {
             results.truncate(limit);
@@ -938,6 +943,9 @@ impl Repository {
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
         let since = since.map(|ts| ts.to_rfc3339());
+        // Case folding and outer whitespace are the only equivalences here:
+        // punctuation and internal whitespace can distinguish note titles.
+        let normalized_title = query.trim().to_lowercase();
         let results: Vec<SearchResult> = self
             .db
             .query(
@@ -950,6 +958,7 @@ impl Repository {
                     tags,
                     created_at,
                     source_id.uri AS source_uri,
+                    ($normalized_title != '' AND string::lowercase(string::trim(title ?? '')) = $normalized_title) AS exact_title_match,
                     (search::score(0) * 0.7 + search::score(1) * 0.2 + search::score(2) * 0.1) AS fts_score
                 FROM note
                 WHERE (search_content @0@ $query OR content @1@ $query OR title @2@ $query)
@@ -960,11 +969,12 @@ impl Repository {
                     OR source_generation IS NONE
                     OR source_generation = source_id.successful_generation
                   )
-                ORDER BY fts_score DESC, id ASC
+                ORDER BY exact_title_match DESC, fts_score DESC, id ASC
                 LIMIT $limit
             "#,
             )
             .bind(("query", query.to_string()))
+            .bind(("normalized_title", normalized_title))
             .bind(("limit", limit))
             .bind(("since", since))
             .bind(("source_uri", source_uri))

@@ -18,6 +18,8 @@ mod remote_jobs;
 mod remote_mutations;
 mod sources;
 mod stats;
+#[cfg(test)]
+mod title_score_diagnostic_tests;
 
 pub use chats::{EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEdgeRow};
 pub use folder_sync::FileSourceSnapshot;

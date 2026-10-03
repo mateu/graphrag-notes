@@ -32,6 +32,12 @@ keyword ranking. BM25 scores from different record indexes can have different
 scales. `--scope all` therefore exposes each score and hit kind rather than
 claiming a calibrated semantic similarity.
 
+Current source prioritizes indexed exact note titles before numeric ranking,
+with case and outer whitespace ignored. Existing captured notes need no refresh.
+This correction is newer than the published `v0.1.0-rc.2` assets. See
+[retrieval ranking](retrieval-ranking.md) for title normalization, graph score
+calibration and explain output.
+
 Keyword retrieval never embeds or extracts, checks provider health, reads the
 inference cache, or initializes embedding compatibility metadata. It can search
 legacy records with untracked vectors and records restored without vectors.
@@ -45,7 +51,7 @@ it does not expand or change the keyword result ranking.
 Hybrid failures keep their original failure status and suggest an exact
 keyword command with the selected query, scope, filters, configuration,
 database, output format, and result limit. The CLI never switches modes
-implicitly. Hybrid retrieval and its existing rankings are unchanged.
+implicitly.
 
 ## Machine output
 

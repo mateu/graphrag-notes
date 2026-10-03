@@ -42,8 +42,8 @@ pub struct GraphRetrievalConfig {
     pub min_confidence: f32,
     pub per_hop_decay: f32,
     pub candidate_cap: usize,
-    /// Fixed graph-channel score before hop/confidence decay. It shares the
-    /// existing final sorter rather than creating a second ranker.
+    /// Graph-channel strength before hop/confidence decay. The result is
+    /// calibrated to the active fusion strategy before final ranking.
     pub seed_score: f32,
 }
 
@@ -66,7 +66,7 @@ impl Default for GraphRetrievalConfig {
             min_confidence: 0.0,
             per_hop_decay: 0.8,
             candidate_cap: 32,
-            seed_score: 0.03,
+            seed_score: 1.0,
         }
     }
 }
@@ -239,6 +239,7 @@ fn retrieval_explanation(input: ExplanationInput<'_>) -> crate::RetrievalExplana
         schema_version: crate::EXPLANATION_SCHEMA_VERSION,
         result_id: input.result_id,
         title: input.title,
+        exact_title_match: input.fusion.exact_title_match,
         rank: input.fusion.final_rank,
         context_rank: None,
         hit_type: input.hit_type.into(),
@@ -409,8 +410,11 @@ impl SearchAgent {
 
         let mut enriched = Vec::new();
 
-        for result in results {
+        for mut result in results {
             // Try to get related notes (best effort) using the full RecordId
+            if self.note_weight <= 0.0 {
+                result.fusion.exact_title_match = false;
+            }
             let related = self.repo.get_related_notes(&result.id).await.ok();
             let final_score = fusion::apply_hit_type_weight(&result.fusion, self.note_weight);
 
@@ -469,6 +473,7 @@ impl SearchAgent {
                 .await?;
             hits.extend(notes.into_iter().enumerate().map(|(index, mut result)| {
                 result.fusion = keyword_evidence(result.fts_score, index + 1);
+                result.fusion.exact_title_match = result.exact_title_match;
                 let mut hit = self.from_note_result(result);
                 hit.score_kind = crate::ScoreKind::Bm25;
                 hit
@@ -1044,9 +1049,13 @@ impl SearchAgent {
     fn from_graph_note_result(
         &self,
         result: SearchResult,
-        graph: GraphEvidence,
+        mut graph: GraphEvidence,
     ) -> ScopedSearchResult {
         let mut hit = self.from_note_result(result);
+        // Treat graph as an alternative to the strongest base channel,
+        // rather than a raw score above the maximum RRF score. Convert after
+        // traversal so confidence/decay and path selection stay unchanged.
+        graph.score = calibrated_graph_score(graph.score, &self.fusion);
         // Graph-only candidates share the final ranker with every other
         // search scope. Apply the note channel's configured weight here just
         // as `from_note_result` does, including an explicitly configured
@@ -1063,7 +1072,10 @@ impl SearchAgent {
     }
 
     #[allow(clippy::wrong_self_convention)]
-    fn from_note_result(&self, result: SearchResult) -> ScopedSearchResult {
+    fn from_note_result(&self, mut result: SearchResult) -> ScopedSearchResult {
+        if self.note_weight <= 0.0 {
+            result.fusion.exact_title_match = false;
+        }
         ScopedSearchResult {
             hit_type: SearchHitType::Note,
             id: record_id_to_string(&result.id),
@@ -1432,11 +1444,27 @@ fn merge_graph_hits(results: &mut Vec<ScopedSearchResult>, graph_hits: Vec<Scope
         .collect::<HashMap<_, _>>();
     for graph_hit in graph_hits {
         if let Some(index) = positions.get(&graph_hit.id).copied() {
+            // A candidate's score must not depend on whether its ID happened
+            // to survive the baseline limit. Retain the stronger calibrated
+            // channel, while preserving its direct retrieval evidence.
+            if graph_hit.score > results[index].score {
+                results[index].score = graph_hit.score;
+                results[index].fusion.fused_score = graph_hit.fusion.fused_score;
+                results[index].score_kind = graph_hit.score_kind;
+            }
             results[index].graph = graph_hit.graph;
         } else {
             positions.insert(graph_hit.id.clone(), results.len());
             results.push(graph_hit);
         }
+    }
+}
+
+fn calibrated_graph_score(strength: f32, fusion: &FusionConfig) -> f32 {
+    let channel_strength = strength * fusion.vector_weight.max(fusion.fulltext_weight);
+    match fusion.strategy {
+        fusion::FusionStrategy::ReciprocalRank => channel_strength / (fusion.rrf_k as f32 + 1.0),
+        fusion::FusionStrategy::Weighted => channel_strength.clamp(0.0, 1.0),
     }
 }
 
@@ -2780,7 +2808,10 @@ mod tests {
         // hop one. Hop two must still be allowed to improve that existing
         // target's evidence without admitting another note.
         config.candidate_cap = 3;
-        let weak_direct_score = config.seed_score * config.per_hop_decay * 0.2;
+        let weak_direct_score = calibrated_graph_score(
+            config.seed_score * config.per_hop_decay * 0.2,
+            &FusionConfig::default(),
+        );
         let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
             .with_graph_config(config)
             .search_with_scope_graph(
@@ -3125,6 +3156,177 @@ mod tests {
     }
 
     #[test]
+    fn graph_strength_is_calibrated_to_rrf_and_weighted_scores() {
+        let mut config = FusionConfig::default();
+        let seed = calibrated_graph_score(1.0, &config);
+        assert!((seed - 0.7 / 61.0).abs() < f32::EPSILON);
+        assert!(seed < fusion::fused_score(Some(1), None, Some(1), None, &config));
+        assert_eq!(calibrated_graph_score(0.0, &config), 0.0);
+        assert!(calibrated_graph_score(0.8 * 0.2, &config) < seed);
+        config.rrf_k = 0;
+        assert_eq!(calibrated_graph_score(1.0, &config), 0.7);
+        config.strategy = fusion::FusionStrategy::Weighted;
+        assert_eq!(calibrated_graph_score(1.0, &config), 0.7);
+        assert_eq!(calibrated_graph_score(10.0, &config), 1.0);
+        assert!(
+            calibrated_graph_score(1.0, &config)
+                < fusion::fused_score(Some(1), Some(0.0), Some(1), Some(10.0), &config)
+        );
+    }
+
+    #[tokio::test]
+    async fn graph_channel_can_add_recall_when_weak_vectors_fill_the_requested_limit() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(
+            &EmbeddingIdentity::new("deterministic-test", "fixture", 1024),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut query_embedding = vec![0.0; 1024];
+        query_embedding[0] = 1.0;
+        let mut weak_embedding = vec![0.0; 1024];
+        weak_embedding[1] = 1.0;
+        for index in 0..8 {
+            repo.create_note(
+                Note::new(format!("unrelated vector material {index}"))
+                    .with_embedding(weak_embedding.clone()),
+            )
+            .await
+            .unwrap();
+        }
+        let mut entity = Entity::new("Nimbus", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        let mut graph_ids = Vec::new();
+        for index in 0..8 {
+            let note = repo
+                .create_note(Note::new(format!("linked supporting material {index}")))
+                .await
+                .unwrap();
+            repo.link_note_to_entity(note.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+            graph_ids.push(record_id_to_string(note.id.as_ref().unwrap()));
+        }
+        for strategy in [
+            fusion::FusionStrategy::ReciprocalRank,
+            fusion::FusionStrategy::Weighted,
+        ] {
+            let search = SearchAgent::new(
+                repo.clone(),
+                Arc::new(
+                    DeterministicEmbedder::default()
+                        .with_default_embedding(query_embedding.clone()),
+                ),
+            )
+            .with_fusion_config(
+                FusionConfig {
+                    strategy,
+                    ..Default::default()
+                },
+                1.0,
+                1.0,
+                1.0,
+            );
+            let off = search
+                .search_with_scope_graph(
+                    "Nimbus",
+                    5,
+                    SearchScope::Notes,
+                    None,
+                    None,
+                    GraphMode::Off,
+                )
+                .await
+                .unwrap();
+            assert_eq!(off.hits.len(), 5);
+            assert!(off.hits.iter().all(|hit| !graph_ids.contains(&hit.id)));
+            for mode in [GraphMode::Auto, GraphMode::On] {
+                let results = search
+                    .search_with_scope_graph("Nimbus", 5, SearchScope::Notes, None, None, mode)
+                    .await
+                    .unwrap();
+                assert_eq!(results.hits.len(), 5);
+                assert!(
+                    results.hits.iter().any(|hit| graph_ids.contains(&hit.id)),
+                    "{strategy:?} {mode:?}"
+                );
+                assert!(results
+                    .hits
+                    .iter()
+                    .filter(|hit| graph_ids.contains(&hit.id))
+                    .all(|hit| hit.graph.is_some()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_note_weight_clears_title_priority_in_keyword_and_legacy_explanations() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.create_note(Note::new("unrelated body").with_title("Named Notebook"))
+            .await
+            .unwrap();
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_fusion_config(FusionConfig::default(), 0.0, 1.0, 1.0);
+        let keyword = search
+            .keyword_search_with_scope("Named Notebook", 5, SearchScope::All, None, None)
+            .await
+            .unwrap();
+        assert_eq!(keyword.hits.len(), 1);
+        assert!(!keyword.hits[0].fusion.exact_title_match);
+        assert!(!keyword.hits[0].explanation().exact_title_match);
+        let enriched = search
+            .search_with_context_filtered("Named Notebook", 5, None, None)
+            .await
+            .unwrap();
+        assert_eq!(enriched.len(), 1);
+        assert!(!enriched[0].explanation().exact_title_match);
+    }
+
+    #[test]
+    fn graph_merge_retains_the_strongest_channel_and_direct_evidence_without_duplicates() {
+        for baseline_score in [0.0001, 0.02] {
+            let graph_score = calibrated_graph_score(1.0, &FusionConfig::default());
+            let mut direct = make_hit("note:shared", baseline_score, "direct match");
+            direct.fusion.fulltext_rank = Some(1);
+            direct.fusion.exact_title_match = true;
+            let mut graph_hit = make_hit("note:shared", graph_score, "same match");
+            graph_hit.score_kind = crate::ScoreKind::GraphTraversal;
+            let mut evidence = GraphFrontier::seed(
+                RecordId::new("note", "shared"),
+                "note:shared".into(),
+                vec!["Entity".into()],
+                graph_score,
+            )
+            .evidence(None);
+            evidence.source_uri = Some("fixture://shared".into());
+            graph_hit.graph = Some(evidence);
+            let mut hits = vec![direct];
+            merge_graph_hits(&mut hits, vec![graph_hit]);
+            rank_scoped_results(&mut hits);
+            assert_eq!(hits.len(), 1);
+            let hit = &hits[0];
+            assert_eq!(hit.score, baseline_score.max(graph_score));
+            assert_eq!(hit.fusion.fused_score, hit.score);
+            assert_eq!(hit.fusion.fulltext_rank, Some(1));
+            assert!(hit.fusion.exact_title_match);
+            let explanation = hit.explanation();
+            assert!(explanation.exact_title_match);
+            assert_eq!(explanation.final_score.value, hit.score);
+            assert_eq!(explanation.graph.unwrap().score, graph_score);
+            assert_eq!(
+                hit.score_kind,
+                if baseline_score < graph_score {
+                    crate::ScoreKind::GraphTraversal
+                } else {
+                    crate::ScoreKind::ReciprocalRankFusion
+                }
+            );
+        }
+    }
+
+    #[test]
     fn explanation_reports_the_score_and_weight_used_for_final_ranking() {
         let mut hit = make_hit("note:weighted", 0.24, "weighted evidence");
         hit.fusion.fused_score = 0.4;
@@ -3154,6 +3356,7 @@ mod tests {
                 source_uri: None,
                 vec_distance: Some(0.1),
                 fts_score: Some(0.5),
+                exact_title_match: false,
                 fusion: FusionEvidence {
                     fused_score: 0.4,
                     ..Default::default()

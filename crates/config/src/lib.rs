@@ -177,6 +177,8 @@ pub struct SearchConfig {
     pub graph_min_confidence: f32,
     pub graph_per_hop_decay: f32,
     pub graph_candidate_cap: usize,
+    /// Strength relative to the strongest base channel, before hop/confidence
+    /// decay. Divide by (rrf_k + 1) for RRF; clamp to [0, 1] for weighted fusion.
     pub graph_seed_score: f32,
 }
 impl Default for SearchConfig {
@@ -209,7 +211,7 @@ impl Default for SearchConfig {
             graph_min_confidence: 0.0,
             graph_per_hop_decay: 0.8,
             graph_candidate_cap: 32,
-            graph_seed_score: 0.03,
+            graph_seed_score: 1.0,
         }
     }
 }

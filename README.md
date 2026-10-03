@@ -392,6 +392,8 @@ reports BM25 evidence without provider calls or embedding compatibility checks.
 It disables graph expansion; `--graph on` requires hybrid mode. Hybrid failures
 suggest a copyable keyword command and keep their failure status. See
 [offline keyword search](docs/keyword-search.md) for ranking and output contracts.
+See [retrieval ranking](docs/retrieval-ranking.md) for exact-title lookup and
+calibrated graph contributions in current source.
 
 `--explain` adds compact evidence lines to human output and emits the same
 versioned evidence object for machine output. It reports final/fused rank,

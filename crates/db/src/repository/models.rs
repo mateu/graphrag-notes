@@ -19,6 +19,9 @@ pub struct SearchResult {
     pub vec_distance: Option<f32>,
     #[serde(default)]
     pub fts_score: Option<f32>,
+    #[serde(default)]
+    #[surreal(default)]
+    pub exact_title_match: bool,
     #[serde(skip, default)]
     #[surreal(default)]
     pub fusion: FusionEvidence,
@@ -76,6 +79,10 @@ impl FusionRecord for SearchResult {
 
     fn fulltext_score(&self) -> Option<f32> {
         self.fts_score
+    }
+
+    fn exact_title_match(&self) -> bool {
+        self.exact_title_match
     }
 
     fn set_fusion_evidence(&mut self, evidence: FusionEvidence) {

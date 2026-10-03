@@ -118,6 +118,9 @@ pub fn human(explanation: &RetrievalExplanation) -> String {
     .collect::<Vec<_>>()
     .join(",");
     let mut decision_evidence = Vec::new();
+    if explanation.exact_title_match {
+        decision_evidence.push("exact_title_match=true".to_owned());
+    }
     if let Some(selection) = explanation.selection.as_ref() {
         decision_evidence.push(format!(
             "selection(relevance={:.4}, novelty={:.4}, score={:.4})",
@@ -169,6 +172,7 @@ mod tests {
             schema_version: 1,
             result_id: "note:fixture".into(),
             title: Some("Fixture".into()),
+            exact_title_match: false,
             rank: 1,
             context_rank: Some(1),
             hit_type: SearchHitTypeEvidence::Note,
@@ -220,6 +224,19 @@ mod tests {
                 selected_span_end: Some(3),
             },
         }
+    }
+
+    #[test]
+    fn exact_title_priority_is_visible_in_human_and_json_evidence() {
+        let mut explanation = sample();
+        assert!(!human(&explanation).contains("exact_title_match"));
+        explanation.exact_title_match = true;
+        explanation.final_score.value = 0.0;
+        assert!(human(&explanation).contains("exact_title_match=true"));
+        assert_eq!(
+            serde_json::to_value(&explanation).unwrap()["exact_title_match"],
+            true
+        );
     }
 
     #[test]

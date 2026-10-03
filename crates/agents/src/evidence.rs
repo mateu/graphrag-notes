@@ -105,6 +105,9 @@ pub struct RetrievalExplanation {
     /// without requiring consumers to match rank or score floats.
     pub result_id: String,
     pub title: Option<String>,
+    /// Enabled note results with a normalized exact title are ordered before
+    /// other candidates, independently of their numeric fusion score.
+    pub exact_title_match: bool,
     /// Final position after hybrid/graph retrieval fusion.
     pub rank: usize,
     /// Position after augmentation packing, when this result was selected for
@@ -114,7 +117,7 @@ pub struct RetrievalExplanation {
     pub context_rank: Option<usize>,
     pub hit_type: SearchHitTypeEvidence,
     /// The final hit-type-weighted score used by the shared result sorter.
-    /// This, rather than the unweighted fused channel score, determines rank.
+    /// This determines rank after the normalized exact-title preference.
     pub final_score: ScoreEvidence,
     /// Configured effective hit-type weight applied to `fused` to produce
     /// `final_score` (or to graph traversal score for graph-only hits).
