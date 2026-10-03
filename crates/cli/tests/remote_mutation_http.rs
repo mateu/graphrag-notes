@@ -535,40 +535,30 @@ async fn cli_upload_recovery_replays_and_removes_only_the_explicit_owned_draft()
     let repo = Repository::new(init_memory().await.unwrap());
     let fixture = Fixture::new(&repo).await;
     let input = fixture.temp.path().join("ordinary-input.md");
-    let drafts = fixture.temp.path().join("private drafts");
+    let relative_drafts = "private drafts";
+    let drafts = fixture.temp.path().join(relative_drafts);
     let body = "# Recovery fixture\n\nSupplied content must survive uncertain admission.";
     std::fs::write(&input, body).unwrap();
-    let failed = tokio::process::Command::new(env!("CARGO_BIN_EXE_graphrag"))
-        .current_dir(fixture.temp.path())
-        .env("GRAPHRAG_TOKEN", TOKEN)
-        .env(
-            "GRAPHRAG_CONFIG",
-            fixture.temp.path().join("missing-config.toml"),
-        )
-        .env(
-            "GRAPHRAG_DB_PATH",
-            fixture.temp.path().join("must-not-create-client-db"),
-        )
-        .args([
-            "--server",
-            "http://127.0.0.1:0/mcp",
+    let failed = fixture
+        .command(&[
             "--request-id",
             "upload-recovery-001",
             "upload",
             "--document-key",
             "recovery-document",
             "--content-file",
+            input.to_str().unwrap(),
+            "--draft-dir",
+            relative_drafts,
+            "--format",
+            "json",
         ])
-        .arg(&input)
-        .arg("--draft-dir")
-        .arg(&drafts)
-        .args(["--format", "json"])
+        .env("GRAPHRAG_TOKEN", "")
         .output()
         .await
         .unwrap();
     assert!(!failed.status.success());
     let diagnostic = String::from_utf8_lossy(&failed.stderr);
-    assert!(diagnostic.contains("service_unreachable"));
     assert!(diagnostic.contains("--recover-draft"));
     let retained: Vec<_> = std::fs::read_dir(&drafts)
         .unwrap()
@@ -598,28 +588,59 @@ async fn cli_upload_recovery_replays_and_removes_only_the_explicit_owned_draft()
     assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 1);
 
     // Retry the uncertain request with its exact retained input and ownership flag.
-    let replay = fixture
-        .success(&[
-            "--recover-draft",
-            "--request-id",
-            "upload-recovery-001",
-            "upload",
-            "--document-key",
-            "recovery-document",
-            "--content-file",
-            retained[0].to_str().unwrap(),
-            "--draft-dir",
-            drafts.to_str().unwrap(),
-            "--format",
-            "json",
-        ])
-        .await;
+    let copied = diagnostic
+        .lines()
+        .find_map(|line| line.strip_prefix("Recover: "))
+        .expect("failed upload must retain its copied command");
+    assert!(copied.contains(&format!(
+        "--draft-dir='{}'",
+        std::fs::canonicalize(&drafts).unwrap().display()
+    )));
+    let executable = env!("CARGO_BIN_EXE_graphrag").replace('\'', "'\\''");
+    let copied = format!(
+        "'{executable}' {}",
+        copied.strip_prefix("graphrag ").unwrap()
+    );
+    let replay_cwd = fixture.temp.path().join("different working directory");
+    std::fs::create_dir(&replay_cwd).unwrap();
+    let mut replay_command = tokio::process::Command::new("/bin/sh");
+    replay_command
+        .env_clear()
+        .current_dir(&replay_cwd)
+        .env("HOME", fixture.temp.path())
+        .env("XDG_CONFIG_HOME", fixture.temp.path())
+        .env("PATH", "/usr/bin:/bin")
+        .env("GRAPHRAG_TOKEN", TOKEN)
+        .env(
+            "GRAPHRAG_CONFIG",
+            fixture.temp.path().join("missing-config.toml"),
+        )
+        .env(
+            "GRAPHRAG_DB_PATH",
+            fixture.temp.path().join("must-not-create-client-db"),
+        )
+        .args(["-c", &copied])
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(10), replay_command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["error"], Value::Null);
+    let replay = &response["data"]["data"];
     assert_eq!(replay["replayed"], true);
     assert_eq!(replay["job_id"], admitted["job_id"]);
     assert_eq!(replay["source_id"], admitted["source_id"]);
     assert!(!retained[0].exists());
     assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 0);
     assert_eq!(std::fs::read_to_string(&input).unwrap(), body);
+    assert!(!replay_cwd.join(relative_drafts).exists());
     assert!(!fixture
         .temp
         .path()

@@ -63,6 +63,7 @@ pub(super) fn prepare(cli: &Cli, server: &str) -> Result<Option<Invocation>> {
                     .unwrap_or_else(std::env::temp_dir)
                     .join(".graphrag/remote-drafts")
             });
+            let directory = crate::commands::editor::recovery_directory(&directory)?;
             let directory_text = path_text(&directory)?.to_owned();
             let recovery_path = cli.recover_draft.then_some(content_file.as_path());
             let bytes = if recovery_path.is_some() {
