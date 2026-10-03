@@ -34,7 +34,9 @@ versions within one report. The harness compiles nothing.
 
 The default OpenClaw entry is
 `dist/agents/agent-bundle-mcp-runtime.js`; `--openclaw-runtime` overrides it if
-the installed layout changes. The adapters target the runtime APIs verified in
+the installed layout changes. An override must resolve within the declared
+OpenClaw installation, including after symlink resolution, so the reported
+package version identifies the loaded runtime. The adapters target APIs verified in
 OpenClaw 2026.9.7 (`createSessionMcpRuntime/getCatalog/callTool`) and Hermes
 0.21.2 (`register_mcp_servers/tools.registry.dispatch`). They report the versions
 actually loaded, including Node/Python and the Hermes MCP SDK. An incompatible

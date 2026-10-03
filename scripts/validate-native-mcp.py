@@ -284,7 +284,7 @@ def parser_options(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path, help="Built MCP-capable GraphRAG binary")
     parser.add_argument("--openclaw-root", required=True, type=Path, help="Installed OpenClaw package directory")
-    parser.add_argument("--openclaw-runtime", type=Path, help="Override installed runtime module entry point")
+    parser.add_argument("--openclaw-runtime", type=Path, help="Override runtime module entry point within the declared OpenClaw installation")
     parser.add_argument("--node", type=Path, default=shutil.which("node"), help="Installed Node executable")
     parser.add_argument("--hermes-root", required=True, type=Path, help="Installed Hermes Agent code directory")
     parser.add_argument("--hermes-python", type=Path, help="Hermes Python/venv executable; defaults to ROOT/venv/bin/python")
@@ -303,6 +303,8 @@ def parser_options(argv):
     options.openclaw_root = options.openclaw_root.expanduser().resolve()
     options.hermes_root = options.hermes_root.expanduser().resolve()
     options.openclaw_runtime = (options.openclaw_runtime or options.openclaw_root / "dist/agents/agent-bundle-mcp-runtime.js").expanduser().resolve()
+    if not options.openclaw_runtime.is_relative_to(options.openclaw_root):
+        parser.error("--openclaw-runtime must resolve within --openclaw-root so evidence identifies the loaded installation")
     # Python discovers pyvenv.cfg relative to its invoked executable path.
     # Dereferencing a venv/bin/python symlink silently drops its MCP packages.
     options.hermes_python = (options.hermes_python or options.hermes_root / "venv/bin/python").expanduser().absolute()

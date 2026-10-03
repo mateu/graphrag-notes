@@ -150,6 +150,27 @@ class NativeRuntimeHarness(unittest.TestCase):
         self.assertTrue(options.hermes_python.is_symlink())
         self.assertEqual(options.hermes_python,self.directory/"hermes/venv/bin/python")
 
+    def test_openclaw_runtime_override_is_bound_to_the_reported_installation(self):
+        arguments = self.installed_arguments()
+        root = self.directory / "openclaw"
+        internal = root / "dist/custom-runtime.js"
+        internal.write_text("export {};\n")
+        options = HARNESS.parser_options([*arguments,"--openclaw-runtime",str(internal)])
+        self.assertEqual(options.openclaw_runtime, internal.resolve())
+        foreign = self.directory / "other-installation/runtime.js"
+        foreign.parent.mkdir()
+        foreign.write_text("export {};\n")
+        linked = root / "dist/foreign-runtime.js"
+        linked.symlink_to(foreign)
+        for override in (foreign, linked):
+            with self.subTest(override=override):
+                with mock.patch.object(HARNESS, "PrivateServer") as server:
+                    with contextlib.redirect_stderr(io.StringIO()) as error:
+                        with self.assertRaises(SystemExit):
+                            HARNESS.main([*arguments,"--openclaw-runtime",str(override)])
+                server.assert_not_called()
+                self.assertIn("must resolve within --openclaw-root", error.getvalue())
+
     def test_native_service_error_survives_hermes_rendering_and_requires_exact_category(self):
         envelope = {"schema_version": 1, "data": None,
                     "error": {"code": "revision_conflict", "message": "Refresh the snapshot.", "retryable": False}}
