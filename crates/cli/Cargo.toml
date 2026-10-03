@@ -12,6 +12,7 @@ path = "src/main.rs"
 graphrag-core = { path = "../core" }
 graphrag-db = { path = "../db", features = ["rocksdb"] }
 graphrag-agents = { path = "../agents" }
+graphrag-application = { path = "../application" }
 graphrag-config = { path = "../config" }
 
 tokio.workspace = true
@@ -26,6 +27,7 @@ sha2.workspace = true
 chrono.workspace = true
 tempfile.workspace = true
 reqwest.workspace = true
+rustyline = { version = "18.0.1", default-features = false }
 
 [dev-dependencies]
 assert_cmd.workspace = true

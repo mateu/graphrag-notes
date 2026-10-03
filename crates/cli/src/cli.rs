@@ -418,7 +418,8 @@ pub(crate) enum Commands {
     /// Show the database's current and this binary's latest schema version
     SchemaVersion,
 
-    /// Interactive mode
+    /// Persistent terminal workspace for browsing, capture, and review
+    #[command(name = "workspace", visible_alias = "interactive")]
     Interactive,
 
     /// Show the embedding dimension from the active embeddings provider

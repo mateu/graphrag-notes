@@ -7,6 +7,9 @@ pub enum DbError {
     #[error("Database connection error: {0}")]
     Connection(String),
 
+    #[error("Database is already in use: {0}. Exit the owning terminal workspace or wait for the current GraphRAG command to finish, then retry. Embedded storage allows one owning process.")]
+    DatabaseBusy(String),
+
     #[error("Record not found: {0} with id {1}")]
     NotFound(String, String),
 

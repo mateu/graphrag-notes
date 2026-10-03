@@ -27,35 +27,18 @@ impl fmt::Display for NavigationError {
 impl std::error::Error for NavigationError {}
 
 pub(crate) fn validate_id(id: &str) -> Result<()> {
-    let valid = id.split_once(':').is_some_and(|(table, key)| {
-        matches!(table, "note" | "message" | "conversation")
-            && !key.trim().is_empty()
-            && !id.chars().any(char::is_control)
-    });
-    if !valid {
-        return Err(NavigationError::Validation(
-            "Use the full note:ID, message:ID, or conversation:ID printed by search; result numbers are display positions, not record IDs.".into(),
-        ).into());
-    }
-    Ok(())
+    graphrag_application::validate_record_id(id)
+        .map_err(|error| NavigationError::Validation(error.to_string()).into())
 }
 
 pub(crate) fn validate_neighbors(neighbors: usize) -> Result<()> {
-    if neighbors > 20 {
-        return Err(
-            NavigationError::Validation("--neighbors must be between 0 and 20.".into()).into(),
-        );
-    }
-    Ok(())
+    graphrag_application::validate_neighbors(neighbors)
+        .map_err(|error| NavigationError::Validation(error.to_string()).into())
 }
 
 fn check_revision(record: &RecordInspection, expected: Option<&str>) -> Result<()> {
-    if expected.is_some_and(|revision| revision != record.revision) {
-        return Err(NavigationError::Validation(format!(
-            "The record {} changed since this result was displayed (revision mismatch). Run search again and use its new inspection command.", record.id
-        )).into());
-    }
-    Ok(())
+    graphrag_application::validate_record_revision(record, expected)
+        .map_err(|error| NavigationError::Validation(error.to_string()).into())
 }
 
 pub(crate) async fn inspect(
@@ -76,7 +59,10 @@ pub(crate) async fn inspect(
     })
 }
 
-fn render_inspection(writer: &mut dyn Write, record: &RecordInspection) -> std::io::Result<()> {
+pub(crate) fn render_inspection(
+    writer: &mut dyn Write,
+    record: &RecordInspection,
+) -> std::io::Result<()> {
     writeln!(
         writer,
         "[{}] {}",
@@ -268,7 +254,11 @@ pub(crate) async fn open(
         provenance: &record.provenance,
     };
     output::print(format, "open", data, |writer| {
-        writeln!(writer, "Opened {}", path.display())
+        writeln!(
+            writer,
+            "Opened {}",
+            output::safe_text(&path.to_string_lossy(), false)
+        )
     })
 }
 

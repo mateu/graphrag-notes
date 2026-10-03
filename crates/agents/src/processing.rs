@@ -111,6 +111,7 @@ pub fn classify_retry(error: &AgentError) -> RetryClassification {
         AgentError::Database(_)
         | AgentError::NotFound(_)
         | AgentError::Processing(_)
+        | AgentError::Cancelled
         | AgentError::DurablePartialFailure { .. } => RetryClassification::Permanent,
     }
 }

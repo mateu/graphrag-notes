@@ -689,7 +689,13 @@ impl LibrarianAgent {
                 "note content cannot be empty".into(),
             ));
         }
+        if self.cancellation_requested.load(Ordering::Acquire) {
+            return Err(crate::AgentError::Cancelled);
+        }
         let embedding = self.embed_text(&content).await?;
+        if self.cancellation_requested.load(Ordering::Acquire) {
+            return Err(crate::AgentError::Cancelled);
+        }
         let entities = if self.runtime.skip_entity_extraction {
             Vec::new()
         } else {
@@ -723,6 +729,12 @@ impl LibrarianAgent {
         if let Some(title) = title {
             note = note.with_title(title);
         }
+        if self.cancellation_requested.load(Ordering::Acquire) {
+            return Err(crate::AgentError::Cancelled);
+        }
+        // Persistence is one atomic note/entity transaction. Once it starts,
+        // await and return its authoritative result even if cancellation
+        // arrives: a committed capture must never look safe to repeat.
         Ok(self
             .repo
             .create_note_and_replace_entities(note, entities)

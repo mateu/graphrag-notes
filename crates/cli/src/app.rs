@@ -37,6 +37,7 @@ pub(crate) struct AppContext {
     pub(crate) cancellation_requested: Option<Arc<AtomicBool>>,
     pub(crate) prepared_notes_edit: Option<commands::notes::PreparedEdit>,
     pub(crate) prepared_capture: Option<commands::capture::PreparedCapture>,
+    pub(crate) memory: bool,
 }
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -278,7 +279,6 @@ fn provider_requirements(
                 | Commands::MigrateChats { .. }
                 | Commands::EvalAugment { .. }
                 | Commands::Reindex { .. }
-                | Commands::Interactive
         );
     let extractor = (notes_edit_reprocesses
         || matches!(
@@ -290,7 +290,6 @@ fn provider_requirements(
                     command: SourcesCommand::Reimport { .. },
                 }
                 | Commands::ImportChats { .. }
-                | Commands::Interactive
                 | Commands::ExtractEntities { .. }
                 | Commands::MigrateChats {
                     with_notes: true,
@@ -448,6 +447,16 @@ impl std::error::Error for DoctorExit {}
 /// produced by Clap-adjacent handlers that intentionally use `anyhow::bail!`.
 pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
     for cause in error.chain() {
+        if let Some(error) = cause.downcast_ref::<graphrag_application::ApplicationError>() {
+            return match error {
+                graphrag_application::ApplicationError::Validation(_)
+                | graphrag_application::ApplicationError::RevisionConflict(_) => {
+                    output::ExitCode::Validation
+                }
+                graphrag_application::ApplicationError::NotFound(_) => output::ExitCode::NotFound,
+                _ => output::ExitCode::Internal,
+            };
+        }
         if cause
             .downcast_ref::<crate::dispatch::ChatImportFailure>()
             .is_some()
@@ -912,6 +921,7 @@ pub(crate) async fn run() -> Result<()> {
             cancellation_requested,
             prepared_notes_edit,
             prepared_capture: prepared_capture.take(),
+            memory: cli.memory,
         },
         cli.command,
         cli.explain,
@@ -1510,6 +1520,14 @@ mod tests {
 
     #[test]
     fn documented_exit_codes_classify_typed_and_validation_errors() {
+        for error in [
+            graphrag_application::ApplicationError::Validation("invalid proposal choice".into()),
+            graphrag_application::ApplicationError::RevisionConflict(
+                "proposal changed during review".into(),
+            ),
+        ] {
+            assert_eq!(exit_code_for(&error.into()), output::ExitCode::Validation);
+        }
         assert_eq!(
             exit_code_for(&crate::dispatch::ChatImportFailure(1).into()),
             output::ExitCode::PartialFailure

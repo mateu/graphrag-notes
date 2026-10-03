@@ -6,6 +6,23 @@ use std::io::{self, Write};
 /// Stable machine-output contract shared by newly modular CLI commands.
 pub const CLI_OUTPUT_SCHEMA_VERSION: u32 = 1;
 
+/// Escape terminal controls in human-facing corpus text and local paths.
+/// Machine output and literal executable arguments retain the original value.
+pub(crate) fn safe_text(value: &str, multiline: bool) -> String {
+    let mut result = String::new();
+    for character in value.chars() {
+        match character {
+            '\n' | '\r' | '\t' if !multiline => result.push(' '),
+            '\n' | '\t' if multiline => result.push(character),
+            character if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') => {
+                result.extend(character.escape_default())
+            }
+            character => result.push(character),
+        }
+    }
+    result
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum OutputFormat {
     Human,
