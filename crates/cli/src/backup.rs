@@ -407,6 +407,17 @@ fn take_opaque_client_fields(
 }
 
 fn sanitize_portable_record(table: &str, record: &mut serde_json::Value, include_embeddings: bool) {
+    // Entity extraction persists an empty array when no vector was computed.
+    // Match Entity's portable serialization: absence is not a dimension-zero
+    // vector. Normalize only this owned field; caller metadata stays intact.
+    if table == "entity"
+        && record
+            .get("embedding")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        record.as_object_mut().unwrap().remove("embedding");
+    }
     let opaque = take_opaque_client_fields(table, record);
     sanitize_record(record, include_embeddings);
     for (parent, key, value) in opaque {
@@ -2169,6 +2180,144 @@ mod tests {
         assert!(fs::read_to_string(backup_path.join(RECORDS_FILE))
             .unwrap()
             .contains("\"embedding\""));
+    }
+
+    #[tokio::test]
+    async fn vector_backup_restores_entity_mentions_with_optional_embeddings() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(
+            &graphrag_db::compatibility::EmbeddingIdentity::new("fixture", "model", 1024),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut unembedded = Entity::new("Unembedded extracted entity", EntityType::Concept);
+        unembedded.metadata = serde_json::json!({});
+        let mut embedded = Entity::new("Computed entity vector", EntityType::Concept)
+            .with_embedding(vec![0.2; 1024]);
+        embedded.metadata = serde_json::json!({});
+        let note = repo
+            .create_note_and_replace_entities(
+                Note::new("A vector-bearing note with two extracted entity mentions")
+                    .with_embedding(vec![0.1; 1024]),
+                vec![unembedded, embedded],
+            )
+            .await
+            .unwrap();
+        let note_id = record_id_to_string(note.id.as_ref().unwrap());
+        let entities = repo.portable_records_page("entity", 0, 10).await.unwrap();
+        assert_eq!(
+            entities
+                .iter()
+                .find(|entity| entity["name"] == "Unembedded extracted entity")
+                .unwrap()["embedding"],
+            serde_json::json!([]),
+            "the real extraction transaction persists absence as an empty array"
+        );
+        let archive = temp.path().join("optional-entity-vectors");
+        let created = create_backup(&repo, &archive, true).await.unwrap();
+        assert_eq!(verify_backup(&archive).unwrap(), created);
+        let records = fs::read_to_string(archive.join(RECORDS_FILE))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        let absent = records
+            .iter()
+            .find(|record| {
+                record.table == "entity" && record.record["name"] == "Unembedded extracted entity"
+            })
+            .unwrap();
+        assert!(absent.record.get("embedding").is_none());
+        let target = temp.path().join("restored-optional-entity-vectors");
+        restore_backup(&archive, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        assert_eq!(
+            count_repository_records(&restored).await.unwrap(),
+            created.record_counts
+        );
+        assert_eq!(
+            restored
+                .get_note(&note_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding,
+            vec![0.1; 1024]
+        );
+        let restored_entities = restored.get_entities_for_note(&note_id).await.unwrap();
+        assert_eq!(restored_entities.len(), 2);
+        assert!(restored_entities
+            .iter()
+            .find(|entity| entity.name == "Unembedded extracted entity")
+            .unwrap()
+            .embedding
+            .is_empty());
+        assert_eq!(
+            restored_entities
+                .iter()
+                .find(|entity| entity.name == "Computed entity vector")
+                .unwrap()
+                .embedding,
+            vec![0.2; 1024]
+        );
+    }
+
+    #[tokio::test]
+    async fn vector_archive_rejects_nonempty_entity_dimension_mismatch_before_restore() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(
+            &graphrag_db::compatibility::EmbeddingIdentity::new("fixture", "model", 1024),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut entity = Entity::new("Valid computed vector", EntityType::Concept)
+            .with_embedding(vec![0.2; 1024]);
+        entity.metadata = serde_json::json!({});
+        repo.upsert_entity(entity).await.unwrap();
+        let archive = temp.path().join("malformed-entity-vector");
+        create_backup(&repo, &archive, true).await.unwrap();
+        let payload_path = archive.join(RECORDS_FILE);
+        let mut records = fs::read_to_string(&payload_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        records
+            .iter_mut()
+            .find(|record| record.table == "entity")
+            .unwrap()
+            .record["embedding"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        let payload = records
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+            + "\n";
+        fs::write(&payload_path, &payload).unwrap();
+        let manifest_path = archive.join(MANIFEST_FILE);
+        let mut manifest = read_manifest(&archive).unwrap();
+        manifest.payload.sha256 = format!("{:x}", Sha256::digest(payload.as_bytes()));
+        manifest.payload.bytes = payload.len() as u64;
+        fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(verify_backup(&archive)
+            .unwrap_err()
+            .to_string()
+            .contains("dimension 1023"));
+        let target = temp.path().join("must-not-restore-malformed-entity-vector");
+        assert!(restore_backup(&archive, &target, false)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("dimension 1023"));
+        assert!(!target.exists());
     }
 
     #[tokio::test]
