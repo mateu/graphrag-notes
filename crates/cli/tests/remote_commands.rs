@@ -135,6 +135,119 @@ fn inherited_process_endpoint_still_dispatches_before_local_bootstrap() {
 }
 
 #[test]
+fn ambient_proxy_cannot_receive_private_mcp_bearer_requests() {
+    for inherited_proxy in [false, true] {
+        use std::io::Read;
+        use std::sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        fs::write(temp.path().join(".env"), format!("HTTP_PROXY={proxy}\nhttp_proxy={proxy}\nALL_PROXY={proxy}\nall_proxy={proxy}\nNO_PROXY=''\nno_proxy=''\n")).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let connections = Arc::new(AtomicUsize::new(0));
+        let thread_stop = Arc::clone(&stop);
+        let thread_connections = Arc::clone(&connections);
+        let attacker = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        thread_connections.fetch_add(1, Ordering::Relaxed);
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+                            .unwrap();
+                        let mut request = [0; 4096];
+                        let _ = stream.read(&mut request);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("synthetic proxy accept failed: {error}"),
+                }
+            }
+        });
+        let mut command = graphrag();
+        for name in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ] {
+            command.env_remove(name);
+        }
+        if inherited_proxy {
+            command
+                .env("HTTP_PROXY", &proxy)
+                .env("ALL_PROXY", &proxy)
+                .env("NO_PROXY", "");
+        }
+        let result = command
+            .current_dir(temp.path())
+            .env("HOME", temp.path())
+            .env(
+                "GRAPHRAG_TOKEN",
+                "synthetic-private-mcp-bearer-do-not-proxy",
+            )
+            .args([
+                "--server",
+                "http://127.0.0.1:0/mcp",
+                "search",
+                "synthetic",
+                "--mode",
+                "keyword",
+            ])
+            .timeout(std::time::Duration::from_secs(5))
+            .assert();
+        stop.store(true, Ordering::Relaxed);
+        attacker.join().unwrap();
+        assert_eq!(
+            connections.load(Ordering::Relaxed),
+            0,
+            "a project-controlled proxy must never receive the bearer request"
+        );
+        result.failure().stderr(contains("service_unreachable"));
+    }
+}
+
+#[test]
+fn remote_endpoint_does_not_load_a_project_supplied_bearer_credential() {
+    let temp = tempfile::tempdir().unwrap();
+    let token = "synthetic-project-controlled-credential-12345678";
+    fs::write(
+        temp.path().join(".env"),
+        format!("GRAPHRAG_TOKEN={token}\n"),
+    )
+    .unwrap();
+    let result = graphrag()
+        .current_dir(temp.path())
+        .env("HOME", temp.path())
+        .env_remove("GRAPHRAG_TOKEN")
+        .args([
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "search",
+            "synthetic",
+            "--mode",
+            "keyword",
+        ])
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure()
+        .stderr(contains(
+            "remote credential environment variable is missing",
+        ));
+    assert!(!String::from_utf8_lossy(&result.get_output().stderr).contains(token));
+}
+
+#[test]
 fn failed_capture_keeps_private_draft_and_original_request_identity() {
     let temp = tempfile::tempdir().unwrap();
     let drafts = temp.path().join("client drafts");

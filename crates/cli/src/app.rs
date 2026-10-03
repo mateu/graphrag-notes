@@ -579,17 +579,16 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
 }
 
 pub(crate) async fn run() -> Result<()> {
-    // A working-directory .env is project-controlled configuration. Routing
-    // an inherited bearer credential must use an explicitly supplied endpoint
-    // or the process environment as it existed before loading that file.
+    // A working-directory .env is project-controlled configuration. Remote
+    // routing, credentials and transport settings use only explicit CLI/process
+    // inputs; automatic dotenv loading belongs to local bootstrap alone.
     let process_server = std::env::var("GRAPHRAG_SERVER").ok();
-    // Load environment variables from .env if present.
-    dotenvy::dotenv().ok();
-
     let cli = Cli::parse();
     if let Some(server) = cli.server.clone().or(process_server) {
         return crate::remote::run(&cli, &server).await;
     }
+    // Load local database/provider configuration from .env if present.
+    dotenvy::dotenv().ok();
     if cli.request_id.is_some() {
         anyhow::bail!("--request-id requires --server and a remote capture command");
     }

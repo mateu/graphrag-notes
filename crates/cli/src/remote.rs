@@ -213,6 +213,9 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         anyhow::bail!("remote credential is invalid");
     }
     let http = reqwest_mcp::Client::builder()
+        // Project dotenv/ambient proxy settings must never redirect a bearer
+        // request. Private MCP uses its explicit HTTPS endpoint or local tunnel.
+        .no_proxy()
         .timeout(std::time::Duration::from_secs(300))
         .redirect(reqwest_mcp::redirect::Policy::none())
         .build()?;

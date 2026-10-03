@@ -86,6 +86,10 @@ graphrag --server http://127.0.0.1:3300/mcp inspect note:ID --format json
 `GRAPHRAG_SERVER` exported in the process environment can supply the endpoint;
 `--server` overrides it. An automatically loaded project `.env` cannot set the
 remote endpoint, so a project cannot redirect an inherited bearer credential.
+Remote mode does not automatically load project dotenv files; supply credentials
+and transport configuration through the invoking process environment.
+The private MCP client connects directly and ignores ambient HTTP/HTTPS/ALL proxy
+settings. Use the explicit HTTPS endpoint or a loopback encrypted tunnel.
 `--credential-env NAME` selects a different token variable. Credentials are never
 accepted in URL parameters or command-line arguments. Non-loopback CLI endpoints
 require HTTPS; loopback HTTP supports the encrypted tunnel recipe.
