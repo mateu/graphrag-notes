@@ -1,10 +1,12 @@
 # Uploaded source and durable job validation
 
-Validated on Apple Silicon macOS on 2026-10-03 using isolated in-memory or disposable persistent databases, synthetic Markdown, deterministic providers, private credential files, and loopback HTTP. The standalone #77 working tree is based on foundation `5675096`; the owner repeats integration checks after stacking the remote-mutation changes. Published rc.2 does not contain these commands.
+Validated on Apple Silicon macOS on 2026-10-03 using isolated in-memory or disposable persistent databases, synthetic Markdown, deterministic providers, private credential files, and loopback HTTP. The final combined candidate includes foundation `c862de6` and remote mutations `29ed6ee`. The earlier standalone #77 gate used foundation `5675096`. Published rc.2 does not contain these commands.
 
 ## Automated acceptance
 
-The complete standalone workspace/all-feature run passed **638 tests**, with zero failures and five existing ignored tests across 22 nonempty targets. All-target/all-feature Clippy with warnings denied, formatting, and whitespace checks passed.
+The final combined workspace/all-feature run passed **667 tests**, with zero failures and five existing ignored tests across 25 nonempty targets. All-target/all-feature Clippy with warnings denied, formatting, whitespace checks, and five credential-helper tests passed. The earlier standalone gate passed 638 tests across 22 nonempty targets with the same five ignored tests.
+
+The installed OpenClaw 2026.9.7 and Hermes 0.21.2 runtimes also exercised capture, revision-checked edit/delete, upload admission, cancellation/resume, owner isolation, cross-client reads, and replay after service restart against this combined candidate. That smoke uses one Mac and a synthetic corpus; its reproducible harness and sanitized evidence are tracked in #78.
 
 Fourteen dedicated database regressions cover principal-scoped admission retries/conflicts, source identity, lease/CAS ownership, cancellation outside the transition gate, restart reconciliation, bounded inputs, hidden staging, active versus pending provenance, unchanged title/configuration policy, extraction checkpoints, promotion/reconciliation retries, accepted-edge undo, portable input preservation, generic local-job bypass refusal, and deletion/recreation of the same source identity.
 
@@ -27,7 +29,9 @@ git diff --check
 
 Retained local evidence:
 
-- `/tmp/graphrag-77-workspace-tests.log` — final standalone full suite.
+- `/tmp/graphrag-77-integrated-tests.log` — final combined full suite.
+- `/tmp/graphrag-77-integrated-clippy.log` — final combined workspace Clippy.
+- `/tmp/graphrag-77-workspace-tests.log` — earlier standalone full suite.
 - `/tmp/graphrag-77-clippy-final.log` — final all-target/all-feature Clippy.
 - `/tmp/graphrag-77-db-tests-final.log` — 145 database library tests, including the 14 upload regressions.
 - `/tmp/graphrag-77-application-service-tests-final.log` — seven application job regressions and the preceding service run.
