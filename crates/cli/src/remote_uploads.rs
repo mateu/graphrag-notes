@@ -164,7 +164,11 @@ pub(super) fn validate_result(invocation: &Invocation, value: &Value) -> Result<
             .unwrap_or_default()
         || !canonical_hash_id(&result.job_id, "processing_job")
         || !canonical_hash_id(&result.source_id, "source")
-        || !result.source_uri.starts_with("mcp://upload/")
+        || result.source_uri
+            != format!(
+                "mcp://upload/{}",
+                result.source_id.strip_prefix("source:").unwrap_or_default()
+            )
     {
         return Err(ApplicationError::Compatibility("upload admission does not match the request or stable identity contract; retain recovery".into()).into());
     }
@@ -197,6 +201,9 @@ mod tests {
         assert!(validate_result(&invocation, &json!({"data":data})).is_err());
         data["request_id"] = json!("attempt-1");
         data["job_id"] = json!("processing_job:wrong");
+        assert!(validate_result(&invocation, &json!({"data":data})).is_err());
+        data["job_id"] = json!(format!("processing_job:{}", "a".repeat(64)));
+        data["source_uri"] = json!(format!("mcp://upload/{}", "c".repeat(64)));
         assert!(validate_result(&invocation, &json!({"data":data})).is_err());
     }
 }
