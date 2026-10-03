@@ -39,6 +39,8 @@ impl Fixture {
                     Capability::Edit,
                     Capability::Delete,
                     Capability::Capture,
+                    Capability::Upload,
+                    Capability::Jobs,
                 ],
             }],
         };
@@ -526,4 +528,101 @@ async fn unchanged_remote_editor_applies_explicit_metadata_without_losing_recove
     assert_eq!(current["title"], json!("explicit metadata"));
     assert_eq!(current["content"], json!("unchanged body"));
     assert_eq!(std::fs::read_dir(drafts).unwrap().count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_upload_recovery_replays_and_removes_only_the_explicit_owned_draft() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let fixture = Fixture::new(&repo).await;
+    let input = fixture.temp.path().join("ordinary-input.md");
+    let drafts = fixture.temp.path().join("private drafts");
+    let body = "# Recovery fixture\n\nSupplied content must survive uncertain admission.";
+    std::fs::write(&input, body).unwrap();
+    let failed = tokio::process::Command::new(env!("CARGO_BIN_EXE_graphrag"))
+        .current_dir(fixture.temp.path())
+        .env("GRAPHRAG_TOKEN", TOKEN)
+        .env(
+            "GRAPHRAG_CONFIG",
+            fixture.temp.path().join("missing-config.toml"),
+        )
+        .env(
+            "GRAPHRAG_DB_PATH",
+            fixture.temp.path().join("must-not-create-client-db"),
+        )
+        .args([
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--request-id",
+            "upload-recovery-001",
+            "upload",
+            "--document-key",
+            "recovery-document",
+            "--content-file",
+        ])
+        .arg(&input)
+        .arg("--draft-dir")
+        .arg(&drafts)
+        .args(["--format", "json"])
+        .output()
+        .await
+        .unwrap();
+    assert!(!failed.status.success());
+    let diagnostic = String::from_utf8_lossy(&failed.stderr);
+    assert!(diagnostic.contains("service_unreachable"));
+    assert!(diagnostic.contains("--recover-draft"));
+    let retained: Vec<_> = std::fs::read_dir(&drafts)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(std::fs::read_to_string(&retained[0]).unwrap(), body);
+
+    // The ordinary input stays caller-owned even when another retained draft exists.
+    let admitted = fixture
+        .success(&[
+            "--request-id",
+            "upload-recovery-001",
+            "upload",
+            "--document-key",
+            "recovery-document",
+            "--content-file",
+            input.to_str().unwrap(),
+            "--draft-dir",
+            drafts.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .await;
+    assert_eq!(admitted["replayed"], false);
+    assert_eq!(std::fs::read_to_string(&input).unwrap(), body);
+    assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 1);
+
+    // Retry the uncertain request with its exact retained input and ownership flag.
+    let replay = fixture
+        .success(&[
+            "--recover-draft",
+            "--request-id",
+            "upload-recovery-001",
+            "upload",
+            "--document-key",
+            "recovery-document",
+            "--content-file",
+            retained[0].to_str().unwrap(),
+            "--draft-dir",
+            drafts.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .await;
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["job_id"], admitted["job_id"]);
+    assert_eq!(replay["source_id"], admitted["source_id"]);
+    assert!(!retained[0].exists());
+    assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 0);
+    assert_eq!(std::fs::read_to_string(&input).unwrap(), body);
+    assert!(!fixture
+        .temp
+        .path()
+        .join("must-not-create-client-db")
+        .exists());
 }
