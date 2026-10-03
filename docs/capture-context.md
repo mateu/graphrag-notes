@@ -1,7 +1,7 @@
 # Capture, revise, and reuse context
 
-These commands are available in current source and the forthcoming Apple
-Silicon `0.1.0-rc.2` candidate. Use source until its assets are published;
+These commands are available in current source and the published Apple
+Silicon `0.1.0-rc.2` prerelease;
 `v0.1.0-rc.1` predates them. [Getting started](getting-started.md) covers
 installation and providers; the [daily workflow](daily-workflow.md) connects
 capture to refresh, retrieval, review, and recovery. Native Linux and Intel
