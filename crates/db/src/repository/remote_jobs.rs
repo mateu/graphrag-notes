@@ -293,6 +293,46 @@ fn check_write(errors: HashMap<usize, surrealdb::Error>, lease: &RemoteJobLease)
     )))
 }
 
+/// Legacy history predates numbered admissions. Use a total order across
+/// mixed histories: legacy timestamp/ID, then durable number/timestamp/ID.
+/// Pairwise timestamp fallback when only one number is absent can cycle after
+/// clock rollback. Arguments are fixed query expressions, never caller input.
+fn admission_precedes_sql(
+    left_order: &str,
+    left_created: &str,
+    left_id: &str,
+    right_order: &str,
+    right_created: &str,
+    right_id: &str,
+) -> String {
+    format!(
+        "(({left_order} = NONE AND {right_order} != NONE) \
+         OR ({left_order} != NONE AND {right_order} != NONE AND {left_order} < {right_order}) \
+         OR ((({left_order} = NONE AND {right_order} = NONE) \
+         OR ({left_order} != NONE AND {right_order} != NONE AND {left_order} = {right_order})) \
+         AND ({left_created} < {right_created} OR ({left_created} = {right_created} AND {left_id} < {right_id}))))"
+    )
+}
+
+/// Share scheduling precedence between the bounded candidate query and the
+/// explicit claim check.
+fn claim_blocker_sql(instance: &str, uri: &str, id: &str, order: &str, created: &str) -> String {
+    let earlier = admission_precedes_sql(
+        "remote_admission_order",
+        "created_at",
+        "id",
+        order,
+        created,
+        id,
+    );
+    format!(
+        "job_type = 'remote_upload' AND remote_instance_id = {instance} \
+         AND remote_source_uri = {uri} AND id != {id} \
+         AND (status = 'running' OR (status = 'queued' AND remote_cancel_requested = false \
+         AND {earlier}))"
+    )
+}
+
 impl Repository {
     async fn remote_job_row(&self, instance: &str, id: &RecordId) -> Result<Option<JobRow>> {
         Ok(self.db.query("SELECT * FROM processing_job WHERE id = $id AND job_type = 'remote_upload' AND remote_instance_id = $instance LIMIT 1")
@@ -472,7 +512,16 @@ impl Repository {
         if !matches!(row.status.as_str(), "failed" | "cancelled") {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(&id)));
         }
-        self.ensure_remote_source_current(&row.public()?).await?;
+        let job = row.public()?;
+        // A newer execution can already own this source before it prepares a
+        // generation. Do not queue its older prepared origin underneath it:
+        // generation preparation would then see a conflicting queued owner.
+        let active: Vec<RecordId> = self.db.query("SELECT VALUE id FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND id != $job AND status = 'running' LIMIT 1")
+            .bind(("instance", instance.to_string())).bind(("uri", job.source_uri.clone())).bind(("job", id.clone())).await?.take(0)?;
+        if !active.is_empty() {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(&id)));
+        }
+        self.ensure_remote_source_current(&job).await?;
         let row: Option<JobRow> = self.db.query("UPDATE $id SET status = 'queued', remote_cancel_requested = false, remote_service_epoch = NONE, remote_worker_token = NONE, last_error = NONE, finished_at = NONE, updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND (status = 'failed' OR status = 'cancelled') RETURN AFTER")
             .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.take(0)?;
         row.ok_or_else(|| DbError::RemoteJobOwnershipLost(record_id_to_string(&id)))?
@@ -504,6 +553,24 @@ impl Repository {
             return Err(DbError::InvalidRemoteRequest(
                 "stored upload identity does not match its owner".into(),
             ));
+        }
+        // Claim is source ownership, including the window before generation
+        // preparation and the period after promotion through terminalization.
+        let blockers: Vec<RecordId> = self
+            .db
+            .query(format!(
+                "SELECT VALUE id FROM processing_job WHERE {} LIMIT 1",
+                claim_blocker_sql("$instance", "$uri", "$job", "$order", "<datetime>$created")
+            ))
+            .bind(("instance", instance.to_string()))
+            .bind(("uri", job.source_uri.clone()))
+            .bind(("job", id.clone()))
+            .bind(("order", job.admission_order))
+            .bind(("created", job.job.created_at.to_rfc3339()))
+            .await?
+            .take(0)?;
+        if !blockers.is_empty() {
+            return Ok(None);
         }
         let now = Utc::now();
         let claimed: Vec<RecordId> = self.db.query("UPDATE $id SET status = 'running', remote_service_epoch = $epoch, remote_worker_token = $worker, updated_at = <datetime>$now WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false RETURN VALUE id")
@@ -538,25 +605,47 @@ impl Repository {
         identity(epoch)?;
         identity(worker)?;
         let _gate = self.remote_job_transition_lock.lock().await;
-        // Read only identities first, so a malformed immutable input does not
-        // prevent other queued jobs from reaching validation and ownership.
-        let rows: Vec<QueuedJobIdentity> = self.db.query("SELECT id, remote_instance_id, created_at FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'queued' AND remote_cancel_requested = false ORDER BY created_at ASC, id ASC LIMIT $limit")
-            .bind(("limit", MAX_REMOTE_CLAIM_SCAN)).await?.take(0)?;
-        for row in rows {
-            match self
-                .claim_remote_upload_locked(&row.remote_instance_id, &row.id, epoch, worker)
-                .await
-            {
-                Ok(Some(job)) => return Ok(Some(job)),
-                Ok(None) => continue,
-                Err(DbError::InvalidRemoteRequest(_)) => {
-                    // Deterministic saved-input errors are terminal before a
-                    // worker fence is acquired. Retain the input/checkpoint for
-                    // repair followed by explicit resume; never hide DB faults.
-                    self.db.query("UPDATE $id SET status = 'failed', last_error = 'validation', finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false")
-                        .bind(("id", row.id)).bind(("instance", row.remote_instance_id)).await?.check()?;
+        // Select only eligible document heads before applying the bound. A
+        // backlog behind one active source cannot hide unrelated documents.
+        // Read identities only so malformed execution input remains eligible
+        // for validation quarantine rather than breaking the candidate query.
+        let blockers = claim_blocker_sql(
+            "$parent.remote_instance_id",
+            "$parent.remote_source_uri",
+            "$parent.id",
+            "$parent.remote_admission_order",
+            "$parent.created_at",
+        );
+        let query = format!("SELECT id, remote_instance_id, created_at FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'queued' AND remote_cancel_requested = false AND array::len((SELECT VALUE id FROM processing_job WHERE {blockers} LIMIT 1)) = 0 ORDER BY created_at ASC, id ASC LIMIT $limit");
+        let mut remaining = MAX_REMOTE_CLAIM_SCAN;
+        while remaining > 0 {
+            let rows: Vec<QueuedJobIdentity> = self
+                .db
+                .query(&query)
+                .bind(("limit", remaining))
+                .await?
+                .take(0)?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in rows {
+                remaining -= 1;
+                match self
+                    .claim_remote_upload_locked(&row.remote_instance_id, &row.id, epoch, worker)
+                    .await
+                {
+                    Ok(Some(job)) => return Ok(Some(job)),
+                    Ok(None) => continue,
+                    Err(DbError::InvalidRemoteRequest(_)) => {
+                        // Deterministic saved-input errors are terminal before
+                        // a worker fence. Retain input/checkpoint for repair and
+                        // explicit resume; never hide storage faults. Reselect
+                        // within the bound to expose this document's next head.
+                        self.db.query("UPDATE $id SET status = 'failed', last_error = 'validation', finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false")
+                            .bind(("id", row.id)).bind(("instance", row.remote_instance_id)).await?.check()?;
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
             }
         }
         Ok(None)
@@ -597,9 +686,17 @@ impl Repository {
             // An older unprepared request cannot supersede a newer request
             // that already acquired this logical document. Keep the sequence
             // in the durable journal so deletion/recreation cannot reset it.
-            // Legacy archives without the optional sequence use their original
-            // admission timestamps rather than silently bypassing the fence.
-            let newer: Vec<RecordId> = self.db.query("SELECT VALUE id FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND id != $job AND remote_source_generation IS NOT NONE AND (($order != NONE AND remote_admission_order != NONE AND remote_admission_order > $order) OR (($order = NONE OR remote_admission_order = NONE) AND created_at > <datetime>$created)) LIMIT 1")
+            // Use the same total order as scheduling, including legacy ties
+            // and mixed histories, so an old resume cannot bypass the fence.
+            let later = admission_precedes_sql(
+                "$order",
+                "<datetime>$created",
+                "$job",
+                "remote_admission_order",
+                "created_at",
+                "id",
+            );
+            let newer: Vec<RecordId> = self.db.query(format!("SELECT VALUE id FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND id != $job AND remote_source_generation IS NOT NONE AND {later} LIMIT 1"))
                 .bind(("instance", job.instance_id.clone())).bind(("uri", job.source_uri.clone()))
                 .bind(("job", job.job.id.clone().expect("persisted ID"))).bind(("order", job.admission_order))
                 .bind(("created", job.job.created_at.to_rfc3339())).await?.take(0)?;

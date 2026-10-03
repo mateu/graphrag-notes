@@ -891,6 +891,400 @@ async fn deleted_and_recreated_source_cannot_accept_old_pinned_generation() {
 }
 
 #[tokio::test]
+async fn same_source_claims_wait_for_terminalization_and_follow_admission_order() {
+    for legacy in [false, true] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut admissions = Vec::new();
+        for (request, body) in [
+            ("first", "First version"),
+            ("second", "Second version"),
+            ("third", "Third version"),
+        ] {
+            admissions.push(
+                repo.admit_remote_upload(input("owner", request, body))
+                    .await
+                    .unwrap(),
+            );
+        }
+        let ids = admissions
+            .iter()
+            .map(|admission| admission.result["job_id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        if legacy {
+            repo.db
+                .query("UPDATE processing_job UNSET remote_admission_order")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        } else {
+            // Durable order must win even when the admission clock moves back.
+            repo.db
+                .query("UPDATE $id SET created_at = <datetime>$created")
+                .bind(("id", job_id(ids[0]).unwrap()))
+                .bind((
+                    "created",
+                    (Utc::now() + chrono::Duration::seconds(5)).to_rfc3339(),
+                ))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        assert!(matches!(
+            repo.claim_remote_upload_job("owner", ids[2], "epoch", "out-of-order")
+                .await,
+            Err(DbError::RemoteJobOwnershipLost(_))
+        ));
+        let (left, right) = tokio::join!(
+            repo.claim_next_remote_upload("epoch", "left"),
+            repo.claim_next_remote_upload("epoch", "right")
+        );
+        let first = match (left.unwrap(), right.unwrap()) {
+            (Some(first), None) | (None, Some(first)) => first,
+            jobs => panic!("only one document owner may run before generation: {jobs:?}"),
+        };
+        assert_eq!(first.job.id, Some(job_id(ids[0]).unwrap()));
+        assert!(first.source_generation.is_none());
+        assert!(table(&repo, "source").await.is_empty());
+        let lease = RemoteJobLease {
+            job_id: first.job.id.unwrap(),
+            instance_id: first.instance_id,
+            service_epoch: first.service_epoch.unwrap(),
+            worker_token: first.worker_token.unwrap(),
+        };
+        let source = repo.begin_remote_upload_generation(&lease).await.unwrap();
+        repo.stage_remote_upload_notes(&lease, vec![Note::new("First version")])
+            .await
+            .unwrap();
+        repo.reconcile_remote_upload(&lease, &[]).await.unwrap();
+        // Promotion does not release the source while extraction/finish owns it.
+        assert!(repo
+            .claim_next_remote_upload("epoch", "promoted-racer")
+            .await
+            .unwrap()
+            .is_none());
+        let foreign = repo
+            .admit_remote_upload(input("other-owner", "same-key", "Foreign version"))
+            .await
+            .unwrap();
+        let foreign_job = repo
+            .claim_next_remote_upload("epoch", "foreign-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            foreign_job.job.id,
+            Some(job_id(foreign.result["job_id"].as_str().unwrap()).unwrap())
+        );
+        assert_ne!(foreign_job.source_uri, source.uri.clone().unwrap());
+        complete(
+            &repo,
+            &RemoteJobLease {
+                job_id: foreign_job.job.id.unwrap(),
+                instance_id: foreign_job.instance_id,
+                service_epoch: "epoch".into(),
+                worker_token: "foreign-worker".into(),
+            },
+            "Foreign version",
+        )
+        .await;
+        repo.finish_remote_upload_job(&lease, ProcessingJobStatus::Completed, None, None)
+            .await
+            .unwrap();
+        for (index, body) in [(1, "Second version"), (2, "Third version")] {
+            let job = repo
+                .claim_next_remote_upload("epoch", "next-worker")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(job.job.id, Some(job_id(ids[index]).unwrap()));
+            let result = complete(
+                &repo,
+                &RemoteJobLease {
+                    job_id: job.job.id.unwrap(),
+                    instance_id: job.instance_id,
+                    service_epoch: "epoch".into(),
+                    worker_token: "next-worker".into(),
+                },
+                body,
+            )
+            .await;
+            assert_eq!(result.source_generation, Some(index as u64 + 1));
+        }
+        assert_eq!(
+            repo.get_source_chunks(source.id.as_ref().unwrap())
+                .await
+                .unwrap()[0]
+                .content,
+            "Third version"
+        );
+        for id in ids {
+            assert_eq!(
+                repo.get_remote_upload_job_status("owner", id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .job
+                    .status,
+                "completed"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn blocked_source_backlog_does_not_starve_an_unrelated_document_or_release_on_cancel_flag() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let (_, first) = admit_claim(
+        &repo,
+        input("owner", "active", "Active version"),
+        "epoch",
+        "active-worker",
+    )
+    .await;
+    let mut next_id = None;
+    for index in 0..=MAX_REMOTE_CLAIM_SCAN {
+        let admission = repo
+            .admit_remote_upload(input(
+                "owner",
+                &format!("blocked-{index}"),
+                "Queued version",
+            ))
+            .await
+            .unwrap();
+        next_id.get_or_insert_with(|| admission.result["job_id"].as_str().unwrap().to_string());
+    }
+    let mut unrelated_input = input("owner", "unrelated", "Unrelated version");
+    unrelated_input.document_key = "unrelated.md".into();
+    let unrelated = repo.admit_remote_upload(unrelated_input).await.unwrap();
+    repo.cancel_remote_upload_job_status("owner", &record_id_to_string(&first.job_id))
+        .await
+        .unwrap();
+    let claimed = repo
+        .claim_next_remote_upload("epoch", "unrelated-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        claimed.job.id,
+        Some(job_id(unrelated.result["job_id"].as_str().unwrap()).unwrap())
+    );
+    complete(
+        &repo,
+        &RemoteJobLease {
+            job_id: claimed.job.id.unwrap(),
+            instance_id: claimed.instance_id,
+            service_epoch: "epoch".into(),
+            worker_token: "unrelated-worker".into(),
+        },
+        "Unrelated version",
+    )
+    .await;
+    // A requested running cancellation still owns the source until settled.
+    assert!(repo
+        .claim_next_remote_upload("epoch", "cancel-racer")
+        .await
+        .unwrap()
+        .is_none());
+    repo.recover_remote_upload_job(&first, "cancelled")
+        .await
+        .unwrap();
+    let next = repo
+        .claim_next_remote_upload("epoch", "after-cancel")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        next.job.id,
+        Some(job_id(next_id.as_deref().unwrap()).unwrap())
+    );
+    assert_eq!(
+        repo.get_remote_upload_job_status("owner", &record_id_to_string(&first.job_id))
+            .await
+            .unwrap()
+            .unwrap()
+            .job
+            .status,
+        "cancelled"
+    );
+}
+
+#[tokio::test]
+async fn prepared_failed_owner_cannot_resume_into_a_newer_claimed_upload() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let (_, older) = admit_claim(
+        &repo,
+        input("owner", "failed-owner", "Failed version"),
+        "epoch",
+        "old-worker",
+    )
+    .await;
+    repo.begin_remote_upload_generation(&older).await.unwrap();
+    repo.stage_remote_upload_notes(&older, vec![Note::new("Failed version")])
+        .await
+        .unwrap();
+    let failed = repo
+        .finish_remote_upload_job(
+            &older,
+            ProcessingJobStatus::Failed,
+            Some("internal".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    let (_, newer) = admit_claim(
+        &repo,
+        input("owner", "new-owner", "New version"),
+        "epoch",
+        "new-worker",
+    )
+    .await;
+    assert!(matches!(
+        repo.resume_remote_upload_job("owner", &record_id_to_string(&older.job_id))
+            .await,
+        Err(DbError::RemoteJobSourceConflict(_))
+    ));
+    let still_failed = repo
+        .get_remote_upload_job("owner", &record_id_to_string(&older.job_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still_failed.job.status, "failed");
+    assert_eq!(still_failed.job.item_ids, failed.job.item_ids);
+    assert_eq!(still_failed.job.last_error, failed.job.last_error);
+    assert_eq!(
+        complete(&repo, &newer, "New version")
+            .await
+            .source_generation,
+        Some(2)
+    );
+    assert!(matches!(
+        repo.resume_remote_upload_job("owner", &record_id_to_string(&older.job_id))
+            .await,
+        Err(DbError::RemoteJobSourceConflict(_))
+    ));
+}
+
+#[tokio::test]
+async fn mixed_legacy_and_numbered_admissions_have_total_order_after_clock_rollback() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let mut admissions = Vec::new();
+    for (request, body) in [
+        ("number-one", "Numbered first"),
+        ("number-two", "Numbered second"),
+        ("legacy", "Legacy version"),
+    ] {
+        admissions.push(
+            repo.admit_remote_upload(input("owner", request, body))
+                .await
+                .unwrap(),
+        );
+    }
+    let ids = admissions
+        .iter()
+        .map(|admission| admission.result["job_id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let base = Utc::now();
+    for (index, seconds) in [(0, 3), (1, 1), (2, 2)] {
+        repo.db
+            .query("UPDATE $id SET created_at = <datetime>$created")
+            .bind(("id", job_id(ids[index]).unwrap()))
+            .bind((
+                "created",
+                (base + chrono::Duration::seconds(seconds)).to_rfc3339(),
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    repo.db
+        .query("UPDATE $id UNSET remote_admission_order")
+        .bind(("id", job_id(ids[2]).unwrap()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    // Pairwise timestamp fallback would cycle: number-one precedes number-two,
+    // number-two precedes legacy, and legacy precedes number-one.
+    for (generation, index, body) in [
+        (1, 2, "Legacy version"),
+        (2, 0, "Numbered first"),
+        (3, 1, "Numbered second"),
+    ] {
+        let job = repo
+            .claim_next_remote_upload("epoch", "worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.job.id, Some(job_id(ids[index]).unwrap()));
+        let completed = complete(
+            &repo,
+            &RemoteJobLease {
+                job_id: job.job.id.unwrap(),
+                instance_id: job.instance_id,
+                service_epoch: "epoch".into(),
+                worker_token: "worker".into(),
+            },
+            body,
+        )
+        .await;
+        assert_eq!(completed.source_generation, Some(generation));
+    }
+}
+
+#[tokio::test]
+async fn equal_legacy_timestamps_use_the_same_id_order_for_claims_and_stale_resume() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let mut ids = Vec::new();
+    for request in ["legacy-alpha", "legacy-beta"] {
+        let admission = repo
+            .admit_remote_upload(input("owner", request, request))
+            .await
+            .unwrap();
+        ids.push(admission.result["job_id"].as_str().unwrap().to_string());
+    }
+    ids.sort();
+    repo.db.query("UPDATE processing_job SET created_at = <datetime>$created, remote_admission_order = NONE")
+        .bind(("created", Utc::now().to_rfc3339())).await.unwrap().check().unwrap();
+    repo.cancel_remote_upload_job_status("owner", &ids[0])
+        .await
+        .unwrap();
+    let newest = repo
+        .claim_next_remote_upload("epoch", "worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(newest.job.id, Some(job_id(&ids[1]).unwrap()));
+    let completed = complete(
+        &repo,
+        &RemoteJobLease {
+            job_id: newest.job.id.unwrap(),
+            instance_id: newest.instance_id,
+            service_epoch: "epoch".into(),
+            worker_token: "worker".into(),
+        },
+        "Newest version",
+    )
+    .await;
+    assert!(matches!(
+        repo.resume_remote_upload_job("owner", &ids[0]).await,
+        Err(DbError::RemoteJobSourceConflict(_))
+    ));
+    let source = repo
+        .get_source(&completed.source_uri)
+        .await
+        .unwrap()
+        .unwrap();
+    repo.delete_source(&source).await.unwrap();
+    assert!(matches!(
+        repo.resume_remote_upload_job("owner", &ids[0]).await,
+        Err(DbError::RemoteJobSourceConflict(_))
+    ));
+}
+
+#[tokio::test]
 async fn older_unprepared_admission_cannot_replace_a_newer_document() {
     for already_claimed in [false, true] {
         let repo = Repository::new(init_memory().await.unwrap());
@@ -916,13 +1310,30 @@ async fn older_unprepared_admission_cannot_replace_a_newer_document() {
                 .unwrap();
             None
         };
-        let (_, newer) = admit_claim(
-            &repo,
-            input("openclaw", "newer", "New document"),
-            "epoch",
-            "new-worker",
-        )
-        .await;
+        let newer = repo
+            .admit_remote_upload(input("openclaw", "newer", "New document"))
+            .await
+            .unwrap();
+        let newer_id = newer.result["job_id"].as_str().unwrap();
+        if already_claimed {
+            // Pre-fix overlapping claims could be restored from an older
+            // journal. Simulate that state directly; current scheduling must
+            // never create it, while the generation fence must still reject it.
+            repo.db
+                .query("UPDATE $id SET status = 'running', remote_service_epoch = 'epoch', remote_worker_token = 'new-worker'")
+                .bind(("id", job_id(newer_id).unwrap()))
+                .await.unwrap().check().unwrap();
+        } else {
+            repo.claim_remote_upload_job("openclaw", newer_id, "epoch", "new-worker")
+                .await
+                .unwrap();
+        }
+        let newer = RemoteJobLease {
+            job_id: job_id(newer_id).unwrap(),
+            instance_id: "openclaw".into(),
+            service_epoch: "epoch".into(),
+            worker_token: "new-worker".into(),
+        };
         let saved = complete(&repo, &newer, "New document").await;
         assert_eq!(saved.admission_order, Some(2));
         let sources = table(&repo, "source").await;
@@ -1200,17 +1611,8 @@ async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
         .admit_remote_upload(input("owner", "healthy-status", "Healthy admitted input"))
         .await
         .unwrap();
-    let foreign = original
-        .admit_remote_upload(input(
-            "other-owner",
-            "foreign-status",
-            "Foreign admitted input",
-        ))
-        .await
-        .unwrap();
     let damaged_id = damaged.result["job_id"].as_str().unwrap();
     let healthy_id = healthy.result["job_id"].as_str().unwrap();
-    let foreign_id = foreign.result["job_id"].as_str().unwrap();
     let restored = Repository::new(init_memory().await.unwrap());
     for mut record in table(&original, "processing_job").await {
         if record["remote_request_id"] == "damaged-status" {
@@ -1227,6 +1629,15 @@ async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
         .unwrap()
         .unwrap();
     assert_eq!(claimed.job.id, Some(job_id(healthy_id).unwrap()));
+    let foreign = restored
+        .admit_remote_upload(input(
+            "other-owner",
+            "foreign-status",
+            "Foreign admitted input",
+        ))
+        .await
+        .unwrap();
+    let foreign_id = foreign.result["job_id"].as_str().unwrap();
     let damaged = restored
         .get_remote_upload_job_status("owner", damaged_id)
         .await
