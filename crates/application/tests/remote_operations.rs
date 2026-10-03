@@ -340,6 +340,60 @@ async fn source_uri_credentials_are_rejected_before_providers_or_persistence() {
 }
 
 #[tokio::test]
+async fn provenance_bounds_match_unicode_runtime_limits_before_inference() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let mut boundary = capture_request();
+    boundary.provenance = Some(CaptureProvenance {
+        uri: Some(format!("client:{}", "a".repeat(2041))),
+        label: Some("é".repeat(512)),
+        metadata: (0..32)
+            .map(|index| (format!("{index:02}{}", "é".repeat(62)), "é".repeat(1024)))
+            .collect(),
+    });
+    let unavailable = application(
+        &repo,
+        Arc::new(DeterministicEmbedder::default().unhealthy()),
+        Arc::new(NoInference),
+    );
+    assert!(matches!(
+        unavailable
+            .capture_remote(
+                caller("bounds"),
+                boundary.clone(),
+                ActionCancellation::new()
+            )
+            .await,
+        Err(ApplicationError::ProviderUnavailable(_))
+    ));
+    let no_inference = offline(&repo);
+    for field in 0..5 {
+        let mut request = boundary.clone();
+        let provenance = request.provenance.as_mut().unwrap();
+        match field {
+            0 => provenance.uri.as_mut().unwrap().push('a'),
+            1 => provenance.label.as_mut().unwrap().push('é'),
+            2 => {
+                provenance.metadata.insert("extra".into(), "value".into());
+            }
+            3 => {
+                provenance.metadata = BTreeMap::from([("é".repeat(65), "value".into())]);
+            }
+            _ => {
+                provenance.metadata = BTreeMap::from([("key".into(), "é".repeat(1025))]);
+            }
+        }
+        assert!(matches!(
+            no_inference
+                .capture_remote(caller("bounds"), request, ActionCancellation::new())
+                .await,
+            Err(ApplicationError::Validation(_))
+        ));
+    }
+    assert_eq!(repo.get_stats().await.unwrap().note_count, 0);
+    assert_eq!(repo.get_stats().await.unwrap().source_count, 0);
+}
+
+#[tokio::test]
 async fn remote_context_preserves_existing_packing_citations_and_budget() {
     let repo = Repository::new(init_memory().await.unwrap());
     for content in [

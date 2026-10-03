@@ -297,6 +297,47 @@ fn error(result: &Value) -> &Value {
 }
 
 #[tokio::test]
+async fn capture_discovery_publishes_provenance_string_and_map_bounds() {
+    let fixture = Fixture::new(TestApplication::default()).await;
+    let listed = fixture
+        .rpc(
+            TOKEN_A,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        )
+        .await;
+    let capture = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "capture_note")
+        .unwrap();
+    let schema = &capture["inputSchema"];
+    let reference = schema["properties"]["provenance"]["anyOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|branch| branch["$ref"].as_str())
+        .unwrap();
+    let provenance = schema
+        .pointer(reference.strip_prefix('#').unwrap())
+        .unwrap();
+    assert_eq!(provenance["additionalProperties"], false);
+    assert_eq!(provenance["properties"]["uri"]["minLength"], 1);
+    assert_eq!(provenance["properties"]["uri"]["maxLength"], 2048);
+    assert_eq!(provenance["properties"]["label"]["maxLength"], 512);
+    let metadata = &provenance["properties"]["metadata"];
+    assert_eq!(metadata["type"], "object");
+    assert_eq!(metadata["maxProperties"], 32);
+    assert_eq!(metadata["propertyNames"]["type"], "string");
+    assert_eq!(metadata["propertyNames"]["minLength"], 1);
+    assert_eq!(metadata["propertyNames"]["maxLength"], 64);
+    assert_eq!(metadata["additionalProperties"]["type"], "string");
+    assert_eq!(metadata["additionalProperties"]["maxLength"], 1024);
+    assert_eq!(fixture.application.captures.load(Ordering::SeqCst), 0);
+    fixture.stop().await;
+}
+
+#[tokio::test]
 async fn legacy_handshake_catalog_and_trusted_instance_retry_contract() {
     let fixture = Fixture::new(TestApplication::default()).await;
     let response = fixture.request(TOKEN_A, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"compatibility-test","version":"1"}}})).send().await.unwrap();

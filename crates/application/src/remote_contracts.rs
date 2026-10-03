@@ -23,10 +23,30 @@ pub struct CallerIdentity {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureProvenance {
+    /// An absolute provenance URI without credentials; never fetched by the server.
+    #[schemars(length(min = 1, max = 2048))]
     pub uri: Option<String>,
+    #[schemars(length(max = 512))]
     pub label: Option<String>,
     #[serde(default)]
+    #[schemars(schema_with = "capture_metadata_schema")]
     pub metadata: BTreeMap<String, String>,
+}
+
+fn capture_metadata_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "maxProperties": 32,
+        "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+        },
+        "additionalProperties": {
+            "type": "string",
+            "maxLength": 1024
+        }
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
