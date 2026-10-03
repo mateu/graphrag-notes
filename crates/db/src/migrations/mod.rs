@@ -19,6 +19,7 @@ mod v012_reindex_item_fingerprints;
 mod v013_reindex_ownership;
 mod v014_reindex_input_snapshots;
 mod v015_chat_metadata;
+mod v016_remote_capture_receipts;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -31,7 +32,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 15;
+pub const LATEST_SCHEMA_VERSION: u32 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -62,6 +63,7 @@ const MIGRATIONS: &[Migration] = &[
     v013_reindex_ownership::MIGRATION,
     v014_reindex_input_snapshots::MIGRATION,
     v015_chat_metadata::MIGRATION,
+    v016_remote_capture_receipts::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -568,6 +570,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v016_adds_capture_receipts_without_rewriting_existing_knowledge() {
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..15]).await.unwrap();
+        db.query("CREATE note SET content = 'pre-service manual note', tags = ['preserved']; \
+                  CREATE source SET source_type = 'manual', metadata = { legacy: { value: 'preserved' } }")
+            .await.unwrap().check().unwrap();
+        let notes_before: Vec<serde_json::Value> = db.select("note").await.unwrap();
+        let sources_before: Vec<serde_json::Value> = db.select("source").await.unwrap();
+        let history_before = load_applied_migrations(&db).await.unwrap();
+        apply_all(&db).await.unwrap();
+        let notes_after: Vec<serde_json::Value> = db.select("note").await.unwrap();
+        let sources_after: Vec<serde_json::Value> = db.select("source").await.unwrap();
+        assert_eq!(notes_after, notes_before);
+        assert_eq!(sources_after, sources_before);
+        assert_eq!(current_version(&db).await.unwrap(), 16);
+        let history_after = load_applied_migrations(&db).await.unwrap();
+        assert_eq!(history_after.len(), 16);
+        for (before, after) in history_before.iter().zip(history_after.iter()) {
+            assert_eq!(before.version, after.version);
+            assert_eq!(before.checksum, after.checksum);
+        }
+        let receipts: Vec<serde_json::Value> = db.select("remote_capture_receipt").await.unwrap();
+        assert!(receipts.is_empty());
+    }
+
+    #[tokio::test]
     async fn v015_preserves_existing_records_and_accepts_librarian_chat_metadata() {
         let db = raw_memory_db().await;
         apply_migrations(&db, &MIGRATIONS[..14]).await.unwrap();
@@ -646,7 +674,7 @@ mod tests {
             .unwrap();
         assert_eq!(retained_note.content, "Keep this existing note.");
         assert_eq!(retained_note.source_id, Some(source_id));
-        assert_eq!(current_version(&db).await.unwrap(), 15);
+        assert_eq!(current_version(&db).await.unwrap(), latest_version());
     }
 
     #[tokio::test]

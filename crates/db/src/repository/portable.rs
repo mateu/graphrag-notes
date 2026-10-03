@@ -26,6 +26,9 @@ pub const PORTABLE_TABLES: &[&str] = &[
     "note_from_conversation",
     "note_from_message",
     "proposed_edge",
+    // Capture receipts must survive restore with their original safe response;
+    // dropping them would lose committed-request replay guarantees.
+    "remote_capture_receipt",
     "graphrag_metadata",
 ];
 
@@ -112,6 +115,7 @@ fn portable_timestamps(
         | "note_from_message" => &["created_at"],
         "proposed_edge" => &["created_at", "updated_at", "reviewed_at", "superseded_at"],
         "graphrag_metadata" => &["last_reindex_at", "updated_at"],
+        "remote_capture_receipt" => &["created_at", "updated_at"],
         _ => &[],
     };
     let mut values = Vec::new();
@@ -154,6 +158,7 @@ fn portable_record_ids(
             ("out", Some("note")),
             ("resulting_edge_id", None),
         ],
+        "remote_capture_receipt" => &[("note_id", Some("note")), ("source_id", Some("source"))],
         _ => &[],
     };
     let mut values = Vec::new();

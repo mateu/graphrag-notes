@@ -1,6 +1,7 @@
 //! Transport-neutral local application requests and results.
 
 use graphrag_db::InspectionProvenance;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -10,20 +11,20 @@ use std::sync::{
 pub const APPLICATION_CONTRACT_VERSION: u32 = 1;
 pub const MAX_RESULT_LIMIT: usize = 200;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RecordRef {
     pub id: String,
     pub revision: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
     Keyword,
     Hybrid,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     Notes,
@@ -31,7 +32,7 @@ pub enum Scope {
     All,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GraphPolicy {
     Off,
@@ -39,7 +40,7 @@ pub enum GraphPolicy {
     On,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchRequest {
     pub query: String,
     pub mode: SearchMode,

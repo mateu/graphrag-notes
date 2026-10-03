@@ -22,6 +22,15 @@ pub enum DbError {
     #[error("Note {0} changed or became unavailable while the editor was open. Inspect the current note before applying the retained draft.")]
     NoteRevisionConflict(String),
 
+    #[error("Remote request {request_id} for instance {instance_id} was already used with a different capture payload")]
+    RemoteRequestConflict {
+        instance_id: String,
+        request_id: String,
+    },
+
+    #[error("Invalid remote capture request: {0}")]
+    InvalidRemoteRequest(String),
+
     #[error("Schema initialization failed: {0}")]
     SchemaInit(String),
 

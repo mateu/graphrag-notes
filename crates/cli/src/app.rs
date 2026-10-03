@@ -454,6 +454,9 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
                     output::ExitCode::Validation
                 }
                 graphrag_application::ApplicationError::NotFound(_) => output::ExitCode::NotFound,
+                graphrag_application::ApplicationError::Compatibility(_) => {
+                    output::ExitCode::Compatibility
+                }
                 _ => output::ExitCode::Internal,
             };
         }
@@ -580,6 +583,35 @@ pub(crate) async fn run() -> Result<()> {
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+    if let Some(server) = cli
+        .server
+        .clone()
+        .or_else(|| std::env::var("GRAPHRAG_SERVER").ok())
+    {
+        return crate::remote::run(&cli, &server).await;
+    }
+    if cli.request_id.is_some() {
+        anyhow::bail!("--request-id requires --server and a remote capture command");
+    }
+    if let Commands::Serve {
+        listen,
+        credentials_file,
+        external_encryption,
+        allowed_hosts,
+        max_request_body_bytes,
+        max_concurrent_requests,
+    } = &cli.command
+    {
+        graphrag_service::ServiceOptions {
+            listen: *listen,
+            credentials_file: credentials_file.clone(),
+            external_encryption: *external_encryption,
+            allowed_hosts: allowed_hosts.clone(),
+            max_request_body_bytes: *max_request_body_bytes,
+            max_concurrent_requests: *max_concurrent_requests,
+        }
+        .validate()?;
+    }
     if matches!(&cli.command, Commands::Init { .. }) {
         return crate::init::run(&cli).await;
     }
@@ -857,6 +889,41 @@ pub(crate) async fn run() -> Result<()> {
         Some(repo.clone()),
         extraction_processing,
     ));
+
+    if let Commands::Serve {
+        listen,
+        credentials_file,
+        external_encryption,
+        allowed_hosts,
+        max_request_body_bytes,
+        max_concurrent_requests,
+    } = &cli.command
+    {
+        let application = graphrag_application::EmbeddedApplication::new(
+            repo.clone(),
+            configured_search_agent(repo, tei.clone(), &config.search),
+            tei,
+            tgi,
+            librarian_config,
+        )
+        .with_augment_options(augment_options(
+            config.augment.default_limit,
+            config.augment.max_tokens,
+            config.augment.max_chunk_tokens,
+            &config.augment,
+        ));
+        let options = graphrag_service::ServiceOptions {
+            listen: *listen,
+            credentials_file: credentials_file.clone(),
+            external_encryption: *external_encryption,
+            allowed_hosts: allowed_hosts.clone(),
+            max_request_body_bytes: *max_request_body_bytes,
+            max_concurrent_requests: *max_concurrent_requests,
+        };
+        return graphrag_service::run(Arc::new(application), options)
+            .await
+            .map_err(Into::into);
+    }
 
     // Check inference services only when needed.
     let mut requirements =
@@ -1528,6 +1595,13 @@ mod tests {
         ] {
             assert_eq!(exit_code_for(&error.into()), output::ExitCode::Validation);
         }
+        assert_eq!(
+            exit_code_for(
+                &graphrag_application::ApplicationError::Compatibility("model mismatch".into())
+                    .into()
+            ),
+            output::ExitCode::Compatibility
+        );
         assert_eq!(
             exit_code_for(&crate::dispatch::ChatImportFailure(1).into()),
             output::ExitCode::PartialFailure

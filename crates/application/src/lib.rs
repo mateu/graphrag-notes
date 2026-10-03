@@ -5,13 +5,17 @@ mod contracts;
 mod embedded;
 mod error;
 mod inference;
+mod remote_contracts;
+mod remote_operations;
 
 pub use contracts::*;
 pub use embedded::{
     decide_proposal, proposal_card, proposal_revision, validate_neighbors, validate_record_id,
     validate_record_revision, EmbeddedApplication,
 };
-pub use error::{ApplicationError, ApplicationResult};
+pub use error::{ApplicationError, ApplicationFailure, ApplicationResult};
+pub use remote_contracts::*;
+pub use remote_operations::remote_capture_fingerprint;
 
 use async_trait::async_trait;
 use graphrag_core::{Note, ProposedEdgeStatus};
@@ -47,4 +51,20 @@ pub trait ApplicationOperations: Send + Sync {
         request: ProposalDecisionRequest,
     ) -> ApplicationResult<ProposalCard>;
     async fn stats(&self) -> ApplicationResult<DbStats>;
+}
+
+/// Shared remote foundation; transports authenticate the caller before invoking it.
+#[async_trait]
+pub trait RemoteApplicationOperations: ApplicationOperations {
+    async fn build_context(
+        &self,
+        request: BuildContextRequest,
+        cancellation: ActionCancellation,
+    ) -> ApplicationResult<ContextResponse>;
+    async fn capture_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteCaptureRequest,
+        cancellation: ActionCancellation,
+    ) -> ApplicationResult<RemoteCaptureResponse>;
 }

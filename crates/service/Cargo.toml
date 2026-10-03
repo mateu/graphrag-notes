@@ -1,0 +1,30 @@
+[package]
+name = "graphrag-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+graphrag-application = { path = "../application" }
+rmcp.workspace = true
+axum.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+tracing.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true
+async-trait.workspace = true
+graphrag-core = { path = "../core" }
+graphrag-db = { path = "../db" }
+graphrag-agents = { path = "../agents" }

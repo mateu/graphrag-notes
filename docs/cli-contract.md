@@ -218,9 +218,12 @@ revision. Inspect, open, copy, and proposal decisions recheck those references;
 new result lists clear the previous selection. Startup and read-only actions
 do not probe inference providers. Capture reuses private drafts and the atomic
 ingestion operation; proposal decisions reuse the same governed policy as
-`garden review`. Shared typed operation contract version 1 is a local adapter
-boundary, not an implemented remote protocol.
+`garden review`. Shared typed operation contract version 1 defines this local
+adapter boundary. The optional [MCP service](shared-mcp.md) adds a separate
+versioned remote envelope, credentials and retry-safe capture. Remote CLI
+dispatch occurs before local database/configuration/provider bootstrap; the
+terminal workspace currently uses the embedded adapter.
 
 See [terminal workspace](terminal-workspace.md) for commands, keyboard support,
 safe cancellation, content-copy semantics, and database ownership, and the
-[application boundary](application-boundary.md) for future remote integration.
+[application boundary](application-boundary.md) for shared operation contracts.

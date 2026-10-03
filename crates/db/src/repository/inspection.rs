@@ -27,6 +27,12 @@ pub struct InspectionProvenance {
     pub message_uuid: Option<String>,
     pub message_index: Option<i64>,
     pub role: Option<String>,
+    /// Authenticated originating instance for a shared-service capture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    /// Opaque caller provenance, nested separately from trusted instance identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,7 +109,7 @@ const CONVERSATION_FIELDS: &str =
     "id, uuid, title, summary, source_uri, created_at, updated_at, ingested_at";
 const MESSAGE_FIELDS: &str = "id, message_key, message_uuid, conversation_id, conversation_uuid, message_index, role, content, created_at, updated_at, ingested_at";
 
-fn fingerprint(value: &impl Serialize) -> Result<String> {
+pub(super) fn fingerprint(value: &impl Serialize) -> Result<String> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| DbError::QueryFailed(format!("record revision: {error}")))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -278,6 +284,20 @@ impl Repository {
                     .unwrap_or("unknown")
                     .to_string(),
             );
+            if source.source_type == SourceType::Manual
+                && source
+                    .uri
+                    .as_deref()
+                    .is_some_and(|uri| uri.starts_with("mcp://capture/"))
+            {
+                if let Some(origin) = source.metadata.get("remote_capture") {
+                    provenance.instance_id = origin
+                        .get("instance_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+                    provenance.source = origin.get("source").cloned();
+                }
+            }
             if source.status == SourceIngestionStatus::Failed {
                 warnings.push(
                     "The latest source refresh failed; this is the last successful generation."

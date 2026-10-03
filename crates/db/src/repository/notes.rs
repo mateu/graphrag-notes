@@ -19,7 +19,7 @@ const EDITOR_REVISION_CONFLICT: &str = "graphrag-note-editor-revision-conflict";
 /// in-place updates additionally require manual ownership; provenance links
 /// added during editor/provider work must not turn a manual edit into an
 /// imported-note overwrite. Detach only checks the opening note snapshot.
-fn editor_snapshot_guard(require_manual: bool) -> String {
+pub(super) fn editor_snapshot_guard(require_manual: bool) -> String {
     let ownership = if require_manual {
         "AND source_generation IS NONE \
          AND array::len((SELECT VALUE id FROM note_from_conversation WHERE in = $editor_source LIMIT 1)) = 0 \
@@ -71,7 +71,7 @@ fn editor_source_id(expected: &Note) -> Result<RecordId> {
 /// guard and inside the note transaction prevents failed edits from changing
 /// shared entities or leaving unused rows behind. Resolve IDs after all
 /// upserts so repeated canonical names create only one mention.
-fn replacement_entities_transaction() -> &'static str {
+pub(super) fn replacement_entities_transaction() -> &'static str {
     "FOR $entity IN $replacement_entities { \
         INSERT INTO entity (entity_type, name, canonical_name, embedding, metadata, created_at) \
         VALUES ($entity.entity_type, $entity.name, $entity.canonical_name, \

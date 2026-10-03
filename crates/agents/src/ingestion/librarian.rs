@@ -674,16 +674,16 @@ impl LibrarianAgent {
         Ok(note)
     }
 
-    /// Capture a manual note only after all required provider work succeeds.
-    /// Reuse the atomic note/mention operation so failed capture creates no
-    /// partial manual source or visible note. Legacy `ingest_text` stays compatible.
+    /// Prepare a manual capture without persisting it. Embedded capture and
+    /// authenticated remote capture share provider, title and entity rules;
+    /// their repository operations choose the appropriate atomic commit.
     #[instrument(skip(self, content, title, tags))]
-    pub async fn capture_manual_note(
+    pub async fn prepare_manual_capture(
         &self,
         content: String,
         title: Option<String>,
         tags: Vec<String>,
-    ) -> Result<Note> {
+    ) -> Result<(Note, Vec<Entity>)> {
         if content.trim().is_empty() {
             return Err(crate::AgentError::Processing(
                 "note content cannot be empty".into(),
@@ -729,6 +729,22 @@ impl LibrarianAgent {
         if let Some(title) = title {
             note = note.with_title(title);
         }
+        if self.cancellation_requested.load(Ordering::Acquire) {
+            return Err(crate::AgentError::Cancelled);
+        }
+        Ok((note, entities))
+    }
+
+    /// Capture only after provider work succeeds, with an atomic note/entity
+    /// commit. Failed preparation creates no partial manual source or note.
+    #[instrument(skip(self, content, title, tags))]
+    pub async fn capture_manual_note(
+        &self,
+        content: String,
+        title: Option<String>,
+        tags: Vec<String>,
+    ) -> Result<Note> {
+        let (note, entities) = self.prepare_manual_capture(content, title, tags).await?;
         if self.cancellation_requested.load(Ordering::Acquire) {
             return Err(crate::AgentError::Cancelled);
         }

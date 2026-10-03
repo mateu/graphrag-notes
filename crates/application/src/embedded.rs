@@ -2,8 +2,8 @@ use crate::inference::{CancellableEmbedder, CancellableExtractor};
 use crate::*;
 use async_trait::async_trait;
 use graphrag_agents::{
-    GraphMode, LibrarianAgent, LibrarianRuntimeConfig, SearchAgent, SearchHitType, SearchScope,
-    SharedEmbedder, SharedEntityExtractor,
+    AugmentOptions, GraphMode, LibrarianAgent, LibrarianRuntimeConfig, SearchAgent, SearchHitType,
+    SearchScope, SharedEmbedder, SharedEntityExtractor,
 };
 use graphrag_core::{
     record_id_to_string, Note, ProposedEdge, ProposedEdgeStatus, SourceIngestionStatus,
@@ -14,11 +14,12 @@ use std::sync::Arc;
 
 /// An adapter over resources already owned by the calling process.
 pub struct EmbeddedApplication {
-    repo: Repository,
-    search: SearchAgent,
-    embedder: SharedEmbedder,
-    extractor: SharedEntityExtractor,
-    runtime: LibrarianRuntimeConfig,
+    pub(crate) repo: Repository,
+    pub(crate) search: SearchAgent,
+    pub(crate) embedder: SharedEmbedder,
+    pub(crate) extractor: SharedEntityExtractor,
+    pub(crate) runtime: LibrarianRuntimeConfig,
+    pub(crate) augment_options: AugmentOptions,
 }
 
 impl EmbeddedApplication {
@@ -35,10 +36,16 @@ impl EmbeddedApplication {
             embedder,
             extractor,
             runtime,
+            augment_options: AugmentOptions::default(),
         }
     }
 
-    async fn require_providers(
+    pub fn with_augment_options(mut self, options: AugmentOptions) -> Self {
+        self.augment_options = options;
+        self
+    }
+
+    pub(crate) async fn require_providers(
         &self,
         extraction: bool,
         cancel: &ActionCancellation,
