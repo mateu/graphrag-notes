@@ -652,7 +652,8 @@ async fn authenticated_stalled_bodies_release_capacity_and_bound_shutdown() {
         let url = reqwest::Url::parse(&fixture.url).unwrap();
         let address = (url.host_str().unwrap(), url.port().unwrap());
         let mut stalled = Vec::new();
-        for _ in 0..ServiceOptions::default().max_concurrent_requests {
+        // This combined service reserves two short ingress/control slots for jobs.
+        for _ in 0..ServiceOptions::default().max_concurrent_requests + 2 {
             let mut stream = TcpStream::connect(address).await.unwrap();
             let headers = format!(
                 "POST /mcp HTTP/1.1\r\nHost: {}:{}\r\nAuthorization: Bearer {TOKEN_READ}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n\r\n{{",
