@@ -579,15 +579,15 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
 }
 
 pub(crate) async fn run() -> Result<()> {
+    // A working-directory .env is project-controlled configuration. Routing
+    // an inherited bearer credential must use an explicitly supplied endpoint
+    // or the process environment as it existed before loading that file.
+    let process_server = std::env::var("GRAPHRAG_SERVER").ok();
     // Load environment variables from .env if present.
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
-    if let Some(server) = cli
-        .server
-        .clone()
-        .or_else(|| std::env::var("GRAPHRAG_SERVER").ok())
-    {
+    if let Some(server) = cli.server.clone().or(process_server) {
         return crate::remote::run(&cli, &server).await;
     }
     if cli.request_id.is_some() {

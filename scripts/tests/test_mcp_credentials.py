@@ -67,6 +67,47 @@ class CredentialProvisioning(unittest.TestCase):
                 credentials.provision(path, [f"client-{i}" for i in range(129)], [])
             self.assertFalse(path.exists())
 
+    def test_case_colliding_ids_are_rejected_before_any_provisioning_write(self):
+        for writers, readers in [(["OpenClaw-A", "openclaw-a"], []),
+                                 (["OpenClaw-A"], ["openclaw-a"]),
+                                 ([], ["Hermes", "HERMES"])]:
+            with self.subTest(writers=writers, readers=readers), tempfile.TemporaryDirectory() as base:
+                path = Path(base) / "private"
+                with patch.object(credentials, "private_write", side_effect=AssertionError("must not write")):
+                    with self.assertRaises(ValueError):
+                        credentials.provision(path, writers, readers)
+                self.assertFalse(path.exists())
+
+    def test_rotation_refuses_legacy_case_colliding_policy_without_changing_tokens(self):
+        with tempfile.TemporaryDirectory() as base:
+            path = Path(base) / "private"
+            credentials.provision(path, ["OpenClaw-A"], ["hermes"])
+            policy_path = path / "credentials.json"
+            policy = json.loads(policy_path.read_text())
+            policy["credentials"].append({**policy["credentials"][0], "instance_id": "openclaw-a"})
+            policy_path.write_text(json.dumps(policy) + "\n")
+            original_policy = policy_path.read_bytes()
+            original_token = (path / "OpenClaw-A.env").read_bytes()
+            with patch.object(credentials, "private_write", side_effect=AssertionError("must not write")):
+                with self.assertRaises(ValueError):
+                    credentials.rotate(path, "OpenClaw-A")
+            self.assertEqual(policy_path.read_bytes(), original_policy)
+            self.assertEqual((path / "OpenClaw-A.env").read_bytes(), original_token)
+            self.assertFalse((path / "OpenClaw-A.rotation.json").exists())
+
+    def test_unique_mixed_case_identity_can_rotate_without_renaming(self):
+        with tempfile.TemporaryDirectory() as base:
+            path = Path(base) / "private"
+            credentials.provision(path, ["OpenClaw-A"], ["Hermes"])
+            before = json.loads((path / "credentials.json").read_text())
+            credentials.rotate(path, "OpenClaw-A")
+            after = json.loads((path / "credentials.json").read_text())
+            self.assertEqual(after["credentials"][0]["instance_id"], "OpenClaw-A")
+            self.assertNotEqual(before["credentials"][0]["token_sha256"], after["credentials"][0]["token_sha256"])
+            self.assertEqual(before["credentials"][1], after["credentials"][1])
+            self.assertTrue((path / "OpenClaw-A.env").is_file())
+            self.assertFalse((path / "OpenClaw-A.rotation.json").exists())
+
     @unittest.skipUnless(os.name == "posix", "private file permissions require POSIX")
     def test_rotation_refuses_nonregular_or_exposed_recovery_without_changing_tokens(self):
         for kind in ["fifo", "directory", "symlink", "broken-symlink", "exposed-file"]:

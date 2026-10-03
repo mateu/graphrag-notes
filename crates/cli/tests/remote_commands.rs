@@ -38,6 +38,103 @@ fn remote_dispatch_bypasses_invalid_local_configuration_and_database() {
 }
 
 #[test]
+fn project_dotenv_cannot_redirect_an_inherited_bearer_credential() {
+    use std::io::Read;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("private-home");
+    fs::create_dir(&home).unwrap();
+    let database = temp.path().join("local-database");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    fs::write(
+        temp.path().join(".env"),
+        format!(
+            "GRAPHRAG_SERVER=http://{}/mcp\nGRAPHRAG_DB_PATH=\"{}\"\n",
+            listener.local_addr().unwrap(),
+            database.display()
+        ),
+    )
+    .unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let connections = Arc::new(AtomicUsize::new(0));
+    let thread_stop = Arc::clone(&stop);
+    let thread_connections = Arc::clone(&connections);
+    let attacker = std::thread::spawn(move || {
+        while !thread_stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    thread_connections.fetch_add(1, Ordering::Relaxed);
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+                        .unwrap();
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("synthetic endpoint accept failed: {error}"),
+            }
+        }
+    });
+    let result = graphrag()
+        .current_dir(temp.path())
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .env_remove("GRAPHRAG_DB_PATH")
+        .env("GRAPHRAG_TOKEN", "synthetic-inherited-bearer-do-not-send")
+        .args([
+            "search",
+            "synthetic",
+            "--mode",
+            "keyword",
+            "--graph",
+            "off",
+            "--format",
+            "json",
+        ])
+        .timeout(std::time::Duration::from_secs(5))
+        .assert();
+    stop.store(true, Ordering::Relaxed);
+    attacker.join().unwrap();
+    assert_eq!(
+        connections.load(Ordering::Relaxed),
+        0,
+        "a project-controlled endpoint must receive no credential-bearing request"
+    );
+    result.success();
+    assert!(
+        database.exists(),
+        "the command should use its isolated local database"
+    );
+}
+
+#[test]
+fn inherited_process_endpoint_still_dispatches_before_local_bootstrap() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("must-not-exist");
+    let config = temp.path().join("invalid.toml");
+    fs::write(&config, "this is invalid TOML [").unwrap();
+    graphrag()
+        .current_dir(temp.path())
+        .env("GRAPHRAG_SERVER", "http://127.0.0.1:0/mcp")
+        .env("GRAPHRAG_CONFIG", &config)
+        .env("GRAPHRAG_DB_PATH", &database)
+        .env("GRAPHRAG_TOKEN", "synthetic-inherited-bearer-12345678")
+        .args(["search", "synthetic", "--mode", "keyword"])
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure()
+        .stderr(contains("service_unreachable"));
+    assert!(!database.exists());
+}
+
+#[test]
 fn failed_capture_keeps_private_draft_and_original_request_identity() {
     let temp = tempfile::tempdir().unwrap();
     let drafts = temp.path().join("client drafts");
@@ -59,7 +156,7 @@ fn failed_capture_keeps_private_draft_and_original_request_identity() {
         .arg(&drafts)
         .assert()
         .failure()
-        .stderr(contains("--request-id 'capture-replay-001'"))
+        .stderr(contains("--request-id='capture-replay-001'"))
         .stderr(contains("--content-file"))
         .stderr(contains(format!("--draft-dir '{}'", drafts.display())));
     let paths = fs::read_dir(&drafts)
@@ -79,6 +176,67 @@ fn failed_capture_keeps_private_draft_and_original_request_identity() {
             0o600
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn option_like_capture_request_identity_survives_the_printed_recovery_command() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("private-home");
+    fs::create_dir(&home).unwrap();
+    let drafts = temp.path().join("client drafts");
+    let token = "synthetic-replay-token-12345678901234";
+    let result = graphrag()
+        .current_dir(temp.path())
+        .env("HOME", &home)
+        .env("GRAPHRAG_TOKEN", token)
+        .args([
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--request-id=-custom",
+            "capture",
+            "synthetic replay draft",
+            "--draft-dir",
+        ])
+        .arg(&drafts)
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+    let recovery = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Recover: "))
+        .expect("failed capture must print its retry command");
+    assert!(recovery.contains("--request-id='-custom'"));
+    let original = fs::read_dir(&drafts)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    // Execute the actual printed shell recovery command against only the
+    // synthetic fixture and private binary PATH, exercising shell + Clap.
+    let binary_directory = std::path::Path::new(env!("CARGO_BIN_EXE_graphrag"))
+        .parent()
+        .unwrap();
+    let replay = Command::new("/bin/sh")
+        .current_dir(temp.path())
+        .env_remove("GRAPHRAG_SERVER")
+        .env_remove("GRAPHRAG_CONFIG")
+        .env("HOME", &home)
+        .env("PATH", binary_directory)
+        .env("GRAPHRAG_TOKEN", token)
+        .args(["-c", recovery])
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure()
+        .stderr(contains("Capture request ID: -custom"))
+        .stderr(contains("service_unreachable"));
+    assert!(!String::from_utf8_lossy(&replay.get_output().stderr).contains(token));
+    assert_eq!(
+        fs::read_to_string(original).unwrap(),
+        "synthetic replay draft"
+    );
 }
 
 #[test]
@@ -156,7 +314,7 @@ fn cancelled_editor_preserves_changed_remote_draft_without_sending() {
         .assert()
         .failure()
         .stderr(contains("editor cancelled"))
-        .stderr(contains("--request-id 'cancel-recovery-001'"));
+        .stderr(contains("--request-id='cancel-recovery-001'"));
     let paths = fs::read_dir(&drafts)
         .unwrap()
         .map(|entry| entry.unwrap().path())

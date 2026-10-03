@@ -17,6 +17,14 @@ def instance_id(value):
     return value
 
 
+def validate_identities(identities):
+    # Instance IDs are ASCII. Token/recovery filenames must remain distinct
+    # on the case-insensitive filesystems used by the supported macOS build.
+    if (not identities or len(identities) > 128
+            or len({identity.lower() for identity in identities}) != len(identities)):
+        raise ValueError("provide 1–128 client IDs unique ignoring ASCII letter case")
+
+
 def private_write(path, text):
     fd, temporary = tempfile.mkstemp(prefix=".credential-", dir=path.parent)
     try:
@@ -37,8 +45,7 @@ def private_write(path, text):
 def provision(directory, writers, readers):
     writers, readers = [instance_id(i) for i in writers], [instance_id(i) for i in readers]
     identities = writers + readers
-    if not identities or len(identities) > 128 or len(set(identities)) != len(identities):
-        raise ValueError("provide 1–128 unique client IDs")
+    validate_identities(identities)
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     policy = {"schema_version": 1, "credentials": []}
     for identity in identities:
@@ -71,6 +78,9 @@ def _rotate_locked(directory, identity):
     if policy_path.is_symlink() or not policy_path.is_file():
         raise ValueError("credential policy must be a regular file")
     policy = json.loads(policy_path.read_text())
+    # Refuse an older colliding policy before writing either its replacement
+    # policy or a staged token; rotating one entry could overwrite the other.
+    validate_identities([instance_id(entry["instance_id"]) for entry in policy["credentials"]])
     entries = [entry for entry in policy["credentials"] if entry["instance_id"] == identity]
     if policy.get("schema_version") != 1 or len(entries) != 1:
         raise ValueError("rotation requires exactly one existing instance in schema version 1")

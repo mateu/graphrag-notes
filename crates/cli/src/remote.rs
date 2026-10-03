@@ -113,7 +113,7 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
             .join(".graphrag/remote-drafts")
     });
     let mut draft = Draft::save(&bytes, &directory, |path| {
-        let mut command = format!("graphrag --server {} --credential-env {} --request-id {} capture --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(format));
+        let mut command = format!("graphrag --server {} --credential-env {} --request-id={} capture --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(format));
         if let Some(directory) = &options.draft_dir {
             command.push_str(&format!(
                 " --draft-dir {}",
