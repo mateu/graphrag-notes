@@ -5,11 +5,15 @@ providers. OpenClaw, Hermes and the remote CLI connect to `/mcp` using Streamabl
 HTTP. Each instance has its own bearer credential and server-enforced capabilities.
 The service is optional; embedded commands still work when the service is stopped.
 
-This first implementation is tracked in [#75](https://github.com/mateu/graphrag-notes/issues/75).
-[#56](https://github.com/mateu/graphrag-notes/issues/56) also tracks revision-checked
-editing/review (#76), uploaded sources/durable jobs (#77), and the actual
-two-computer deployment walkthrough (#78). Those workflows remain incomplete.
-Build the current source for these commands; published `v0.1.0-rc.2` predates MCP.
+The service foundation is tracked in [#75](https://github.com/mateu/graphrag-notes/issues/75).
+This source tree also implements revision-checked editing/review for #76 in
+[PR #80](https://github.com/mateu/graphrag-notes/pull/80) and uploaded sources/durable
+jobs for #77 in [PR #81](https://github.com/mateu/graphrag-notes/pull/81).
+[#56](https://github.com/mateu/graphrag-notes/issues/56) remains open while
+[#78](https://github.com/mateu/graphrag-notes/issues/78) completes the actual
+two-computer deployment and conversational agent-session acceptance.
+Build source including these stacked changes for the commands below;
+published `v0.1.0-rc.2` predates MCP.
 macOS and Linux are the targets.
 See [foundation validation](shared-mcp-validation.md) for automated and installed
 native-runtime evidence, including the remaining deployment acceptance gates.
@@ -94,8 +98,13 @@ settings. Use the explicit HTTPS endpoint or a loopback encrypted tunnel.
 accepted in URL parameters or command-line arguments. Non-loopback CLI endpoints
 require HTTPS; loopback HTTP supports the encrypted tunnel recipe.
 Remote dispatch happens before local configuration/database/provider startup.
-It supports `search`, `inspect`, `augment`, `capture` and `add`; host maintenance
-stays on the host. Local configuration, database and inference overrides are
+It supports `search`, `inspect`, `augment`, `capture` and `add`, plus
+`notes show/edit/delete`, `garden review`, explicitly confirmed
+`garden proposals accept/reject/undo`, `upload`, `sources show` and
+`jobs list/show/cancel/resume`. See [revisioned mutations](shared-mcp-mutations.md)
+and [uploaded sources/jobs](remote-upload-jobs.md) for permissions, reviewed
+revisions, stable request IDs and recovery. Host maintenance stays on the host.
+Local configuration, database and inference overrides are
 rejected in remote mode. JSON/JSONL uses the existing CLI envelope containing the
 versioned MCP result; human output renders that result.
 
@@ -243,4 +252,4 @@ Optional agent instruction:
 Tool availability does not replace native agent memory or enable automatic
 transcript ingestion. The sanitized two-computer walkthrough remains tracked in
 #78, including OpenClaw A capture, OpenClaw B/Hermes search and inspection,
-read-only enforcement, revocation, and later durable-job reconnects.
+read-only enforcement, revocation, durable-job reconnects and host recovery.

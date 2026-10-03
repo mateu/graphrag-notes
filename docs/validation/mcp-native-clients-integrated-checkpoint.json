@@ -1,0 +1,1036 @@
+{
+  "schema_version": 1,
+  "success": true,
+  "scope": "installed native tool runtimes on one host",
+  "host_platform": "Darwin",
+  "different_computers_tested": false,
+  "real_agent_llm_sessions_tested": false,
+  "synthetic_inference": true,
+  "real_user_profiles_used": false,
+  "host_backup_restore_tested": false,
+  "binary_sha256": "322de8704df22f7a701feb671de9960d74ad0686edc614968646c62100c28159",
+  "binary_snapshot_used": true,
+  "wire_schema_version": 1,
+  "writer_capabilities": [
+    "read",
+    "capture"
+  ],
+  "mutation_capabilities_granted": true,
+  "extended_scenarios_requested": true,
+  "cleanup_errors": [],
+  "binary_version": "graphrag 0.1.0-rc.2",
+  "extended": {
+    "explicit_grants": {
+      "writer": [
+        "read",
+        "capture",
+        "edit",
+        "delete",
+        "accept",
+        "reject",
+        "undo"
+      ],
+      "uploader": [
+        "read",
+        "capture",
+        "upload",
+        "jobs"
+      ],
+      "foreign-jobs": [
+        "read",
+        "jobs"
+      ]
+    },
+    "connection_decisions_exercised": false,
+    "connection_decision_limit": "No synthetic connection proposal is seeded; decision grants alone are not decision evidence.",
+    "source_refresh_exercised": false,
+    "entity_extraction_exercised": false,
+    "restart_during_running_job_exercised": false,
+    "native_calls": [
+      {
+        "client": "openclaw",
+        "instance_id": "writer",
+        "tool": "capture_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "writer",
+        "tool": "get_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "writer",
+        "tool": "edit_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "writer",
+        "tool": "edit_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "writer",
+        "tool": "get_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "writer",
+        "tool": "edit_note",
+        "expected_error": "revision_conflict",
+        "status": "completed",
+        "categorized_error": "revision_conflict",
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "writer",
+        "tool": "edit_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "writer",
+        "tool": "get_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "writer",
+        "tool": "delete_note",
+        "expected_error": "invalid_input",
+        "status": "completed",
+        "categorized_error": "invalid_input",
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "writer",
+        "tool": "delete_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "writer",
+        "tool": "delete_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "writer",
+        "tool": "get_note",
+        "expected_error": "not_found",
+        "status": "completed",
+        "categorized_error": "not_found",
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "writer",
+        "tool": "capture_note",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "writer",
+        "tool": "get_note",
+        "expected_error": "not_found",
+        "status": "completed",
+        "categorized_error": "not_found",
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "decide_proposal",
+          "delete_note",
+          "edit_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "uploader",
+        "tool": "upload_source",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "uploader",
+        "tool": "get_job",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "uploader",
+        "tool": "cancel_job",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "uploader",
+        "tool": "get_job",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "uploader",
+        "tool": "resume_job",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "uploader",
+        "tool": "get_job",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "uploader",
+        "tool": "upload_source",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "uploader",
+        "tool": "upload_source",
+        "expected_error": "revision_conflict",
+        "status": "completed",
+        "categorized_error": "revision_conflict",
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "foreign-jobs",
+        "tool": "get_job",
+        "expected_error": "not_found",
+        "status": "completed",
+        "categorized_error": "not_found",
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "foreign-jobs",
+        "tool": "cancel_job",
+        "expected_error": "not_found",
+        "status": "completed",
+        "categorized_error": "not_found",
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "foreign-jobs",
+        "tool": "resume_job",
+        "expected_error": "not_found",
+        "status": "completed",
+        "categorized_error": "not_found",
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "foreign-jobs",
+        "tool": "list_jobs",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "uploader",
+        "tool": "list_jobs",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "cancel_job",
+          "capture_note",
+          "get_job",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_jobs",
+          "list_proposals",
+          "resume_job",
+          "search_notes",
+          "upload_source"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "openclaw-b",
+        "tool": "get_source",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "hermes",
+        "instance_id": "hermes",
+        "tool": "get_source",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      },
+      {
+        "client": "openclaw",
+        "instance_id": "openclaw-a",
+        "tool": "get_record",
+        "expected_error": null,
+        "status": "completed",
+        "categorized_error": null,
+        "catalog": [
+          "build_context",
+          "capture_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ]
+      }
+    ],
+    "mutations": {
+      "id": "note:d041e06675fccde0b30148adcbc2d360a522a95419300ae640772e77841bb41e",
+      "original_revision": "06d171b3727c6bc6a94d14c5bab02925af1a16642b86b1b413dd6ad047cbdd4d",
+      "deleted_revision": "6259fa52a6175059938981d676ee3c851f73cef14f8e54c75f117089ea1cff68",
+      "openclaw_edit": {
+        "outcome": {
+          "actor": "mcp:writer",
+          "cascade": null,
+          "id": "note:d041e06675fccde0b30148adcbc2d360a522a95419300ae640772e77841bb41e",
+          "operation": "edit",
+          "previous_revision": "06d171b3727c6bc6a94d14c5bab02925af1a16642b86b1b413dd6ad047cbdd4d",
+          "resulting_edge_id": null,
+          "status": "edited"
+        },
+        "replayed": false,
+        "request_id": "native-edit-001"
+      },
+      "hermes_edit": {
+        "outcome": {
+          "actor": "mcp:writer",
+          "cascade": null,
+          "id": "note:d041e06675fccde0b30148adcbc2d360a522a95419300ae640772e77841bb41e",
+          "operation": "edit",
+          "previous_revision": "bc3eae5e0d04af7fec2b2e0a5a84299fdcc451762214a8975901e557a6f271b5",
+          "resulting_edge_id": null,
+          "status": "edited"
+        },
+        "replayed": false,
+        "request_id": "native-edit-002"
+      },
+      "delete": {
+        "outcome": {
+          "actor": "mcp:writer",
+          "cascade": {
+            "mentions": 0,
+            "note_conversation_provenance": 0,
+            "note_edges": 0,
+            "note_message_provenance": 0,
+            "notes": 1,
+            "proposals": 0
+          },
+          "id": "note:d041e06675fccde0b30148adcbc2d360a522a95419300ae640772e77841bb41e",
+          "operation": "delete",
+          "previous_revision": "6259fa52a6175059938981d676ee3c851f73cef14f8e54c75f117089ea1cff68",
+          "resulting_edge_id": null,
+          "status": "deleted"
+        },
+        "replayed": false,
+        "request_id": "native-delete-001"
+      },
+      "stale_revision_rejected": true,
+      "unconfirmed_delete_rejected": true,
+      "capture_replay_did_not_resurrect_deleted_note": true
+    },
+    "upload": {
+      "admission": {
+        "job_id": "processing_job:9caefbc8e052d9c2197925e4b3a8165d001b1812868a5db9e806040c2b698ad2",
+        "replayed": false,
+        "request_id": "native-upload-001",
+        "source_id": "source:06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082",
+        "source_uri": "mcp://upload/06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082"
+      },
+      "cancelled_checkpoint": {
+        "cancellation_requested": true,
+        "checkpoint": null,
+        "completed": 0,
+        "created_at": "2026-10-03T16:12:18.117322+00:00",
+        "error_code": "cancelled",
+        "failed": 0,
+        "generation": 1,
+        "id": "processing_job:9caefbc8e052d9c2197925e4b3a8165d001b1812868a5db9e806040c2b698ad2",
+        "instance_id": "uploader",
+        "job_type": "remote_upload",
+        "phase": "preparing",
+        "result": null,
+        "source_id": "source:06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082",
+        "status": "cancelled",
+        "total": 0,
+        "updated_at": "2026-10-03T16:12:18.998053+00:00"
+      },
+      "completed_job": {
+        "cancellation_requested": false,
+        "checkpoint": null,
+        "completed": 1,
+        "created_at": "2026-10-03T16:12:18.117322+00:00",
+        "error_code": null,
+        "failed": 0,
+        "generation": 1,
+        "id": "processing_job:9caefbc8e052d9c2197925e4b3a8165d001b1812868a5db9e806040c2b698ad2",
+        "instance_id": "uploader",
+        "job_type": "remote_upload",
+        "phase": "completed",
+        "result": {
+          "action": "created",
+          "extracted": false,
+          "generation": 1,
+          "note_ids": [
+            "note:b582129d57197d7ce48c96418ac6cb4e0a999db4c5fe19f9ba1c31eb9ab4b3eb"
+          ],
+          "source_id": "source:06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082",
+          "source_uri": "mcp://upload/06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082"
+        },
+        "source_id": "source:06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082",
+        "status": "completed",
+        "total": 1,
+        "updated_at": "2026-10-03T16:12:19.962788+00:00"
+      },
+      "source": {
+        "content": "# Native upload atlas\n\nnativeuploadatlas is a fictional project shared by native MCP clients.\n",
+        "content_hash": "sha256:daed9c3eee1c1bfa3674a13875647e154db8b5e44e027dc0de834b069c7265b6",
+        "document_key": "synthetic/native-upload-atlas.md",
+        "generation": 1,
+        "id": "source:06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082",
+        "instance_id": "uploader",
+        "provenance": {
+          "label": "synthetic uploaded document",
+          "metadata": {
+            "session": "synthetic-native-upload-session"
+          },
+          "uri": "file:///client-only/native-upload-atlas.md"
+        },
+        "revision": "3c936ad37b3795f00397758103fbb22352f1fe249ff34426cbd9bfbffaee9ea1",
+        "status": "ready",
+        "successful_generation": 1,
+        "title": "Native upload atlas",
+        "uri": "mcp://upload/06f7e484d315b191fc5acc54e94115a88bc1c179f5e798cefb9edf5063a18082"
+      },
+      "job_owner_isolation": true,
+      "disconnect_did_not_cancel": true,
+      "explicit_cancel_and_resume": true,
+      "changed_retry_payload_rejected": true,
+      "shared_native_source_read": true
+    },
+    "service_restart": {
+      "capture_delete_receipts_preserved": true,
+      "upload_admission_preserved": true,
+      "completed_chunk_ids_preserved": true,
+      "note_ids": [
+        "note:b582129d57197d7ce48c96418ac6cb4e0a999db4c5fe19f9ba1c31eb9ab4b3eb"
+      ]
+    },
+    "durable_mutation_receipt_count": 3
+  },
+  "openclaw": {
+    "version": "2026.9.7",
+    "node_version": "v26.7.0",
+    "catalog": [
+      "build_context",
+      "capture_note",
+      "get_note",
+      "get_proposal",
+      "get_record",
+      "get_source",
+      "list_proposals",
+      "search_notes"
+    ],
+    "native_runtime_api": "createSessionMcpRuntime/getCatalog/callTool",
+    "openclaw_b_read_openclaw_a": true,
+    "same_instance_replay": true,
+    "native_context_citations": true,
+    "native_context_tokens": 114,
+    "independent_principals": [
+      "openclaw-a",
+      "openclaw-b"
+    ],
+    "record": {
+      "content": "nativeclientatlas synthetic shared client runtime note.",
+      "created_at": "2026-10-03T16:12:10.270595+00:00",
+      "id": "note:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+      "provenance": {
+        "conversation_id": null,
+        "conversation_uuid": null,
+        "end_line": null,
+        "heading_path": [],
+        "instance_id": "openclaw-a",
+        "message_index": null,
+        "message_key": null,
+        "message_uuid": null,
+        "role": null,
+        "source": {
+          "label": "synthetic",
+          "metadata": {
+            "session": "synthetic-native-client-session"
+          },
+          "uri": "file:///client-only/native-source.md"
+        },
+        "source_generation": null,
+        "source_id": "source:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+        "source_type": "manual",
+        "source_uri": "mcp://capture/b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+        "start_line": null
+      },
+      "revision": "af1a1336b48d03be96d9ba3e24e1863d8782efff38b05d52120aeed717346b0f",
+      "tags": [
+        "native-client-walkthrough"
+      ],
+      "title": "Synthetic native clients",
+      "updated_at": "2026-10-03T16:12:10.270595+00:00"
+    },
+    "second_record_id": "note:5229e7ac1c82c8ea24685a7b85c336e2031850ceb2b335a8e8feeb80489c4841"
+  },
+  "hermes": {
+    "version": "0.21.2",
+    "python_version": "3.11.15",
+    "mcp_sdk_version": "2.0.0",
+    "catalog": [
+      "build_context",
+      "capture_note",
+      "get_note",
+      "get_proposal",
+      "get_record",
+      "get_source",
+      "list_proposals",
+      "search_notes"
+    ],
+    "exercised_tools": [
+      "build_context",
+      "capture_note",
+      "get_record",
+      "search_notes"
+    ],
+    "registry_names": [
+      "mcp__graphrag__build_context",
+      "mcp__graphrag__capture_note",
+      "mcp__graphrag__get_note",
+      "mcp__graphrag__get_proposal",
+      "mcp__graphrag__get_record",
+      "mcp__graphrag__get_source",
+      "mcp__graphrag__list_proposals",
+      "mcp__graphrag__search_notes"
+    ],
+    "native_runtime_api": "register_mcp_servers/tools.registry.dispatch",
+    "hermes_read_openclaw_a": true,
+    "same_instance_replay": true,
+    "native_context_citations": true,
+    "native_context_tokens": 114,
+    "trusted_principal": "hermes",
+    "note_count": 3,
+    "record_id": "note:9fec8d82bc3d9b72d177f428336d3877031601ddfe1468dbbe6db616fb4ed18d"
+  },
+  "readonly_native_runtime": {
+    "version": "2026.9.7",
+    "node_version": "v26.7.0",
+    "catalog": [
+      "build_context",
+      "get_note",
+      "get_proposal",
+      "get_record",
+      "get_source",
+      "list_proposals",
+      "search_notes"
+    ],
+    "read_succeeded": true,
+    "capture_not_advertised": true,
+    "native_mutation_denied": true,
+    "limitation": "The native runtime may refuse a tool outside its catalog; service-side enforcement is separately tested."
+  },
+  "revoked_native_runtime": {
+    "version": "2026.9.7",
+    "node_version": "v26.7.0",
+    "revoked_credential_connection_denied": true,
+    "valid_control_read_succeeded": true,
+    "limitation": "Installed OpenClaw redacts HTTP status/body; native evidence proves denial against a healthy control, exact HTTP status is separately tested."
+  },
+  "service_restart": {
+    "version": "2026.9.7",
+    "node_version": "v26.7.0",
+    "catalog": [
+      "build_context",
+      "capture_note",
+      "get_note",
+      "get_proposal",
+      "get_record",
+      "get_source",
+      "list_proposals",
+      "search_notes"
+    ],
+    "replay_after_restart": true,
+    "note_count": 3,
+    "record": {
+      "content": "nativeclientatlas synthetic shared client runtime note.",
+      "created_at": "2026-10-03T16:12:10.270595+00:00",
+      "id": "note:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+      "provenance": {
+        "conversation_id": null,
+        "conversation_uuid": null,
+        "end_line": null,
+        "heading_path": [],
+        "instance_id": "openclaw-a",
+        "message_index": null,
+        "message_key": null,
+        "message_uuid": null,
+        "role": null,
+        "source": {
+          "label": "synthetic",
+          "metadata": {
+            "session": "synthetic-native-client-session"
+          },
+          "uri": "file:///client-only/native-source.md"
+        },
+        "source_generation": null,
+        "source_id": "source:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+        "source_type": "manual",
+        "source_uri": "mcp://capture/b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+        "start_line": null
+      },
+      "revision": "af1a1336b48d03be96d9ba3e24e1863d8782efff38b05d52120aeed717346b0f",
+      "tags": [
+        "native-client-walkthrough"
+      ],
+      "title": "Synthetic native clients",
+      "updated_at": "2026-10-03T16:12:10.270595+00:00"
+    }
+  },
+  "durable_receipt_count": 4,
+  "durable_note_count": 4,
+  "independent_instances": [
+    "hermes",
+    "openclaw-a",
+    "openclaw-b"
+  ],
+  "provider_request_count": 28,
+  "source_provenance_preserved_by_export": true,
+  "database_schema_version": 18,
+  "database_schema_evidence": "host portable-backup manifest",
+  "evidence_kind": "integrated review checkpoint; not eventual final foundation",
+  "source_revision_reported_by_builder": "d4f541e8590ce0de6d0d0540a18ac3838c176978",
+  "regression_gate": {
+    "python_tests": 31,
+    "native_harness_tests": 16,
+    "node_syntax": true,
+    "python_compilation": true,
+    "diff_check": true,
+    "scope": "Historical gate at checkpoint authorship; not the current test inventory"
+  },
+  "post_review_regression_gate": {
+    "observed_at": "2026-10-03T16:41:48.086365+00:00",
+    "scope": "Post-review gate observed at the recorded timestamp and file hashes; not a live test inventory",
+    "python_tests": 35,
+    "native_harness_tests": 20,
+    "harness_sha256": "6fc2a1a25f8eaba13f70f54df3d10dbaca41cf10ad3af40dd58d5393f1233e1c",
+    "test_suite_sha256": "b1c3f8da6a28bc44090dfd4088aac69717507b5781bc9700d0cbd5019a8edf0a",
+    "node_syntax": true,
+    "python_compilation": true,
+    "diff_check": true
+  }
+}
