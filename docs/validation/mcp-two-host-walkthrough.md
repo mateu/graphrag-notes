@@ -6,10 +6,11 @@ plus separately attributed lifecycle and portable-maintenance checks. The
 [sanitized JSON proof](mcp-two-host-walkthrough.json) preserves exact service
 envelopes, identities, failures and source attribution. This is an observed
 checkpoint that demonstrates the required native capture/read walkthrough
-acceptance. Later endpoint-compatibility and public-job-status fixes need separate
-source/runtime attribution. No issue closure or GitHub approval is claimed.
+acceptance. The dated follow-up below records the later endpoint-compatibility
+and public-job-status fixes under their own source/runtime attribution. No issue
+closure or GitHub approval is claimed.
 
-The last observed executable had SHA-256
+The preceding vector-restored checkpoint had SHA-256
 `3a99eb0eb6d324e3903e8f119f4f3656cad7544b1930f747df6742f6ebdb942b`, source
 `02a49a2449153d9b1f3ec67bab2907ab4c610bd6`. Its frozen hash was independently
 checked. Earlier conversation/job checks used `896e0819…`, built from `d146db2`;
@@ -129,4 +130,67 @@ Proposal decisions and resume after a superseding generation were unperformed.
 Both maintenance archives contained completed jobs; restoration of an in-flight
 worker lease was unperformed, while live restart/interruption/resume was observed.
 These supplemental limits do not mark the demonstrated native walkthrough
-acceptance pending. This checkpoint does not attest later source fixes.
+acceptance pending. The preceding checkpoint does not attest the later source
+fixes; the follow-up below records their acceptance.
+
+## October 3 follow-up: reviewed recovery and fresh restore
+
+The later endpoint-compatibility and quarantined-status changes were reviewed at
+source `f6af11e3d3ed541dfc9bfde62be6eab9a8c42148`. Their observed executable had
+independently checked SHA-256
+`a861e61249f8e2e2882c26cc64bb5b19765b4f8ee61bd92750c9802013af7d7e`.
+The report worktree's production crates and Cargo files match that tested source.
+The builder recorded 715 Rust passes, five existing ignored across 33 targets,
+and passing workspace Clippy, format and build. Focused regressions passed:
+21 database jobs tests and 11 application jobs tests. Independent Codex review
+found no actionable issue in the two source-fix commits. Subsequent source
+changes require their own acceptance attribution. The unchanged native
+harness retains its separately recorded macOS and Linux gates above.
+
+| Client session on the fresh restored service | Outer turns | Successful MCP calls | Retained diagnostics |
+| --- | ---: | ---: | --- |
+| A `2aadfa40-779d-4447-9a00-f0d6ac9a260f` | 4 | 1 capture replay | One unawaited-promise discovery warning, recovered before capture |
+| Hermes `20261003_121525_68fce7` | 6 | 4 search/record/context calls | One rejected multi-local bridge batch |
+| B `8d30b5e3-b6e6-4474-9170-0b98b489c0c6` | 9 | 4 search/record/job/source calls | None |
+
+All three launcher processes exited 0. The nine successful service calls produced
+11 saved envelope representations, with zero service errors. A replayed its
+original immutable capture receipt; Hermes and B inspected the exact original
+writer record, including revision `6a08ec33…` and trusted `openclaw-shiva`.
+Hermes inspected both writers and built three cited chunks using 296 estimated
+tokens within the requested 300-total/120-per-chunk limits; its final two chunks
+were truncated. B read the completed **base job only** and the ready generation 2
+source with its opaque `/Projects/topic` title. These are actual conversational
+calls using the same three configured models listed above.
+
+Separate authenticated service-host RPC submitted one new synthetic upload with
+title `/Projects/reviewed-provider`, completed generation 1 through a real
+`bge-m3:latest` embedding request, and replayed its admission. Inspection of the
+actual portable archive found 64-character endpoint digests for both provider
+roles in that new job's processing options, with no raw endpoint URL or service
+credential. Three older completed jobs retain their original options without
+endpoint identity. Focused fixtures proved changed endpoints or missing legacy
+identity reject execution/resume before provider work, while malformed saved
+input remains visible through owner-scoped status APIs without weakening strict
+execution/resume. Those mismatch/quarantine cases were regression tests, rather
+than additional live malformed-input or endpoint-change attempts.
+
+Actual vector-inclusive create, verify and fresh restore succeeded at schema 18
+with 55 records: 14 entities, 21 mentions, six notes, four jobs, three capture
+receipts, six sources and one embedding metadata record. Restored RPC replayed
+all three capture receipts and four upload admissions with no inference POSTs,
+and returned all four completed statuses. The owning list contained four jobs;
+foreign Hermes get/cancel probes returned `not_found` and its list was empty.
+A lacked jobs permission and received `forbidden`. Hermes could read the new
+shared source. Original canonical inspection and generation 2 provenance/title
+survived. The three sessions above then used this freshly restored service.
+
+This follow-up adds three sessions, bringing the distinct recorded windows to
+12 sessions, 32 successful MCP calls and 65 outer transcript turns. The JSON
+preserves the original `896e0819…`, `8d69d630…` and `3a99eb0e…` observations and
+hashes separately. Job mutation, archive and four-job status checks remain RPC
+orchestration, rather than LLM job submissions. Completed-job archive coverage
+does not establish restoration of an in-flight worker lease. Observed prior
+owners stopped before the fresh restore; the acceptance runtime remains privately
+managed. Permanent installation, personal profile changes and final runtime
+cleanup are separate operator follow-up.

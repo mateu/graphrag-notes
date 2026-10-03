@@ -260,6 +260,16 @@ database and restart. Prove original capture/upload receipts replay, restored
 worker leases are not trusted, and interrupted jobs require explicit resume.
 Record schema and binary versions; do not downgrade a migrated database.
 
+Before resuming an uploaded job, restore its saved host settings: both provider
+endpoints and models, plus chunk/preparation settings. The journal stores endpoint
+identity digests; a different endpoint is incompatible even with the same model
+name. Older snapshots without endpoint identity require a new upload request and
+request ID instead of resume. Their completed admission receipts still replay,
+and owner-scoped status/list views remain usable. Quarantined malformed inputs
+can be inspected and cancelled through those views; execution and resume still
+validate the saved input strictly. Cancelling a job already marked
+`failed/validation` leaves that terminal state intact.
+
 Retain a sanitized evidence summary with machine roles (no secrets), versions,
 protocol/catalog observations, actual session tool calls, IDs/revisions, exact
 synthetic content, categorized denials, restart/retry counts and cleanup.
