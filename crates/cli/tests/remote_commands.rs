@@ -609,3 +609,78 @@ fn remote_decisions_require_review_revision_and_confirmation_before_connecting()
             .stderr(contains("--expected-revision"));
     }
 }
+
+#[test]
+fn failed_upload_preserves_private_input_and_logical_identity_without_local_corpus() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("client markdown.md");
+    let drafts = temp.path().join("private drafts");
+    let database = temp.path().join("must-not-exist");
+    fs::write(&input, "# Uploaded synthetic content\n\nrecoverylexeme").unwrap();
+    let result = graphrag()
+        .env("HOME", temp.path())
+        .env("GRAPHRAG_DB_PATH", &database)
+        .env("GRAPHRAG_TOKEN", "synthetic-upload-token-12345678901234")
+        .args([
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--request-id=-upload-recovery-001",
+            "upload",
+            "--document-key=-logical-key",
+            "--title=-title",
+            "--content-file",
+        ])
+        .arg(&input)
+        .arg("--draft-dir")
+        .arg(&drafts)
+        .arg("--extract-entities")
+        .args(["--format", "json"])
+        .assert()
+        .failure()
+        .stderr(contains("--request-id='-upload-recovery-001'"))
+        .stderr(contains("--document-key='-logical-key'"))
+        .stderr(contains("--title='-title'"))
+        .stderr(contains("--draft-dir"))
+        .stderr(contains("--extract-entities"));
+    let error = String::from_utf8_lossy(&result.get_output().stderr);
+    assert!(!error.contains("synthetic-upload-token"));
+    assert!(!database.exists());
+    let paths = fs::read_dir(&drafts)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(
+        fs::read_to_string(&paths[0]).unwrap(),
+        fs::read_to_string(&input).unwrap()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&paths[0]).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
+fn upload_without_server_fails_before_creating_corpus_or_reading_client_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("must-not-exist");
+    graphrag()
+        .env("HOME", temp.path())
+        .arg("--db-path")
+        .arg(&database)
+        .args([
+            "upload",
+            "--document-key",
+            "logical",
+            "--content-file",
+            "/missing/synthetic-file.md",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("upload requires --server"));
+    assert!(!database.exists());
+}

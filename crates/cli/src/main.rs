@@ -13,6 +13,7 @@ mod interactive;
 mod output;
 mod remote;
 mod remote_mutations;
+mod remote_uploads;
 mod search_recovery;
 
 #[tokio::main]

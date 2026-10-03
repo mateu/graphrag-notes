@@ -351,13 +351,33 @@ async fn write_records(
 /// Immutable capture outcomes and caller provenance are user content, like
 /// note bodies. Walking them would change the identity of a committed request
 /// and make its original response unrecoverable after restore. Authentication
-/// credentials are never part of these database fields.
+/// credentials are never part of these database fields. Upload processing
+/// snapshots are also preserved: their `embedding` member describes provider
+/// configuration rather than a stored vector.
 fn opaque_client_fields(
     table: &str,
     record: &serde_json::Value,
 ) -> &'static [(&'static str, &'static str)] {
     match table {
         "remote_capture_receipt" | "remote_mutation_receipt" => &[("", "payload"), ("", "result")],
+        "processing_job" if record["remote_instance_id"].is_string() => &[
+            ("", "remote_input"),
+            ("", "remote_admission"),
+            ("", "remote_result"),
+        ],
+        "source"
+            if record["source_type"] == "markdown"
+                && record["uri"]
+                    .as_str()
+                    .is_some_and(|uri| uri.starts_with("mcp://upload/")) =>
+        {
+            &[
+                ("/metadata/remote_upload", "source"),
+                ("/metadata/remote_upload", "processing_options"),
+                ("/metadata/remote_upload_pending", "source"),
+                ("/metadata/remote_upload_pending", "processing_options"),
+            ]
+        }
         "source"
             if record["source_type"] == "manual"
                 && record["uri"]
@@ -387,6 +407,17 @@ fn take_opaque_client_fields(
 }
 
 fn sanitize_portable_record(table: &str, record: &mut serde_json::Value, include_embeddings: bool) {
+    // Entity extraction persists an empty array when no vector was computed.
+    // Match Entity's portable serialization: absence is not a dimension-zero
+    // vector. Normalize only this owned field; caller metadata stays intact.
+    if table == "entity"
+        && record
+            .get("embedding")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        record.as_object_mut().unwrap().remove("embedding");
+    }
     let opaque = take_opaque_client_fields(table, record);
     sanitize_record(record, include_embeddings);
     for (parent, key, value) in opaque {
@@ -442,6 +473,15 @@ fn is_local_absolute_path(value: &str) -> bool {
 }
 
 fn strip_source_title_path(record: &mut serde_json::Value) {
+    // Uploaded titles are caller-supplied text, even when they resemble a
+    // filesystem path. Only locally derived source titles need path removal.
+    if record["source_type"] == "markdown"
+        && record["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("mcp://upload/"))
+    {
+        return;
+    }
     let Some(object) = record.as_object_mut() else {
         return;
     };
@@ -623,6 +663,7 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
         "note_from_message" => &[("in", Some("note")), ("out", Some("message"))],
         "remote_capture_receipt" => &[("note_id", Some("note")), ("source_id", Some("source"))],
         "remote_mutation_receipt" => &[("target", None)],
+        "processing_job" => &[("remote_source_id", Some("source"))],
         _ => &[],
     };
     let object = record
@@ -634,6 +675,31 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
             Some("rejected" | "superseded")
         );
     let mut references = Vec::new();
+    if table == "processing_job" {
+        if object.get("job_type").and_then(serde_json::Value::as_str) != Some("remote_upload")
+            || object
+                .get("remote_instance_id")
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+        {
+            bail!("portable processing_job must be a remote-owned upload job");
+        }
+        let items = object
+            .get("item_ids")
+            .and_then(serde_json::Value::as_array)
+            .context("portable uploaded job item_ids must be an array")?;
+        for value in items
+            .iter()
+            .chain(object.get("checkpoint").filter(|value| !value.is_null()))
+        {
+            let id = value
+                .as_str()
+                .context("portable uploaded job items/checkpoint must be canonical note IDs")?;
+            graphrag_db::parse_portable_record_id(id, Some("note")).context(
+                "portable uploaded job has a malformed or wrong-table historical note ID",
+            )?;
+        }
+    }
     for (field, expected_table) in expected {
         let Some(value) = object.get(*field) else {
             continue;
@@ -654,6 +720,7 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
         if (historical_proposal && matches!(*field, "in" | "out"))
             || table == "remote_capture_receipt"
             || table == "remote_mutation_receipt"
+            || table == "processing_job"
         {
             // Terminal proposals and successful capture receipts retain IDs
             // after source/note cleanup. Validate their shape without requiring
@@ -835,6 +902,466 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn uploaded_path_like_titles_survive_archives_without_changing_refresh_identity() {
+        use graphrag_agents::{
+            DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
+        };
+        use graphrag_application::{
+            ActionCancellation, CallerIdentity, EmbeddedApplication, RemoteApplicationOperations,
+            UploadSourceRequest,
+        };
+        use std::sync::Arc;
+
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let application = |repo: &Repository| {
+            let embedder = Arc::new(DeterministicEmbedder::default());
+            EmbeddedApplication::new(
+                repo.clone(),
+                SearchAgent::new(repo.clone(), embedder.clone()),
+                embedder,
+                Arc::new(FixtureEntityExtractor::default()),
+                LibrarianRuntimeConfig {
+                    min_chunk_size: 1,
+                    skip_entity_extraction: true,
+                    ..Default::default()
+                },
+            )
+        };
+        let caller = CallerIdentity {
+            instance_id: "uploaded-title-backup".into(),
+        };
+        let request = |id: &str| UploadSourceRequest {
+            request_id: id.into(),
+            document_key: "title-document".into(),
+            content: "# Supplied document\r\n\r\nSynthetic portable notes.\r\n".into(),
+            title: Some("/Projects/supplied-topic".into()),
+            provenance: None,
+            extract_entities: false,
+        };
+        let app = application(&repo);
+        let admission = app
+            .upload_source(caller.clone(), request("original"))
+            .await
+            .unwrap();
+        let execution = app
+            .claim_remote_job("original-epoch", "original-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        app.execute_remote_job(execution, ActionCancellation::new())
+            .await
+            .unwrap();
+        let original = app.get_uploaded_source(&admission.source_id).await.unwrap();
+        let original_job = app
+            .get_remote_job(caller.clone(), &admission.job_id)
+            .await
+            .unwrap();
+        let host_source =
+            Source::from_file("/private/server/host-notes.md", SourceType::Markdown).unwrap();
+        let host = repo.create_source(host_source).await.unwrap();
+
+        for (name, include_embeddings, jsonl) in [
+            ("vectorless", false, false),
+            ("vectors", true, false),
+            ("jsonl", false, true),
+        ] {
+            let archive = temp.path().join(name);
+            let target = temp.path().join(format!("restored-{name}"));
+            if jsonl {
+                export_jsonl(&repo, &archive).await.unwrap();
+                verify_jsonl(&archive).unwrap();
+                import_jsonl(&archive, &target, false).await.unwrap();
+            } else {
+                create_backup(&repo, &archive, include_embeddings)
+                    .await
+                    .unwrap();
+                verify_backup(&archive).unwrap();
+                restore_backup(&archive, &target, false).await.unwrap();
+            }
+            let restored_repo = Repository::new(init_persistent(&target).await.unwrap());
+            let restored_app = application(&restored_repo);
+            let restored = restored_app
+                .get_uploaded_source(&admission.source_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                restored, original,
+                "uploaded title/revision changed in {name}"
+            );
+            assert!(restored_repo
+                .get_source(&record_id_to_string(host.id.as_ref().unwrap()))
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .is_none());
+            let replay = restored_app
+                .upload_source(caller.clone(), request("original"))
+                .await
+                .unwrap();
+            assert!(replay.replayed);
+            assert_eq!(replay.job_id, admission.job_id);
+            let refresh = restored_app
+                .upload_source(caller.clone(), request("refresh"))
+                .await
+                .unwrap();
+            let execution = restored_app
+                .claim_remote_job("restored-epoch", "restored-worker")
+                .await
+                .unwrap()
+                .unwrap();
+            restored_app
+                .execute_remote_job(execution, ActionCancellation::new())
+                .await
+                .unwrap();
+            let refreshed = restored_app
+                .get_remote_job(caller.clone(), &refresh.job_id)
+                .await
+                .unwrap();
+            assert_eq!(refreshed.generation, Some(original.generation));
+            let result = refreshed.result.unwrap();
+            assert_eq!(result["action"], "unchanged");
+            assert_eq!(
+                result["note_ids"],
+                original_job.result.as_ref().unwrap()["note_ids"]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn uploaded_job_backup_preserves_replay_input_and_private_client_provenance() {
+        use graphrag_db::{ProcessingJobStatus, RemoteJobLease, RemoteUploadInput};
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let input = RemoteUploadInput {
+            authenticated_instance_id: "hermes-backup".into(),
+            request_id: "upload-backup".into(),
+            payload_fingerprint: "d".repeat(64),
+            document_key: "logical-document".into(),
+            markdown: "# Synthetic uploaded source\n\nportableuploadlexeme".into(),
+            title: Some("Uploaded backup".into()),
+            source_provenance: serde_json::json!({"uri":"file:///client-only/daily.md","metadata":{"token":"client vocabulary","embedding":"user label"}}),
+            extract_entities: false,
+            processing_options: serde_json::json!({"provider":"fixture","chunk_size":200}),
+        };
+        let admitted = repo.admit_remote_upload(input.clone()).await.unwrap();
+        let id = admitted.result["job_id"].as_str().unwrap();
+        let claimed = repo
+            .claim_remote_upload_job(&input.authenticated_instance_id, id, "old-epoch", "worker")
+            .await
+            .unwrap();
+        let lease = RemoteJobLease {
+            job_id: claimed.job.id.clone().unwrap(),
+            instance_id: input.authenticated_instance_id.clone(),
+            service_epoch: "old-epoch".into(),
+            worker_token: "worker".into(),
+        };
+        let source = repo.begin_remote_upload_generation(&lease).await.unwrap();
+        repo.stage_remote_upload_notes(&lease, vec![Note::new(input.markdown.clone())])
+            .await
+            .unwrap();
+        repo.reconcile_remote_upload(&lease, &[]).await.unwrap();
+        let original = repo.finish_remote_upload_job(&lease, ProcessingJobStatus::Completed, None, Some(serde_json::json!({"source_id":record_id_to_string(source.id.as_ref().unwrap())}))).await.unwrap();
+        // A second version prunes the original generated note; the first
+        // completed job's immutable item IDs remain historical audit data.
+        let mut next_input = input.clone();
+        next_input.request_id = "upload-backup-new".into();
+        next_input.payload_fingerprint = "e".repeat(64);
+        next_input.markdown = "# Refreshed uploaded source\n\nnewportableuploadlexeme".into();
+        let next = repo.admit_remote_upload(next_input.clone()).await.unwrap();
+        let next_claim = repo
+            .claim_remote_upload_job(
+                &input.authenticated_instance_id,
+                next.result["job_id"].as_str().unwrap(),
+                "new-epoch",
+                "new-worker",
+            )
+            .await
+            .unwrap();
+        let next_lease = RemoteJobLease {
+            job_id: next_claim.job.id.unwrap(),
+            instance_id: input.authenticated_instance_id.clone(),
+            service_epoch: "new-epoch".into(),
+            worker_token: "new-worker".into(),
+        };
+        repo.begin_remote_upload_generation(&next_lease)
+            .await
+            .unwrap();
+        repo.stage_remote_upload_notes(&next_lease, vec![Note::new(next_input.markdown.clone())])
+            .await
+            .unwrap();
+        repo.reconcile_remote_upload(&next_lease, &[])
+            .await
+            .unwrap();
+        repo.finish_remote_upload_job(
+            &next_lease,
+            ProcessingJobStatus::Completed,
+            None,
+            Some(serde_json::json!({"refreshed":true})),
+        )
+        .await
+        .unwrap();
+        for old_id in &original.job.item_ids {
+            assert!(repo.get_note(old_id).await.unwrap().is_none());
+        }
+        let mut host = Source::manual();
+        host.uri = Some("file:///private/server/hidden.md".into());
+        host.normalized_uri = host.uri.clone();
+        host.metadata = serde_json::json!({"token":"real-host-secret"});
+        repo.create_source(host).await.unwrap();
+        let archive = temp.path().join("remote-jobs");
+        let summary = create_backup(&repo, &archive, false).await.unwrap();
+        assert_eq!(verify_backup(&archive).unwrap(), summary);
+        let payload = fs::read_to_string(archive.join(RECORDS_FILE)).unwrap();
+        assert!(payload.contains("file:///client-only/daily.md"));
+        assert!(payload.contains("client vocabulary"));
+        assert!(!payload.contains("/private/server"));
+        assert!(!payload.contains("real-host-secret"));
+        assert!(!payload.contains("token_sha256"));
+        let target = temp.path().join("restored-jobs");
+        restore_backup(&archive, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        let replay = restored
+            .find_remote_upload_admission(
+                &input.authenticated_instance_id,
+                &input.request_id,
+                &input.payload_fingerprint,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.result, admitted.result);
+        let job = restored
+            .get_remote_upload_job(&input.authenticated_instance_id, id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.input, input);
+        assert_eq!(job.result, original.result);
+        assert!(job.service_epoch.is_none());
+        assert!(job.worker_token.is_none());
+        for (case, wrong) in ["source:wrong-table", "note:⟨broken", "note:u'invalid-uuid'"]
+            .into_iter()
+            .enumerate()
+        {
+            for field in ["item_ids", "checkpoint"] {
+                let invalid_archive = temp.path().join(format!("invalid-upload-{case}-{field}"));
+                fs::create_dir(&invalid_archive).unwrap();
+                let mut records = payload
+                    .lines()
+                    .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+                    .collect::<Vec<_>>();
+                let record = &mut records
+                    .iter_mut()
+                    .find(|record| record.table == "processing_job")
+                    .unwrap()
+                    .record;
+                record[field] = if field == "item_ids" {
+                    serde_json::json!([wrong])
+                } else {
+                    serde_json::json!(wrong)
+                };
+                let invalid_payload = records
+                    .iter()
+                    .map(|record| format!("{}\n", serde_json::to_string(record).unwrap()))
+                    .collect::<String>();
+                fs::write(invalid_archive.join(RECORDS_FILE), &invalid_payload).unwrap();
+                let mut manifest = read_manifest(&archive).unwrap();
+                manifest.payload.bytes = invalid_payload.len() as u64;
+                manifest.payload.sha256 =
+                    format!("{:x}", Sha256::digest(invalid_payload.as_bytes()));
+                write_manifest(&invalid_archive.join(MANIFEST_FILE), &manifest).unwrap();
+                assert!(
+                    verify_backup(&invalid_archive).is_err(),
+                    "verify accepted malformed upload {field}"
+                );
+                let invalid_target = temp.path().join(format!("invalid-restore-{case}-{field}"));
+                assert!(restore_backup(&invalid_archive, &invalid_target, false)
+                    .await
+                    .is_err());
+                assert!(!invalid_target.exists());
+            }
+        }
+        let restored_source = restored
+            .get_source(&record_id_to_string(source.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            restored_source.metadata["remote_upload"]["source"],
+            input.source_provenance
+        );
+    }
+
+    #[tokio::test]
+    async fn uploaded_processing_snapshots_survive_vector_and_vectorless_exports() {
+        use graphrag_agents::{
+            DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
+        };
+        use graphrag_application::{
+            ActionCancellation, CallerIdentity, EmbeddedApplication, RemoteApplicationOperations,
+            UploadSourceRequest,
+        };
+        use graphrag_db::RemoteJobLease;
+        use std::sync::Arc;
+
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let embedder = Arc::new(DeterministicEmbedder::default());
+        let extractor = Arc::new(FixtureEntityExtractor::default());
+        let caller = CallerIdentity {
+            instance_id: "snapshot-backup".into(),
+        };
+        let application = |target_chunk_size| {
+            EmbeddedApplication::new(
+                repo.clone(),
+                SearchAgent::new(repo.clone(), embedder.clone()),
+                embedder.clone(),
+                extractor.clone(),
+                LibrarianRuntimeConfig {
+                    target_chunk_size,
+                    skip_entity_extraction: true,
+                    ..Default::default()
+                },
+            )
+        };
+        let request = |request_id: &str, content: &str| UploadSourceRequest {
+            request_id: request_id.into(),
+            document_key: "snapshot-document".into(),
+            content: content.into(),
+            title: Some("Processing snapshots".into()),
+            provenance: None,
+            extract_entities: false,
+        };
+        let active_app = application(500);
+        let admission = active_app
+            .upload_source(
+                caller.clone(),
+                request(
+                    "active",
+                    "# Active generation\n\nOriginal source with actual vectors.",
+                ),
+            )
+            .await
+            .unwrap();
+        let execution = active_app
+            .claim_remote_job("active-epoch", "active-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        active_app
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await
+            .unwrap();
+        let active_source = repo
+            .get_source(&admission.source_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let active_options = active_source.metadata["remote_upload"]["processing_options"].clone();
+        assert!(active_options["embedding"].is_object());
+
+        let pending_app = application(300);
+        let pending = pending_app
+            .upload_source(
+                caller.clone(),
+                request(
+                    "pending",
+                    "# Pending generation\n\nChanged source with different chunk configuration.",
+                ),
+            )
+            .await
+            .unwrap();
+        let claimed = repo
+            .claim_remote_upload_job(
+                &caller.instance_id,
+                &pending.job_id,
+                "pending-epoch",
+                "pending-worker",
+            )
+            .await
+            .unwrap();
+        let lease = RemoteJobLease {
+            job_id: claimed.job.id.unwrap(),
+            instance_id: caller.instance_id.clone(),
+            service_epoch: "pending-epoch".into(),
+            worker_token: "pending-worker".into(),
+        };
+        let source = repo.begin_remote_upload_generation(&lease).await.unwrap();
+        let pending_options =
+            source.metadata["remote_upload_pending"]["processing_options"].clone();
+        assert!(pending_options["embedding"].is_object());
+        assert_ne!(active_options, pending_options);
+
+        for include_embeddings in [false, true] {
+            let archive = temp.path().join(format!("snapshots-{include_embeddings}"));
+            let summary = create_backup(&repo, &archive, include_embeddings)
+                .await
+                .unwrap();
+            assert_eq!(verify_backup(&archive).unwrap(), summary);
+            let target = temp
+                .path()
+                .join(format!("restored-snapshots-{include_embeddings}"));
+            restore_backup(&archive, &target, false).await.unwrap();
+            let restored = Repository::new(init_persistent(&target).await.unwrap());
+            let restored_source = restored
+                .get_source(&admission.source_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                restored_source.metadata["remote_upload"]["processing_options"],
+                active_options
+            );
+            assert_eq!(
+                restored_source.metadata["remote_upload_pending"]["processing_options"],
+                pending_options
+            );
+            let restored_job = restored
+                .get_remote_upload_job(&caller.instance_id, &pending.job_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored_job.input.processing_options, pending_options);
+            let records = fs::read_to_string(archive.join(RECORDS_FILE))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+                .collect::<Vec<_>>();
+            let notes: Vec<_> = records
+                .iter()
+                .filter(|record| record.table == "note")
+                .collect();
+            assert!(!notes.is_empty());
+            for note in notes {
+                assert_eq!(note.record.get("embedding").is_some(), include_embeddings);
+            }
+        }
+        let path = temp.path().join("snapshots.jsonl");
+        let summary = export_jsonl(&repo, &path).await.unwrap();
+        assert_eq!(verify_jsonl(&path).unwrap(), summary);
+        let records = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        let archived_source = records
+            .iter()
+            .find(|record| record.table == "source" && record.record["uri"] == admission.source_uri)
+            .unwrap();
+        assert_eq!(
+            archived_source.record["metadata"]["remote_upload"]["processing_options"],
+            active_options
+        );
+        assert_eq!(
+            archived_source.record["metadata"]["remote_upload_pending"]["processing_options"],
+            pending_options
         );
     }
 
@@ -1653,6 +2180,144 @@ mod tests {
         assert!(fs::read_to_string(backup_path.join(RECORDS_FILE))
             .unwrap()
             .contains("\"embedding\""));
+    }
+
+    #[tokio::test]
+    async fn vector_backup_restores_entity_mentions_with_optional_embeddings() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(
+            &graphrag_db::compatibility::EmbeddingIdentity::new("fixture", "model", 1024),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut unembedded = Entity::new("Unembedded extracted entity", EntityType::Concept);
+        unembedded.metadata = serde_json::json!({});
+        let mut embedded = Entity::new("Computed entity vector", EntityType::Concept)
+            .with_embedding(vec![0.2; 1024]);
+        embedded.metadata = serde_json::json!({});
+        let note = repo
+            .create_note_and_replace_entities(
+                Note::new("A vector-bearing note with two extracted entity mentions")
+                    .with_embedding(vec![0.1; 1024]),
+                vec![unembedded, embedded],
+            )
+            .await
+            .unwrap();
+        let note_id = record_id_to_string(note.id.as_ref().unwrap());
+        let entities = repo.portable_records_page("entity", 0, 10).await.unwrap();
+        assert_eq!(
+            entities
+                .iter()
+                .find(|entity| entity["name"] == "Unembedded extracted entity")
+                .unwrap()["embedding"],
+            serde_json::json!([]),
+            "the real extraction transaction persists absence as an empty array"
+        );
+        let archive = temp.path().join("optional-entity-vectors");
+        let created = create_backup(&repo, &archive, true).await.unwrap();
+        assert_eq!(verify_backup(&archive).unwrap(), created);
+        let records = fs::read_to_string(archive.join(RECORDS_FILE))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        let absent = records
+            .iter()
+            .find(|record| {
+                record.table == "entity" && record.record["name"] == "Unembedded extracted entity"
+            })
+            .unwrap();
+        assert!(absent.record.get("embedding").is_none());
+        let target = temp.path().join("restored-optional-entity-vectors");
+        restore_backup(&archive, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        assert_eq!(
+            count_repository_records(&restored).await.unwrap(),
+            created.record_counts
+        );
+        assert_eq!(
+            restored
+                .get_note(&note_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding,
+            vec![0.1; 1024]
+        );
+        let restored_entities = restored.get_entities_for_note(&note_id).await.unwrap();
+        assert_eq!(restored_entities.len(), 2);
+        assert!(restored_entities
+            .iter()
+            .find(|entity| entity.name == "Unembedded extracted entity")
+            .unwrap()
+            .embedding
+            .is_empty());
+        assert_eq!(
+            restored_entities
+                .iter()
+                .find(|entity| entity.name == "Computed entity vector")
+                .unwrap()
+                .embedding,
+            vec![0.2; 1024]
+        );
+    }
+
+    #[tokio::test]
+    async fn vector_archive_rejects_nonempty_entity_dimension_mismatch_before_restore() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        repo.record_embedding_metadata(
+            &graphrag_db::compatibility::EmbeddingIdentity::new("fixture", "model", 1024),
+            None,
+        )
+        .await
+        .unwrap();
+        let mut entity = Entity::new("Valid computed vector", EntityType::Concept)
+            .with_embedding(vec![0.2; 1024]);
+        entity.metadata = serde_json::json!({});
+        repo.upsert_entity(entity).await.unwrap();
+        let archive = temp.path().join("malformed-entity-vector");
+        create_backup(&repo, &archive, true).await.unwrap();
+        let payload_path = archive.join(RECORDS_FILE);
+        let mut records = fs::read_to_string(&payload_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        records
+            .iter_mut()
+            .find(|record| record.table == "entity")
+            .unwrap()
+            .record["embedding"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        let payload = records
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n")
+            + "\n";
+        fs::write(&payload_path, &payload).unwrap();
+        let manifest_path = archive.join(MANIFEST_FILE);
+        let mut manifest = read_manifest(&archive).unwrap();
+        manifest.payload.sha256 = format!("{:x}", Sha256::digest(payload.as_bytes()));
+        manifest.payload.bytes = payload.len() as u64;
+        fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(verify_backup(&archive)
+            .unwrap_err()
+            .to_string()
+            .contains("dimension 1023"));
+        let target = temp.path().join("must-not-restore-malformed-entity-vector");
+        assert!(restore_backup(&archive, &target, false)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("dimension 1023"));
+        assert!(!target.exists());
     }
 
     #[tokio::test]

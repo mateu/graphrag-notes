@@ -14,6 +14,7 @@ mod models;
 mod notes;
 mod portable;
 mod remote_capture;
+mod remote_jobs;
 mod remote_mutations;
 mod sources;
 mod stats;
@@ -36,6 +37,10 @@ pub use models::{
 };
 pub use portable::{parse_portable_record_id, PORTABLE_TABLES};
 pub use remote_capture::{RemoteCaptureInput, RemoteCaptureReceipt};
+pub use remote_jobs::{
+    RemoteJobAdmission, RemoteJobLease, RemoteUploadInput, RemoteUploadJob, RemoteUploadJobStatus,
+    MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS,
+};
 pub use remote_mutations::{
     MutationGuard, MutationNoteSnapshot, RemoteMutationEffect, RemoteMutationInput,
 };
@@ -70,6 +75,7 @@ use uuid::Uuid;
 pub struct Repository {
     db: DbConnection,
     proposal_acceptance_lock: Arc<Mutex<()>>,
+    remote_job_transition_lock: Arc<Mutex<()>>,
 }
 
 // A source generation becomes visible only after promotion. Legacy/manual
@@ -245,9 +251,11 @@ impl Repository {
     /// Create a new repository
     pub fn new(db: DbConnection) -> Self {
         let proposal_acceptance_lock = db.proposal_lifecycle_lock();
+        let remote_job_transition_lock = db.remote_job_transition_lock();
         Self {
             db,
             proposal_acceptance_lock,
+            remote_job_transition_lock,
         }
     }
 }

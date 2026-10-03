@@ -601,6 +601,7 @@ pub(crate) async fn run() -> Result<()> {
         allowed_hosts,
         max_request_body_bytes,
         max_concurrent_requests,
+        max_job_workers,
     } = &cli.command
     {
         if cli.memory {
@@ -615,8 +616,12 @@ pub(crate) async fn run() -> Result<()> {
             allowed_hosts: allowed_hosts.clone(),
             max_request_body_bytes: *max_request_body_bytes,
             max_concurrent_requests: *max_concurrent_requests,
+            max_job_workers: *max_job_workers,
         }
         .validate()?;
+    }
+    if matches!(&cli.command, Commands::Upload { .. }) {
+        anyhow::bail!("upload requires --server; local file imports use import or folder sync");
     }
     if matches!(&cli.command, Commands::Init { .. }) {
         return crate::init::run(&cli).await;
@@ -903,6 +908,7 @@ pub(crate) async fn run() -> Result<()> {
         allowed_hosts,
         max_request_body_bytes,
         max_concurrent_requests,
+        max_job_workers,
     } = &cli.command
     {
         let application = graphrag_application::EmbeddedApplication::new(
@@ -925,6 +931,7 @@ pub(crate) async fn run() -> Result<()> {
             allowed_hosts: allowed_hosts.clone(),
             max_request_body_bytes: *max_request_body_bytes,
             max_concurrent_requests: *max_concurrent_requests,
+            max_job_workers: *max_job_workers,
         };
         return graphrag_service::run(Arc::new(application), options)
             .await

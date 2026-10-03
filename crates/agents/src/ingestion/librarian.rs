@@ -39,7 +39,7 @@ const DEFAULT_TARGET_CHUNK_SIZE: usize = 500;
 /// The CLI constructs this from the resolved application configuration so the
 /// agent never needs to read process environment variables directly. Defaults
 /// retain the library's historical behavior for programmatic callers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LibrarianRuntimeConfig {
     pub min_chunk_size: usize,
     /// Target Markdown chunk size in Unicode scalar values (characters).
@@ -370,7 +370,8 @@ fn align_markdown_chunk_sequences(
 /// extracted content (notably entity mentions) are copied only for those
 /// exact matches; graph/provenance links can also follow a safely anchored
 /// local edit.
-fn markdown_chunk_successors(
+/// Reconcile structural successors without following a stale displayed ID.
+pub fn markdown_chunk_successors(
     existing: &[Note],
     staged: &[Note],
 ) -> Vec<(RecordId, RecordId, bool)> {
@@ -946,12 +947,32 @@ impl LibrarianAgent {
         let content = content.into();
         let normalized_uri = normalize_file_uri(path)
             .map_err(|error| crate::AgentError::Processing(error.to_string()))?;
+        self.ingest_markdown_content(&normalized_uri, path, content, force)
+            .await
+    }
+
+    /// Ingest supplied Markdown under a trusted canonical source identity.
+    /// This entry point never reads a path or fetches a URI. Remote workers
+    /// use the preparation helper with their guarded durable job lifecycle.
+    #[instrument(skip(self, content))]
+    pub async fn ingest_markdown_content<C>(
+        &self,
+        normalized_uri: &str,
+        title: &str,
+        content: C,
+        force: bool,
+    ) -> Result<MarkdownImportResult>
+    where
+        C: Into<String> + std::fmt::Debug,
+    {
+        let content = content.into();
+        let normalized_uri = normalized_uri.to_string();
         info!("Ingesting markdown from: {}", normalized_uri);
         let plan = self
             .repo
             .begin_file_import(
                 SourceType::Markdown,
-                path.to_string(),
+                title.to_string(),
                 normalized_uri.clone(),
                 content.clone(),
                 normalized_content_hash(&content),
@@ -1538,10 +1559,8 @@ impl LibrarianAgent {
             return Ok(());
         }
 
-        let text = truncate_for_extraction(&note.content, self.runtime.extract_max_chars);
-        let extraction = self.extractor.extract(&text).await?;
-        let extracted_count = extraction.entities.len();
-        let entities = extracted_entities_to_domain(extraction.entities);
+        let entities = self.prepare_note_entities(note).await?;
+        let extracted_count = entities.len();
         let linked_count = match &note.id {
             Some(note_id) => {
                 if replace_mentions {
@@ -1571,6 +1590,14 @@ impl LibrarianAgent {
         }
 
         Ok(())
+    }
+
+    /// Perform inference before a caller's guarded note/mention transaction.
+    /// No entities or mentions are persisted by this preparation step.
+    pub async fn prepare_note_entities(&self, note: &Note) -> Result<Vec<Entity>> {
+        let text = truncate_for_extraction(&note.content, self.runtime.extract_max_chars);
+        let extraction = self.extractor.extract(&text).await?;
+        Ok(extracted_entities_to_domain(extraction.entities))
     }
 
     /// Extract entities for notes missing entity links
@@ -2110,17 +2137,45 @@ impl LibrarianAgent {
                 .chunk_and_create_notes(content, None, source_generation, None)
                 .await;
         };
-        let chunker = MarkdownChunker::new(ChunkingConfig {
+        let prepared = self
+            .prepare_markdown_generation(content, source_id, source_generation, existing_chunks)
+            .await?;
+        let mut notes = Vec::with_capacity(prepared.len());
+        for note in prepared {
+            notes.push(self.repo.create_note(note).await?);
+        }
+        Ok(notes)
+    }
+
+    /// Preview the configured Markdown split without providers or persistence.
+    /// Remote admission uses this to enforce its prepared-item bound up front.
+    pub fn preview_markdown_chunks(
+        &self,
+        content: &str,
+        source_identity: &str,
+    ) -> Result<Vec<Chunk>> {
+        MarkdownChunker::new(ChunkingConfig {
             min_size: self.runtime.min_chunk_size,
             target_size: self.runtime.target_chunk_size,
             max_size: self.runtime.max_chunk_size,
             overlap_size: self.runtime.chunk_overlap,
         })
-        .map_err(|error| crate::AgentError::Processing(error.to_string()))?;
+        .map_err(|error| crate::AgentError::Processing(error.to_string()))?
+        .chunk(source_identity, content)
+        .map_err(|error| crate::AgentError::Processing(error.to_string()))
+    }
+
+    /// Prepare a complete copy-on-write Markdown generation without creating
+    /// notes. A durable worker persists it together with its checkpoint.
+    pub async fn prepare_markdown_generation(
+        &self,
+        content: &str,
+        source_id: RecordId,
+        source_generation: Option<u64>,
+        existing_chunks: &[Note],
+    ) -> Result<Vec<Note>> {
         let source_identity = record_id_to_string(&source_id);
-        let chunks = chunker
-            .chunk(&source_identity, content)
-            .map_err(|error| crate::AgentError::Processing(error.to_string()))?;
+        let chunks = self.preview_markdown_chunks(content, &source_identity)?;
 
         if chunks.is_empty() {
             return Ok(Vec::new());
@@ -2195,7 +2250,6 @@ impl LibrarianAgent {
                 let existing = matched_existing.expect("exact match has an existing chunk");
                 note.created_at = existing.created_at;
             }
-            let note = self.repo.create_note(note).await?;
             notes.push(note);
         }
         Ok(notes)

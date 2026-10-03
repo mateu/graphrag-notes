@@ -6,6 +6,8 @@ mod embedded;
 mod error;
 mod inference;
 mod remote_contracts;
+mod remote_job_contracts;
+mod remote_jobs;
 mod remote_mutation_contracts;
 mod remote_mutations;
 mod remote_operations;
@@ -17,6 +19,7 @@ pub use embedded::{
 };
 pub use error::{ApplicationError, ApplicationFailure, ApplicationResult};
 pub use remote_contracts::*;
+pub use remote_job_contracts::*;
 pub use remote_mutation_contracts::*;
 pub use remote_mutations::remote_mutation_fingerprint;
 pub use remote_operations::remote_capture_fingerprint;
@@ -109,4 +112,89 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
         request: RemoteCaptureRequest,
         cancellation: ActionCancellation,
     ) -> ApplicationResult<RemoteCaptureResponse>;
+    async fn upload_source(
+        &self,
+        _caller: CallerIdentity,
+        _request: UploadSourceRequest,
+    ) -> ApplicationResult<UploadAdmission> {
+        Err(ApplicationError::Compatibility(
+            "Uploaded jobs are unavailable in this adapter".into(),
+        ))
+    }
+    async fn get_uploaded_source(&self, _id: &str) -> ApplicationResult<UploadedSource> {
+        Err(ApplicationError::Compatibility(
+            "Uploaded sources are unavailable in this adapter".into(),
+        ))
+    }
+    async fn get_remote_job(
+        &self,
+        _caller: CallerIdentity,
+        _id: &str,
+    ) -> ApplicationResult<RemoteJobStatus> {
+        Err(ApplicationError::Compatibility(
+            "Uploaded jobs are unavailable in this adapter".into(),
+        ))
+    }
+    async fn list_remote_jobs(
+        &self,
+        _caller: CallerIdentity,
+        _limit: usize,
+    ) -> ApplicationResult<RemoteJobList> {
+        Err(ApplicationError::Compatibility(
+            "Uploaded jobs are unavailable in this adapter".into(),
+        ))
+    }
+    async fn cancel_remote_job(
+        &self,
+        _caller: CallerIdentity,
+        _id: &str,
+    ) -> ApplicationResult<RemoteJobStatus> {
+        Err(ApplicationError::Compatibility(
+            "Uploaded jobs are unavailable in this adapter".into(),
+        ))
+    }
+    async fn resume_remote_job(
+        &self,
+        _caller: CallerIdentity,
+        _id: &str,
+    ) -> ApplicationResult<RemoteJobStatus> {
+        Err(ApplicationError::Compatibility(
+            "Uploaded jobs are unavailable in this adapter".into(),
+        ))
+    }
+    async fn reconcile_remote_jobs(&self, _epoch: &str) -> ApplicationResult<()> {
+        Ok(())
+    }
+    async fn claim_remote_job(
+        &self,
+        _epoch: &str,
+        _worker: &str,
+    ) -> ApplicationResult<Option<RemoteJobExecution>> {
+        Ok(None)
+    }
+    async fn remote_job_cancel_requested(
+        &self,
+        _execution: &RemoteJobExecution,
+    ) -> ApplicationResult<bool> {
+        Ok(false)
+    }
+    async fn execute_remote_job(
+        &self,
+        _execution: RemoteJobExecution,
+        _cancel: ActionCancellation,
+    ) -> ApplicationResult<()> {
+        Ok(())
+    }
+    async fn interrupt_remote_job(&self, _execution: RemoteJobExecution) -> ApplicationResult<()> {
+        Ok(())
+    }
+    /// Confirm a failed worker's durable terminal outcome or loss of ownership.
+    /// Errors retain the worker lease for retry; storage failures are not success.
+    async fn recover_remote_job(
+        &self,
+        execution: RemoteJobExecution,
+        _error_code: String,
+    ) -> ApplicationResult<()> {
+        self.interrupt_remote_job(execution).await
+    }
 }

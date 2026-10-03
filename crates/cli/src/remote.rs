@@ -183,6 +183,9 @@ async fn invocation(cli: &Cli, server: &str) -> Result<Invocation> {
             "--expected-revision is only valid for remote edit/delete/proposal decisions"
         );
     }
+    if let Some(invocation) = crate::remote_uploads::prepare(cli, server)? {
+        return Ok(invocation);
+    }
     if cli.recover_draft && !matches!(cli.command, Commands::Capture { .. }) {
         anyhow::bail!("--recover-draft requires a supported remote write with --content-file");
     }
@@ -203,7 +206,7 @@ async fn invocation(cli: &Cli, server: &str) -> Result<Invocation> {
             let tags: Vec<String> = tags.as_deref().map(|tags|tags.split(',').map(|tag|tag.trim().to_string()).collect()).unwrap_or_default();
             return prepare_capture(cli,server,CaptureInput { content:content.as_deref(),file:None,title:title.as_deref(),tags:&tags,options:&EditorOptions::default(),format:OutputFormat::Human });
         }
-        _ => anyhow::bail!("remote mode currently supports search, inspect, augment, capture and add; use host-side commands for database maintenance"),
+        _ => anyhow::bail!("remote mode supports search, inspect, augment, capture, notes edit/delete, connection review, upload, uploaded sources show and owned jobs; use host-side commands for database maintenance"),
     };
     Ok(Invocation {
         tool,
@@ -240,6 +243,11 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
     // before rendering: a broken output pipe must not invite a new mutation.
     if invocation.tool == "capture_note" {
         acknowledge_capture(&mut invocation, &value)?;
+    } else if invocation.tool == "upload_source" {
+        let id = crate::remote_uploads::validate_result(&invocation, &value)?;
+        if let Some(draft) = &mut invocation.draft {
+            draft.discard(Some(&id));
+        }
     } else if let Some(draft) = &mut invocation.draft {
         let id = invocation.arguments["id"]
             .as_str()
@@ -367,6 +375,9 @@ fn validate_read_result(tool: &str, value: &Value) -> Result<()> {
                 .is_ok()
         }
         "capture_note" | "edit_note" | "delete_note" | "decide_proposal" => true,
+        "upload_source" | "get_source" | "get_job" | "list_jobs" | "cancel_job" | "resume_job" => {
+            crate::remote_uploads::valid_read_result(tool, value)
+        }
         _ => false,
     };
     if !valid {

@@ -235,8 +235,17 @@ and `notes delete --yes` require global `--expected-revision`; editor/file/stdin
 edits keep a private recovery draft until a matching authoritative outcome.
 Remote `garden review` and `garden proposals list/show` return proposal cards.
 `garden proposals accept/reject/undo --yes` select one proposal and require its
-reviewed revision. Global `--request-id` is valid for these writes and capture;
+reviewed revision. Global `--request-id` is valid for these writes, capture, and upload;
 it is rejected on read commands. Global `--recover-draft` explicitly adopts a
 private `--content-file` recovery file for verified-success cleanup; ordinary
 input files remain caller-owned. These global mutation flags require remote mode.
 See [remote mutations](shared-mcp-mutations.md) for precise recovery semantics.
+
+`--server ... upload --document-key KEY --content-file PATH` reads the file on
+this client only and preserves its stable request/document identity in a private
+recovery draft until authoritative admission. Remote `jobs list/show/cancel/resume`
+operate on the authenticated instance's uploaded jobs; `sources show source:ID`
+returns supplied content with attempted/successful generation labels. See
+[uploaded sources and durable jobs](remote-upload-jobs.md) for limits, capability
+grants, cancellation, restart recovery, and portable journal semantics. Local
+embedding, reindex, extraction and folder jobs keep their own workers.

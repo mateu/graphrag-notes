@@ -14,9 +14,10 @@ pub use repository::{
     parse_portable_record_id, parse_record_id, InferenceCacheEntry, InspectedConversation,
     InspectedMessage, InspectionProvenance, MutationGuard, MutationNoteSnapshot, ProcessingJob,
     ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, RecordInspection,
-    RemoteCaptureInput, RemoteCaptureReceipt, RemoteMutationEffect, RemoteMutationInput,
-    Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
-    MAX_INSPECTION_NEIGHBORS, PORTABLE_TABLES,
+    RemoteCaptureInput, RemoteCaptureReceipt, RemoteJobAdmission, RemoteJobLease,
+    RemoteMutationEffect, RemoteMutationInput, RemoteUploadInput, RemoteUploadJob,
+    RemoteUploadJobStatus, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
+    MAX_INSPECTION_NEIGHBORS, MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
 };
 
 use std::ops::Deref;
@@ -37,6 +38,7 @@ use uuid::Uuid;
 pub struct DbConnection {
     client: Surreal<Db>,
     proposal_lifecycle_lock: Arc<Mutex<()>>,
+    remote_job_transition_lock: Arc<Mutex<()>>,
 }
 
 impl DbConnection {
@@ -45,11 +47,16 @@ impl DbConnection {
         Self {
             client,
             proposal_lifecycle_lock: Arc::new(Mutex::new(())),
+            remote_job_transition_lock: Arc::new(Mutex::new(())),
         }
     }
 
     pub(crate) fn proposal_lifecycle_lock(&self) -> Arc<Mutex<()>> {
         Arc::clone(&self.proposal_lifecycle_lock)
+    }
+
+    pub(crate) fn remote_job_transition_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.remote_job_transition_lock)
     }
 }
 

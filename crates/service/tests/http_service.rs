@@ -31,6 +31,7 @@ const TOKEN_READ: &str = "read-fixed-test-token-with-32-or-more-bytes";
 struct TestApplication {
     records: Mutex<BTreeMap<(String, String), (String, RemoteCaptureResponse)>>,
     captures: AtomicUsize,
+    uploads: AtomicUsize,
     searches: AtomicUsize,
     slow: bool,
     huge: bool,
@@ -123,6 +124,25 @@ impl ApplicationOperations for TestApplication {
 
 #[async_trait]
 impl RemoteApplicationOperations for TestApplication {
+    async fn upload_source(
+        &self,
+        caller: CallerIdentity,
+        request: UploadSourceRequest,
+    ) -> ApplicationResult<UploadAdmission> {
+        if self.slow {
+            self.started.notify_one();
+            self.release.notified().await;
+        }
+        self.uploads.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(caller.instance_id, "openclaw-a");
+        Ok(UploadAdmission {
+            request_id: request.request_id,
+            job_id: format!("processing_job:{}", "a".repeat(64)),
+            source_id: format!("source:{}", "b".repeat(64)),
+            source_uri: format!("mcp://upload/{}", "b".repeat(64)),
+            replayed: false,
+        })
+    }
     async fn build_context(
         &self,
         request: BuildContextRequest,
@@ -218,6 +238,9 @@ struct Fixture {
 
 impl Fixture {
     async fn new(application: TestApplication) -> Self {
+        Self::with_capacity(application, 8).await
+    }
+    async fn with_capacity(application: TestApplication, capacity: usize) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("credentials.json");
         credentials(
@@ -226,12 +249,12 @@ impl Fixture {
                 (
                     "openclaw-a",
                     TOKEN_A,
-                    vec![Capability::Read, Capability::Capture],
+                    vec![Capability::Read, Capability::Capture, Capability::Upload],
                 ),
                 (
                     "hermes-b",
                     TOKEN_B,
-                    vec![Capability::Read, Capability::Capture],
+                    vec![Capability::Read, Capability::Capture, Capability::Upload],
                 ),
                 ("reader", TOKEN_READ, vec![Capability::Read]),
             ],
@@ -241,6 +264,7 @@ impl Fixture {
         let options = ServiceOptions {
             listen,
             credentials_file: path.clone(),
+            max_concurrent_requests: capacity,
             ..ServiceOptions::default()
         };
         let application = Arc::new(application);
@@ -371,7 +395,7 @@ async fn legacy_handshake_catalog_and_trusted_instance_retry_contract() {
         )
         .await;
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
     assert!(tools
         .iter()
         .all(|tool| tool["annotations"]["readOnlyHint"] == true
@@ -628,7 +652,8 @@ async fn authenticated_stalled_bodies_release_capacity_and_bound_shutdown() {
         let url = reqwest::Url::parse(&fixture.url).unwrap();
         let address = (url.host_str().unwrap(), url.port().unwrap());
         let mut stalled = Vec::new();
-        for _ in 0..ServiceOptions::default().max_concurrent_requests {
+        // This combined service reserves two short ingress/control slots for jobs.
+        for _ in 0..ServiceOptions::default().max_concurrent_requests + 2 {
             let mut stream = TcpStream::connect(address).await.unwrap();
             let headers = format!(
                 "POST /mcp HTTP/1.1\r\nHost: {}:{}\r\nAuthorization: Bearer {TOKEN_READ}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n\r\n{{",
@@ -729,5 +754,110 @@ async fn complete_rpc_body_size_includes_large_echoed_request_ids() {
     let value: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(value["id"], id);
     assert_eq!(error(&value)["code"], "response_too_large");
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn lost_upload_acknowledgment_does_not_drop_accepted_admission_and_shutdown_drains_it() {
+    let fixture = Fixture::new(TestApplication {
+        slow: true,
+        ..Default::default()
+    })
+    .await;
+    let request = fixture.request(TOKEN_A, json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"upload_source","arguments":{"request_id":"lost-upload-ack","document_key":"synthetic-document","content":"Upload admitted after client leaves","title":null,"provenance":null,"extract_entities":false}}}));
+    let client = tokio::spawn(async move { request.send().await });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        fixture.application.started.notified(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !client.is_finished(),
+        "the response must still be pending when the client disconnects"
+    );
+    client.abort();
+    let _ = client.await;
+    fixture.shutdown.cancel();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(
+        !fixture.task.is_finished(),
+        "accepted upload admission must drain before storage is released"
+    );
+    fixture.application.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), fixture.task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.application.uploads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn disconnected_admissions_keep_bounded_capacity_without_blocking_cancellation() {
+    let fixture = Fixture::with_capacity(
+        TestApplication {
+            slow: true,
+            ..Default::default()
+        },
+        1,
+    )
+    .await;
+    credentials(
+        &fixture.credentials,
+        &[(
+            "openclaw-a",
+            TOKEN_A,
+            vec![Capability::Read, Capability::Upload, Capability::Jobs],
+        )],
+    );
+    let message = |request_id: &str| json!({"request_id":request_id,"document_key":"capacity-document","content":"Synthetic bounded admission","title":null,"provenance":null,"extract_entities":false});
+    let first = fixture.request(TOKEN_A, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"upload_source","arguments":message("accepted")}}));
+    let waiter = tokio::spawn(async move { first.send().await });
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.application.started.notified(),
+    )
+    .await
+    .unwrap();
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    // The HTTP slot becomes free while the accepted admission remains blocked.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let response = fixture.request(TOKEN_A, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_notes","arguments":search()}})).send().await.unwrap();
+            if response.status() == StatusCode::OK { break; }
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    for index in 0..20 {
+        let rejected = fixture
+            .tool(
+                TOKEN_A,
+                "upload_source",
+                message(&format!("excess-{index}")),
+            )
+            .await;
+        assert_eq!(error(&rejected)["code"], "busy");
+    }
+    // This adapter deliberately has no job implementation: compatibility proves
+    // the authenticated control call reached it despite full admission capacity.
+    let control = fixture
+        .tool(
+            TOKEN_A,
+            "cancel_job",
+            json!({"id":format!("processing_job:{}", "a".repeat(64))}),
+        )
+        .await;
+    assert_eq!(error(&control)["code"], "compatibility");
+    fixture.application.release.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fixture.application.uploads.load(Ordering::SeqCst) != 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     fixture.stop().await;
 }

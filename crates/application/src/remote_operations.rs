@@ -90,7 +90,7 @@ fn validate_source_uri(uri: &str) -> ApplicationResult<()> {
     Ok(())
 }
 
-fn validate_capture(
+pub(crate) fn validate_capture(
     caller: &CallerIdentity,
     request: &RemoteCaptureRequest,
 ) -> ApplicationResult<()> {
@@ -335,5 +335,83 @@ impl RemoteApplicationOperations for EmbeddedApplication {
             .capture_remote_note(input, note.embedding, entities)
             .await?;
         capture_response(request.request_id, receipt.result, receipt.replayed)
+    }
+    async fn upload_source(
+        &self,
+        caller: CallerIdentity,
+        request: UploadSourceRequest,
+    ) -> ApplicationResult<UploadAdmission> {
+        crate::remote_jobs::upload(self, caller, request).await
+    }
+    async fn get_uploaded_source(&self, id: &str) -> ApplicationResult<UploadedSource> {
+        crate::remote_jobs::source(self, id).await
+    }
+    async fn get_remote_job(
+        &self,
+        caller: CallerIdentity,
+        id: &str,
+    ) -> ApplicationResult<RemoteJobStatus> {
+        crate::remote_jobs::get(self, caller, id).await
+    }
+    async fn list_remote_jobs(
+        &self,
+        caller: CallerIdentity,
+        limit: usize,
+    ) -> ApplicationResult<RemoteJobList> {
+        crate::remote_jobs::list(self, caller, limit).await
+    }
+    async fn cancel_remote_job(
+        &self,
+        caller: CallerIdentity,
+        id: &str,
+    ) -> ApplicationResult<RemoteJobStatus> {
+        crate::remote_jobs::cancel(self, caller, id).await
+    }
+    async fn resume_remote_job(
+        &self,
+        caller: CallerIdentity,
+        id: &str,
+    ) -> ApplicationResult<RemoteJobStatus> {
+        crate::remote_jobs::resume(self, caller, id).await
+    }
+    async fn reconcile_remote_jobs(&self, epoch: &str) -> ApplicationResult<()> {
+        self.repo
+            .reconcile_interrupted_remote_uploads(epoch)
+            .await?;
+        Ok(())
+    }
+    async fn claim_remote_job(
+        &self,
+        epoch: &str,
+        worker: &str,
+    ) -> ApplicationResult<Option<RemoteJobExecution>> {
+        crate::remote_jobs::claim(self, epoch, worker).await
+    }
+    async fn remote_job_cancel_requested(
+        &self,
+        execution: &RemoteJobExecution,
+    ) -> ApplicationResult<bool> {
+        let job = self
+            .repo
+            .owned_remote_upload_job(&crate::remote_jobs::lease(execution)?)
+            .await?;
+        Ok(job.cancel_requested)
+    }
+    async fn execute_remote_job(
+        &self,
+        execution: RemoteJobExecution,
+        cancel: ActionCancellation,
+    ) -> ApplicationResult<()> {
+        crate::remote_jobs::execute(self, execution, cancel).await
+    }
+    async fn interrupt_remote_job(&self, execution: RemoteJobExecution) -> ApplicationResult<()> {
+        crate::remote_jobs::interrupt(self, execution).await
+    }
+    async fn recover_remote_job(
+        &self,
+        execution: RemoteJobExecution,
+        error_code: String,
+    ) -> ApplicationResult<()> {
+        crate::remote_jobs::recover(self, execution, &error_code).await
     }
 }

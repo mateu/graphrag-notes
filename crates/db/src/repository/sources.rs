@@ -20,7 +20,7 @@ impl Repository {
     }
 
     #[allow(clippy::mutable_key_type)] // Typed `RecordId` maps are copied directly into edge writes.
-    async fn copy_note_dependents_to_successors_locked(
+    pub(super) async fn copy_note_dependents_to_successors_locked(
         &self,
         successors: &[(RecordId, RecordId, bool)],
     ) -> Result<()> {
@@ -272,7 +272,7 @@ impl Repository {
         self.complete_file_import_locked(source).await
     }
 
-    async fn complete_file_import_locked(
+    pub(super) async fn complete_file_import_locked(
         &self,
         source: &mut Source,
     ) -> Result<SourceDeleteSummary> {
@@ -400,6 +400,15 @@ impl Repository {
         promoted.last_error = None;
         promoted.updated_at = chrono::Utc::now();
         promoted.last_ingested_at = Some(promoted.updated_at);
+        // Uploaded refresh provenance becomes authoritative at the same
+        // durable boundary as note visibility, never while preparation runs.
+        if let Some(pending) = promoted
+            .metadata
+            .as_object_mut()
+            .and_then(|metadata| metadata.remove("remote_upload_pending"))
+        {
+            promoted.metadata["remote_upload"] = pending;
+        }
         self.replace_source(&promoted).await?;
         *source = promoted;
         // Promotion makes older source generations invisible even if their
