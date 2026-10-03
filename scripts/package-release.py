@@ -156,7 +156,7 @@ def validate_native_facts(target: str, description: str, libraries: str, load_co
     if family == "Mach-O":
         paths = [line.strip().split(" (", 1)[0] for line in libraries.splitlines()[1:] if line.strip()]
         require(paths and all(path.startswith(("/usr/lib/", "/System/Library/")) for path in paths),
-                "macOS release binary requires a non-system shared library")
+                "macOS release: only Apple/system runtime libraries are allowed")
         minimums = re.findall(r"\bminos\s+([0-9.]+)", load_commands)
         require(minimums == ["15.0"], "macOS release binary must declare deployment target 15.0")
         return {"runtime_libraries": paths, "minimum_macos": "15.0", "system_libraries_only": True}
@@ -164,7 +164,7 @@ def validate_native_facts(target: str, description: str, libraries: str, load_co
             "Linux release has missing libraries or dynamically linked OpenSSL")
     paths = re.findall(r"(?:=>\s+)?(/[^\s]+)", libraries)
     require(all(path.startswith(("/lib/", "/lib64/", "/usr/lib/")) for path in paths),
-            "Linux release requires a non-system shared library")
+            "Linux release: only system runtime libraries under /lib, /lib64, or /usr/lib are allowed")
     versions = [tuple(map(int, value.split("."))) for value in re.findall(r"GLIBC_([0-9.]+)", glibc_versions)]
     require(not versions or max(versions) <= (2, 35), "Linux release requires glibc newer than Ubuntu 22.04 (2.35)")
     return {"runtime_libraries": [re.sub(r"\s+\(0x[0-9a-fA-F]+\)", "", line).strip()
