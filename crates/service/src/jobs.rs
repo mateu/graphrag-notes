@@ -213,6 +213,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
+            assert_eq!(execution.job_id, admission.job_id);
             let job_id = execution.job_id.clone();
             let original = repo
                 .get_remote_upload_job("owner", &job_id)
