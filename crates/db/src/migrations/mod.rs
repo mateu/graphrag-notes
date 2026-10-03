@@ -21,6 +21,7 @@ mod v014_reindex_input_snapshots;
 mod v015_chat_metadata;
 mod v016_remote_capture_receipts;
 mod v017_remote_mutation_receipts;
+mod v018_remote_upload_jobs;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -33,7 +34,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 17;
+pub const LATEST_SCHEMA_VERSION: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -66,6 +67,7 @@ const MIGRATIONS: &[Migration] = &[
     v015_chat_metadata::MIGRATION,
     v016_remote_capture_receipts::MIGRATION,
     v017_remote_mutation_receipts::MIGRATION,
+    v018_remote_upload_jobs::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -586,9 +588,9 @@ mod tests {
         let sources_after: Vec<serde_json::Value> = db.select("source").await.unwrap();
         assert_eq!(notes_after, notes_before);
         assert_eq!(sources_after, sources_before);
-        assert_eq!(current_version(&db).await.unwrap(), 16);
+        assert_eq!(current_version(&db).await.unwrap(), LATEST_SCHEMA_VERSION);
         let history_after = load_applied_migrations(&db).await.unwrap();
-        assert_eq!(history_after.len(), 16);
+        assert_eq!(history_after.len(), LATEST_SCHEMA_VERSION as usize);
         for (before, after) in history_before.iter().zip(history_after.iter()) {
             assert_eq!(before.version, after.version);
             assert_eq!(before.checksum, after.checksum);

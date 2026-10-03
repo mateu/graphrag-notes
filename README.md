@@ -81,8 +81,9 @@ validation records retain their original evidence. Native Linux and Intel macOS
 release acceptance follows in [#66](https://github.com/mateu/graphrag-notes/issues/66).
 Current source adds an optional [shared MCP service](docs/shared-mcp.md) for
 OpenClaw, Hermes and the remote CLI, with per-instance authorization and durable
-capture retries. Published rc.2 predates these commands. The remaining remote
-editing, uploads/jobs and two-computer deployment work is tracked under
+capture retries, [uploaded Markdown and durable jobs](docs/remote-upload-jobs.md).
+Published rc.2 predates these commands. The remaining remote editing and
+two-computer deployment work is tracked under
 [#56](https://github.com/mateu/graphrag-notes/issues/56).
 
 ## Architecture

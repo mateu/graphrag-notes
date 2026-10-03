@@ -98,6 +98,9 @@ pub(crate) enum Commands {
         max_request_body_bytes: usize,
         #[arg(long, default_value_t = 8)]
         max_concurrent_requests: usize,
+        /// Background uploaded Markdown workers, separate from HTTP request capacity.
+        #[arg(long, default_value_t = 2)]
+        max_job_workers: usize,
     },
     /// Preview first-run settings; explicitly create a new config or check providers
     Init {
@@ -182,6 +185,26 @@ pub(crate) enum Commands {
     Capture {
         #[command(flatten)]
         args: crate::commands::capture::CaptureArgs,
+    },
+
+    /// Upload supplied Markdown to the configured remote service (client file is never a server path)
+    Upload {
+        /// Stable identity for future versions of this document, scoped to the authenticated instance
+        #[arg(long)]
+        document_key: String,
+        /// Markdown file read on this client only
+        #[arg(long)]
+        content_file: PathBuf,
+        #[arg(long)]
+        title: Option<String>,
+        /// Run a checkpointed entity-extraction phase after generation promotion
+        #[arg(long)]
+        extract_entities: bool,
+        /// Private persistent directory for a recoverable upload draft
+        #[arg(long)]
+        draft_dir: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
     },
 
     /// Add a new note

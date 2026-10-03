@@ -9,7 +9,7 @@ use super::*;
 use surrealdb_types::ToSql;
 
 /// Tables that form the portable, logical GraphRAG data model. Runtime caches,
-/// processing-job checkpoints, and migration history are intentionally absent:
+/// local processing-job checkpoints, and migration history are intentionally absent:
 /// they are machine-local implementation state rather than recoverable user
 /// knowledge.
 pub const PORTABLE_TABLES: &[&str] = &[
@@ -30,6 +30,9 @@ pub const PORTABLE_TABLES: &[&str] = &[
     // dropping them would lose committed-request replay guarantees.
     "remote_capture_receipt",
     "remote_mutation_receipt",
+    // Uploaded document input/admission/results are durable user operations.
+    // Only remote-owned upload jobs are included, never local runtime jobs.
+    "processing_job",
     "graphrag_metadata",
 ];
 
@@ -117,6 +120,7 @@ fn portable_timestamps(
         "proposed_edge" => &["created_at", "updated_at", "reviewed_at", "superseded_at"],
         "graphrag_metadata" => &["last_reindex_at", "updated_at"],
         "remote_capture_receipt" | "remote_mutation_receipt" => &["created_at", "updated_at"],
+        "processing_job" => &["created_at", "updated_at", "finished_at"],
         _ => &[],
     };
     let mut values = Vec::new();
@@ -161,6 +165,7 @@ fn portable_record_ids(
         ],
         "remote_capture_receipt" => &[("note_id", Some("note")), ("source_id", Some("source"))],
         "remote_mutation_receipt" => &[("target", None)],
+        "processing_job" => &[("remote_source_id", Some("source"))],
         _ => &[],
     };
     let mut values = Vec::new();
@@ -196,9 +201,14 @@ impl Repository {
         limit: usize,
     ) -> Result<Vec<serde_json::Value>> {
         validate_portable_table(table)?;
+        let filter = if table == "processing_job" {
+            "WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE"
+        } else {
+            ""
+        };
         self.db
             .query(format!(
-                "SELECT * FROM {table} ORDER BY id ASC LIMIT $limit START $offset"
+                "SELECT * FROM {table} {filter} ORDER BY id ASC LIMIT $limit START $offset"
             ))
             .bind(("limit", limit.max(1)))
             .bind(("offset", offset))
@@ -239,6 +249,28 @@ impl Repository {
         let object = content.as_object_mut().ok_or_else(|| {
             DbError::QueryFailed(format!("portable {table} record is not an object"))
         })?;
+        if table == "processing_job" {
+            if object.get("job_type").and_then(serde_json::Value::as_str) != Some("remote_upload")
+                || object
+                    .get("remote_instance_id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none()
+                || !object
+                    .get("remote_input")
+                    .is_some_and(serde_json::Value::is_object)
+                || !object
+                    .get("remote_admission")
+                    .is_some_and(serde_json::Value::is_object)
+            {
+                return Err(DbError::InvalidRemoteRequest(
+                    "portable processing jobs must be durable uploaded documents".into(),
+                ));
+            }
+            // A restored server must reconcile an interrupted running job;
+            // worker ownership from the exporting process can never survive.
+            object.remove("remote_service_epoch");
+            object.remove("remote_worker_token");
+        }
         object.remove("id");
         // Surreal represents NONE as JSON null, but a JSON null bound back
         // through CONTENT is SQL NULL and is rejected by many option fields.

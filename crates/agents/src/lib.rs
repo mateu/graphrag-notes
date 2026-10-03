@@ -46,8 +46,9 @@ pub use inference::{
     InferenceProviders, SharedEmbedder, SharedEntityExtractor, TeiClient, TgiClient,
 };
 pub use librarian::{
-    ChatImportMode, ChatImportPreview, ChatImportResult, ChatIngestOptions, LibrarianAgent,
-    LibrarianRuntimeConfig, MarkdownImportResult, ProcessingRunResult,
+    markdown_chunk_successors, ChatImportMode, ChatImportPreview, ChatImportResult,
+    ChatIngestOptions, LibrarianAgent, LibrarianRuntimeConfig, MarkdownImportResult,
+    ProcessingRunResult,
 };
 pub use processing::{
     classify_retry, retry_delay, ProcessingConfig, ProcessingStatsSnapshot, ResilientEmbedder,

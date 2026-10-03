@@ -19,6 +19,8 @@ pub enum Capability {
     Accept,
     Reject,
     Undo,
+    Upload,
+    Jobs,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -134,7 +136,6 @@ impl CredentialFile {
                 || decode_hash(&credential.token_sha256).is_none()
                 || !hashes.insert(&credential.token_sha256)
                 || credential.capabilities.is_empty()
-                || credential.capabilities.len() > 7
                 || (credential
                     .capabilities
                     .iter()

@@ -34,6 +34,7 @@ pub struct ServiceOptions {
     pub allowed_hosts: Vec<String>,
     pub max_request_body_bytes: usize,
     pub max_concurrent_requests: usize,
+    pub max_job_workers: usize,
 }
 
 impl Default for ServiceOptions {
@@ -45,6 +46,7 @@ impl Default for ServiceOptions {
             allowed_hosts: Vec::new(),
             max_request_body_bytes: 128 * 1024,
             max_concurrent_requests: 8,
+            max_job_workers: 2,
         }
     }
 }
@@ -59,6 +61,8 @@ pub enum ServiceError {
     Bind,
     #[error("The HTTP service stopped unexpectedly.")]
     Transport,
+    #[error("Cannot initialize uploaded jobs; check the corpus and restart the service.")]
+    Jobs,
 }
 
 impl ServiceOptions {
@@ -78,6 +82,11 @@ impl ServiceOptions {
         if !(1..=64).contains(&self.max_concurrent_requests) {
             return Err(ServiceError::Configuration(
                 "Concurrent request limit must be between 1 and 64.",
+            ));
+        }
+        if !(1..=4).contains(&self.max_job_workers) {
+            return Err(ServiceError::Configuration(
+                "Uploaded job worker limit must be between 1 and 4.",
             ));
         }
         if self.allowed_hosts.len() > 32 || self.allowed_hosts.iter().any(|host| !valid_host(host))
@@ -346,6 +355,12 @@ pub async fn serve(
     options.validate()?;
     options.validate_bind(listener.local_addr().map_err(|_| ServiceError::Bind)?.ip())?;
     let writes = Arc::new(Writes::default());
+    let jobs = crate::jobs::JobWorkers::start(
+        Arc::clone(&application),
+        options.max_job_workers,
+        &shutdown,
+    )
+    .await?;
     let handlers = ToolService::new(
         application,
         Arc::clone(&writes),
@@ -377,6 +392,7 @@ pub async fn serve(
         .with_graceful_shutdown(shutdown.cancelled_owned())
         .await;
     writes.drain().await;
+    jobs.stop().await;
     result.map_err(|_| ServiceError::Transport)
 }
 

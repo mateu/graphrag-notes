@@ -47,7 +47,7 @@ def provision(directory, writers, readers, grants=()):
     identities = writers + readers
     validate_identities(identities)
     capabilities = {identity: (["read", "capture"] if identity in writers else ["read"]) for identity in identities}
-    allowed = {"read", "capture", "edit", "delete", "accept", "reject", "undo"}
+    allowed = {"read", "capture", "edit", "delete", "accept", "reject", "undo", "upload", "jobs"}
     for grant in grants:
         identity, separator, names = grant.partition("=")
         if not separator or identity not in capabilities:

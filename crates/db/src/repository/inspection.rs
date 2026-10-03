@@ -284,19 +284,21 @@ impl Repository {
                     .unwrap_or("unknown")
                     .to_string(),
             );
-            if source.source_type == SourceType::Manual
-                && source
-                    .uri
-                    .as_deref()
-                    .is_some_and(|uri| uri.starts_with("mcp://capture/"))
-            {
-                if let Some(origin) = source.metadata.get("remote_capture") {
-                    provenance.instance_id = origin
-                        .get("instance_id")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string);
-                    provenance.source = origin.get("source").cloned();
+            let remote_origin = match (source.source_type.clone(), source.uri.as_deref()) {
+                (SourceType::Manual, Some(uri)) if uri.starts_with("mcp://capture/") => {
+                    source.metadata.get("remote_capture")
                 }
+                (SourceType::Markdown, Some(uri)) if uri.starts_with("mcp://upload/") => {
+                    source.metadata.get("remote_upload")
+                }
+                _ => None,
+            };
+            if let Some(origin) = remote_origin {
+                provenance.instance_id = origin
+                    .get("instance_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                provenance.source = origin.get("source").cloned();
             }
             if source.status == SourceIngestionStatus::Failed {
                 warnings.push(

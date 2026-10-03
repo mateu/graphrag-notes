@@ -281,7 +281,7 @@ impl Repository {
         fingerprints: std::collections::BTreeMap<String, String>,
     ) -> Result<()> {
         self.db
-            .query("UPDATE $id SET reindex_item_fingerprints = $fingerprints, updated_at = time::now()")
+            .query("UPDATE $id SET reindex_item_fingerprints = $fingerprints, updated_at = time::now() WHERE job_type = 'reindex'")
             .bind(("id", id.clone()))
             .bind(("fingerprints", fingerprints))
             .await?
@@ -451,7 +451,7 @@ impl Repository {
                  checkpoint = IF $checkpoint_set THEN $checkpoint ELSE checkpoint END, \
                  last_error = IF $last_error_set THEN $last_error ELSE last_error END, \
                  finished_at = IF $finish THEN time::now() ELSE finished_at END, updated_at = time::now() \
-                 RETURN AFTER",
+                 WHERE job_type != 'remote_upload' RETURN AFTER",
             )
             .bind(("id", id.clone()))
             .bind(("status", status))
@@ -536,7 +536,7 @@ impl Repository {
             .db
             .query(
                 "UPDATE $id SET status = 'cancelled', updated_at = time::now(), finished_at = time::now() \
-                 WHERE status = 'running' OR status = 'queued' RETURN AFTER",
+                 WHERE job_type != 'remote_upload' AND (status = 'running' OR status = 'queued') RETURN AFTER",
             )
             .bind(("id", id.clone()))
             .await?
@@ -551,7 +551,7 @@ impl Repository {
             .db
             .query(
                 "UPDATE $id SET status = 'running', last_error = NONE, finished_at = NONE, updated_at = time::now() \
-                 WHERE status = 'cancelled' OR status = 'failed' RETURN AFTER",
+                 WHERE job_type != 'remote_upload' AND (status = 'cancelled' OR status = 'failed') RETURN AFTER",
             )
             .bind(("id", id.clone()))
             .await?

@@ -31,6 +31,7 @@ const TOKEN_READ: &str = "read-fixed-test-token-with-32-or-more-bytes";
 struct TestApplication {
     records: Mutex<BTreeMap<(String, String), (String, RemoteCaptureResponse)>>,
     captures: AtomicUsize,
+    uploads: AtomicUsize,
     searches: AtomicUsize,
     slow: bool,
     huge: bool,
@@ -123,6 +124,25 @@ impl ApplicationOperations for TestApplication {
 
 #[async_trait]
 impl RemoteApplicationOperations for TestApplication {
+    async fn upload_source(
+        &self,
+        caller: CallerIdentity,
+        request: UploadSourceRequest,
+    ) -> ApplicationResult<UploadAdmission> {
+        if self.slow {
+            self.started.notify_one();
+            self.release.notified().await;
+        }
+        self.uploads.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(caller.instance_id, "openclaw-a");
+        Ok(UploadAdmission {
+            request_id: request.request_id,
+            job_id: format!("processing_job:{}", "a".repeat(64)),
+            source_id: format!("source:{}", "b".repeat(64)),
+            source_uri: format!("mcp://upload/{}", "b".repeat(64)),
+            replayed: false,
+        })
+    }
     async fn build_context(
         &self,
         request: BuildContextRequest,
@@ -226,12 +246,12 @@ impl Fixture {
                 (
                     "openclaw-a",
                     TOKEN_A,
-                    vec![Capability::Read, Capability::Capture],
+                    vec![Capability::Read, Capability::Capture, Capability::Upload],
                 ),
                 (
                     "hermes-b",
                     TOKEN_B,
-                    vec![Capability::Read, Capability::Capture],
+                    vec![Capability::Read, Capability::Capture, Capability::Upload],
                 ),
                 ("reader", TOKEN_READ, vec![Capability::Read]),
             ],
@@ -371,7 +391,7 @@ async fn legacy_handshake_catalog_and_trusted_instance_retry_contract() {
         )
         .await;
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
     assert!(tools
         .iter()
         .all(|tool| tool["annotations"]["readOnlyHint"] == true
@@ -730,4 +750,40 @@ async fn complete_rpc_body_size_includes_large_echoed_request_ids() {
     assert_eq!(value["id"], id);
     assert_eq!(error(&value)["code"], "response_too_large");
     fixture.stop().await;
+}
+
+#[tokio::test]
+async fn lost_upload_acknowledgment_does_not_drop_accepted_admission_and_shutdown_drains_it() {
+    let fixture = Fixture::new(TestApplication {
+        slow: true,
+        ..Default::default()
+    })
+    .await;
+    let request = fixture.request(TOKEN_A, json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"upload_source","arguments":{"request_id":"lost-upload-ack","document_key":"synthetic-document","content":"Upload admitted after client leaves","title":null,"provenance":null,"extract_entities":false}}}));
+    let client = tokio::spawn(async move { request.send().await });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        fixture.application.started.notified(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !client.is_finished(),
+        "the response must still be pending when the client disconnects"
+    );
+    client.abort();
+    let _ = client.await;
+    fixture.shutdown.cancel();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(
+        !fixture.task.is_finished(),
+        "accepted upload admission must drain before storage is released"
+    );
+    fixture.application.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(5), fixture.task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.application.uploads.load(Ordering::SeqCst), 1);
 }

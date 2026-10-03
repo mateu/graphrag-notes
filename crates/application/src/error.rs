@@ -18,7 +18,7 @@ pub enum ApplicationError {
     Compatibility(String),
     #[error("{0}")]
     ServiceUnreachable(String),
-    #[error("Action cancelled before persistence; retain the draft and retry when ready.")]
+    #[error("Action cancelled at a safe boundary; retain any draft and inspect the durable outcome before retrying.")]
     Cancelled,
     #[error("{0}")]
     Internal(String),
@@ -28,9 +28,11 @@ impl From<DbError> for ApplicationError {
     fn from(error: DbError) -> Self {
         match error {
             DbError::NotFound(..) => Self::NotFound(error.to_string()),
-            DbError::NoteRevisionConflict(_) | DbError::MutationRevisionConflict(_) => {
-                Self::RevisionConflict(error.to_string())
-            }
+            DbError::RemoteJobCancelled(_) => Self::Cancelled,
+            DbError::RemoteJobOwnershipLost(_)
+            | DbError::RemoteJobSourceConflict(_)
+            | DbError::NoteRevisionConflict(_)
+            | DbError::MutationRevisionConflict(_) => Self::RevisionConflict(error.to_string()),
             DbError::RemoteRequestConflict { .. } => Self::RevisionConflict(error.to_string()),
             DbError::InvalidRemoteRequest(_) | DbError::InvalidMutationRequest(_) => {
                 Self::Validation(error.to_string())

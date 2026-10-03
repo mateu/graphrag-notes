@@ -1,0 +1,868 @@
+//! Durable uploaded Markdown admission and fenced worker mutations.
+//! Providers never run while the transition gate is held. Running cancellation
+//! only sets a durable flag, independently of that gate; an entered mutation
+//! phase finishes before the worker acknowledges the next cancellation boundary.
+use super::*;
+use sha2::{Digest, Sha256};
+
+#[cfg(test)]
+#[path = "remote_jobs_tests.rs"]
+mod tests;
+
+pub const MAX_REMOTE_UPLOAD_BYTES: usize = 65_536;
+pub const MAX_REMOTE_UPLOAD_CHUNKS: usize = 200;
+const MAX_REMOTE_JSON_BYTES: usize = 16 * 1024;
+const FENCE: &str = "remote-upload-worker-fence";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RemoteUploadInput {
+    pub authenticated_instance_id: String,
+    pub request_id: String,
+    pub payload_fingerprint: String,
+    pub document_key: String,
+    pub markdown: String,
+    pub title: Option<String>,
+    pub source_provenance: serde_json::Value,
+    pub extract_entities: bool,
+    pub processing_options: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RemoteJobAdmission {
+    pub result: serde_json::Value,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteJobLease {
+    pub job_id: RecordId,
+    pub instance_id: String,
+    pub service_epoch: String,
+    pub worker_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteUploadJob {
+    pub job: ProcessingJob,
+    pub instance_id: String,
+    pub request_id: String,
+    pub source_uri: String,
+    pub source_id: Option<RecordId>,
+    pub source_generation: Option<u64>,
+    pub phase: String,
+    pub cancel_requested: bool,
+    pub service_epoch: Option<String>,
+    pub worker_token: Option<String>,
+    pub input: RemoteUploadInput,
+    pub admission: serde_json::Value,
+    pub result: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct JobRow {
+    id: RecordId,
+    job_type: String,
+    source_generation: Option<String>,
+    scope: Option<String>,
+    item_ids: Vec<String>,
+    status: String,
+    total_count: i64,
+    completed_count: i64,
+    failed_count: i64,
+    checkpoint: Option<String>,
+    last_error: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    finished_at: Option<DateTime<Utc>>,
+    remote_instance_id: String,
+    remote_request_id: String,
+    remote_payload_fingerprint: String,
+    remote_input: serde_json::Value,
+    remote_admission: serde_json::Value,
+    remote_result: Option<serde_json::Value>,
+    remote_source_id: Option<RecordId>,
+    remote_source_uri: String,
+    remote_source_generation: Option<u64>,
+    remote_phase: String,
+    remote_cancel_requested: bool,
+    remote_service_epoch: Option<String>,
+    remote_worker_token: Option<String>,
+}
+
+impl JobRow {
+    fn public(self) -> Result<RemoteUploadJob> {
+        let input = serde_json::from_value(self.remote_input)
+            .map_err(|error| DbError::QueryFailed(format!("remote upload input shape: {error}")))?;
+        Ok(RemoteUploadJob {
+            job: ProcessingJob {
+                id: Some(self.id),
+                job_type: self.job_type,
+                source_generation: self.source_generation,
+                scope: self.scope,
+                item_ids: self.item_ids,
+                status: self.status,
+                total_count: self.total_count,
+                completed_count: self.completed_count,
+                failed_count: self.failed_count,
+                checkpoint: self.checkpoint,
+                last_error: self.last_error,
+                created_at: self.created_at,
+                updated_at: self.updated_at,
+                finished_at: self.finished_at,
+                target_embedding_provider: None,
+                target_embedding_model: None,
+                target_embedding_dimension: None,
+                reindex_item_fingerprints: None,
+                reindex_lease_owner: None,
+                reindex_lease_expires_at: None,
+            },
+            instance_id: self.remote_instance_id,
+            request_id: self.remote_request_id,
+            source_uri: self.remote_source_uri,
+            source_id: self.remote_source_id,
+            source_generation: self.remote_source_generation,
+            phase: self.remote_phase,
+            cancel_requested: self.remote_cancel_requested,
+            service_epoch: self.remote_service_epoch,
+            worker_token: self.remote_worker_token,
+            input,
+            admission: self.remote_admission,
+            result: self.remote_result,
+        })
+    }
+}
+
+fn identity(value: &str) -> Result<()> {
+    if value.trim().is_empty()
+        || value.trim() != value
+        || value.chars().count() > 128
+        || value.len() > 256
+        || value.chars().any(char::is_control)
+    {
+        return Err(DbError::InvalidRemoteRequest(
+            "bounded identities cannot contain controls or surrounding whitespace".into(),
+        ));
+    }
+    Ok(())
+}
+fn digest(domain: &str, parts: &[&str]) -> String {
+    let bytes = serde_json::to_vec(&(domain, parts)).expect("string tuples serialize");
+    format!("{:x}", Sha256::digest(bytes))
+}
+fn job_id(value: &str) -> Result<RecordId> {
+    let key = value
+        .strip_prefix("processing_job:")
+        .ok_or_else(|| DbError::InvalidRemoteRequest("use a canonical processing_job:ID".into()))?;
+    if key.len() != 64
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(DbError::InvalidRemoteRequest(
+            "invalid remote processing-job ID".into(),
+        ));
+    }
+    Ok(RecordId::new("processing_job", key))
+}
+fn validate_input(input: &RemoteUploadInput) -> Result<()> {
+    identity(&input.authenticated_instance_id)?;
+    identity(&input.request_id)?;
+    if input.document_key.trim().is_empty()
+        || input.document_key.trim() != input.document_key
+        || input.document_key.chars().count() > 256
+        || input.document_key.len() > 512
+        || input.document_key.chars().any(char::is_control)
+    {
+        return Err(DbError::InvalidRemoteRequest(
+            "document key exceeds its bounds or contains controls or surrounding whitespace".into(),
+        ));
+    }
+    if input.payload_fingerprint.len() != 64
+        || !input
+            .payload_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || input.markdown.trim().is_empty()
+        || input.markdown.len() > MAX_REMOTE_UPLOAD_BYTES
+        || input
+            .title
+            .as_ref()
+            .is_some_and(|title| title.chars().count() > 512)
+        || !input.processing_options.is_object()
+    {
+        return Err(DbError::InvalidRemoteRequest(
+            "upload content, fingerprint, title or processing snapshot exceeds its bounds".into(),
+        ));
+    }
+    for value in [&input.source_provenance, &input.processing_options] {
+        if serde_json::to_vec(value)
+            .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?
+            .len()
+            > MAX_REMOTE_JSON_BYTES
+        {
+            return Err(DbError::InvalidRemoteRequest(
+                "upload provenance or processing snapshot exceeds 16 KiB".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+fn guard_sql() -> String {
+    format!("LET $owned = (UPDATE $job SET updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker AND remote_cancel_requested = false RETURN AFTER); IF array::len($owned) != 1 {{ THROW '{FENCE}'; }}; ")
+}
+fn check_write(errors: HashMap<usize, surrealdb::Error>, lease: &RemoteJobLease) -> Result<()> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+    if errors
+        .values()
+        .any(|error| error.to_string().contains(FENCE))
+    {
+        return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
+            &lease.job_id,
+        )));
+    }
+    Err(DbError::QueryFailed(format!(
+        "atomic remote upload mutation failed: {errors:?}"
+    )))
+}
+
+impl Repository {
+    async fn remote_job_row(&self, instance: &str, id: &RecordId) -> Result<Option<JobRow>> {
+        Ok(self.db.query("SELECT * FROM processing_job WHERE id = $id AND job_type = 'remote_upload' AND remote_instance_id = $instance LIMIT 1")
+            .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.take(0)?)
+    }
+    async fn remote_request_row(&self, instance: &str, request: &str) -> Result<Option<JobRow>> {
+        Ok(self.db.query("SELECT * FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_request_id = $request LIMIT 1")
+            .bind(("instance", instance.to_string())).bind(("request", request.to_string())).await?.take(0)?)
+    }
+    pub async fn find_remote_upload_admission(
+        &self,
+        instance: &str,
+        request: &str,
+        fingerprint: &str,
+    ) -> Result<Option<RemoteJobAdmission>> {
+        identity(instance)?;
+        identity(request)?;
+        match self.remote_request_row(instance, request).await? {
+            Some(row) if row.remote_payload_fingerprint == fingerprint => {
+                Ok(Some(RemoteJobAdmission {
+                    result: row.remote_admission,
+                    replayed: true,
+                }))
+            }
+            Some(_) => Err(DbError::RemoteRequestConflict {
+                instance_id: instance.into(),
+                request_id: request.into(),
+            }),
+            None => Ok(None),
+        }
+    }
+    pub async fn admit_remote_upload(
+        &self,
+        input: RemoteUploadInput,
+    ) -> Result<RemoteJobAdmission> {
+        validate_input(&input)?;
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let payload = serde_json::to_value(&input)
+            .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?;
+        if let Some(row) = self
+            .remote_request_row(&input.authenticated_instance_id, &input.request_id)
+            .await?
+        {
+            if row.remote_payload_fingerprint != input.payload_fingerprint
+                || row.remote_input != payload
+            {
+                return Err(DbError::RemoteRequestConflict {
+                    instance_id: input.authenticated_instance_id,
+                    request_id: input.request_id,
+                });
+            }
+            return Ok(RemoteJobAdmission {
+                result: row.remote_admission,
+                replayed: true,
+            });
+        }
+        let key = digest(
+            "graphrag-remote-upload-job-v1",
+            &[&input.authenticated_instance_id, &input.request_id],
+        );
+        let id = RecordId::new("processing_job", key);
+        let source_key = digest(
+            "graphrag-remote-upload-source-v1",
+            &[&input.authenticated_instance_id, &input.document_key],
+        );
+        let source_id = RecordId::new("source", source_key.clone());
+        let source_uri = format!("mcp://upload/{source_key}");
+        let now = Utc::now();
+        let result = serde_json::json!({"job_id": record_id_to_string(&id), "source_id":record_id_to_string(&source_id), "source_uri": source_uri, "status": "queued", "created_at": now.to_rfc3339()});
+        self.db.query("CREATE $id SET job_type = 'remote_upload', status = 'queued', total_count = 0, completed_count = 0, failed_count = 0, item_ids = [], created_at = <datetime>$now, updated_at = <datetime>$now, remote_instance_id = $instance, remote_request_id = $request, remote_payload_fingerprint = $fingerprint, remote_input = $input, remote_admission = $admission, remote_source_uri = $uri, remote_phase = 'admitted', remote_cancel_requested = false")
+            .bind(("id", id)).bind(("now", now.to_rfc3339())).bind(("instance", input.authenticated_instance_id))
+            .bind(("request", input.request_id)).bind(("fingerprint", input.payload_fingerprint))
+            .bind(("input", payload)).bind(("admission", result.clone())).bind(("uri", source_uri)).await?.check()?;
+        Ok(RemoteJobAdmission {
+            result,
+            replayed: false,
+        })
+    }
+    pub async fn get_remote_upload_job(
+        &self,
+        instance: &str,
+        id: &str,
+    ) -> Result<Option<RemoteUploadJob>> {
+        identity(instance)?;
+        self.remote_job_row(instance, &job_id(id)?)
+            .await?
+            .map(JobRow::public)
+            .transpose()
+    }
+    pub async fn list_remote_upload_jobs(
+        &self,
+        instance: &str,
+        limit: usize,
+    ) -> Result<Vec<RemoteUploadJob>> {
+        identity(instance)?;
+        if !(1..=200).contains(&limit) {
+            return Err(DbError::InvalidRemoteRequest(
+                "job limit must be 1–200".into(),
+            ));
+        }
+        let rows: Vec<JobRow> = self.db.query("SELECT * FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance ORDER BY updated_at DESC, id ASC LIMIT $limit")
+            .bind(("instance", instance.to_string())).bind(("limit", limit)).await?.take(0)?;
+        rows.into_iter().map(JobRow::public).collect()
+    }
+    pub async fn cancel_remote_upload_job(
+        &self,
+        instance: &str,
+        id: &str,
+    ) -> Result<RemoteUploadJob> {
+        identity(instance)?;
+        let id = job_id(id)?;
+        // Deliberately no transition/lifecycle mutex. A provider-blocked worker
+        // can observe this immediately, and an entered DB phase can finish.
+        self.db.query("UPDATE $id SET remote_cancel_requested = true, finished_at = IF status = 'queued' THEN time::now() ELSE finished_at END, status = IF status = 'queued' THEN 'cancelled' ELSE status END, updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND (status = 'queued' OR status = 'running')")
+            .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.check()?;
+        self.remote_job_row(instance, &id)
+            .await?
+            .ok_or_else(|| DbError::NotFound("remote upload job".into(), record_id_to_string(&id)))?
+            .public()
+    }
+    pub async fn resume_remote_upload_job(
+        &self,
+        instance: &str,
+        id: &str,
+    ) -> Result<RemoteUploadJob> {
+        identity(instance)?;
+        let id = job_id(id)?;
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let row = self.remote_job_row(instance, &id).await?.ok_or_else(|| {
+            DbError::NotFound("remote upload job".into(), record_id_to_string(&id))
+        })?;
+        if !matches!(row.status.as_str(), "failed" | "cancelled") {
+            return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(&id)));
+        }
+        self.ensure_remote_source_current(&row.public()?).await?;
+        let row: Option<JobRow> = self.db.query("UPDATE $id SET status = 'queued', remote_cancel_requested = false, remote_service_epoch = NONE, remote_worker_token = NONE, last_error = NONE, finished_at = NONE, updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND (status = 'failed' OR status = 'cancelled') RETURN AFTER")
+            .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.take(0)?;
+        row.ok_or_else(|| DbError::RemoteJobOwnershipLost(record_id_to_string(&id)))?
+            .public()
+    }
+    async fn claim_remote_upload_locked(
+        &self,
+        instance: &str,
+        id: &RecordId,
+        epoch: &str,
+        worker: &str,
+    ) -> Result<Option<RemoteUploadJob>> {
+        identity(instance)?;
+        identity(epoch)?;
+        identity(worker)?;
+        let row: Option<JobRow> = self.db.query("UPDATE $id SET status = 'running', remote_service_epoch = $epoch, remote_worker_token = $worker, updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false RETURN AFTER")
+            .bind(("id", id.clone())).bind(("instance", instance.to_string())).bind(("epoch", epoch.to_string())).bind(("worker", worker.to_string())).await?.take(0)?;
+        row.map(JobRow::public).transpose()
+    }
+    pub async fn claim_remote_upload_job(
+        &self,
+        instance: &str,
+        id: &str,
+        epoch: &str,
+        worker: &str,
+    ) -> Result<RemoteUploadJob> {
+        let id = job_id(id)?;
+        let _gate = self.remote_job_transition_lock.lock().await;
+        self.claim_remote_upload_locked(instance, &id, epoch, worker)
+            .await?
+            .ok_or_else(|| DbError::RemoteJobOwnershipLost(record_id_to_string(&id)))
+    }
+    pub async fn claim_next_remote_upload(
+        &self,
+        epoch: &str,
+        worker: &str,
+    ) -> Result<Option<RemoteUploadJob>> {
+        identity(epoch)?;
+        identity(worker)?;
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let rows: Vec<JobRow> = self.db.query("SELECT * FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'queued' AND remote_cancel_requested = false ORDER BY created_at ASC, id ASC LIMIT 1").await?.take(0)?;
+        match rows.into_iter().next() {
+            Some(row) => {
+                self.claim_remote_upload_locked(&row.remote_instance_id, &row.id, epoch, worker)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+    async fn owned_remote_upload(
+        &self,
+        lease: &RemoteJobLease,
+        allow_cancel: bool,
+    ) -> Result<RemoteUploadJob> {
+        identity(&lease.instance_id)?;
+        identity(&lease.service_epoch)?;
+        identity(&lease.worker_token)?;
+        let row = self
+            .remote_job_row(&lease.instance_id, &lease.job_id)
+            .await?
+            .ok_or_else(|| DbError::RemoteJobOwnershipLost(record_id_to_string(&lease.job_id)))?;
+        if row.status != "running"
+            || row.remote_service_epoch.as_deref() != Some(&lease.service_epoch)
+            || row.remote_worker_token.as_deref() != Some(&lease.worker_token)
+        {
+            return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
+        if row.remote_cancel_requested && !allow_cancel {
+            return Err(DbError::RemoteJobCancelled(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
+        row.public()
+    }
+    pub async fn owned_remote_upload_job(&self, lease: &RemoteJobLease) -> Result<RemoteUploadJob> {
+        self.owned_remote_upload(lease, false).await
+    }
+    async fn ensure_remote_source_current(&self, job: &RemoteUploadJob) -> Result<()> {
+        if let Some(generation) = job.source_generation {
+            let source = self.get_source(&job.source_uri).await?.ok_or_else(|| {
+                DbError::RemoteJobSourceConflict(record_id_to_string(
+                    job.job.id.as_ref().expect("persisted ID"),
+                ))
+            })?;
+            let origin = source
+                .metadata
+                .get("remote_upload_pending")
+                .or_else(|| source.metadata.get("remote_upload"));
+            let expected_job = record_id_to_string(job.job.id.as_ref().expect("persisted ID"));
+            if source.generation != generation
+                || source.id != job.source_id
+                || source.source_type != SourceType::Markdown
+                || origin.is_none_or(|origin| {
+                    origin["job_id"] != expected_job
+                        || origin["instance_id"] != job.instance_id
+                        || origin["document_key"] != job.input.document_key
+                })
+            {
+                return Err(DbError::RemoteJobSourceConflict(expected_job));
+            }
+        }
+        Ok(())
+    }
+    pub async fn begin_remote_upload_generation(&self, lease: &RemoteJobLease) -> Result<Source> {
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let _lifecycle = self.proposal_acceptance_lock.lock().await;
+        let job = self.owned_remote_upload(lease, false).await?;
+        self.ensure_remote_source_current(&job).await?;
+        if job.source_generation.is_some() {
+            return self.get_source(&job.source_uri).await?.ok_or_else(|| {
+                DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id))
+            });
+        }
+        let input = &job.input;
+        let source_key = digest(
+            "graphrag-remote-upload-source-v1",
+            &[&input.authenticated_instance_id, &input.document_key],
+        );
+        let source_id = RecordId::new("source", source_key);
+        let prior = self.get_source(&job.source_uri).await?;
+        let hash = graphrag_core::normalized_content_hash(&input.markdown);
+        let mut prior_completed = false;
+        if let Some(source) = &prior {
+            let origin = source
+                .metadata
+                .get("remote_upload_pending")
+                .unwrap_or(&source.metadata["remote_upload"]);
+            if source.source_type != SourceType::Markdown
+                || source.id.as_ref() != Some(&source_id)
+                || origin["instance_id"] != input.authenticated_instance_id
+                || origin["document_key"] != input.document_key
+            {
+                return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                    &lease.job_id,
+                )));
+            }
+            if let Some(owner) = origin["job_id"].as_str() {
+                if let Some(other) = self.get_remote_upload_job(&job.instance_id, owner).await? {
+                    if matches!(other.job.status.as_str(), "running" | "queued") {
+                        return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                            &lease.job_id,
+                        )));
+                    }
+                    prior_completed = other.job.status == "completed";
+                }
+            }
+        }
+        let unchanged = prior_completed
+            && prior.as_ref().is_some_and(|source| {
+                source.status == SourceIngestionStatus::Ready
+                    && source.content_hash.as_deref() == Some(hash.as_str())
+                    && source.title == input.title
+                    && source.metadata["remote_upload"]["processing_options"]
+                        == input.processing_options
+                    && source.metadata["remote_upload"]["extract_entities"]
+                        == input.extract_entities
+            });
+        let generation = prior.as_ref().map_or(1, |source| {
+            if unchanged {
+                source.successful_generation
+            } else {
+                source.generation.saturating_add(1)
+            }
+        });
+        let items = if unchanged {
+            self.get_source_chunks(&source_id)
+                .await?
+                .into_iter()
+                .map(|note| record_id_to_string(note.id.as_ref().expect("stored chunk ID")))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if items.len() > MAX_REMOTE_UPLOAD_CHUNKS {
+            return Err(DbError::InvalidRemoteRequest(
+                "existing uploaded source exceeds the chunk bound".into(),
+            ));
+        }
+        let action = if unchanged {
+            "unchanged"
+        } else if prior.is_some() {
+            "updated"
+        } else {
+            "created"
+        };
+        let mut metadata = prior
+            .as_ref()
+            .map_or_else(|| serde_json::json!({}), |source| source.metadata.clone());
+        let origin = serde_json::json!({"instance_id":job.instance_id,"document_key":input.document_key,"request_id":job.request_id,"source":input.source_provenance,"job_id":record_id_to_string(&lease.job_id),"processing_options":input.processing_options,"extract_entities":input.extract_entities});
+        if unchanged {
+            metadata["remote_upload"] = origin;
+            if let Some(metadata) = metadata.as_object_mut() {
+                metadata.remove("remote_upload_pending");
+            }
+        } else {
+            metadata["remote_upload_pending"] = origin;
+        }
+        let source_sql: String = if unchanged {
+            "UPDATE $source SET metadata = $metadata, updated_at = time::now(); ".into()
+        } else {
+            "UPSERT $source SET source_type = 'markdown', title = $title, uri = $uri, normalized_uri = $uri, content = $markdown, content_hash = $hash, generation = $generation, successful_generation = $successful, status = 'pending', last_error = NONE, metadata = $metadata, created_at = IF created_at = NONE THEN time::now() ELSE created_at END, updated_at = time::now(); ".into()
+        };
+        let checkpoint = items.last().cloned();
+        let mut response = self.db.query(format!("BEGIN TRANSACTION; {}{} UPDATE $job SET remote_source_id = $source, remote_source_generation = $generation, source_generation = $generation_label, scope = $action, item_ids = $items, total_count = $total, completed_count = IF $unchanged THEN $total ELSE 0 END, checkpoint = $checkpoint, remote_phase = $phase; COMMIT TRANSACTION;", guard_sql(), source_sql))
+            .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
+            .bind(("source", source_id)).bind(("title", input.title.clone())).bind(("uri", job.source_uri.clone())).bind(("markdown", input.markdown.clone())).bind(("hash", hash))
+            .bind(("generation", generation as i64)).bind(("successful", prior.map_or(0, |source| source.successful_generation) as i64)).bind(("generation_label", generation.to_string()))
+            .bind(("metadata", metadata)).bind(("action", action)).bind(("total", items.len() as i64)).bind(("items", items)).bind(("unchanged",unchanged)).bind(("checkpoint",checkpoint)).bind(("phase", if unchanged {"promoted"} else {"preparing"})).await?;
+        check_write(response.take_errors(), lease)?;
+        self.get_source(&job.source_uri)
+            .await?
+            .ok_or_else(|| DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id)))
+    }
+    pub async fn stage_remote_upload_notes(
+        &self,
+        lease: &RemoteJobLease,
+        mut notes: Vec<Note>,
+    ) -> Result<RemoteUploadJob> {
+        if notes.len() > MAX_REMOTE_UPLOAD_CHUNKS
+            || notes.iter().any(|note| {
+                note.content.trim().is_empty()
+                    || note.content.len() > MAX_REMOTE_UPLOAD_BYTES
+                    || note.embedding.iter().any(|value| !value.is_finite())
+            })
+        {
+            return Err(DbError::InvalidRemoteRequest(
+                "prepared upload chunks exceed bounds or contain invalid vectors".into(),
+            ));
+        }
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let _lifecycle = self.proposal_acceptance_lock.lock().await;
+        let job = self.owned_remote_upload(lease, false).await?;
+        self.ensure_remote_source_current(&job).await?;
+        if matches!(job.phase.as_str(), "staged" | "promoted" | "extracting") {
+            return Ok(job);
+        }
+        if job.phase != "preparing" {
+            return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
+        let source_id = job
+            .source_id
+            .clone()
+            .ok_or_else(|| DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id)))?;
+        for (index, note) in notes.iter_mut().enumerate() {
+            let index = index.to_string();
+            note.id = Some(RecordId::new(
+                "note",
+                digest(
+                    "graphrag-remote-upload-chunk-v1",
+                    &[&job.instance_id, &job.request_id, &index],
+                ),
+            ));
+            note.source_id = Some(source_id.clone());
+            note.source_generation = job.source_generation;
+            if note.search_content.is_none() {
+                note.search_content = Some(derived_search_content(note));
+            }
+        }
+        let ids = notes
+            .iter()
+            .map(|note| record_id_to_string(note.id.as_ref().expect("assigned ID")))
+            .collect::<Vec<_>>();
+        let total = notes.len() as i64;
+        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} FOR $item IN $notes {{ LET $note_id = $item.id; LET $content = IF array::len($item.embedding) = 0 THEN object::remove($item, 'embedding') ELSE $item END; CREATE $note_id CONTENT $content; }}; UPDATE $job SET item_ids = $ids, total_count = $total, completed_count = 0, failed_count = 0, checkpoint = NONE, remote_phase = 'staged'; COMMIT TRANSACTION;", guard_sql()))
+            .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
+            .bind(("notes", notes)).bind(("ids", ids)).bind(("total", total)).await?;
+        check_write(response.take_errors(), lease)?;
+        self.owned_remote_upload(lease, true).await
+    }
+    pub async fn reconcile_remote_upload(
+        &self,
+        lease: &RemoteJobLease,
+        successors: &[(RecordId, RecordId, bool)],
+    ) -> Result<SourceDeleteSummary> {
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let _lifecycle = self.proposal_acceptance_lock.lock().await;
+        let job = self.owned_remote_upload(lease, false).await?;
+        self.ensure_remote_source_current(&job).await?;
+        if !matches!(job.phase.as_str(), "staged" | "promoted") {
+            return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
+        let mut source = self
+            .get_source(&job.source_uri)
+            .await?
+            .ok_or_else(|| DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id)))?;
+        let source_id = source
+            .id
+            .as_ref()
+            .ok_or_else(|| DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id)))?;
+        let outcome = if source.successful_generation == source.generation {
+            // A restart after visibility promotion must never copy dependents
+            // from the now-hidden generation again. Cleanup is retry-safe.
+            self.complete_file_import_locked(&mut source).await
+        } else {
+            for (old, new, _) in successors {
+                let old_note: Option<Note> = self.db.select(old.clone()).await?;
+                let new_note: Option<Note> = self.db.select(new.clone()).await?;
+                if old_note.as_ref().is_none_or(|note| {
+                    note.source_id.as_ref() != Some(source_id)
+                        || note.source_generation != Some(source.successful_generation)
+                }) || new_note.as_ref().is_none_or(|note| {
+                    note.source_id.as_ref() != Some(source_id)
+                        || note.source_generation != job.source_generation
+                        || !job.job.item_ids.contains(&record_id_to_string(new))
+                }) {
+                    return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                        &lease.job_id,
+                    )));
+                }
+            }
+            self.copy_note_dependents_to_successors_locked(successors)
+                .await?;
+            self.complete_file_import_locked(&mut source).await
+        };
+        if source.successful_generation == source.generation {
+            // Even deferred cleanup failure cannot erase a successful visibility
+            // transition. Resume observes promoted and retries cleanup/extraction.
+            self.update_remote_phase_locked(
+                lease,
+                "promoted",
+                ProcessingJobUpdate::default(),
+                true,
+            )
+            .await?;
+        }
+        outcome
+    }
+    /// Exact prepared chunks, including the hidden staged generation. Worker
+    /// ownership and the pinned source generation are checked before reading.
+    pub async fn remote_upload_notes(&self, lease: &RemoteJobLease) -> Result<Vec<Note>> {
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let _lifecycle = self.proposal_acceptance_lock.lock().await;
+        let job = self.owned_remote_upload(lease, false).await?;
+        self.ensure_remote_source_current(&job).await?;
+        let mut notes = Vec::with_capacity(job.job.item_ids.len());
+        for id in &job.job.item_ids {
+            let id = parse_record_id(id, Some("note"))?;
+            let note: Note = self.db.select(id).await?.ok_or_else(|| {
+                DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id))
+            })?;
+            if note.source_id != job.source_id || note.source_generation != job.source_generation {
+                return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                    &lease.job_id,
+                )));
+            }
+            notes.push(note);
+        }
+        Ok(notes)
+    }
+    async fn update_remote_phase_locked(
+        &self,
+        lease: &RemoteJobLease,
+        phase: &str,
+        update: ProcessingJobUpdate,
+        allow_cancel: bool,
+    ) -> Result<RemoteUploadJob> {
+        let job = self.owned_remote_upload(lease, allow_cancel).await?;
+        self.ensure_remote_source_current(&job).await?;
+        let completed = update
+            .completed_count
+            .unwrap_or(job.job.completed_count as u64);
+        let failed = update.failed_count.unwrap_or(job.job.failed_count as u64);
+        if update.status.is_some()
+            || update.finish
+            || completed < job.job.completed_count as u64
+            || failed < job.job.failed_count as u64
+            || completed.saturating_add(failed) > job.job.total_count as u64
+        {
+            return Err(DbError::InvalidRemoteRequest(
+                "remote job checkpoints must be monotonic and bounded by their admitted items"
+                    .into(),
+            ));
+        }
+        let row: Option<JobRow> = self.db.query("UPDATE $job SET remote_phase = $phase, completed_count = $completed, failed_count = $failed, checkpoint = IF $checkpoint_set THEN $checkpoint ELSE checkpoint END, last_error = IF $error_set THEN $error ELSE last_error END, updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN AFTER")
+            .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
+            .bind(("phase", phase.to_string())).bind(("completed", count_to_i64(completed)?)).bind(("failed", count_to_i64(failed)?))
+            .bind(("checkpoint_set", update.checkpoint.is_some())).bind(("checkpoint", update.checkpoint.flatten())).bind(("error_set", update.last_error.is_some())).bind(("error", update.last_error.flatten())).await?.take(0)?;
+        row.ok_or_else(|| DbError::RemoteJobOwnershipLost(record_id_to_string(&lease.job_id)))?
+            .public()
+    }
+    pub async fn checkpoint_remote_upload_job(
+        &self,
+        lease: &RemoteJobLease,
+        phase: &str,
+        update: ProcessingJobUpdate,
+    ) -> Result<RemoteUploadJob> {
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let job = self.owned_remote_upload(lease, false).await?;
+        if phase != "extracting" || !matches!(job.phase.as_str(), "promoted" | "extracting") {
+            return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
+        self.update_remote_phase_locked(lease, phase, update, false)
+            .await
+    }
+    pub async fn persist_remote_upload_entities(
+        &self,
+        lease: &RemoteJobLease,
+        item_index: usize,
+        entities: Vec<Entity>,
+    ) -> Result<RemoteUploadJob> {
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let job = self.owned_remote_upload(lease, false).await?;
+        self.ensure_remote_source_current(&job).await?;
+        if !matches!(job.phase.as_str(), "promoted" | "extracting") {
+            return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
+        let done = (job.job.completed_count + job.job.failed_count) as usize;
+        if item_index < done {
+            return Ok(job);
+        }
+        if item_index != done || item_index >= job.job.item_ids.len() {
+            return Err(DbError::InvalidRemoteRequest(
+                "extraction checkpoint must advance its exact next item".into(),
+            ));
+        }
+        let note_id = parse_record_id(&job.job.item_ids[item_index], Some("note"))?;
+        let _lifecycle = self.proposal_acceptance_lock.lock().await;
+        self.ensure_remote_source_current(&job).await?;
+        let entity_names = entities
+            .iter()
+            .map(|entity| entity.canonical_name.clone())
+            .collect::<Vec<_>>();
+        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation AND source_generation = source_id.successful_generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; {} DELETE mentions WHERE in = $note; FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $note, out = $entity_id; }}; UPDATE $job SET remote_phase = 'extracting', completed_count += 1, checkpoint = $checkpoint; COMMIT TRANSACTION;", guard_sql(), super::notes::replacement_entities_transaction()))
+            .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
+            .bind(("note", note_id)).bind(("source", job.source_id.clone())).bind(("generation", job.source_generation)).bind(("checkpoint", job.job.item_ids[item_index].clone())).bind(("replacement_entities", entities)).bind(("replacement_entity_names", entity_names)).await?;
+        check_write(response.take_errors(), lease)?;
+        self.owned_remote_upload(lease, true).await
+    }
+    pub async fn finish_remote_upload_job(
+        &self,
+        lease: &RemoteJobLease,
+        mut status: ProcessingJobStatus,
+        mut error: Option<String>,
+        result: Option<serde_json::Value>,
+    ) -> Result<RemoteUploadJob> {
+        if !matches!(
+            status,
+            ProcessingJobStatus::Completed
+                | ProcessingJobStatus::Failed
+                | ProcessingJobStatus::Cancelled
+        ) || result.as_ref().is_some_and(|value| !value.is_object())
+            || error.as_ref().is_some_and(|value| value.len() > 512)
+            || result.as_ref().is_some_and(|value| {
+                serde_json::to_vec(value)
+                    .map_or(true, |bytes| bytes.len() > MAX_REMOTE_UPLOAD_BYTES)
+            })
+        {
+            return Err(DbError::InvalidRemoteRequest(
+                "remote job finish requires a terminal status and object result".into(),
+            ));
+        }
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let job = self.owned_remote_upload(lease, true).await?;
+        let _lifecycle = self.proposal_acceptance_lock.lock().await;
+        // Explicit cancellation remains authoritative if a provider failure
+        // or worker panic arrives at the same safe boundary.
+        if job.cancel_requested && status != ProcessingJobStatus::Completed {
+            status = ProcessingJobStatus::Cancelled;
+            error = Some("cancelled".into());
+        }
+        if status == ProcessingJobStatus::Completed {
+            self.ensure_remote_source_current(&job).await?;
+            if job.cancel_requested {
+                return Err(DbError::RemoteJobCancelled(record_id_to_string(
+                    &lease.job_id,
+                )));
+            }
+            if !matches!(job.phase.as_str(), "promoted" | "extracting") {
+                return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
+                    &lease.job_id,
+                )));
+            }
+            if job.input.extract_entities
+                && job.job.completed_count + job.job.failed_count != job.job.total_count
+            {
+                return Err(DbError::InvalidRemoteRequest(
+                    "entity extraction has unprocessed items".into(),
+                ));
+            }
+        }
+        let row: Option<JobRow> = self.db.query("UPDATE $job SET status = $status, remote_phase = IF $status = 'completed' THEN 'completed' ELSE remote_phase END, completed_count = IF $status = 'completed' AND $skip_extract THEN total_count ELSE completed_count END, last_error = $error, remote_result = $result, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN AFTER")
+            .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
+            .bind(("status", status.as_str())).bind(("skip_extract", !job.input.extract_entities)).bind(("error", error)).bind(("result", result)).await?.take(0)?;
+        row.ok_or_else(|| DbError::RemoteJobOwnershipLost(record_id_to_string(&lease.job_id)))?
+            .public()
+    }
+    pub async fn reconcile_interrupted_remote_uploads(&self, current_epoch: &str) -> Result<usize> {
+        identity(current_epoch)?;
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let rows: Vec<JobRow> = self.db.query("UPDATE processing_job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE 'failed' END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE 'interrupted' END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'running' AND (remote_service_epoch = NONE OR remote_service_epoch != $epoch) RETURN AFTER")
+            .bind(("epoch", current_epoch.to_string())).await?.take(0)?;
+        Ok(rows.len())
+    }
+}
