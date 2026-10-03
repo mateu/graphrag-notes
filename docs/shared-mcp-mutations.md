@@ -48,6 +48,9 @@ Copied recovery commands include `--recover-draft`: this explicitly adopts the
 private regular file supplied with `--content-file` and removes that same file
 after a verified acknowledgment. Ordinary input files stay untouched. A draft
 changed after submission is retained so unsent edits are not lost.
+Cleanup first claims the original entry atomically; later saves at its old path
+stay untouched. If changed bytes cannot be restored without replacing a later
+save, the diagnostic identifies their retained private quarantine path.
 
 Only manual notes are editable/deletable remotely. Imported file chunks, chat
 messages and generated chat notes remain source-owned; change their original

@@ -267,7 +267,7 @@ async fn prepare_edit(cli: &Cli, server: &str, command: &NotesCommand) -> Result
             .join(".graphrag/remote-drafts")
     });
     let mut draft = Draft::save_or_recover(&original, &directory, recovery_path, |path| {
-        let mut retry = format!("graphrag --server {} --credential-env {} --request-id {} --expected-revision {} --recover-draft notes edit {} --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(revision), shell_quote(id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(*format));
+        let mut retry = format!("graphrag --server {} --credential-env {} --request-id={} --expected-revision {} --recover-draft notes edit {} --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(revision), shell_quote(id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(*format));
         if let Some(directory) = &editor.draft_dir {
             retry.push_str(&format!(
                 " --draft-dir {}",

@@ -76,7 +76,11 @@ impl Fixture {
     fn command(&self, args: &[&str]) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_graphrag"));
         command
+            .env_clear()
             .current_dir(self.temp.path())
+            .env("HOME", self.temp.path())
+            .env("XDG_CONFIG_HOME", self.temp.path())
+            .env("PATH", "/usr/bin:/bin")
             .env("GRAPHRAG_TOKEN", TOKEN)
             .env(
                 "GRAPHRAG_CONFIG",
@@ -167,8 +171,9 @@ async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_aft
         let drafts = fixture.temp.path().join("private drafts");
         let body = "valuable recovery body after an actual lost acknowledgment";
         std::fs::write(&input, body).unwrap();
-        let request = format!("lost-{operation}");
-        let mut args = vec!["--request-id", &request];
+        let request = format!("-lost-{operation}");
+        let request_option = format!("--request-id={request}");
+        let mut args = vec![request_option.as_str()];
         if operation == "edit" {
             args.extend(["--expected-revision", revision, "notes", "edit", &id]);
         } else {
@@ -215,7 +220,7 @@ async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_aft
         .await
         .unwrap();
         let calls = provider.calls.load(Ordering::SeqCst);
-        let mut retry = vec!["--recover-draft", "--request-id", &request];
+        let mut retry = vec!["--recover-draft", request_option.as_str()];
         if operation == "edit" {
             retry.extend(["--expected-revision", revision, "notes", "edit", &id]);
         } else {
@@ -229,7 +234,57 @@ async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_aft
             "--format",
             "json",
         ]);
-        let replay = fixture.success(&retry).await;
+        // Obtain the actual copied command from another failed attempt, then
+        // execute it with the synthetic token in an isolated environment.
+        let failed_retry = fixture
+            .command(&retry)
+            .env("GRAPHRAG_TOKEN", "")
+            .output()
+            .await
+            .unwrap();
+        assert!(!failed_retry.status.success());
+        assert!(retained.exists());
+        let stderr = String::from_utf8(failed_retry.stderr).unwrap();
+        let copied = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("Recover: "))
+            .expect("failed retry must retain its copied command");
+        assert!(copied.contains(&format!("--request-id='{request}'")));
+        let executable = env!("CARGO_BIN_EXE_graphrag").replace('\'', "'\\''");
+        let copied = format!(
+            "'{executable}' {}",
+            copied.strip_prefix("graphrag ").unwrap()
+        );
+        let mut replay_command = tokio::process::Command::new("/bin/sh");
+        replay_command
+            .env_clear()
+            .current_dir(fixture.temp.path())
+            .env("HOME", fixture.temp.path())
+            .env("XDG_CONFIG_HOME", fixture.temp.path())
+            .env("PATH", "/usr/bin:/bin")
+            .env("GRAPHRAG_TOKEN", TOKEN)
+            .env(
+                "GRAPHRAG_CONFIG",
+                fixture.temp.path().join("missing-config.toml"),
+            )
+            .env(
+                "GRAPHRAG_DB_PATH",
+                fixture.temp.path().join("must-not-create-client-db"),
+            )
+            .args(["-c", &copied])
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(10), replay_command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(envelope["success"], true);
+        let replay = &envelope["data"]["data"];
         assert_eq!(replay["replayed"], true, "{operation}");
         assert_eq!(provider.calls.load(Ordering::SeqCst), calls);
         assert!(!retained.exists());
