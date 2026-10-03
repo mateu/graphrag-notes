@@ -7,7 +7,13 @@ use graphrag_agents::{
 };
 use graphrag_application::*;
 use graphrag_db::{init_memory, Repository};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::sync::Notify;
 
 fn caller(instance: &str) -> CallerIdentity {
@@ -63,6 +69,319 @@ async fn execute(app: &EmbeddedApplication, epoch: &str) -> RemoteJobExecution {
         .await
         .unwrap();
     execution
+}
+
+struct EndpointEmbedder {
+    endpoint: String,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Embedder for EndpointEmbedder {
+    async fn embed(&self, text: &str, query: bool) -> graphrag_agents::Result<Vec<f32>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        DeterministicEmbedder::default().embed(text, query).await
+    }
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        query: bool,
+    ) -> graphrag_agents::Result<Vec<Vec<f32>>> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        DeterministicEmbedder::default()
+            .embed_batch(texts, query)
+            .await
+    }
+    async fn health(&self) -> graphrag_agents::Result<bool> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(true)
+    }
+    fn capabilities(&self) -> InferenceCapabilities {
+        let mut capability = DeterministicEmbedder::default().capabilities();
+        capability.endpoint = self.endpoint.clone();
+        capability
+    }
+}
+
+struct EndpointExtractor {
+    endpoint: String,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl EntityExtractor for EndpointExtractor {
+    async fn extract(&self, text: &str) -> graphrag_agents::Result<EntityExtraction> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        FixtureEntityExtractor::default().extract(text).await
+    }
+    async fn health(&self) -> graphrag_agents::Result<bool> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Ok(true)
+    }
+    fn capabilities(&self) -> InferenceCapabilities {
+        let mut capability = FixtureEntityExtractor::default().capabilities();
+        capability.endpoint = self.endpoint.clone();
+        capability
+    }
+}
+
+fn endpoint_app(
+    repo: &Repository,
+    embedding: &str,
+    extraction: &str,
+) -> (EmbeddedApplication, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let embedding_calls = Arc::new(AtomicUsize::new(0));
+    let extraction_calls = Arc::new(AtomicUsize::new(0));
+    (
+        app(
+            repo,
+            Arc::new(EndpointEmbedder {
+                endpoint: embedding.into(),
+                calls: embedding_calls.clone(),
+            }),
+            Arc::new(EndpointExtractor {
+                endpoint: extraction.into(),
+                calls: extraction_calls.clone(),
+            }),
+        ),
+        embedding_calls,
+        extraction_calls,
+    )
+}
+
+#[tokio::test]
+async fn changed_provider_endpoints_reject_resume_but_preserve_completed_receipt_replay() {
+    const EMBEDDING: &str =
+        "http://fixture-user:fixture-secret@embedding.invalid?token=fixture-token";
+    const EXTRACTION: &str =
+        "http://fixture-user:fixture-secret@extraction.invalid?token=fixture-token";
+    for (embedding, extraction) in [
+        ("http://changed-embedding.invalid", EXTRACTION),
+        (EMBEDDING, "http://changed-extraction.invalid"),
+    ] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (original, _, _) = endpoint_app(&repo, EMBEDDING, EXTRACTION);
+        let input = request("endpoint-pinned-upload");
+        let admitted = original
+            .upload_source(caller("owner"), input.clone())
+            .await
+            .unwrap();
+        let cancelled = original
+            .cancel_remote_job(caller("owner"), &admitted.job_id)
+            .await
+            .unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        let (changed, embedding_calls, extraction_calls) =
+            endpoint_app(&repo, embedding, extraction);
+        assert!(matches!(
+            changed
+                .resume_remote_job(caller("owner"), &admitted.job_id)
+                .await,
+            Err(ApplicationError::Compatibility(_))
+        ));
+        assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            changed
+                .get_remote_job(caller("owner"), &admitted.job_id)
+                .await
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+        let stored = repo
+            .get_remote_upload_job("owner", &admitted.job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let snapshot = serde_json::to_string(&stored.input.processing_options).unwrap();
+        assert!(!snapshot.contains("fixture-secret"));
+        assert!(!snapshot.contains("fixture-token"));
+        assert!(!snapshot.contains("embedding.invalid"));
+        assert!(!snapshot.contains("extraction.invalid"));
+        for role in ["embedding", "extraction"] {
+            let digest = stored.input.processing_options[role]["endpoint_identity"]
+                .as_str()
+                .unwrap();
+            assert_eq!(digest.len(), 64);
+            assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        }
+        original
+            .resume_remote_job(caller("owner"), &admitted.job_id)
+            .await
+            .unwrap();
+        execute(&original, "original-endpoint").await;
+        let completed = original
+            .get_remote_job(caller("owner"), &admitted.job_id)
+            .await
+            .unwrap();
+        let replay = changed.upload_source(caller("owner"), input).await.unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.job_id, admitted.job_id);
+        assert_eq!(replay.source_id, admitted.source_id);
+        let replay_status = changed
+            .get_remote_job(caller("owner"), &replay.job_id)
+            .await
+            .unwrap();
+        assert_eq!(replay_status.status, "completed");
+        assert_eq!(replay_status.result, completed.result);
+        assert_eq!(replay_status.generation, completed.generation);
+        assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[tokio::test]
+async fn queued_legacy_endpoint_snapshot_fails_before_inference_and_requires_explicit_new_input() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let (application, embedding_calls, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://extraction.invalid",
+    );
+    let admitted = application
+        .upload_source(caller("owner"), request("legacy-endpoint-upload"))
+        .await
+        .unwrap();
+    let job = repo
+        .get_remote_upload_job("owner", &admitted.job_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let initial_phase = job.phase;
+    let mut legacy = job.input.processing_options;
+    for role in ["embedding", "extraction"] {
+        legacy[role]
+            .as_object_mut()
+            .unwrap()
+            .remove("endpoint_identity");
+    }
+    db.query("UPDATE $job SET remote_input.processing_options = $legacy")
+        .bind((
+            "job",
+            graphrag_db::parse_record_id(&admitted.job_id, Some("processing_job")).unwrap(),
+        ))
+        .bind(("legacy", legacy))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let execution = application
+        .claim_remote_job("new-service", "worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        application
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await,
+        Err(ApplicationError::Compatibility(_))
+    ));
+    let failed = application
+        .get_remote_job(caller("owner"), &admitted.job_id)
+        .await
+        .unwrap();
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.phase, initial_phase);
+    assert_eq!(failed.error_code.as_deref(), Some("compatibility"));
+    assert_eq!(failed.generation, None);
+    assert!(matches!(
+        application
+            .resume_remote_job(caller("owner"), &admitted.job_id)
+            .await,
+        Err(ApplicationError::Compatibility(_))
+    ));
+    assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+    let replay = application
+        .upload_source(caller("owner"), request("legacy-endpoint-upload"))
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.job_id, admitted.job_id);
+    let fresh = application
+        .upload_source(caller("owner"), request("new-endpoint-upload"))
+        .await
+        .unwrap();
+    assert_ne!(fresh.job_id, admitted.job_id);
+    execute(&application, "new-service").await;
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &fresh.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn quarantined_malformed_input_remains_readable_only_to_its_owner() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let application = healthy(&repo);
+    let admitted = application
+        .upload_source(caller("owner"), request("malformed-input-status"))
+        .await
+        .unwrap();
+    db.query("UPDATE $job SET remote_input = {}")
+        .bind((
+            "job",
+            graphrag_db::parse_record_id(&admitted.job_id, Some("processing_job")).unwrap(),
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(application
+        .claim_remote_job("service", "worker")
+        .await
+        .unwrap()
+        .is_none());
+    let quarantined = application
+        .get_remote_job(caller("owner"), &admitted.job_id)
+        .await
+        .unwrap();
+    assert_eq!(quarantined.id, admitted.job_id);
+    assert_eq!(quarantined.source_id, admitted.source_id);
+    assert_eq!(quarantined.status, "failed");
+    assert_eq!(quarantined.error_code.as_deref(), Some("validation"));
+    let listed = application
+        .list_remote_jobs(caller("owner"), 10)
+        .await
+        .unwrap();
+    assert_eq!(listed.jobs.len(), 1);
+    assert_eq!(listed.jobs[0].id, quarantined.id);
+    assert_eq!(listed.jobs[0].error_code, quarantined.error_code);
+    let cancelled = application
+        .cancel_remote_job(caller("owner"), &admitted.job_id)
+        .await
+        .unwrap();
+    assert_eq!(cancelled.status, "failed");
+    assert_eq!(cancelled.error_code, quarantined.error_code);
+    assert!(application
+        .resume_remote_job(caller("owner"), &admitted.job_id)
+        .await
+        .is_err());
+    assert!(matches!(
+        application
+            .get_remote_job(caller("foreign"), &admitted.job_id)
+            .await,
+        Err(ApplicationError::NotFound(_))
+    ));
+    assert!(matches!(
+        application
+            .cancel_remote_job(caller("foreign"), &admitted.job_id)
+            .await,
+        Err(ApplicationError::NotFound(_))
+    ));
+    assert!(application
+        .list_remote_jobs(caller("foreign"), 10)
+        .await
+        .unwrap()
+        .jobs
+        .is_empty());
 }
 
 #[tokio::test]

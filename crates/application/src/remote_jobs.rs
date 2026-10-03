@@ -7,7 +7,7 @@ use graphrag_agents::{markdown_chunk_successors, LibrarianAgent};
 use graphrag_core::record_id_to_string;
 use graphrag_db::{
     parse_record_id, ProcessingJobStatus, ProcessingJobUpdate, RemoteJobLease, RemoteUploadInput,
-    RemoteUploadJob,
+    RemoteUploadJob, RemoteUploadJobStatus,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -33,20 +33,32 @@ fn options(app: &EmbeddedApplication) -> Value {
     // canonical JSON as text rather than coercing it into Surreal's signed
     // integer range; the exact snapshot must round-trip for safe resume.
     let mut snapshot = json!({"runtime": serde_json::to_string(&app.runtime).expect("runtime configuration serializes"), "embedding": {"provider":embedding.provider,"model":embedding.model,"cache_identity":embedding.cache_identity}, "extraction":{"provider":extraction.provider,"model":extraction.model,"cache_identity":extraction.cache_identity}});
+    // Endpoints distinguish semantic backends, even under identical model
+    // names. Persist only their identity: URLs can contain private hosts or
+    // credentials, and these snapshots travel in portable archives.
+    snapshot["embedding"]["endpoint_identity"] = json!(endpoint_identity(&embedding.endpoint));
+    snapshot["extraction"]["endpoint_identity"] = json!(endpoint_identity(&extraction.endpoint));
     if let Some(dimension) = embedding.known_dimension {
         snapshot["embedding"]["dimension"] = json!(dimension.to_string());
     }
     snapshot
 }
 
+fn endpoint_identity(endpoint: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"graphrag-remote-upload-endpoint-v1\0");
+    digest.update(endpoint.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
 fn compatible(app: &EmbeddedApplication, job: &RemoteUploadJob) -> ApplicationResult<()> {
     if job.input.processing_options != options(app) {
-        return Err(ApplicationError::Compatibility("Uploaded job configuration changed; restore its server model/chunk settings before resuming, or submit a new upload request".into()));
+        return Err(ApplicationError::Compatibility("Uploaded job configuration changed or lacks provider identity; restore its server endpoint/model/chunk settings before resuming, or submit a new upload request".into()));
     }
     Ok(())
 }
 
-pub(crate) fn view(job: RemoteUploadJob) -> ApplicationResult<RemoteJobStatus> {
+pub(crate) fn view(job: RemoteUploadJobStatus) -> ApplicationResult<RemoteJobStatus> {
     Ok(RemoteJobStatus {
         id: record_id_to_string(
             job.job
@@ -299,7 +311,7 @@ pub(crate) async fn get(
     job_id(id)?;
     view(
         app.repo
-            .get_remote_upload_job(&caller.instance_id, id)
+            .get_remote_upload_job_status(&caller.instance_id, id)
             .await?
             .ok_or_else(|| {
                 ApplicationError::NotFound("This instance has no uploaded job with that ID".into())
@@ -319,7 +331,7 @@ pub(crate) async fn list(
     Ok(RemoteJobList {
         jobs: app
             .repo
-            .list_remote_upload_jobs(&caller.instance_id, limit)
+            .list_remote_upload_job_statuses(&caller.instance_id, limit)
             .await?
             .into_iter()
             .map(view)
@@ -334,7 +346,7 @@ pub(crate) async fn cancel(
     job_id(id)?;
     view(
         app.repo
-            .cancel_remote_upload_job(&caller.instance_id, id)
+            .cancel_remote_upload_job_status(&caller.instance_id, id)
             .await?,
     )
 }
@@ -355,7 +367,8 @@ pub(crate) async fn resume(
     view(
         app.repo
             .resume_remote_upload_job(&caller.instance_id, id)
-            .await?,
+            .await?
+            .into(),
     )
 }
 
