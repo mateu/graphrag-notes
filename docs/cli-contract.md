@@ -186,3 +186,23 @@ channels are additive machine metadata; see [keyword search](keyword-search.md)
 for the JSON/JSONL field contracts, filters, ranking, and provider-free behavior.
 Hybrid failures preserve their exit code and print a copyable explicit keyword
 command on stderr. The CLI does not silently change retrieval mode.
+
+## Connection review
+
+`garden review` is a provider-free inbox for persisted proposals. The default
+filter is pending; `--id proposed_edge:ID`, `--status`, and `--all-statuses`
+select an exact proposal or lifecycle states. `--limit` is bounded to 1–200.
+Human cards show both notes, bounded excerpts, provenance, confidence, reason,
+proposal state, audit timestamps/manual flags, and available undo. Printed
+follow-up commands preserve the selected config and database. A non-UTF-8
+replay path makes `review_command`, `inspect_command`, and `undo_command` null
+with card `warnings`; cards and interactive decisions remain available without
+lossy replacement hints. See [connection review](connection-review.md).
+
+Read-only JSON uses `command: "garden.review"` and `data.proposals`; JSONL emits
+one envelope per proposal with its card in `data`, and an empty inbox emits no
+lines. Interactive review requires human format; prompts and confirmations use
+stderr. Accept/reject/undo require a matching typed confirmation followed by an
+optional audit reason. Skip, cancellation, EOF, and quit do not write a decision.
+Existing `garden proposals accept --all` still requires `--min-confidence` and
+`--yes` and retains its Gardener/related-to restrictions.
