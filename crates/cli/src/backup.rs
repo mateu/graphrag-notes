@@ -462,6 +462,15 @@ fn is_local_absolute_path(value: &str) -> bool {
 }
 
 fn strip_source_title_path(record: &mut serde_json::Value) {
+    // Uploaded titles are caller-supplied text, even when they resemble a
+    // filesystem path. Only locally derived source titles need path removal.
+    if record["source_type"] == "markdown"
+        && record["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("mcp://upload/"))
+    {
+        return;
+    }
     let Some(object) = record.as_object_mut() else {
         return;
     };
@@ -883,6 +892,134 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn uploaded_path_like_titles_survive_archives_without_changing_refresh_identity() {
+        use graphrag_agents::{
+            DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
+        };
+        use graphrag_application::{
+            ActionCancellation, CallerIdentity, EmbeddedApplication, RemoteApplicationOperations,
+            UploadSourceRequest,
+        };
+        use std::sync::Arc;
+
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let application = |repo: &Repository| {
+            let embedder = Arc::new(DeterministicEmbedder::default());
+            EmbeddedApplication::new(
+                repo.clone(),
+                SearchAgent::new(repo.clone(), embedder.clone()),
+                embedder,
+                Arc::new(FixtureEntityExtractor::default()),
+                LibrarianRuntimeConfig {
+                    min_chunk_size: 1,
+                    skip_entity_extraction: true,
+                    ..Default::default()
+                },
+            )
+        };
+        let caller = CallerIdentity {
+            instance_id: "uploaded-title-backup".into(),
+        };
+        let request = |id: &str| UploadSourceRequest {
+            request_id: id.into(),
+            document_key: "title-document".into(),
+            content: "# Supplied document\r\n\r\nSynthetic portable notes.\r\n".into(),
+            title: Some("/Projects/supplied-topic".into()),
+            provenance: None,
+            extract_entities: false,
+        };
+        let app = application(&repo);
+        let admission = app
+            .upload_source(caller.clone(), request("original"))
+            .await
+            .unwrap();
+        let execution = app
+            .claim_remote_job("original-epoch", "original-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        app.execute_remote_job(execution, ActionCancellation::new())
+            .await
+            .unwrap();
+        let original = app.get_uploaded_source(&admission.source_id).await.unwrap();
+        let original_job = app
+            .get_remote_job(caller.clone(), &admission.job_id)
+            .await
+            .unwrap();
+        let host_source =
+            Source::from_file("/private/server/host-notes.md", SourceType::Markdown).unwrap();
+        let host = repo.create_source(host_source).await.unwrap();
+
+        for (name, include_embeddings, jsonl) in [
+            ("vectorless", false, false),
+            ("vectors", true, false),
+            ("jsonl", false, true),
+        ] {
+            let archive = temp.path().join(name);
+            let target = temp.path().join(format!("restored-{name}"));
+            if jsonl {
+                export_jsonl(&repo, &archive).await.unwrap();
+                verify_jsonl(&archive).unwrap();
+                import_jsonl(&archive, &target, false).await.unwrap();
+            } else {
+                create_backup(&repo, &archive, include_embeddings)
+                    .await
+                    .unwrap();
+                verify_backup(&archive).unwrap();
+                restore_backup(&archive, &target, false).await.unwrap();
+            }
+            let restored_repo = Repository::new(init_persistent(&target).await.unwrap());
+            let restored_app = application(&restored_repo);
+            let restored = restored_app
+                .get_uploaded_source(&admission.source_id)
+                .await
+                .unwrap();
+            assert_eq!(
+                restored, original,
+                "uploaded title/revision changed in {name}"
+            );
+            assert!(restored_repo
+                .get_source(&record_id_to_string(host.id.as_ref().unwrap()))
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .is_none());
+            let replay = restored_app
+                .upload_source(caller.clone(), request("original"))
+                .await
+                .unwrap();
+            assert!(replay.replayed);
+            assert_eq!(replay.job_id, admission.job_id);
+            let refresh = restored_app
+                .upload_source(caller.clone(), request("refresh"))
+                .await
+                .unwrap();
+            let execution = restored_app
+                .claim_remote_job("restored-epoch", "restored-worker")
+                .await
+                .unwrap()
+                .unwrap();
+            restored_app
+                .execute_remote_job(execution, ActionCancellation::new())
+                .await
+                .unwrap();
+            let refreshed = restored_app
+                .get_remote_job(caller.clone(), &refresh.job_id)
+                .await
+                .unwrap();
+            assert_eq!(refreshed.generation, Some(original.generation));
+            let result = refreshed.result.unwrap();
+            assert_eq!(result["action"], "unchanged");
+            assert_eq!(
+                result["note_ids"],
+                original_job.result.as_ref().unwrap()["note_ids"]
+            );
+        }
     }
 
     #[tokio::test]
