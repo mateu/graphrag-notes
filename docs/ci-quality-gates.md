@@ -6,10 +6,10 @@ service. Normal pull requests run only deterministic offline tests.
 
 | Job | Exact local-equivalent command | What it protects |
 | --- | --- | --- |
-| `format` | `bash scripts/test-install.sh`, then `cargo fmt --all -- --check` | Offline installer/setup behavior and formatting drift |
+| `format` | `bash scripts/test-install.sh`, `python3 scripts/test-release.py` and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`, then `cargo fmt --all -- --check` | Offline installer/setup and packaging behavior, compiled-input identity, and formatting drift |
 | `clippy` | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Warnings and lint regressions |
-| `msrv` | `cargo +1.97.1 check --workspace --locked` | Declared Rust 1.97.1 MSRV |
-| `offline-integration` | `cargo test --workspace --locked` | Unit tests and offline integration with deterministic doubles |
+| `msrv` | `python3 scripts/check-workspace-rust-version.py`, then `cargo +1.97.1 check --workspace --locked` | Exact workspace declaration and Rust 1.97.1 MSRV |
+| `offline-integration` | `cargo test --workspace --locked`, then `python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline` | Unit tests, offline integration, and the combined daily workflow with deterministic doubles |
 | `persistent-round-trip` | commands shown in `.github/workflows/rust-ci.yml` | Fresh/upgrade migrations, source idempotency, resilient processing, and portable round trips |
 | `retrieval-regression` | `cargo test -p graphrag-cli eval::tests::committed_retrieval_fixture_matches_versioned_baseline --bin graphrag -- --exact --nocapture` | Committed retrieval fixture baseline |
 | `dependency-audit` | `scripts/check-audit-exemptions.sh && cargo audit` | Scheduled RustSec scan plus reachability checks for scoped exemptions |
@@ -79,3 +79,38 @@ schema from concurrent test tasks. Other tests must use isolated fixtures or a
 similarly narrow lock with a documented shared resource; do not reintroduce a
 workspace-wide serial test flag. TEI, TGI, and Ollama smoke testing remains a
 manual or scheduled concern, never a pull-request gate.
+
+## Combined workflow and release acceptance
+
+The [daily workflow procedure](daily-workflow-validation.md) exercises public
+commands against a fresh fictional corpus. Use an already built binary for
+the deterministic run:
+
+```sh
+python3 scripts/validate-daily-workflow.py \
+  --binary /absolute/path/to/graphrag --offline \
+  --report /absolute/path/to/workflow-metrics.json
+```
+
+The harness uses private configuration/database/draft paths and a loopback
+provider double. It records actual command results, recovery outcomes,
+automated canonical-ID transfers, and local elapsed time. CLI subprocesses and
+entered workspace commands are counted separately. Before/after totals
+are not comparable when supported task sets differ; report per-task coverage
+and keep unobserved human manual-copy count/time null. Supplying a live endpoint
+does not turn a deterministic pass into live-provider evidence.
+
+Live smoke runs use explicit `--live --ollama-url URL` with existing Ollama
+models; they are opt-in and separate from ordinary offline gates. A native
+release build, local package validation, live source walkthrough, and install
+from a published asset are separate checks. Record each result with its binary
+and source provenance in [daily workflow validation](daily-workflow-validation.md).
+The [rc.2 release guide](releases/0.1.0-rc.2.md) defines packaging, checksums,
+compiled-input identity, and prospective post-publication installation.
+
+The candidate acceptance platform is macOS Apple Silicon (macOS 15+ deployment
+target). Native Linux and Intel macOS asset/live acceptance remains in
+[#66](https://github.com/mateu/graphrag-notes/issues/66); an Ubuntu offline CI pass
+does not satisfy those checks. `v0.1.0-rc.1` remains historical onboarding
+evidence. Existing feature validation records are retained with their original
+versions, dates, and limitations.

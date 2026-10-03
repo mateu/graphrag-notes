@@ -1,18 +1,28 @@
 # Getting started
 
-This first-run path targets **v0.1.0-rc.1, the macOS Apple Silicon validation
-candidate**, using Ollama and its versioned prerelease assets. Linux and Intel
-macOS release validation is tracked in
-[follow-up #66](https://github.com/mateu/graphrag-notes/issues/66).
-You need enough free memory and disk space for the two
-models, and internet access for downloads. The sample contains no personal notes.
+Use a current source build for capture, folder sync, keyword search, source
+navigation, review, and the terminal workspace. **0.1.0-rc.2 is a forthcoming
+macOS Apple Silicon candidate; its assets are not published yet.** The published
+`v0.1.0-rc.1` remains a first-run baseline with import and hybrid search.
+Native Linux and Intel macOS release acceptance is tracked in
+[follow-up #66](https://github.com/mateu/graphrag-notes/issues/66); Windows is
+outside this candidate's scope. You need memory and disk space for the two
+models and internet access for downloads. The sample contains no personal notes.
 
 ## 1. Install the CLI
 
-### Install the macOS Apple Silicon candidate
+| Use case | Installation path |
+| --- | --- |
+| Current daily-use commands | [Build from source](#build-from-source) |
+| Reproduce the published first-run baseline | [Install rc.1](#published-onboarding-baseline) |
+| Forthcoming Apple Silicon rc.2 binary | Follow the [release guide](releases/0.1.0-rc.2.md) after publication |
 
-This first candidate targets macOS 15 or newer on Apple Silicon. Download the
-installer from its exact tag, inspect it, and select the prerelease explicitly:
+### Published onboarding baseline
+
+The published `v0.1.0-rc.1` targets macOS 15 or newer on Apple Silicon. It
+predates the daily-use commands covered below and in the other user guides.
+To reproduce its onboarding path, download the installer from the exact tag,
+inspect it, and select the prerelease explicitly:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.1/scripts/install.sh \
@@ -51,10 +61,10 @@ before extracting and installing it.
 
 ### Build from source
 
-Use this fallback for Intel Macs, Linux, unsupported binary platforms, or while
-waiting for a published binary. The commands select the same validation
-candidate tag; they become available once that tag is published. Future stable
-versions can be selected by replacing the tag with a published stable tag.
+This is the current installation path for the daily-use features on `main`
+while rc.2 is being prepared. It also provides a source path for Intel Macs
+and Linux, whose native release acceptance remains in #66. If you already have
+the candidate checkout, run setup from that checkout instead of cloning again.
 
 Install [Rust](https://rustup.rs/) 1.97.1 or newer. The repository toolchain pins
 1.97.1. Install these native build prerequisites before running setup:
@@ -66,10 +76,11 @@ Install [Rust](https://rustup.rs/) 1.97.1 or newer. The repository toolchain pin
 | Other Linux | Install the equivalent compiler/build tools, CMake, pkg-config, OpenSSL development headers, and Clang/libclang packages for your distribution. |
 
 ```bash
-git clone --branch v0.1.0-rc.1 https://github.com/mateu/graphrag-notes.git
+git clone https://github.com/mateu/graphrag-notes.git
 cd graphrag-notes
 ./setup.sh
 export PATH="$PWD/target/release:$PATH"
+graphrag --version
 graphrag --help
 ```
 
@@ -184,7 +195,7 @@ applies application schema migrations. Repeating an unchanged file import is a
 no-op. Finish with `graphrag doctor` to check the initialized database and active
 embedding identity.
 
-In a source build containing the navigation commands, each result prints an
+In the current source build, each result prints an
 `Inspect` command for its full content, source heading/lines, and chat context,
 plus an `Open source` command when it names a local file. Copy these commands;
 they retain the selected configuration/database and check that the result has
@@ -192,7 +203,8 @@ not changed. Use full `note:`, `message:`, or `conversation:` IDs rather than
 display numbers. Inspection and source opening work with providers stopped.
 See [the navigation contract](cli-contract.md) for editor configuration and
 bounded neighboring messages. The published `v0.1.0-rc.1` binary predates these
-commands; they will be included in a subsequent release.
+commands. They are included in the forthcoming rc.2 candidate; use current
+source until its versioned assets are published.
 
 You can now use `graphrag add "your note"`, `graphrag import your-notes.md`, and
 `graphrag search "your question"`. Database-only commands such as
@@ -201,7 +213,9 @@ You can also
 search already indexed content offline using
 `graphrag search "Atlas launch" --mode keyword --scope all`. This explicit mode
 searches notes, original messages, and conversation summaries without requiring
-vectors; hybrid remains the default. See [keyword search](keyword-search.md).
+vectors; hybrid remains the default. This mode requires current source or the
+forthcoming rc.2 binary. Continue with the [daily workflow](daily-workflow.md),
+or see [keyword search](keyword-search.md) for its exact contract.
 
 ## Using TEI and TGI instead
 
@@ -227,6 +241,31 @@ token required by the
 Docker stack in your local `.env`; do not commit it. Setup previews show the
 selected model identities, but TEI/TGI model downloads and serving are managed
 by the Docker stack.
+
+## Upgrade an existing installation
+
+Before changing binaries, use the working installation to create and verify
+a portable backup at a new path:
+
+```bash
+graphrag backup create ./before-rc2 --include-embeddings
+graphrag backup verify ./before-rc2
+```
+
+Keep your usual `--config` and `--db-path` flags when needed. Including vectors
+requires recorded embedding identity; otherwise omit `--include-embeddings`
+and plan to reindex before hybrid retrieval after restore. The new binary
+applies additive schema migrations when it opens the existing database.
+`rc.1` supports schema 14 and refuses a corpus upgraded to schema 15. Returning
+to an older binary requires a compatible pre-upgrade archive restored into a
+fresh database. Do not lower schema metadata or remove fields with SQL.
+
+Portable backups preserve logical identities and source content while
+redacting host-local paths. Restore may therefore need deliberate source
+reconfiguration; keep original Markdown files separately. Follow the
+[operating runbooks](operations.md) for restore and embedding reindexing.
+The validation harness compares separate fresh databases for the old and new
+binaries; it never opens an upgraded corpus with the old binary.
 
 ## If setup stops
 

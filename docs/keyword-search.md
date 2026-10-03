@@ -1,8 +1,10 @@
 # Keyword search without inference services
 
-These commands are available in the current source tree. The existing
-`v0.1.0-rc.1` prerelease predates keyword mode; use the source-build path until
-a subsequent release includes it.
+These commands are available in current source and the forthcoming Apple
+Silicon `0.1.0-rc.2` candidate. Its assets are not published yet; use the
+[source-build path](getting-started.md#build-from-source). The published
+`v0.1.0-rc.1` predates keyword mode. See the [daily workflow](daily-workflow.md)
+for a repeatable capture-to-reuse example.
 
 Hybrid retrieval remains the default. Select keyword retrieval explicitly when
 providers are stopped, when you need literal term matching, or after restoring

@@ -3,8 +3,11 @@
 `garden review` puts both notes, their excerpts and provenance, and the
 proposal's confidence, reason, generator, and lifecycle state in one place.
 Once proposals exist, review and decisions work without inference providers.
-These commands are in the current source build; the published `v0.1.0-rc.1`
-binary predates the inbox.
+These commands are in current source and the forthcoming Apple Silicon
+`0.1.0-rc.2` candidate. Use source until its assets are published; the published
+`v0.1.0-rc.1` predates the inbox. The [daily workflow](daily-workflow.md) connects
+review to capture and retrieval. Native Linux and Intel macOS release acceptance
+remains in [#66](https://github.com/mateu/graphrag-notes/issues/66).
 
 ```sh
 graphrag garden scan

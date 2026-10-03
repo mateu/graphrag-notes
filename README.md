@@ -4,26 +4,28 @@ A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, a
 
 ## Get your first result
 
-The first binary validation candidate is **v0.1.0-rc.1 for macOS Apple Silicon**
-(macOS 15 or newer). Use the versioned prerelease assets with the commands
-below. For Intel Macs, Linux, or other systems, use the
-[source-build fallback](docs/getting-started.md#build-from-source).
+The current source includes the daily workflow: recoverable capture, explicit
+Markdown folder sync, offline keyword search, source inspection/opening,
+connection review, and a terminal workspace. **0.1.0-rc.2 is the forthcoming
+macOS Apple Silicon candidate** (macOS 15+); its assets are not published yet.
+Install the native prerequisites in [getting started](docs/getting-started.md#build-from-source),
+then build current source to use these features now.
 
-Download the installer pinned to the candidate tag, inspect it, and select the
-prerelease explicitly:
+For an existing installation, [create and verify a portable backup before
+switching binaries](docs/getting-started.md#upgrade-an-existing-installation).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.1/scripts/install.sh \
-  -o /tmp/graphrag-install.sh
-bash /tmp/graphrag-install.sh --help
-bash /tmp/graphrag-install.sh --version 0.1.0-rc.1
-export PATH="$HOME/.local/bin:$PATH"
+git clone https://github.com/mateu/graphrag-notes.git
+cd graphrag-notes
+./setup.sh
+export PATH="$PWD/target/release:$PATH"
 graphrag --version
-
-# Preview first, then create a new configuration explicitly.
 graphrag init --backend ollama
 graphrag init --backend ollama --write
 ```
+
+For an existing configuration, run `graphrag init` to inspect it;
+`--write` creates a new file and refuses to overwrite one.
 
 Use [Ollama](https://ollama.com/download) for the local inference backend.
 Start Ollama in another terminal with `ollama serve` if it is not already
@@ -34,50 +36,22 @@ ollama pull bge-m3:latest
 ollama pull phi4-mini:latest
 graphrag init --check
 graphrag doctor
-graphrag import "$HOME/.local/share/graphrag-notes/samples/first-notes.md"
+graphrag import samples/first-notes.md
 graphrag search "What is the Atlas project launch plan?" --limit 3
 ```
 
 Expect a result containing the Atlas launch plan. Before the first import,
 `doctor` can warn that the database does not exist yet; the import creates it.
 `init` previews configuration without opening the database or contacting
-providers. `--check` adds provider checks; `--write` creates a new configuration
-and refuses to overwrite one. For an existing installation, run `graphrag init`
-without a backend preset to inspect its effective settings.
+providers. `--check` adds provider checks. Copy a result's **Inspect** or
+**Open source** command to preserve its ID, revision, configuration, and database.
+The [daily workflow](docs/daily-workflow.md) walks through capture, refresh,
+find, inspect, open, reuse, review, and recovery with fictional Atlas notes.
 
-The latest source build adds search-result commands to **inspect** full content
-and chat context, and to **open** an original local source file. Copy the printed command
-to retain your selected database and reject a result that changed after search.
-Result numbers are display positions; use the full record ID. See the
-[navigation contract](docs/cli-contract.md) for chat context and editor settings.
-The published `v0.1.0-rc.1` binary predates these commands.
-
-Review proposed connections with both notes and their provenance together using
-`graphrag garden review`. Add `--interactive` for confirmed accept/reject/undo
-and read-only skip; existing proposals remain reviewable with providers offline.
-See the [connection-review guide](docs/connection-review.md).
-
-[Getting started](docs/getting-started.md) covers binary installation, default
-paths, TEI/TGI, and recovery from missing prerequisites. Existing users can go
-directly to [the operating runbooks](docs/operations.md) for database migration,
-backups, reindexing, and diagnostics. [Setup validation](docs/setup-validation.md)
-records the walkthrough procedure and validation status. The installer's default
-latest-release lookup selects stable releases; keep `--version 0.1.0-rc.1` for
-this candidate. Linux and Intel macOS release validation follows in
-[#66](https://github.com/mateu/graphrag-notes/issues/66); broader stable binary
-releases follow later.
-
-For day-to-day use, [capture and revise notes in an editor, then reuse clean
-prompt context](docs/capture-context.md). The latest source build adds:
+For a terminal session, select a result once and reuse that selection:
 
 ```bash
 graphrag capture --editor
-graphrag augment "Atlas launch plan" --raw > atlas-context.txt
-```
-
-The latest source build also provides a [daily terminal workspace](docs/terminal-workspace.md):
-
-```bash
 graphrag workspace
 # Inside: keyword Atlas → select 1 → inspect / open / copy
 ```
@@ -85,6 +59,22 @@ graphrag workspace
 Browsing, keyword search, source status, and saved proposal review work offline.
 The workspace holds the embedded database until you quit; other commands using
 that database must wait for the workspace to exit.
+
+The published [v0.1.0-rc.1](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.1)
+remains an onboarding baseline and predates these daily-use commands. Its
+[versioned install instructions](docs/getting-started.md#published-onboarding-baseline)
+remain available. See the [rc.2 release guide](docs/releases/0.1.0-rc.2.md) for
+candidate scope and the installation procedure to use after publication.
+Prereleases need an explicit `--version`; default installer lookup selects stable releases.
+
+[Operating runbooks](docs/operations.md) cover existing database migration,
+backups, and reindexing. [Daily workflow validation](docs/daily-workflow-validation.md)
+describes automated measurements and live smoke testing; older feature
+validation records retain their original evidence. Native Linux and Intel macOS
+release acceptance follows in [#66](https://github.com/mateu/graphrag-notes/issues/66).
+Network/MCP access from OpenClaw and Hermes follows in
+[#56](https://github.com/mateu/graphrag-notes/issues/56); exported prompt context
+can be reused manually today.
 
 ## Architecture
 
