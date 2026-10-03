@@ -8,6 +8,7 @@ No existing client configuration, credentials, or corpus is used.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -38,17 +39,60 @@ def require(condition, message):
         raise ValidationError(message)
 
 
-def private_write(path, text):
-    descriptor, temporary = tempfile.mkstemp(prefix=".native-write-", dir=path.parent)
+def private_write(path, text, directory_fd=None):
+    if directory_fd is None:
+        descriptor, temporary = tempfile.mkstemp(prefix=".native-write-", dir=path.parent)
+    else:
+        temporary = ".native-write-" + secrets.token_hex(16)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             0o600, dir_fd=directory_fd)
     try:
         with os.fdopen(descriptor, "w") as stream:
             stream.write(text)
             stream.flush()
         # Atomic replacement also avoids following a surprising symlink left
         # by an installed runtime. Existing external files are never opened.
-        os.replace(temporary, path)
+        if directory_fd is None:
+            os.replace(temporary, path)
+        else:
+            os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
     finally:
-        Path(temporary).unlink(missing_ok=True)
+        if directory_fd is None:
+            Path(temporary).unlink(missing_ok=True)
+        else:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+
+@contextmanager
+def private_directory(path, parent_fd=None, create=True):
+    """Open only an owned mode-0700 directory, without following child links."""
+    descriptor = None
+    try:
+        if create:
+            try:
+                os.mkdir(path, mode=0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=parent_fd)
+        metadata = os.fstat(descriptor)
+        require(stat.S_ISDIR(metadata.st_mode) and stat.S_IMODE(metadata.st_mode) == 0o700
+                and metadata.st_uid == os.geteuid(), "Unsafe private environment directory")
+    except OSError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise ValidationError("Unsafe private environment directory") from None
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
 
 def redact(text, tokens):
@@ -129,9 +173,7 @@ def pin_binary(source, directory):
 
 def private_environment(directory, client, hermes_root=None):
     home = directory / "homes" / client
-    home.mkdir(parents=True, mode=0o700, exist_ok=True)
     config = home / "xdg"
-    config.mkdir(mode=0o700, exist_ok=True)
     # Intentionally construct an environment instead of copying os.environ:
     # no personal API keys, client defaults, proxy credentials or profile paths.
     environment = {
@@ -140,20 +182,30 @@ def private_environment(directory, client, hermes_root=None):
         "PATH": os.defpath, "TERM": "dumb", "LANG": "en_US.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
     }
-    if client.startswith("openclaw"):
-        state = home / "state"
-        state.mkdir(mode=0o700, exist_ok=True)
-        config_path = home / "empty-openclaw.json"
-        private_write(config_path, "{}\n")
-        environment.update(OPENCLAW_HOME=str(home), OPENCLAW_STATE_DIR=str(state),
-                           OPENCLAW_CONFIG_PATH=str(config_path))
-    elif client == "hermes":
-        profile = home / "hermes-profile"
-        profile.mkdir(mode=0o700, exist_ok=True)
-        private_write(profile / "config.yaml", "mcp_servers: {}\n")
-        private_write(profile / ".env", "")
-        environment.update(HERMES_HOME=str(profile), HERMES_REAL_HOME=str(home),
-                           PYTHONPATH=str(hermes_root), TERMINAL_HOME_MODE="profile")
+    # Runtimes may leave links or alter directory permissions between calls.
+    # Validate every private parent and keep writes anchored to its open handle;
+    # refusing an unsafe path must never repair or overwrite an external profile.
+    with private_directory(directory, create=False) as runspace_fd, \
+            private_directory("homes", runspace_fd) as homes_fd, \
+            private_directory(client, homes_fd) as home_fd:
+        for folder in ("xdg", "cache", "data"):
+            with private_directory(folder, home_fd):
+                pass
+        if client.startswith("openclaw"):
+            state = home / "state"
+            with private_directory("state", home_fd):
+                pass
+            config_path = home / "empty-openclaw.json"
+            private_write(config_path, "{}\n", directory_fd=home_fd)
+            environment.update(OPENCLAW_HOME=str(home), OPENCLAW_STATE_DIR=str(state),
+                               OPENCLAW_CONFIG_PATH=str(config_path))
+        elif client == "hermes":
+            profile = home / "hermes-profile"
+            with private_directory("hermes-profile", home_fd) as profile_fd:
+                private_write(profile / "config.yaml", "mcp_servers: {}\n", directory_fd=profile_fd)
+                private_write(profile / ".env", "", directory_fd=profile_fd)
+            environment.update(HERMES_HOME=str(profile), HERMES_REAL_HOME=str(home),
+                               PYTHONPATH=str(hermes_root), TERMINAL_HOME_MODE="profile")
     return environment
 
 

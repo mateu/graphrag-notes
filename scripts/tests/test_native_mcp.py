@@ -62,6 +62,69 @@ class NativeRuntimeHarness(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(Path(hermes["HERMES_HOME"]).stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE(Path(node["OPENCLAW_CONFIG_PATH"]).stat().st_mode), 0o600)
 
+    def test_private_environment_rejects_linked_parents_without_editing_external_profiles(self):
+        cases = (("hermes", ()), ("hermes", ("homes",)),
+                 ("hermes", ("homes", "hermes")),
+                 ("hermes", ("homes", "hermes", "xdg")),
+                 ("hermes", ("homes", "hermes", "cache")),
+                 ("hermes", ("homes", "hermes", "data")),
+                 ("hermes", ("homes", "hermes", "hermes-profile")),
+                 ("openclaw-a", ("homes", "openclaw-a", "state")))
+        for client, parts in cases:
+            with self.subTest(client=client, parts=parts), tempfile.TemporaryDirectory(
+                    prefix="native-parent-probe-", dir=self.directory) as temporary:
+                root = Path(temporary)
+                runspace = root / "runspace"
+                runspace.mkdir(mode=0o700)
+                HARNESS.private_environment(runspace, client, Path("/installed/code"))
+                external = root / "external-profile"
+                external.mkdir(mode=0o700)
+                original = {"config.yaml": "synthetic existing configuration\n",
+                            ".env": "SYNTHETIC_MARKER=preserve\n"}
+                for name, content in original.items():
+                    (external / name).write_text(content)
+                linked = runspace.joinpath(*parts)
+                linked.rename(linked.with_name(linked.name + "-original"))
+                linked.symlink_to(external, target_is_directory=True)
+                with self.assertRaisesRegex(HARNESS.ValidationError, "Unsafe private environment directory"):
+                    HARNESS.private_environment(runspace, client, Path("/installed/code"))
+                self.assertTrue(linked.is_symlink())
+                self.assertEqual(sorted(path.name for path in external.iterdir()), sorted(original))
+                for name, content in original.items():
+                    self.assertEqual((external / name).read_text(), content)
+
+    def test_private_environment_rejects_unsafe_existing_directories_without_repairing_them(self):
+        for parts in ((), ("homes",), ("homes", "hermes"),
+                      ("homes", "hermes", "xdg"), ("homes", "hermes", "cache"),
+                      ("homes", "hermes", "data"), ("homes", "hermes", "hermes-profile")):
+            with self.subTest(parts=parts), tempfile.TemporaryDirectory(
+                    prefix="native-mode-probe-", dir=self.directory) as temporary:
+                runspace = Path(temporary)
+                HARNESS.private_environment(runspace, "hermes", Path("/installed/code"))
+                unsafe = runspace.joinpath(*parts)
+                unsafe.chmod(0o755)
+                with self.assertRaisesRegex(HARNESS.ValidationError, "Unsafe private environment directory"):
+                    HARNESS.private_environment(runspace, "hermes", Path("/installed/code"))
+                self.assertEqual(stat.S_IMODE(unsafe.stat().st_mode), 0o755)
+
+    def test_private_environment_rejects_non_directory_parent_without_blocking(self):
+        for fifo in (False, True):
+            with self.subTest(fifo=fifo), tempfile.TemporaryDirectory(
+                    prefix="native-special-parent-probe-", dir=self.directory) as temporary:
+                runspace = Path(temporary)
+                environment = HARNESS.private_environment(runspace, "hermes", Path("/installed/code"))
+                profile = Path(environment["HERMES_HOME"])
+                profile.rename(profile.with_name("original-profile"))
+                if fifo:
+                    os.mkfifo(profile, 0o600)
+                else:
+                    profile.write_text("synthetic existing file")
+                started = time.monotonic()
+                with self.assertRaisesRegex(HARNESS.ValidationError, "Unsafe private environment directory"):
+                    HARNESS.private_environment(runspace, "hermes", Path("/installed/code"))
+                self.assertLess(time.monotonic() - started, 1)
+                self.assertTrue(stat.S_ISFIFO(profile.lstat().st_mode) if fifo else profile.is_file())
+
     def test_runtime_credential_leak_is_rejected_and_only_redacted_logs_survive(self):
         credential = "synthetic-bearer-must-not-be-retained"
         binary = self.executable("leaking-runtime", f"import sys\nprint({credential!r})\nprint({credential!r}, file=sys.stderr)\n")
