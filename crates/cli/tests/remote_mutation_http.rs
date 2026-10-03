@@ -168,7 +168,8 @@ async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_aft
             .await;
         let revision = snapshot["revision"].as_str().unwrap();
         let input = fixture.temp.path().join("ordinary-input.md");
-        let drafts = fixture.temp.path().join("private drafts");
+        let relative_drafts = "relative private drafts";
+        let drafts = fixture.temp.path().join(relative_drafts);
         let body = "valuable recovery body after an actual lost acknowledgment";
         std::fs::write(&input, body).unwrap();
         let request = format!("-lost-{operation}");
@@ -183,7 +184,7 @@ async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_aft
             "--content-file",
             input.to_str().unwrap(),
             "--draft-dir",
-            drafts.to_str().unwrap(),
+            relative_drafts,
             "--format",
             "json",
         ]);
@@ -230,7 +231,7 @@ async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_aft
             "--content-file",
             retained.to_str().unwrap(),
             "--draft-dir",
-            drafts.to_str().unwrap(),
+            relative_drafts,
             "--format",
             "json",
         ]);
@@ -250,15 +251,21 @@ async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_aft
             .find_map(|line| line.strip_prefix("Recover: "))
             .expect("failed retry must retain its copied command");
         assert!(copied.contains(&format!("--request-id='{request}'")));
+        assert!(copied.contains(&format!(
+            "--draft-dir '{}'",
+            std::fs::canonicalize(&drafts).unwrap().display()
+        )));
         let executable = env!("CARGO_BIN_EXE_graphrag").replace('\'', "'\\''");
         let copied = format!(
             "'{executable}' {}",
             copied.strip_prefix("graphrag ").unwrap()
         );
         let mut replay_command = tokio::process::Command::new("/bin/sh");
+        let replay_cwd = fixture.temp.path().join("different working directory");
+        std::fs::create_dir(&replay_cwd).unwrap();
         replay_command
             .env_clear()
-            .current_dir(fixture.temp.path())
+            .current_dir(&replay_cwd)
             .env("HOME", fixture.temp.path())
             .env("XDG_CONFIG_HOME", fixture.temp.path())
             .env("PATH", "/usr/bin:/bin")
@@ -290,6 +297,7 @@ async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_aft
         assert!(!retained.exists());
         assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 0);
         assert_eq!(std::fs::read_to_string(&input).unwrap(), body);
+        assert!(!replay_cwd.join(relative_drafts).exists());
     }
 }
 impl Drop for Fixture {

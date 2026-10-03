@@ -221,6 +221,13 @@ async fn prepare_edit(cli: &Cli, server: &str, command: &NotesCommand) -> Result
         }
         return Ok(invocation);
     }
+    let directory = editor.draft_dir.clone().unwrap_or_else(|| {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".graphrag/remote-drafts")
+    });
+    let directory = crate::commands::editor::recovery_directory(&directory)?;
     let original = if editor.editor {
         let response = call_tool(
             cli,
@@ -260,15 +267,9 @@ async fn prepare_edit(cli: &Cli, server: &str, command: &NotesCommand) -> Result
     if original.len() > 65_536 {
         anyhow::bail!("remote edit content must be at most 65536 UTF-8 bytes");
     }
-    let directory = editor.draft_dir.clone().unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join(".graphrag/remote-drafts")
-    });
     let mut draft = Draft::save_or_recover(&original, &directory, recovery_path, |path| {
         let mut retry = format!("graphrag --server {} --credential-env {} --request-id={} --expected-revision {} --recover-draft notes edit {} --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(revision), shell_quote(id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(*format));
-        if let Some(directory) = &editor.draft_dir {
+        if editor.draft_dir.is_some() {
             retry.push_str(&format!(
                 " --draft-dir {}",
                 shell_quote(&directory.to_string_lossy())
