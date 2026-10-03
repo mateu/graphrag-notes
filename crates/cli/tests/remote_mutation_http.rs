@@ -306,6 +306,78 @@ impl Drop for Fixture {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_edit_acknowledgment_preserves_draft_changes_made_after_submission() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let note = repo
+        .create_note(Note::new("original manual content"))
+        .await
+        .unwrap();
+    let id = record_id_to_string(note.id.as_ref().unwrap());
+    let provider = Arc::new(BlockedEmbedder {
+        started: Notify::new(),
+        released: Notify::new(),
+        calls: AtomicUsize::new(0),
+    });
+    let fixture = Fixture::with_embedder(&repo, provider.clone()).await;
+    let snapshot = fixture
+        .success(&["notes", "show", &id, "--format", "json"])
+        .await;
+    let submitted = "submitted fresh edit body";
+    let unsent = "new unsent edits made while awaiting the acknowledgment";
+    let input = fixture.temp.path().join("replacement.md");
+    let drafts = fixture.temp.path().join("fresh-drafts");
+    std::fs::write(&input, submitted).unwrap();
+    let mut command = fixture.command(&[
+        "--request-id=fresh-edit",
+        "--expected-revision",
+        snapshot["revision"].as_str().unwrap(),
+        "notes",
+        "edit",
+        &id,
+        "--content-file",
+        input.to_str().unwrap(),
+        "--draft-dir",
+        drafts.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), provider.started.notified())
+        .await
+        .unwrap();
+    let retained = std::fs::read_dir(&drafts)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(std::fs::read_to_string(&retained).unwrap(), submitted);
+    std::fs::write(&retained, unsent).unwrap();
+    provider.released.notify_one();
+    let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(response["data"]["data"]["replayed"], false);
+    assert_eq!(repo.list_notes(1).await.unwrap()[0].content, submitted);
+    assert_eq!(std::fs::read_to_string(&retained).unwrap(), unsent);
+    assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 1);
+    assert_eq!(std::fs::read_to_string(&input).unwrap(), submitted);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Recover:"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_edit_guards_revision_replays_and_keeps_only_failed_drafts() {
     let repo = Repository::new(init_memory().await.unwrap());

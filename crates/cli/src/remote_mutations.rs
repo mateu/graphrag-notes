@@ -305,6 +305,7 @@ async fn prepare_edit(cli: &Cli, server: &str, command: &NotesCommand) -> Result
     if content.trim().is_empty() || content.len() > 65_536 {
         anyhow::bail!("remote edit content must contain text and be at most 65536 UTF-8 bytes");
     }
+    draft.pin_remote_submission(content.as_bytes())?;
     invocation.arguments["patch"]["content"] = json!(content);
     invocation.draft = Some(draft);
     Ok(invocation)
