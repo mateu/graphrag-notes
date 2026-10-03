@@ -57,6 +57,9 @@ make that distinction explicit and provide reproducible validation without
 personal profiles or notes.
 Later packaged checkpoints cover [revision-aware reads](validation/mcp-native-clients-76.md)
 and the [combined mutation/upload-job candidate](validation/mcp-native-clients-77.md).
+The [integrated review checkpoint](validation/mcp-native-clients-integrated-checkpoint.md)
+adds the reviewed ancestor changes and hardened harness; it remains separate
+from eventual final-foundation and two-host/session acceptance.
 Each report identifies its tested binary, observed schema and exact native calls;
 the original foundation evidence above remains a separate historical result.
 The two-computer deployment and full conversational agent walkthrough remain

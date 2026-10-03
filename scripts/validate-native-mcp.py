@@ -81,12 +81,14 @@ def sanitize_logs(directory, tokens):
             # Unlink removes only the local entry, including a link/FIFO; an
             # empty directory can be removed without traversing its contents.
             try:
-                if path.is_dir() and not path.is_symlink():
-                    path.rmdir()
-                else:
-                    path.unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
             except OSError:
-                pass
+                try:
+                    # rmdir never follows a final symlink; avoid is_dir/stat
+                    # even after rejection, which could inspect its target.
+                    path.rmdir()
+                except OSError:
+                    pass
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -314,8 +316,10 @@ def parser_options(argv):
         parser.error("Installed client runtime entry points are missing; verify roots for their installed versions")
     if options.runspace_root:
         options.runspace_root = options.runspace_root.expanduser()
-        if options.runspace_root.is_symlink() or not options.runspace_root.is_dir() or options.runspace_root.stat().st_mode & 0o077:
-            parser.error("--runspace-root must be an existing private regular directory (mode 0700)")
+        if (options.runspace_root.is_symlink() or not options.runspace_root.is_dir()
+                or stat.S_IMODE(options.runspace_root.stat().st_mode) != 0o700
+                or not os.access(options.runspace_root, os.W_OK | os.X_OK)):
+            parser.error("--runspace-root must be an existing private regular directory (mode 0700) with write/search access")
         options.runspace_root = options.runspace_root.resolve()
     return options
 

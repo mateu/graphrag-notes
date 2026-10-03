@@ -130,7 +130,7 @@ class NativeRuntimeHarness(unittest.TestCase):
                     self.assertEqual(error.exception.code, 2)
                     server.assert_not_called()
 
-    def test_python_venv_executable_symlink_is_preserved(self):
+    def installed_arguments(self):
         binary=self.executable("fixture-binary", "pass\n")
         openclaw=self.directory/"openclaw"
         entry=openclaw/"dist/agents/agent-bundle-mcp-runtime.js"
@@ -142,10 +142,13 @@ class NativeRuntimeHarness(unittest.TestCase):
         python=hermes/"venv/bin/python"
         python.parent.mkdir(parents=True)
         python.symlink_to(sys.executable)
-        options=HARNESS.parser_options(["--binary",str(binary),"--openclaw-root",str(openclaw),
-            "--node",str(binary),"--hermes-root",str(hermes),"--hermes-python",str(python)])
+        return ["--binary",str(binary),"--openclaw-root",str(openclaw),
+            "--node",str(binary),"--hermes-root",str(hermes),"--hermes-python",str(python)]
+
+    def test_python_venv_executable_symlink_is_preserved(self):
+        options=HARNESS.parser_options(self.installed_arguments())
         self.assertTrue(options.hermes_python.is_symlink())
-        self.assertEqual(options.hermes_python,python)
+        self.assertEqual(options.hermes_python,self.directory/"hermes/venv/bin/python")
 
     def test_native_service_error_survives_hermes_rendering_and_requires_exact_category(self):
         envelope = {"schema_version": 1, "data": None,
@@ -222,6 +225,42 @@ class NativeRuntimeHarness(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(snapshot.parent.stat().st_mode), 0o700)
         self.assertEqual(self.run_child(snapshot), "original-version\n")
         self.assertEqual(self.run_child(snapshot, label="snapshot-restart"), "original-version\n")
+
+    def test_rejected_directory_symlink_is_unlinked_without_following_target_metadata(self):
+        with tempfile.TemporaryDirectory(prefix="native-external-directory-") as external:
+            target = Path(external)
+            marker = target / "untouched.txt"
+            marker.write_text("synthetic external marker")
+            link = self.directory / "child.stderr"
+            link.symlink_to(target, target_is_directory=True)
+            with mock.patch.object(Path, "is_dir", side_effect=AssertionError("A rejected log must not follow its target")):
+                self.assertTrue(HARNESS.sanitize_logs(self.directory, []))
+            self.assertFalse(link.is_symlink())
+            self.assertEqual(marker.read_text(), "synthetic external marker")
+
+    def test_runspace_root_requires_exact_private_mode_and_write_search_access(self):
+        arguments = self.installed_arguments()
+        root = self.directory / "runspace"
+        root.mkdir(mode=0o700)
+        for mode in (0o000, 0o500, 0o600, 0o701, 0o1700):
+            with self.subTest(mode=mode):
+                root.chmod(mode)
+                try:
+                    with contextlib.redirect_stderr(io.StringIO()) as error:
+                        with self.assertRaises(SystemExit):
+                            HARNESS.parser_options([*arguments,"--runspace-root",str(root)])
+                    self.assertIn("mode 0700",error.getvalue())
+                finally:
+                    root.chmod(0o700)
+        actual_access = os.access
+        def denied_access(path, mode):
+            return False if Path(path) == root else actual_access(path, mode)
+        with mock.patch.object(HARNESS.os, "access", side_effect=denied_access):
+            with contextlib.redirect_stderr(io.StringIO()) as error:
+                with self.assertRaises(SystemExit):
+                    HARNESS.parser_options([*arguments,"--runspace-root",str(root)])
+        self.assertIn("write/search access",error.getvalue())
+        self.assertEqual(HARNESS.parser_options([*arguments,"--runspace-root",str(root)]).runspace_root,root.resolve())
 
 
 if __name__ == "__main__":
