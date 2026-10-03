@@ -9,11 +9,16 @@ use thiserror::Error;
 const MAX_CREDENTIAL_FILE_BYTES: u64 = 64 * 1024;
 const MAX_CREDENTIALS: usize = 128;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
     Read,
     Capture,
+    Edit,
+    Delete,
+    Accept,
+    Reject,
+    Undo,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -59,7 +64,7 @@ pub enum CredentialError {
     Unavailable,
     #[error("Credentials must be a regular file owned by the service user with permissions 0600; symlinks are refused.")]
     UnsafeFile,
-    #[error("Invalid credential file; expected schema version 1, unique instance IDs, SHA-256 token hashes and read/capture capabilities.")]
+    #[error("Invalid credential file; expected schema version 1, unique instance IDs, SHA-256 token hashes and supported capabilities.")]
     InvalidFile,
 }
 
@@ -129,9 +134,14 @@ impl CredentialFile {
                 || decode_hash(&credential.token_sha256).is_none()
                 || !hashes.insert(&credential.token_sha256)
                 || credential.capabilities.is_empty()
-                || credential.capabilities.len() > 2
-                || (credential.capabilities.len() == 2
-                    && credential.capabilities[0] == credential.capabilities[1])
+                || credential.capabilities.len() > 7
+                || (credential
+                    .capabilities
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != credential.capabilities.len())
             {
                 return Err(CredentialError::InvalidFile);
             }

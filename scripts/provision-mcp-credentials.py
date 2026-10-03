@@ -42,10 +42,20 @@ def private_write(path, text):
         Path(temporary).unlink(missing_ok=True)
 
 
-def provision(directory, writers, readers):
+def provision(directory, writers, readers, grants=()):
     writers, readers = [instance_id(i) for i in writers], [instance_id(i) for i in readers]
     identities = writers + readers
     validate_identities(identities)
+    capabilities = {identity: (["read", "capture"] if identity in writers else ["read"]) for identity in identities}
+    allowed = {"read", "capture", "edit", "delete", "accept", "reject", "undo"}
+    for grant in grants:
+        identity, separator, names = grant.partition("=")
+        if not separator or identity not in capabilities:
+            raise ValueError("grants require an existing client ID and INSTANCE=CAPABILITY syntax")
+        for name in names.split(","):
+            if name not in allowed or name in capabilities[identity]:
+                raise ValueError("grant capabilities must be known and unique for each instance")
+            capabilities[identity].append(name)
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     policy = {"schema_version": 1, "credentials": []}
     for identity in identities:
@@ -54,7 +64,7 @@ def provision(directory, writers, readers):
         policy["credentials"].append({
             "instance_id": identity,
             "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
-            "capabilities": ["read", "capture"] if identity in writers else ["read"],
+            "capabilities": capabilities[identity],
         })
     private_write(directory / "credentials.json", json.dumps(policy, indent=2) + "\n")
 
@@ -117,16 +127,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
     parser.add_argument("--client", action="append", default=[], help="read/capture instance ID; repeat for each")
-    parser.add_argument("--read-only", action="append", default=[], help="read-only instance ID; repeat for each")
+    parser.add_argument("--read-only", action="append", default=[], help="read-only by default instance ID; use --grant for explicit additional permissions")
+    parser.add_argument("--grant", action="append", default=[], metavar="INSTANCE=CAPABILITY[,CAPABILITY]", help="explicit additional grants for a provisioned client; repeat for each instance")
     parser.add_argument("--rotate", metavar="ID", help="replace one existing instance's token, retaining its identity")
     args = parser.parse_args()
     try:
         if args.rotate:
-            if args.client or args.read_only:
+            if args.client or args.read_only or args.grant:
                 raise ValueError("rotation cannot provision new clients")
             rotate(args.directory, args.rotate)
         else:
-            provision(args.directory, args.client, args.read_only)
+            provision(args.directory, args.client, args.read_only, args.grant)
     except (OSError, ValueError, KeyError, TypeError):
         parser.exit(1, "Credential setup failed; check private directory, unique client IDs and existing policy. Retry the same --rotate command to recover an interrupted rotation. No tokens are printed.\n")
     print(f"Private credential files ready in {args.directory}; transfer only each client's own .env file.")

@@ -12,6 +12,7 @@ mod init;
 mod interactive;
 mod output;
 mod remote;
+mod remote_mutations;
 mod search_recovery;
 
 #[tokio::main]

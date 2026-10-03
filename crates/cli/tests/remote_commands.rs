@@ -271,6 +271,7 @@ fn failed_capture_keeps_private_draft_and_original_request_identity() {
         .failure()
         .stderr(contains("--request-id='capture-replay-001'"))
         .stderr(contains("--content-file"))
+        .stderr(contains("--recover-draft"))
         .stderr(contains(format!("--draft-dir '{}'", drafts.display())));
     let paths = fs::read_dir(&drafts)
         .unwrap()
@@ -321,7 +322,6 @@ fn option_like_capture_request_identity_survives_the_printed_recovery_command() 
         .find_map(|line| line.strip_prefix("Recover: "))
         .expect("failed capture must print its retry command");
     assert!(recovery.contains("--request-id='-custom'"));
-    assert!(recovery.contains("--recover-draft"));
     let original = fs::read_dir(&drafts)
         .unwrap()
         .next()
@@ -351,7 +351,6 @@ fn option_like_capture_request_identity_survives_the_printed_recovery_command() 
         fs::read_to_string(original).unwrap(),
         "synthetic replay draft"
     );
-    assert_eq!(fs::read_dir(&drafts).unwrap().count(), 1);
 }
 
 #[cfg(unix)]
@@ -418,7 +417,44 @@ fn relative_capture_draft_recovery_works_from_another_working_directory() {
         "synthetic retained cross-directory draft"
     );
     assert_eq!(fs::read_dir(&retry_directory).unwrap().count(), 0);
-    assert_eq!(fs::read_dir(&drafts).unwrap().count(), 1);
+}
+
+#[test]
+fn recovery_requires_remote_file_write_and_explicit_original_request_identity() {
+    for args in [
+        vec!["--recover-draft", "capture", "text"],
+        vec![
+            "--recover-draft",
+            "--request-id",
+            "retry-1",
+            "capture",
+            "text",
+        ],
+        vec![
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--recover-draft",
+            "--request-id",
+            "retry-1",
+            "search",
+            "text",
+        ],
+        vec![
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--recover-draft",
+            "--request-id",
+            "retry-1",
+            "capture",
+            "text",
+        ],
+    ] {
+        graphrag()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(contains("--recover-draft"));
+    }
 }
 
 #[test]
@@ -509,39 +545,67 @@ fn cancelled_editor_preserves_changed_remote_draft_without_sending() {
 }
 
 #[test]
-fn recovery_requires_remote_file_write_and_explicit_original_request_identity() {
+fn remote_edit_disconnect_retains_content_revision_and_request_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("edit.md");
+    let drafts = temp.path().join("private drafts");
+    fs::write(&input, "valuable replacement text").unwrap();
+    let revision = "a".repeat(64);
+    graphrag()
+        .env("GRAPHRAG_TOKEN", "synthetic-client-token-12345678901234")
+        .args([
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--request-id",
+            "edit-retry-001",
+            "--expected-revision",
+            &revision,
+            "notes",
+            "edit",
+            "note:synthetic",
+            "--content-file",
+        ])
+        .arg(&input)
+        .arg("--draft-dir")
+        .arg(&drafts)
+        .assert()
+        .failure()
+        .stderr(contains("service_unreachable"))
+        .stderr(contains("--recover-draft"))
+        .stderr(contains("--request-id='edit-retry-001'"))
+        .stderr(contains(format!("--expected-revision '{revision}'")))
+        .stderr(contains(format!("--draft-dir '{}'", drafts.display())));
+    let paths = fs::read_dir(&drafts)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(
+        fs::read_to_string(&paths[0]).unwrap(),
+        "valuable replacement text"
+    );
+}
+
+#[test]
+fn remote_decisions_require_review_revision_and_confirmation_before_connecting() {
     for args in [
-        vec!["--recover-draft", "capture", "text"],
-        vec![
-            "--recover-draft",
-            "--request-id",
-            "retry-1",
-            "capture",
-            "text",
-        ],
-        vec![
-            "--server",
-            "http://127.0.0.1:0/mcp",
-            "--recover-draft",
-            "--request-id",
-            "retry-1",
-            "search",
-            "text",
-        ],
-        vec![
-            "--server",
-            "http://127.0.0.1:0/mcp",
-            "--recover-draft",
-            "--request-id",
-            "retry-1",
-            "capture",
-            "text",
-        ],
+        vec!["notes", "delete", "note:synthetic"],
+        vec!["garden", "proposals", "accept", "proposed_edge:synthetic"],
+        vec!["garden", "proposals", "reject", "proposed_edge:synthetic"],
+        vec!["garden", "proposals", "undo", "proposed_edge:synthetic"],
     ] {
         graphrag()
-            .args(args)
+            .args(["--server", "http://127.0.0.1:0/mcp"])
+            .args(&args)
             .assert()
             .failure()
-            .stderr(contains("--recover-draft"));
+            .stderr(contains("--yes"));
+        graphrag()
+            .args(["--server", "http://127.0.0.1:0/mcp"])
+            .args(&args)
+            .arg("--yes")
+            .assert()
+            .failure()
+            .stderr(contains("--expected-revision"));
     }
 }

@@ -73,6 +73,7 @@ impl Repository {
     /// silently resurrect a user decision or create an equivalent duplicate.
     #[instrument(skip(self, draft))]
     pub async fn upsert_edge_proposal(&self, mut draft: EdgeProposalDraft) -> Result<ProposedEdge> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         validate_note_edge(&draft.from_id, &draft.to_id, &draft.edge_type)?;
         canonicalize_note_edge(&mut draft.from_id, &mut draft.to_id, &draft.edge_type);
         draft.confidence = draft.confidence.clamp(0.0, 1.0);
@@ -322,6 +323,7 @@ impl Repository {
         reviewer: Option<String>,
         action_reason: Option<String>,
     ) -> Result<ProposedEdge> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         let proposal = self
             .get_edge_proposal(id)
             .await?
@@ -1664,7 +1666,7 @@ fn proposal_select_sql(where_clause: &str) -> String {
     )
 }
 
-fn note_edge_table(edge_type: &EdgeType) -> Result<&'static str> {
+pub(super) fn note_edge_table(edge_type: &EdgeType) -> Result<&'static str> {
     match edge_type {
         EdgeType::Supports => Ok("supports"),
         EdgeType::Contradicts => Ok("contradicts"),

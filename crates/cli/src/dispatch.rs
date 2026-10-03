@@ -2682,6 +2682,30 @@ pub(crate) async fn cmd_proposals(repo: Repository, command: ProposalCommand) ->
                 );
             }
         }
+        ProposalCommand::Undo { id, reason, yes } => {
+            if !yes {
+                anyhow::bail!("refusing to undo a proposal without --yes");
+            }
+            let key = parse_record_id(&id, Some("proposed_edge"))?;
+            let proposal = repo
+                .get_edge_proposal(&key)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("proposal was not found"))?;
+            let card = graphrag_application::proposal_card(&repo, proposal).await?;
+            let result = graphrag_application::decide_proposal(
+                &repo,
+                graphrag_application::ProposalDecisionRequest {
+                    id: card.id,
+                    revision: card.revision,
+                    action: graphrag_application::ProposalAction::Undo,
+                    reason,
+                    confirmed: true,
+                    reviewer: "cli".into(),
+                },
+            )
+            .await?;
+            println!("Proposal {} is {}.", result.id, result.status);
+        }
         ProposalCommand::Reject { id, reason, yes } => {
             if !yes {
                 anyhow::bail!("refusing to reject a proposal without --yes");

@@ -208,6 +208,10 @@ budgets are at most 200 chunks / 32768 total tokens / 8192 tokens per chunk.
 Zero context budgets return no context without inference. Narrow requests when
 the serialized MCP response exceeds the 2 MiB service output limit.
 
+Manual note changes and confirmed connection decisions are documented in
+[remote mutations](shared-mcp-mutations.md), including independent permissions,
+reviewed revisions and retry-safe results.
+
 ## Rotation and recovery
 
 Rotate one instance while retaining its identity and capabilities:

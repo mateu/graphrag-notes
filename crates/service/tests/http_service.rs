@@ -371,7 +371,7 @@ async fn legacy_handshake_catalog_and_trusted_instance_retry_contract() {
         )
         .await;
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 6);
     assert!(tools
         .iter()
         .all(|tool| tool["annotations"]["readOnlyHint"] == true

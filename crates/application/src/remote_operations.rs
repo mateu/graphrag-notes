@@ -158,6 +158,32 @@ fn capture_response(
 
 #[async_trait]
 impl RemoteApplicationOperations for EmbeddedApplication {
+    async fn note_snapshot(&self, reference: RecordRef) -> ApplicationResult<RemoteNoteSnapshot> {
+        self.remote_note_snapshot_impl(reference).await
+    }
+    async fn edit_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteEditRequest,
+        cancellation: ActionCancellation,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        self.remote_edit_impl(caller, request, cancellation).await
+    }
+    async fn delete_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteDeleteRequest,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        self.remote_delete_impl(caller, request).await
+    }
+    async fn decide_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteDecisionRequest,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        self.remote_decision_impl(caller, request).await
+    }
+
     async fn build_context(
         &self,
         request: BuildContextRequest,

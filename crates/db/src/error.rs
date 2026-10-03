@@ -31,6 +31,12 @@ pub enum DbError {
     #[error("Invalid remote capture request: {0}")]
     InvalidRemoteRequest(String),
 
+    #[error("{0}")]
+    MutationRevisionConflict(String),
+
+    #[error("Invalid remote mutation: {0}")]
+    InvalidMutationRequest(String),
+
     #[error("Schema initialization failed: {0}")]
     SchemaInit(String),
 

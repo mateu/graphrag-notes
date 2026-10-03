@@ -227,3 +227,16 @@ terminal workspace currently uses the embedded adapter.
 See [terminal workspace](terminal-workspace.md) for commands, keyboard support,
 safe cancellation, content-copy semantics, and database ownership, and the
 [application boundary](application-boundary.md) for shared operation contracts.
+
+### Remote mutation commands
+
+Remote `notes show` returns an editable snapshot with its revision. `notes edit`
+and `notes delete --yes` require global `--expected-revision`; editor/file/stdin
+edits keep a private recovery draft until a matching authoritative outcome.
+Remote `garden review` and `garden proposals list/show` return proposal cards.
+`garden proposals accept/reject/undo --yes` select one proposal and require its
+reviewed revision. Global `--request-id` is valid for these writes and capture;
+it is rejected on read commands. Global `--recover-draft` explicitly adopts a
+private `--content-file` recovery file for verified-success cleanup; ordinary
+input files remain caller-owned. These global mutation flags require remote mode.
+See [remote mutations](shared-mcp-mutations.md) for precise recovery semantics.
