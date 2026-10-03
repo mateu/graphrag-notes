@@ -161,7 +161,7 @@ async fn independent_capabilities_confirmations_trusted_actor_and_durable_replay
     let (repo, id) = seeded().await;
     let fixture = Fixture::new(application(&repo, Arc::new(NoInference))).await;
     for (name, expected) in [
-        ("reader", 6),
+        ("reader", 7),
         ("editor", 1),
         ("deleter", 1),
         ("acceptor", 1),
