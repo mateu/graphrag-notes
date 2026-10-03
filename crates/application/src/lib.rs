@@ -188,4 +188,13 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
     async fn interrupt_remote_job(&self, _execution: RemoteJobExecution) -> ApplicationResult<()> {
         Ok(())
     }
+    /// Confirm a failed worker's durable terminal outcome or loss of ownership.
+    /// Errors retain the worker lease for retry; storage failures are not success.
+    async fn recover_remote_job(
+        &self,
+        execution: RemoteJobExecution,
+        _error_code: String,
+    ) -> ApplicationResult<()> {
+        self.interrupt_remote_job(execution).await
+    }
 }

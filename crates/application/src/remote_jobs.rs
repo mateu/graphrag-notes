@@ -357,31 +357,10 @@ pub(crate) async fn execute(
     let lease = lease(&execution)?;
     let result = run(app, &lease, &cancellation).await;
     if let Err(error) = &result {
-        if let Ok(Some(job)) = app
-            .repo
-            .get_remote_upload_job(&lease.instance_id, &record_id_to_string(&lease.job_id))
-            .await
-        {
-            if job.job.status != "running"
-                || job.service_epoch.as_deref() != Some(&lease.service_epoch)
-                || job.worker_token.as_deref() != Some(&lease.worker_token)
-            {
-                return result;
-            }
-            let (status, code) = if matches!(error, ApplicationError::Cancelled) {
-                if job.cancel_requested {
-                    (ProcessingJobStatus::Cancelled, "cancelled")
-                } else {
-                    (ProcessingJobStatus::Failed, "interrupted")
-                }
-            } else {
-                (ProcessingJobStatus::Failed, error.code())
-            };
-            let _ = app
-                .repo
-                .finish_remote_upload_job(&lease, status, Some(code.into()), None)
-                .await;
-        }
+        // Attempt immediate settlement for direct callers. The server retains
+        // this fenced execution on every error and retries recovery until a
+        // terminal state or changed owner is observed, including storage faults.
+        let _ = recover(app, execution, error.code()).await;
     }
     result
 }
@@ -534,9 +513,13 @@ async fn complete(
     job: &RemoteUploadJob,
 ) -> ApplicationResult<()> {
     let result = json!({"source_id":job.source_id.as_ref().map(record_id_to_string),"source_uri":job.source_uri,"generation":job.source_generation,"note_ids":job.job.item_ids,"action":job.job.scope,"extracted":job.input.extract_entities});
-    app.repo
+    let saved = app
+        .repo
         .finish_remote_upload_job(lease, ProcessingJobStatus::Completed, None, Some(result))
         .await?;
+    if saved.job.status == "cancelled" {
+        return Err(ApplicationError::Cancelled);
+    }
     Ok(())
 }
 
@@ -544,13 +527,43 @@ pub(crate) async fn interrupt(
     app: &EmbeddedApplication,
     execution: RemoteJobExecution,
 ) -> ApplicationResult<()> {
+    recover(app, execution, "worker_interrupted").await
+}
+
+pub(crate) async fn recover(
+    app: &EmbeddedApplication,
+    execution: RemoteJobExecution,
+    error_code: &str,
+) -> ApplicationResult<()> {
+    let lease = lease(&execution)?;
+    let Some(job) = app
+        .repo
+        .get_remote_upload_job(&lease.instance_id, &execution.job_id)
+        .await?
+    else {
+        return Ok(());
+    };
+    if job.job.status != "running"
+        || job.service_epoch.as_deref() != Some(&lease.service_epoch)
+        || job.worker_token.as_deref() != Some(&lease.worker_token)
+    {
+        return Ok(());
+    }
+    let code = match error_code {
+        "cancelled" if !job.cancel_requested => "interrupted",
+        "validation"
+        | "not_found"
+        | "conflict"
+        | "provider_unavailable"
+        | "compatibility"
+        | "service_unreachable"
+        | "cancelled"
+        | "internal"
+        | "worker_interrupted" => error_code,
+        _ => "internal",
+    };
     app.repo
-        .finish_remote_upload_job(
-            &lease(&execution)?,
-            ProcessingJobStatus::Failed,
-            Some("worker_interrupted".into()),
-            None,
-        )
+        .finish_remote_upload_job(&lease, ProcessingJobStatus::Failed, Some(code.into()), None)
         .await?;
     Ok(())
 }

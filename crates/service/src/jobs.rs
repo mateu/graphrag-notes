@@ -85,7 +85,7 @@ impl JobWorkers {
                 tokio::select! {
                     _ = signal.cancelled() => break,
                     result = running.join_next_with_id(), if !running.is_empty() => {
-                        handle_completion(result, &mut owners, &application).await;
+                        handle_completion(result, &mut running, &mut owners, &application);
                     },
                     _ = tokio::time::sleep(Duration::from_millis(100)) => {},
                 }
@@ -93,7 +93,7 @@ impl JobWorkers {
             // Shutdown wakes preparation cancellation, then drains workers.
             // Their safe checkpoints remain resumable on the next service.
             while let Some(result) = running.join_next_with_id().await {
-                handle_completion(Some(result), &mut owners, &application).await;
+                handle_completion(Some(result), &mut running, &mut owners, &application);
             }
         });
         Ok(Self { stop, task })
@@ -111,24 +111,198 @@ type WorkerOutcome = (
 );
 type WorkerCompletion = Result<(Id, WorkerOutcome), tokio::task::JoinError>;
 
-async fn handle_completion(
+fn handle_completion(
     result: Option<WorkerCompletion>,
+    running: &mut JoinSet<WorkerOutcome>,
     owners: &mut HashMap<Id, RemoteJobExecution>,
     application: &Arc<dyn RemoteApplicationOperations>,
 ) {
     match result {
-        Some(Ok((id, (_, outcome)))) => {
+        Some(Ok((id, (execution, outcome)))) => {
             owners.remove(&id);
-            if outcome.is_err() {
-                tracing::warn!("Uploaded job stopped; inspect its durable status before resuming.");
+            if let Err(error) = outcome {
+                schedule_recovery(running, owners, application, execution, error.code().into());
             }
         }
         Some(Err(error)) => {
             if let Some(execution) = owners.remove(&error.id()) {
-                let _ = application.interrupt_remote_job(execution).await;
+                schedule_recovery(
+                    running,
+                    owners,
+                    application,
+                    execution,
+                    "worker_interrupted".into(),
+                );
             }
             tracing::warn!("Uploaded worker interrupted; its durable checkpoint was retained.");
         }
         None => {}
+    }
+}
+
+fn schedule_recovery(
+    running: &mut JoinSet<WorkerOutcome>,
+    owners: &mut HashMap<Id, RemoteJobExecution>,
+    application: &Arc<dyn RemoteApplicationOperations>,
+    execution: RemoteJobExecution,
+    error_code: String,
+) {
+    let application = Arc::clone(application);
+    let owner = execution.clone();
+    let handle = running.spawn(async move {
+        let mut delay = Duration::from_millis(100);
+        loop {
+            match application.recover_remote_job(execution.clone(), error_code.clone()).await {
+                Ok(()) => return (execution, Ok(())),
+                Err(_) => {
+                    tracing::warn!("Uploaded job terminalization is pending; retaining its fenced worker and retrying.");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(Duration::from_secs(5));
+                }
+            }
+        }
+    });
+    // Recovery occupies the same bounded worker slot and is drained during
+    // shutdown. Never re-execute providers or abandon a still-running lease.
+    owners.insert(handle.id(), owner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graphrag_agents::{
+        DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
+    };
+    use graphrag_application::{
+        ApplicationError, CallerIdentity, EmbeddedApplication, UploadSourceRequest,
+    };
+    use graphrag_db::{init_memory, Repository};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn failed_status_reads_and_terminal_writes_keep_recovery_tracked_until_settled() {
+        for read_failure in [true, false] {
+            let db = init_memory().await.unwrap();
+            let repo = Repository::new(db.clone());
+            let embedder = Arc::new(DeterministicEmbedder::default());
+            let app = Arc::new(EmbeddedApplication::new(
+                repo.clone(),
+                SearchAgent::new(repo.clone(), embedder.clone()),
+                embedder,
+                Arc::new(FixtureEntityExtractor::default()),
+                LibrarianRuntimeConfig::default(),
+            ));
+            let admission = app
+                .upload_source(
+                    CallerIdentity {
+                        instance_id: "owner".into(),
+                    },
+                    UploadSourceRequest {
+                        request_id: "retry-settlement".into(),
+                        document_key: "synthetic.md".into(),
+                        content: "Synthetic pending upload".into(),
+                        title: None,
+                        provenance: None,
+                        extract_entities: false,
+                    },
+                )
+                .await
+                .unwrap();
+            let execution = app
+                .claim_remote_job("epoch", "worker")
+                .await
+                .unwrap()
+                .unwrap();
+            let job_id = execution.job_id.clone();
+            let original = repo
+                .get_remote_upload_job("owner", &job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .input;
+            if read_failure {
+                // The status read reaches stored data but cannot decode it;
+                // settlement must return the actual storage error, not success.
+                db.query("UPDATE processing_job SET remote_input = $input WHERE job_type = 'remote_upload'").bind(("input",json!({"transient_fixture_read_failure":true}))).await.unwrap().check().unwrap();
+            } else {
+                db.query("DEFINE FIELD OVERWRITE status ON processing_job TYPE string ASSERT $value != 'failed'").await.unwrap().check().unwrap();
+            }
+            let application: Arc<dyn RemoteApplicationOperations> = app.clone();
+            let mut running = JoinSet::new();
+            let finished = execution.clone();
+            let worker = running.spawn(async move {
+                (
+                    finished,
+                    Err(ApplicationError::ProviderUnavailable(
+                        "synthetic provider unavailable".into(),
+                    )),
+                )
+            });
+            let mut owners = HashMap::from([(worker.id(), execution.clone())]);
+            let outcome = running.join_next_with_id().await;
+            handle_completion(outcome, &mut running, &mut owners, &application);
+            tokio::time::sleep(Duration::from_millis(130)).await;
+            assert_eq!(
+                owners.len(),
+                1,
+                "the failed worker's fenced lease must remain tracked"
+            );
+            assert_eq!(
+                running.len(),
+                1,
+                "recovery must retain the bounded worker slot"
+            );
+            assert!(matches!(
+                app.recover_remote_job(execution.clone(), "provider_unavailable".into())
+                    .await,
+                Err(ApplicationError::Internal(_))
+            ));
+            if read_failure {
+                db.query("UPDATE processing_job SET remote_input = $input WHERE job_type = 'remote_upload'").bind(("input",serde_json::to_value(original).unwrap())).await.unwrap().check().unwrap();
+            } else {
+                db.query("DEFINE FIELD OVERWRITE status ON processing_job TYPE string")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
+            let outcome = tokio::time::timeout(Duration::from_secs(5), running.join_next_with_id())
+                .await
+                .unwrap();
+            handle_completion(outcome, &mut running, &mut owners, &application);
+            assert!(owners.is_empty());
+            assert!(running.is_empty());
+            let terminal = repo
+                .get_remote_upload_job("owner", &job_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(terminal.job.status, "failed");
+            assert_eq!(
+                terminal.job.last_error.as_deref(),
+                Some("provider_unavailable")
+            );
+            assert!(terminal.service_epoch.is_none());
+            assert!(terminal.worker_token.is_none());
+            // The same process can resume immediately; no epoch restart needed.
+            app.resume_remote_job(
+                CallerIdentity {
+                    instance_id: "owner".into(),
+                },
+                &job_id,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                repo.get_remote_upload_job("owner", &job_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .job
+                    .status,
+                "queued"
+            );
+            assert_eq!(repo.get_stats().await.unwrap().note_count, 0);
+        }
     }
 }

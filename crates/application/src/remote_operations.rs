@@ -407,4 +407,11 @@ impl RemoteApplicationOperations for EmbeddedApplication {
     async fn interrupt_remote_job(&self, execution: RemoteJobExecution) -> ApplicationResult<()> {
         crate::remote_jobs::interrupt(self, execution).await
     }
+    async fn recover_remote_job(
+        &self,
+        execution: RemoteJobExecution,
+        error_code: String,
+    ) -> ApplicationResult<()> {
+        crate::remote_jobs::recover(self, execution, &error_code).await
+    }
 }

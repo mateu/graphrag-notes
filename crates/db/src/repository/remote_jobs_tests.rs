@@ -889,3 +889,134 @@ async fn deleted_and_recreated_source_cannot_accept_old_pinned_generation() {
     assert_eq!(table(&repo, "source").await, sources);
     assert!(table(&repo, "note").await.is_empty());
 }
+
+#[tokio::test]
+async fn older_unprepared_admission_cannot_replace_a_newer_document() {
+    for already_claimed in [false, true] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let old = repo
+            .admit_remote_upload(input("openclaw", "older", "Old document"))
+            .await
+            .unwrap();
+        let old_id = old.result["job_id"].as_str().unwrap();
+        let old_lease = if already_claimed {
+            let row = repo
+                .claim_remote_upload_job("openclaw", old_id, "epoch", "old-worker")
+                .await
+                .unwrap();
+            Some(RemoteJobLease {
+                job_id: row.job.id.unwrap(),
+                instance_id: "openclaw".into(),
+                service_epoch: "epoch".into(),
+                worker_token: "old-worker".into(),
+            })
+        } else {
+            repo.cancel_remote_upload_job("openclaw", old_id)
+                .await
+                .unwrap();
+            None
+        };
+        let (_, newer) = admit_claim(
+            &repo,
+            input("openclaw", "newer", "New document"),
+            "epoch",
+            "new-worker",
+        )
+        .await;
+        let saved = complete(&repo, &newer, "New document").await;
+        assert_eq!(saved.admission_order, Some(2));
+        let sources = table(&repo, "source").await;
+        let notes = table(&repo, "note").await;
+        if let Some(lease) = old_lease {
+            assert!(matches!(
+                repo.begin_remote_upload_generation(&lease).await,
+                Err(DbError::RemoteJobSourceConflict(_))
+            ));
+        } else {
+            assert!(matches!(
+                repo.resume_remote_upload_job("openclaw", old_id).await,
+                Err(DbError::RemoteJobSourceConflict(_))
+            ));
+            // Restored pre-fix journals without an admission counter still
+            // compare their original immutable timestamps instead of bypassing.
+            repo.db
+                .query("UPDATE $id UNSET remote_admission_order")
+                .bind(("id", job_id(old_id).unwrap()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            assert!(matches!(
+                repo.resume_remote_upload_job("openclaw", old_id).await,
+                Err(DbError::RemoteJobSourceConflict(_))
+            ));
+        }
+        assert_eq!(table(&repo, "source").await, sources);
+        assert_eq!(table(&repo, "note").await, notes);
+    }
+}
+
+#[tokio::test]
+async fn cancellation_accepted_during_lifecycle_wait_wins_terminal_transition() {
+    for requested in [ProcessingJobStatus::Failed, ProcessingJobStatus::Completed] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (_, lease) = admit_claim(
+            &repo,
+            input("openclaw", "cancel-terminal", "Prepared upload"),
+            "epoch",
+            "worker",
+        )
+        .await;
+        if requested == ProcessingJobStatus::Completed {
+            repo.begin_remote_upload_generation(&lease).await.unwrap();
+            repo.stage_remote_upload_notes(&lease, vec![Note::new("Prepared upload")])
+                .await
+                .unwrap();
+            repo.reconcile_remote_upload(&lease, &[]).await.unwrap();
+        }
+        let lifecycle = repo.proposal_acceptance_lock.lock().await;
+        let clone = repo.clone();
+        let finishing = lease.clone();
+        let task = tokio::spawn(async move {
+            clone
+                .finish_remote_upload_job(
+                    &finishing,
+                    requested,
+                    Some("provider_unavailable".into()),
+                    Some(serde_json::json!({"completed":true})),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if repo.remote_job_transition_lock.try_lock().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // The finalizer has entered its transition phase and cannot pass the
+        // held lifecycle gate. Cancellation remains an independent DB action.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let cancelled = repo
+            .cancel_remote_upload_job("openclaw", &record_id_to_string(&lease.job_id))
+            .await
+            .unwrap();
+        assert!(cancelled.cancel_requested);
+        assert_eq!(cancelled.job.status, "running");
+        assert!(!task.is_finished());
+        drop(lifecycle);
+        let terminal = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.job.status, "cancelled");
+        assert_eq!(terminal.job.last_error.as_deref(), Some("cancelled"));
+        assert!(terminal.result.is_none());
+        assert!(terminal.service_epoch.is_none());
+        assert!(terminal.worker_token.is_none());
+    }
+}

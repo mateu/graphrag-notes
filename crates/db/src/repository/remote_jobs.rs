@@ -49,6 +49,7 @@ pub struct RemoteUploadJob {
     pub source_uri: String,
     pub source_id: Option<RecordId>,
     pub source_generation: Option<u64>,
+    pub admission_order: Option<u64>,
     pub phase: String,
     pub cancel_requested: bool,
     pub service_epoch: Option<String>,
@@ -83,6 +84,7 @@ struct JobRow {
     remote_source_id: Option<RecordId>,
     remote_source_uri: String,
     remote_source_generation: Option<u64>,
+    remote_admission_order: Option<u64>,
     remote_phase: String,
     remote_cancel_requested: bool,
     remote_service_epoch: Option<String>,
@@ -121,6 +123,7 @@ impl JobRow {
             source_uri: self.remote_source_uri,
             source_id: self.remote_source_id,
             source_generation: self.remote_source_generation,
+            admission_order: self.remote_admission_order,
             phase: self.remote_phase,
             cancel_requested: self.remote_cancel_requested,
             service_epoch: self.remote_service_epoch,
@@ -296,7 +299,7 @@ impl Repository {
         let source_uri = format!("mcp://upload/{source_key}");
         let now = Utc::now();
         let result = serde_json::json!({"job_id": record_id_to_string(&id), "source_id":record_id_to_string(&source_id), "source_uri": source_uri, "status": "queued", "created_at": now.to_rfc3339()});
-        self.db.query("CREATE $id SET job_type = 'remote_upload', status = 'queued', total_count = 0, completed_count = 0, failed_count = 0, item_ids = [], created_at = <datetime>$now, updated_at = <datetime>$now, remote_instance_id = $instance, remote_request_id = $request, remote_payload_fingerprint = $fingerprint, remote_input = $input, remote_admission = $admission, remote_source_uri = $uri, remote_phase = 'admitted', remote_cancel_requested = false")
+        self.db.query("BEGIN TRANSACTION; LET $prior_orders = (SELECT VALUE remote_admission_order FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND remote_admission_order IS NOT NONE ORDER BY remote_admission_order DESC LIMIT 1); CREATE $id SET job_type = 'remote_upload', status = 'queued', total_count = 0, completed_count = 0, failed_count = 0, item_ids = [], created_at = <datetime>$now, updated_at = <datetime>$now, remote_instance_id = $instance, remote_request_id = $request, remote_payload_fingerprint = $fingerprint, remote_input = $input, remote_admission = $admission, remote_source_uri = $uri, remote_admission_order = IF array::len($prior_orders) = 0 THEN 1 ELSE $prior_orders[0] + 1 END, remote_phase = 'admitted', remote_cancel_requested = false; COMMIT TRANSACTION;")
             .bind(("id", id)).bind(("now", now.to_rfc3339())).bind(("instance", input.authenticated_instance_id))
             .bind(("request", input.request_id)).bind(("fingerprint", input.payload_fingerprint))
             .bind(("input", payload)).bind(("admission", result.clone())).bind(("uri", source_uri)).await?.check()?;
@@ -442,6 +445,21 @@ impl Repository {
         self.owned_remote_upload(lease, false).await
     }
     async fn ensure_remote_source_current(&self, job: &RemoteUploadJob) -> Result<()> {
+        let expected_job = record_id_to_string(job.job.id.as_ref().expect("persisted ID"));
+        if job.source_generation.is_none() {
+            // An older unprepared request cannot supersede a newer request
+            // that already acquired this logical document. Keep the sequence
+            // in the durable journal so deletion/recreation cannot reset it.
+            // Legacy archives without the optional sequence use their original
+            // admission timestamps rather than silently bypassing the fence.
+            let newer: Vec<RecordId> = self.db.query("SELECT VALUE id FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND id != $job AND remote_source_generation IS NOT NONE AND (($order != NONE AND remote_admission_order != NONE AND remote_admission_order > $order) OR (($order = NONE OR remote_admission_order = NONE) AND created_at > <datetime>$created)) LIMIT 1")
+                .bind(("instance", job.instance_id.clone())).bind(("uri", job.source_uri.clone()))
+                .bind(("job", job.job.id.clone().expect("persisted ID"))).bind(("order", job.admission_order))
+                .bind(("created", job.job.created_at.to_rfc3339())).await?.take(0)?;
+            if !newer.is_empty() {
+                return Err(DbError::RemoteJobSourceConflict(expected_job));
+            }
+        }
         if let Some(generation) = job.source_generation {
             let source = self.get_source(&job.source_uri).await?.ok_or_else(|| {
                 DbError::RemoteJobSourceConflict(record_id_to_string(
@@ -452,7 +470,6 @@ impl Repository {
                 .metadata
                 .get("remote_upload_pending")
                 .or_else(|| source.metadata.get("remote_upload"));
-            let expected_job = record_id_to_string(job.job.id.as_ref().expect("persisted ID"));
             if source.generation != generation
                 || source.id != job.source_id
                 || source.source_type != SourceType::Markdown
@@ -803,8 +820,8 @@ impl Repository {
     pub async fn finish_remote_upload_job(
         &self,
         lease: &RemoteJobLease,
-        mut status: ProcessingJobStatus,
-        mut error: Option<String>,
+        status: ProcessingJobStatus,
+        error: Option<String>,
         result: Option<serde_json::Value>,
     ) -> Result<RemoteUploadJob> {
         if !matches!(
@@ -826,19 +843,8 @@ impl Repository {
         let _gate = self.remote_job_transition_lock.lock().await;
         let job = self.owned_remote_upload(lease, true).await?;
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
-        // Explicit cancellation remains authoritative if a provider failure
-        // or worker panic arrives at the same safe boundary.
-        if job.cancel_requested && status != ProcessingJobStatus::Completed {
-            status = ProcessingJobStatus::Cancelled;
-            error = Some("cancelled".into());
-        }
-        if status == ProcessingJobStatus::Completed {
+        if status == ProcessingJobStatus::Completed && !job.cancel_requested {
             self.ensure_remote_source_current(&job).await?;
-            if job.cancel_requested {
-                return Err(DbError::RemoteJobCancelled(record_id_to_string(
-                    &lease.job_id,
-                )));
-            }
             if !matches!(job.phase.as_str(), "promoted" | "extracting") {
                 return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
                     &lease.job_id,
@@ -852,7 +858,10 @@ impl Repository {
                 ));
             }
         }
-        let row: Option<JobRow> = self.db.query("UPDATE $job SET status = $status, remote_phase = IF $status = 'completed' THEN 'completed' ELSE remote_phase END, completed_count = IF $status = 'completed' AND $skip_extract THEN total_count ELSE completed_count END, last_error = $error, remote_result = $result, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN AFTER")
+        // Cancellation is independent of both mutexes. Resolve its persisted
+        // flag in the same UPDATE as terminalization, never from the earlier
+        // ownership snapshot taken before waiting for the lifecycle gate.
+        let row: Option<JobRow> = self.db.query("UPDATE $job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE $status END, remote_phase = IF remote_cancel_requested = false AND $status = 'completed' THEN 'completed' ELSE remote_phase END, completed_count = IF remote_cancel_requested = false AND $status = 'completed' AND $skip_extract THEN total_count ELSE completed_count END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE $error END, remote_result = IF remote_cancel_requested THEN NONE ELSE $result END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN AFTER")
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
             .bind(("status", status.as_str())).bind(("skip_extract", !job.input.extract_entities)).bind(("error", error)).bind(("result", result)).await?.take(0)?;
         row.ok_or_else(|| DbError::RemoteJobOwnershipLost(record_id_to_string(&lease.job_id)))?

@@ -351,7 +351,9 @@ async fn write_records(
 /// Immutable capture outcomes and caller provenance are user content, like
 /// note bodies. Walking them would change the identity of a committed request
 /// and make its original response unrecoverable after restore. Authentication
-/// credentials are never part of these database fields.
+/// credentials are never part of these database fields. Upload processing
+/// snapshots are also preserved: their `embedding` member describes provider
+/// configuration rather than a stored vector.
 fn opaque_client_fields(
     table: &str,
     record: &serde_json::Value,
@@ -371,7 +373,9 @@ fn opaque_client_fields(
         {
             &[
                 ("/metadata/remote_upload", "source"),
+                ("/metadata/remote_upload", "processing_options"),
                 ("/metadata/remote_upload_pending", "source"),
+                ("/metadata/remote_upload_pending", "processing_options"),
             ]
         }
         "source"
@@ -1044,6 +1048,172 @@ mod tests {
         assert_eq!(
             restored_source.metadata["remote_upload"]["source"],
             input.source_provenance
+        );
+    }
+
+    #[tokio::test]
+    async fn uploaded_processing_snapshots_survive_vector_and_vectorless_exports() {
+        use graphrag_agents::{
+            DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
+        };
+        use graphrag_application::{
+            ActionCancellation, CallerIdentity, EmbeddedApplication, RemoteApplicationOperations,
+            UploadSourceRequest,
+        };
+        use graphrag_db::RemoteJobLease;
+        use std::sync::Arc;
+
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let embedder = Arc::new(DeterministicEmbedder::default());
+        let extractor = Arc::new(FixtureEntityExtractor::default());
+        let caller = CallerIdentity {
+            instance_id: "snapshot-backup".into(),
+        };
+        let application = |target_chunk_size| {
+            EmbeddedApplication::new(
+                repo.clone(),
+                SearchAgent::new(repo.clone(), embedder.clone()),
+                embedder.clone(),
+                extractor.clone(),
+                LibrarianRuntimeConfig {
+                    target_chunk_size,
+                    skip_entity_extraction: true,
+                    ..Default::default()
+                },
+            )
+        };
+        let request = |request_id: &str, content: &str| UploadSourceRequest {
+            request_id: request_id.into(),
+            document_key: "snapshot-document".into(),
+            content: content.into(),
+            title: Some("Processing snapshots".into()),
+            provenance: None,
+            extract_entities: false,
+        };
+        let active_app = application(500);
+        let admission = active_app
+            .upload_source(
+                caller.clone(),
+                request(
+                    "active",
+                    "# Active generation\n\nOriginal source with actual vectors.",
+                ),
+            )
+            .await
+            .unwrap();
+        let execution = active_app
+            .claim_remote_job("active-epoch", "active-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        active_app
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await
+            .unwrap();
+        let active_source = repo
+            .get_source(&admission.source_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let active_options = active_source.metadata["remote_upload"]["processing_options"].clone();
+        assert!(active_options["embedding"].is_object());
+
+        let pending_app = application(300);
+        let pending = pending_app
+            .upload_source(
+                caller.clone(),
+                request(
+                    "pending",
+                    "# Pending generation\n\nChanged source with different chunk configuration.",
+                ),
+            )
+            .await
+            .unwrap();
+        let claimed = repo
+            .claim_remote_upload_job(
+                &caller.instance_id,
+                &pending.job_id,
+                "pending-epoch",
+                "pending-worker",
+            )
+            .await
+            .unwrap();
+        let lease = RemoteJobLease {
+            job_id: claimed.job.id.unwrap(),
+            instance_id: caller.instance_id.clone(),
+            service_epoch: "pending-epoch".into(),
+            worker_token: "pending-worker".into(),
+        };
+        let source = repo.begin_remote_upload_generation(&lease).await.unwrap();
+        let pending_options =
+            source.metadata["remote_upload_pending"]["processing_options"].clone();
+        assert!(pending_options["embedding"].is_object());
+        assert_ne!(active_options, pending_options);
+
+        for include_embeddings in [false, true] {
+            let archive = temp.path().join(format!("snapshots-{include_embeddings}"));
+            let summary = create_backup(&repo, &archive, include_embeddings)
+                .await
+                .unwrap();
+            assert_eq!(verify_backup(&archive).unwrap(), summary);
+            let target = temp
+                .path()
+                .join(format!("restored-snapshots-{include_embeddings}"));
+            restore_backup(&archive, &target, false).await.unwrap();
+            let restored = Repository::new(init_persistent(&target).await.unwrap());
+            let restored_source = restored
+                .get_source(&admission.source_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                restored_source.metadata["remote_upload"]["processing_options"],
+                active_options
+            );
+            assert_eq!(
+                restored_source.metadata["remote_upload_pending"]["processing_options"],
+                pending_options
+            );
+            let restored_job = restored
+                .get_remote_upload_job(&caller.instance_id, &pending.job_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored_job.input.processing_options, pending_options);
+            let records = fs::read_to_string(archive.join(RECORDS_FILE))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+                .collect::<Vec<_>>();
+            let notes: Vec<_> = records
+                .iter()
+                .filter(|record| record.table == "note")
+                .collect();
+            assert!(!notes.is_empty());
+            for note in notes {
+                assert_eq!(note.record.get("embedding").is_some(), include_embeddings);
+            }
+        }
+        let path = temp.path().join("snapshots.jsonl");
+        let summary = export_jsonl(&repo, &path).await.unwrap();
+        assert_eq!(verify_jsonl(&path).unwrap(), summary);
+        let records = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        let archived_source = records
+            .iter()
+            .find(|record| record.table == "source" && record.record["uri"] == admission.source_uri)
+            .unwrap();
+        assert_eq!(
+            archived_source.record["metadata"]["remote_upload"]["processing_options"],
+            active_options
+        );
+        assert_eq!(
+            archived_source.record["metadata"]["remote_upload_pending"]["processing_options"],
+            pending_options
         );
     }
 
