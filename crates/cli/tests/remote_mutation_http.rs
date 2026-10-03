@@ -167,7 +167,7 @@ async fn cli_edit_guards_revision_replays_and_keeps_only_failed_drafts() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("revision_conflict"));
     assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 1);
     assert_eq!(
-        repo.get_note(&id.split_once(':').unwrap().1.to_owned())
+        repo.get_note(id.split_once(':').unwrap().1)
             .await
             .unwrap()
             .unwrap()

@@ -414,7 +414,7 @@ impl ServerHandler for ToolService {
             tools: catalog()
                 .into_iter()
                 .filter(|(capability, tool)| {
-                    crate::mutations::allows_catalog(&principal, *capability, tool.name.as_ref())
+                    crate::mutations::allows_catalog(principal, *capability, tool.name.as_ref())
                 })
                 .map(|(_, tool)| tool)
                 .collect(),
