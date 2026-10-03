@@ -75,8 +75,9 @@ def _rotate_locked(directory, identity):
     if policy.get("schema_version") != 1 or len(entries) != 1:
         raise ValueError("rotation requires exactly one existing instance in schema version 1")
     pending_path = directory / f"{identity}.rotation.json"
-    if pending_path.exists():
-        if pending_path.is_symlink() or pending_path.stat().st_mode & 0o077:
+    if pending_path.exists() or pending_path.is_symlink():
+        if (pending_path.is_symlink() or not pending_path.is_file()
+                or pending_path.stat().st_mode & 0o077):
             raise ValueError("rotation recovery must be a private regular file")
         pending = json.loads(pending_path.read_text())
         token = pending["token"]

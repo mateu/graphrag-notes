@@ -312,6 +312,9 @@ async fn capture_discovery_publishes_provenance_string_and_map_bounds() {
         .find(|tool| tool["name"] == "capture_note")
         .unwrap();
     let schema = &capture["inputSchema"];
+    assert_eq!(schema["properties"]["tags"]["maxItems"], 32);
+    assert_eq!(schema["properties"]["tags"]["items"]["minLength"], 1);
+    assert_eq!(schema["properties"]["tags"]["items"]["maxLength"], 64);
     let reference = schema["properties"]["provenance"]["anyOf"]
         .as_array()
         .unwrap()

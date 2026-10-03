@@ -16,7 +16,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::{io, sync::Arc};
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]
@@ -37,6 +37,53 @@ impl ToolService {
             writes,
             write_gate: Arc::new(Semaphore::new(concurrency)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::ser::SerializeSeq;
+    use std::cell::Cell;
+
+    struct LargeSequence<'a>(&'a Cell<usize>);
+
+    impl Serialize for LargeSequence<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut sequence = serializer.serialize_seq(Some(1_000_000))?;
+            for _ in 0..1_000_000 {
+                self.0.set(self.0.get() + 1);
+                sequence.serialize_element(&"x".repeat(1024))?;
+            }
+            sequence.end()
+        }
+    }
+
+    #[test]
+    fn oversized_output_stops_serialization_before_materializing_the_payload() {
+        let visited = Cell::new(0);
+        let result = success(LargeSequence(&visited));
+        assert_eq!(
+            result.structured_content.unwrap()["error"]["code"],
+            "response_too_large"
+        );
+        assert!(
+            visited.get() < 2100,
+            "must stop near 2 MiB rather than serialize all million entries"
+        );
+    }
+
+    #[test]
+    fn response_limit_counts_encoded_escapes_and_accepts_exact_byte_boundary() {
+        assert!(check_encoded_size(&"a".repeat(MAX_RESPONSE_BYTES - 2)).is_ok());
+        assert!(matches!(
+            check_encoded_size(&"a".repeat(MAX_RESPONSE_BYTES - 1)),
+            Err(EncodingFailure::TooLarge)
+        ));
+        assert!(matches!(
+            check_encoded_size(&"\0".repeat(MAX_RESPONSE_BYTES / 6 + 1)),
+            Err(EncodingFailure::TooLarge)
+        ));
     }
 }
 
@@ -138,7 +185,7 @@ struct CaptureInput {
     #[schemars(length(max = 512))]
     title: Option<String>,
     #[serde(default)]
-    #[schemars(length(max = 32))]
+    #[schemars(length(max = 32), inner(length(min = 1, max = 64)))]
     tags: Vec<String>,
     provenance: Option<CaptureProvenance>,
 }
@@ -241,25 +288,73 @@ fn parse<T: DeserializeOwned>(
     })
 }
 
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
+enum EncodingFailure {
+    TooLarge,
+    Invalid,
+}
+
+/// Count encoded bytes without accumulating output, and stop serialization as
+/// soon as the limit is crossed. This runs before creating JSON values/buffers.
+#[derive(Default)]
+struct ResponseSizeWriter {
+    written: usize,
+    exceeded: bool,
+}
+
+impl io::Write for ResponseSizeWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > MAX_RESPONSE_BYTES.saturating_sub(self.written) {
+            self.exceeded = true;
+            return Err(io::Error::other("response byte limit exceeded"));
+        }
+        self.written += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn check_encoded_size<T: Serialize>(value: &T) -> Result<(), EncodingFailure> {
+    let mut writer = ResponseSizeWriter::default();
+    serde_json::to_writer(&mut writer, value).map_err(|_| {
+        if writer.exceeded {
+            EncodingFailure::TooLarge
+        } else {
+            EncodingFailure::Invalid
+        }
+    })
+}
+
+fn bounded_value<T: Serialize>(value: T) -> Result<Value, EncodingFailure> {
+    check_encoded_size(&value)?;
+    serde_json::to_value(value).map_err(|_| EncodingFailure::Invalid)
+}
+
+fn encoding_failure(error: EncodingFailure) -> CallToolResult {
+    match error {
+        EncodingFailure::TooLarge => failure("response_too_large", "The result exceeds the service's 2 MiB response limit. Narrow the query, reduce limit/neighbors or context budgets, or ask the corpus owner to inspect the large record locally.", false),
+        EncodingFailure::Invalid => failure("internal", "Cannot encode the tool result; contact the service owner.", false),
+    }
+}
+
 fn success<T: Serialize>(data: T) -> CallToolResult {
-    match serde_json::to_value(Envelope {
+    match bounded_value(Envelope {
         schema_version: 1,
         data: Some(data),
         error: None,
     }) {
         Ok(value) => {
             let result = CallToolResult::structured(value);
-            match serde_json::to_vec(&result) {
-                Ok(bytes) if bytes.len() <= 2 * 1024 * 1024 => result,
-                Ok(_) => failure("response_too_large", "The result exceeds the service's 2 MiB response limit. Narrow the query, reduce limit/neighbors or context budgets, or ask the corpus owner to inspect the large record locally.", false),
-                Err(_) => failure("internal", "Cannot encode the tool result; contact the service owner.", false),
+            match check_encoded_size(&result) {
+                Ok(()) => result,
+                Err(error) => encoding_failure(error),
             }
         }
-        Err(_) => failure(
-            "internal",
-            "Cannot encode the tool result; contact the service owner.",
-            false,
-        ),
+        Err(error) => encoding_failure(error),
     }
 }
 
@@ -344,10 +439,10 @@ impl ServerHandler for ToolService {
             id,
             result: rmcp::model::ServerResult::from(result.clone()),
         };
-        match serde_json::to_vec(&response) {
-            Ok(bytes) if bytes.len() <= 2 * 1024 * 1024 => Ok(result),
-            Ok(_) => Ok(failure("response_too_large", "The complete response exceeds the service's 2 MiB output limit. Narrow the query or budgets, and use a shorter protocol request ID.", false).into()),
-            Err(_) => Ok(failure("internal", "Cannot encode the response; contact the service owner.", false).into()),
+        match check_encoded_size(&response) {
+            Ok(()) => Ok(result),
+            Err(EncodingFailure::TooLarge) => Ok(failure("response_too_large", "The complete response exceeds the service's 2 MiB output limit. Narrow the query or budgets, and use a shorter protocol request ID.", false).into()),
+            Err(EncodingFailure::Invalid) => Ok(failure("internal", "Cannot encode the response; contact the service owner.", false).into()),
         }
     }
 }
@@ -406,15 +501,12 @@ impl ToolService {
                     _ = context.ct.cancelled() => { cancellation.cancel(); Err(ApplicationError::Cancelled) }
                 };
                 match result {
-                    Ok(records) => match serde_json::to_value(records)
-                        .and_then(serde_json::from_value::<Vec<RecordOutput>>)
-                    {
-                        Ok(records) => success(SearchOutput { records }),
-                        Err(_) => failure(
-                            "internal",
-                            "Cannot encode search records; contact the service owner.",
-                            false,
-                        ),
+                    Ok(records) => match bounded_value(records) {
+                        Ok(value) => match serde_json::from_value::<Vec<RecordOutput>>(value) {
+                            Ok(records) => success(SearchOutput { records }),
+                            Err(_) => encoding_failure(EncodingFailure::Invalid),
+                        },
+                        Err(error) => encoding_failure(error),
                     },
                     Err(error) => application_failure(error),
                 }
@@ -447,15 +539,12 @@ impl ToolService {
                     )
                     .await
                 {
-                    Ok(record) => match serde_json::to_value(record)
-                        .and_then(serde_json::from_value::<InspectionOutput>)
-                    {
-                        Ok(record) => success(record),
-                        Err(_) => failure(
-                            "internal",
-                            "Cannot encode the record; contact the service owner.",
-                            false,
-                        ),
+                    Ok(record) => match bounded_value(record) {
+                        Ok(value) => match serde_json::from_value::<InspectionOutput>(value) {
+                            Ok(record) => success(record),
+                            Err(_) => encoding_failure(EncodingFailure::Invalid),
+                        },
+                        Err(error) => encoding_failure(error),
                     },
                     Err(error) => application_failure(error),
                 }

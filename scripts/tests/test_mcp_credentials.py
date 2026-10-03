@@ -3,6 +3,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -64,6 +66,44 @@ class CredentialProvisioning(unittest.TestCase):
             with self.assertRaises(ValueError):
                 credentials.provision(path, [f"client-{i}" for i in range(129)], [])
             self.assertFalse(path.exists())
+
+    @unittest.skipUnless(os.name == "posix", "private file permissions require POSIX")
+    def test_rotation_refuses_nonregular_or_exposed_recovery_without_changing_tokens(self):
+        for kind in ["fifo", "directory", "symlink", "broken-symlink", "exposed-file"]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as base:
+                path = Path(base) / "private"
+                credentials.provision(path, ["openclaw-a"], ["hermes"])
+                policy = path / "credentials.json"
+                original_policy = policy.read_bytes()
+                token_file = path / "openclaw-a.env"
+                original_token = token_file.read_bytes()
+                pending = path / "openclaw-a.rotation.json"
+                if kind == "fifo":
+                    os.mkfifo(pending, 0o600)
+                elif kind == "directory":
+                    pending.mkdir(mode=0o700)
+                elif kind in ["symlink", "broken-symlink"]:
+                    target = Path(base) / "recovery.json"
+                    if kind == "symlink":
+                        target.write_text("{}\n")
+                        target.chmod(0o600)
+                    pending.symlink_to(target)
+                else:
+                    pending.write_text("{}\n")
+                    pending.chmod(0o644)
+                # With no FIFO writer, an attempted read would block. A real
+                # process and deadline prove refusal occurs before that read.
+                result = subprocess.run(
+                    [sys.executable, str(spec.origin), str(path), "--rotate", "openclaw-a"],
+                    capture_output=True, text=True, timeout=2,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("Credential setup failed", result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertNotIn(original_token.decode().split("'")[1], result.stderr)
+                self.assertEqual(policy.read_bytes(), original_policy)
+                self.assertEqual(token_file.read_bytes(), original_token)
+                self.assertTrue(pending.exists() or pending.is_symlink())
 
     def test_refuses_overwrite_and_invalid_ids_before_writing(self):
         with tempfile.TemporaryDirectory() as base:
