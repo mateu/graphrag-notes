@@ -96,6 +96,37 @@ fn invalid_service_security_policy_is_rejected_before_database_creation() {
     assert!(!database.exists());
 }
 
+#[test]
+fn in_memory_service_is_rejected_before_configuration_or_database_creation() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("private-home");
+    fs::create_dir(&home).unwrap();
+    let config = temp.path().join("invalid.toml");
+    let database = temp.path().join("must-not-exist");
+    fs::write(&config, "this is invalid TOML [").unwrap();
+    graphrag()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .arg("--config")
+        .arg(&config)
+        .arg("--db-path")
+        .arg(&database)
+        .args(["--memory", "serve", "--credentials-file"])
+        .arg(temp.path().join("missing-policy.json"))
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure()
+        .stderr(contains("serve requires a persistent database"))
+        .stderr(contains("remove --memory"))
+        .stderr(contains("--db-path"));
+    assert!(!database.exists());
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        "this is invalid TOML ["
+    );
+    assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn cancelled_editor_preserves_changed_remote_draft_without_sending() {

@@ -602,6 +602,11 @@ pub(crate) async fn run() -> Result<()> {
         max_concurrent_requests,
     } = &cli.command
     {
+        if cli.memory {
+            anyhow::bail!(
+                "serve requires a persistent database for restart-safe capture and request replay; remove --memory and select --db-path"
+            );
+        }
         graphrag_service::ServiceOptions {
             listen: *listen,
             credentials_file: credentials_file.clone(),
