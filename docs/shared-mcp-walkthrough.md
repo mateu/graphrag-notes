@@ -53,6 +53,10 @@ and whole-scenario deadlines are bounded and configurable. On timeout/startup
 failure, private subprocess groups are stopped and partial sanitized logs are
 retained. An otherwise successful client or service that leaves descendants
 requiring forced cleanup fails the run instead of reporting clean shutdown.
+Graceful shutdown and process-group waits use the remaining work budget rather
+than starting another fixed wait. Once that budget expires, mandatory cleanup
+may add a one-second killed-child reap and a one-second pipe drain; the local
+inference fixture also closes before the report is finalized.
 The generated policy contains token hashes only; runtime tokens pass
 through stdin/configuration memory and are redacted from retained process logs.
 Cleanup rejects linked or non-regular log paths before reading them, so a

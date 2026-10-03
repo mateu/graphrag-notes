@@ -32,9 +32,15 @@ capture/delete/upload receipts. Host export contained four capture receipts,
 three mutation receipts and four live notes; all private processes shut down
 cleanly.
 
-The finished harness gate passed 31 Python tests, including sixteen native
-failure/isolation regressions, plus Node syntax, Python compilation and diff
-checks. Log cleanup rejects symbolic/hard links and special files without
+At checkpoint authorship, the harness gate passed 31 Python tests, including
+sixteen native failure/isolation regressions, plus Node syntax, Python
+compilation and diff checks. These historical counts are retained in the JSON
+`regression_gate`; they describe that checkpoint, not the current suite inventory.
+The separately dated `post_review_regression_gate` records the later gate of
+35 Python tests, including twenty native regressions, and the observed
+harness/test file hashes. That gate also passed Node syntax, Python compilation
+and diff checks; it is a recorded observation rather than a live test inventory.
+Log cleanup rejects symbolic/hard links and special files without
 following targets, and supplied runspace roots require exact 0700 mode with
 write/search access. Ordinary identities retain `read,capture`; writer/uploader
 and foreign-job grants are separate opt-in identities.

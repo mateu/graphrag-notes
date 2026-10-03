@@ -159,6 +159,7 @@ def private_environment(directory, client, hermes_root=None):
 
 def terminate_group(process, timeout=5):
     """Stop a private subprocess group; report whether intervention was needed."""
+    deadline = time.monotonic() + max(0, timeout)
     intervened = process.poll() is None
     if process.poll() is None:
         try:
@@ -166,25 +167,25 @@ def terminate_group(process, timeout=5):
         except ProcessLookupError:
             pass
         try:
-            process.wait(timeout=timeout)
+            process.wait(timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
             pass
     # A successful parent can leave descendants behind. Allow a brief bounded
     # interval for exiting children to be reaped before testing the whole group.
-    deadline = time.monotonic() + 0.25
+    reap_deadline = min(deadline, time.monotonic() + 0.25)
     while True:
         try:
             os.killpg(process.pid, 0)
         except ProcessLookupError:
-            process.wait(timeout=timeout)
+            process.wait(timeout=max(0, deadline - time.monotonic()))
             return intervened
         except PermissionError:
             # A remaining private group must not count as a clean shutdown,
             # even if the platform will not let us signal it while reaping.
             pass
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= reap_deadline:
             break
-        time.sleep(0.01)
+        time.sleep(min(0.01, max(0, reap_deadline - time.monotonic())))
     intervened = True
     try:
         os.killpg(process.pid, signal.SIGKILL)
@@ -195,27 +196,33 @@ def terminate_group(process, timeout=5):
         # reaped. A live owning process must still report cleanup failure.
         if process.poll() is None:
             raise
-    process.wait(timeout=timeout)
+    # Deadline expiry must still reap a killed child. This fixed emergency
+    # allowance is independent of (and never restarts) the work budget.
+    process.wait(timeout=max(1, deadline - time.monotonic()))
     return intervened
 
 
 def run_child(command, payload, directory, label, environment, tokens, timeout):
+    deadline = time.monotonic() + timeout
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, cwd=directory,
                                env=environment, start_new_session=True)
     timed_out = False
     forced_cleanup = False
+    cleanup_performed = False
     stdout = stderr = ""
     try:
         stdout, stderr = process.communicate(json.dumps(payload) if payload is not None else None,
-                                             timeout=timeout)
+                                             timeout=max(0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         timed_out = True
-        forced_cleanup = terminate_group(process)
-        stdout, stderr = process.communicate(timeout=5)
+        forced_cleanup = terminate_group(process, timeout=0)
+        cleanup_performed = True
+        stdout, stderr = process.communicate(timeout=1)
     finally:
         try:
-            forced_cleanup = terminate_group(process) or forced_cleanup
+            if not cleanup_performed:
+                forced_cleanup = terminate_group(process, timeout=max(0, deadline - time.monotonic())) or forced_cleanup
         finally:
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
@@ -255,6 +262,8 @@ class PrivateServer:
         self.port = free_port()
         self.process = None
         self.streams = []
+        self.shutdown_timeout = min(15, timeout)
+        deadline = time.monotonic() + min(20, timeout)
         try:
             for name in ("stdout", "stderr"):
                 path = directory / f"server-{self.port}.{name}"
@@ -266,7 +275,6 @@ class PrivateServer:
             self.process = subprocess.Popen(command, cwd=directory,
                 env=private_environment(directory, "server"), stdout=self.streams[0],
                 stderr=self.streams[1], start_new_session=True)
-            deadline = time.monotonic() + min(20, timeout)
             while time.monotonic() < deadline:
                 require(self.process.poll() is None, "Synthetic service stopped during startup")
                 try:
@@ -276,25 +284,27 @@ class PrivateServer:
                     time.sleep(0.05)
             raise ValidationError("Synthetic service startup exceeded its bounded deadline")
         except BaseException:
-            self.stop(require_clean=False)
+            self.stop(require_clean=False, timeout=max(0, deadline - time.monotonic()))
             raise
 
     @property
     def url(self):
         return f"http://127.0.0.1:{self.port}/mcp"
 
-    def stop(self, require_clean=True):
+    def stop(self, require_clean=True, timeout=None):
+        budget = self.shutdown_timeout if timeout is None else min(15, max(0, timeout))
+        deadline = time.monotonic() + budget
         clean = True
         try:
             if self.process is not None:
                 if self.process.poll() is None:
                     self.process.send_signal(signal.SIGINT)
                     try:
-                        self.process.wait(timeout=15)
+                        self.process.wait(timeout=max(0, deadline - time.monotonic()))
                     except subprocess.TimeoutExpired:
                         clean = False
                 clean = clean and self.process.poll() == 0
-                forced_cleanup = terminate_group(self.process)
+                forced_cleanup = terminate_group(self.process, timeout=max(0, deadline - time.monotonic()))
                 clean = clean and not forced_cleanup
         finally:
             for stream in self.streams:
@@ -312,8 +322,8 @@ def parser_options(argv):
     parser.add_argument("--hermes-root", required=True, type=Path, help="Installed Hermes Agent code directory")
     parser.add_argument("--hermes-python", type=Path, help="Hermes Python/venv executable; defaults to ROOT/venv/bin/python")
     parser.add_argument("--runspace-root", type=Path, help="Existing private directory for fresh retained runs")
-    parser.add_argument("--command-timeout", type=float, default=120, help="Per-child deadline, 1–600 seconds")
-    parser.add_argument("--deadline-seconds", type=float, default=600, help="Whole scenario budget, 1–1800 seconds")
+    parser.add_argument("--command-timeout", type=float, default=120, help="Per-child work budget, 1–600 seconds; bounded emergency cleanup may follow")
+    parser.add_argument("--deadline-seconds", type=float, default=600, help="Whole scenario work budget, 1–1800 seconds; bounded emergency cleanup may follow")
     parser.add_argument("--extended", action="store_true", help="Explicitly grant extra synthetic identities mutation/upload/jobs capabilities and exercise the combined candidate")
     options = parser.parse_args(argv)
     if platform.system() not in ("Darwin", "Linux"):
@@ -446,13 +456,13 @@ level = "warn"
         if extended:
             evidence["extended"] = {}
             _, extended_state = extended.run_extended(native_calls, provider, require, timeout, evidence["extended"])
-        server.stop()
+        server.stop(timeout=timeout())
         server = None
         server = PrivateServer(options.binary, directory, timeout())
         replay = openclaw("replay", original=original["record"])
         if extended:
             evidence["extended"]["service_restart"] = extended.replay_extended(native_calls, extended_state, require)
-        server.stop()
+        server.stop(timeout=timeout())
         server = None
         exported = directory / "logical-records.jsonl"
         run_child([str(options.binary), "--config", str(directory / "config.toml"), "--db-path",
@@ -494,7 +504,7 @@ level = "warn"
     finally:
         if server:
             try:
-                server.stop()
+                server.stop(timeout=max(0, min(options.command_timeout, deadline - time.monotonic())))
             except Exception:
                 evidence["cleanup_errors"].append("Synthetic service required forced cleanup")
         if provider:

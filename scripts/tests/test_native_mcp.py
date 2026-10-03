@@ -159,6 +159,22 @@ class NativeRuntimeHarness(unittest.TestCase):
         self.assertTrue(all(stream.closed for stream in server.streams))
         self.assert_process_stopped(int(pid_path.read_text()))
 
+    def test_unresponsive_service_shutdown_uses_remaining_budget_and_reaps(self):
+        binary = self.executable("unresponsive-service",
+            "import signal,socket,sys,time\n"
+            + "signal.signal(signal.SIGINT,signal.SIG_IGN); signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+            + "host,port=sys.argv[sys.argv.index('--listen')+1].split(':')\n"
+            + "listener=socket.socket(); listener.bind((host,int(port))); listener.listen()\n"
+            + "while True: time.sleep(0.1)\n")
+        server = HARNESS.PrivateServer(binary, self.directory, 2)
+        started = time.monotonic()
+        with self.assertRaisesRegex(HARNESS.ValidationError, "did not shut down cleanly"):
+            server.stop(timeout=0.2)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertLess(server.process.returncode, 0)
+        self.assertTrue(all(stream.closed for stream in server.streams))
+        self.assert_process_stopped(server.process.pid)
+
     def test_invalid_deadlines_are_rejected_before_starting_runtimes(self):
         required = ["--binary", "/absent", "--openclaw-root", "/absent", "--hermes-root", "/absent"]
         for flag in ("--command-timeout", "--deadline-seconds"):

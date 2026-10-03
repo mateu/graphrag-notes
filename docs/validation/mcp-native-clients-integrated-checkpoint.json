@@ -1019,6 +1019,18 @@
     "native_harness_tests": 16,
     "node_syntax": true,
     "python_compilation": true,
+    "diff_check": true,
+    "scope": "Historical gate at checkpoint authorship; not the current test inventory"
+  },
+  "post_review_regression_gate": {
+    "observed_at": "2026-10-03T16:41:48.086365+00:00",
+    "scope": "Post-review gate observed at the recorded timestamp and file hashes; not a live test inventory",
+    "python_tests": 35,
+    "native_harness_tests": 20,
+    "harness_sha256": "6fc2a1a25f8eaba13f70f54df3d10dbaca41cf10ad3af40dd58d5393f1233e1c",
+    "test_suite_sha256": "b1c3f8da6a28bc44090dfd4088aac69717507b5781bc9700d0cbd5019a8edf0a",
+    "node_syntax": true,
+    "python_compilation": true,
     "diff_check": true
   }
 }
