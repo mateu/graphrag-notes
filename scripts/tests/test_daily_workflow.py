@@ -10,6 +10,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -190,6 +191,44 @@ class DailyWorkflowContracts(unittest.TestCase):
         self.assertFalse(mutation_marker.exists())
         self.assertFalse(workflow.db.exists())
         self.assertFalse(workflow.steps[0]["success"])
+
+    def test_interrupted_sync_uses_one_cumulative_command_timeout(self):
+        self.binary.write_text(
+            "#!" + sys.executable + "\n"
+            "import json,signal,sys,time\n"
+            "def cancel(*_):\n"
+            " print('Cancellation requested; sync --resume processing_job:fixture',file=sys.stderr,flush=True)\n"
+            " time.sleep(0.65)\n"
+            " print(json.dumps({'data':{'cancelled':True,'job_id':'processing_job:fixture',"
+            "'files':[{'status':'pending'}]}}),flush=True)\n"
+            " sys.exit(5)\n"
+            "signal.signal(signal.SIGINT,cancel)\n"
+            "print('Ingesting markdown from: synthetic.md',file=sys.stderr,flush=True)\n"
+            "while True: time.sleep(0.01)\n"
+        )
+        workflow = self.workflow(timeout=1)
+        entered = threading.Event()
+        release = threading.Event()
+        timer = threading.Timer(0.65, entered.set)
+        workflow.provider = SimpleNamespace(
+            arm=timer.start, entered=entered, release=release
+        )
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "timed out|deadline expired"):
+                workflow.interrupt_sync()
+        finally:
+            timer.cancel()
+            timer.join(2)
+        self.assertLess(time.monotonic() - started, 1.6)
+        result = workflow.result()
+        self.assertEqual(result["cli_subprocess_count"], 1)
+        command = result["commands"][0]
+        self.assertIsNotNone(command["error"])
+        evidence = Path(command["stderr_path"]).read_text()
+        self.assertIn("Ingesting markdown from:", evidence)
+        self.assertIn("Cancellation requested;", evidence)
+        self.assertTrue(release.is_set())
 
 
 if __name__ == "__main__":

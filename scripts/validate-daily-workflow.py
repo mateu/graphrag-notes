@@ -327,6 +327,13 @@ opener = {json.dumps([sys.executable, str(self.opener), str(self.open_log), "lit
         args = ["sync", "daily", "--format", "json"]
         argv = self.argv(args)
         started = time.monotonic()
+        command_deadline = min(started + self.options.command_timeout, self.deadline)
+
+        def remaining():
+            value = command_deadline - time.monotonic()
+            require(value > 0, "interrupted sync command deadline expired; evidence retained")
+            return value
+
         if self.provider:
             self.provider.arm()
         process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -335,16 +342,19 @@ opener = {json.dumps([sys.executable, str(self.opener), str(self.open_log), "lit
         imported, acknowledged = threading.Event(), threading.Event()
 
         def read(stream, destination, progress=False):
-            while True:
-                chunk = stream.read(1)
-                if not chunk:
-                    return
-                destination.extend(chunk)
-                if progress:
-                    if b"Ingesting markdown from:" in destination:
-                        imported.set()
-                    if b"Cancellation requested;" in destination:
-                        acknowledged.set()
+            try:
+                while True:
+                    chunk = stream.read(1)
+                    if not chunk:
+                        return
+                    destination.extend(chunk)
+                    if progress:
+                        if b"Ingesting markdown from:" in destination:
+                            imported.set()
+                        if b"Cancellation requested;" in destination:
+                            acknowledged.set()
+            finally:
+                stream.close()
 
         readers = [threading.Thread(target=read, args=(process.stdout, stdout), daemon=True),
                    threading.Thread(target=read, args=(process.stderr, stderr, True), daemon=True)]
@@ -352,15 +362,15 @@ opener = {json.dumps([sys.executable, str(self.opener), str(self.open_log), "lit
             reader.start()
         error = None
         try:
-            require(imported.wait(self.remaining()), "sync never reported first public file import")
+            require(imported.wait(remaining()), "sync never reported first public file import")
             if self.provider:
-                require(self.provider.entered.wait(self.remaining()), "sync never reached deterministic embedding pause")
+                require(self.provider.entered.wait(remaining()), "sync never reached deterministic embedding pause")
             require(process.poll() is None, "sync completed before interruption; no cancelled measurement claimed")
             process.send_signal(signal.SIGINT)
-            require(acknowledged.wait(min(20, self.remaining())), "sync did not acknowledge cancellation")
+            require(acknowledged.wait(min(20, remaining())), "sync did not acknowledge cancellation")
             if self.provider:
                 self.provider.release.set()
-            process.wait(timeout=self.remaining())
+            process.wait(timeout=remaining())
         except Exception as failure:
             error = str(failure)
             if process.poll() is None:
