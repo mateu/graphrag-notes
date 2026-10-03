@@ -253,6 +253,10 @@ impl Repository {
                 if input.operation != "edit" {
                     return Err(conflict());
                 }
+                let mut note = *note;
+                // Match local updates: retain intentional aliases, while
+                // rebuilding body/heading-derived text for changed content.
+                note.search_content = Some(search_content_for_note_update(&expected, &note));
                 target = expected.id.clone().ok_or_else(conflict)?;
                 let mut sql = super::notes::editor_snapshot_guard(true);
                 if let Some(new_entities) = replacement_entities {
@@ -262,7 +266,7 @@ impl Repository {
                 }
                 sql.push_str("UPDATE $target SET content=$replacement.content,title=$replacement.title,tags=$replacement.tags,embedding=$replacement_embedding,search_content=$replacement.search_content,updated_at=$replacement.updated_at; ");
                 expected_note = Some(*expected);
-                replacement = Some(*note);
+                replacement = Some(note);
                 effects = sql;
             }
             RemoteMutationEffect::Delete { expected } => {

@@ -266,7 +266,6 @@ impl EmbeddedApplication {
                 )
                 .await?;
             replacement.embedding = prepared.embedding;
-            replacement.search_content = Some(replacement.content.clone());
             Some(entities)
         } else {
             None

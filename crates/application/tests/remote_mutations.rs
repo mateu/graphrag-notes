@@ -195,6 +195,94 @@ async fn changed_content_prepares_vectors_and_retry_bypasses_unavailable_provide
 }
 
 #[tokio::test]
+async fn content_edits_preserve_custom_search_aliases_and_rebuild_derived_heading_text_on_replay() {
+    for kind in ["body", "headings", "custom"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let obsolete = format!("obsolete{kind}");
+        let current = format!("current{kind}");
+        let mut note = Note::new(format!("{obsolete} old body"));
+        if kind != "body" {
+            // Detached notes can retain heading provenance after becoming
+            // manual, while having no current source generation or chat links.
+            note.chunk_heading_path = vec!["Roadmap".into(), "Milestones".into()];
+            note.search_content = Some(if kind == "custom" {
+                "retainedalias".into()
+            } else {
+                format!("Roadmap > Milestones\n\n{}", note.content)
+            });
+        }
+        let note = repo.create_note(note).await.unwrap();
+        let typed_id = note.id.as_ref().unwrap();
+        let id = record_id_to_string(typed_id);
+        let healthy = application(&repo, true);
+        let before = snapshot(&healthy, &id).await;
+        assert!(before.editable);
+        let content = format!("{current} replacement body");
+        let request = edit(
+            &before,
+            &format!("search-text-{kind}"),
+            RemoteNotePatch {
+                content: Some(content.clone()),
+                ..Default::default()
+            },
+        );
+        let result = healthy
+            .edit_remote(caller(), request.clone(), ActionCancellation::new())
+            .await
+            .unwrap();
+        let stored = repo.get_note(&id).await.unwrap().unwrap();
+        let expected = match kind {
+            "custom" => "retainedalias".into(),
+            "headings" => format!("Roadmap > Milestones\n\n{content}"),
+            _ => content,
+        };
+        assert_eq!(
+            stored.search_content.as_deref(),
+            Some(expected.as_str()),
+            "{kind}"
+        );
+        assert_eq!(stored.chunk_heading_path, note.chunk_heading_path);
+        let replay = application(&repo, false)
+            .edit_remote(caller(), request, ActionCancellation::new())
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.outcome, result.outcome);
+        assert_eq!(
+            repo.get_note(&id).await.unwrap().unwrap().search_content,
+            stored.search_content
+        );
+        assert!(repo
+            .fulltext_search(&obsolete, 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|hit| &hit.id != typed_id));
+        assert!(repo
+            .fulltext_search(&current, 10)
+            .await
+            .unwrap()
+            .iter()
+            .any(|hit| &hit.id == typed_id));
+        let retained_query = if kind == "custom" {
+            "retainedalias"
+        } else {
+            "Milestones"
+        };
+        if kind != "body" {
+            assert!(
+                repo.fulltext_search(retained_query, 10)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|hit| &hit.id == typed_id),
+                "{kind}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn imported_or_chat_linked_notes_remain_readable_but_refuse_remote_mutations() {
     let db = init_memory().await.unwrap();
     let repo = Repository::new(db.clone());
