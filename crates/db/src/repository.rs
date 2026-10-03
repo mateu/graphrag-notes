@@ -14,6 +14,7 @@ mod models;
 mod notes;
 mod portable;
 mod remote_capture;
+mod remote_mutations;
 mod sources;
 mod stats;
 
@@ -35,6 +36,9 @@ pub use models::{
 };
 pub use portable::{parse_portable_record_id, PORTABLE_TABLES};
 pub use remote_capture::{RemoteCaptureInput, RemoteCaptureReceipt};
+pub use remote_mutations::{
+    MutationGuard, MutationNoteSnapshot, RemoteMutationEffect, RemoteMutationInput,
+};
 pub use stats::DbStats;
 
 use crate::{

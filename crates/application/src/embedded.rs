@@ -434,12 +434,9 @@ impl ApplicationOperations for EmbeddedApplication {
     }
 
     async fn proposal(&self, id: &str) -> ApplicationResult<ProposalCard> {
-        let parsed = proposal_id(id)?;
-        let proposal = self
-            .repo
-            .get_edge_proposal(&parsed)
-            .await?
-            .ok_or_else(|| ApplicationError::NotFound(format!("Proposal {id} not found")))?;
+        let _ = proposal_id(id)?;
+        let guard = self.repo.mutation_guard().await;
+        let proposal = self.repo.mutation_proposal_snapshot(&guard, id).await?;
         self.proposal_card(proposal).await
     }
 

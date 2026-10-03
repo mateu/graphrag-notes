@@ -6,6 +6,8 @@ mod embedded;
 mod error;
 mod inference;
 mod remote_contracts;
+mod remote_mutation_contracts;
+mod remote_mutations;
 mod remote_operations;
 
 pub use contracts::*;
@@ -15,6 +17,8 @@ pub use embedded::{
 };
 pub use error::{ApplicationError, ApplicationFailure, ApplicationResult};
 pub use remote_contracts::*;
+pub use remote_mutation_contracts::*;
+pub use remote_mutations::remote_mutation_fingerprint;
 pub use remote_operations::remote_capture_fingerprint;
 
 use async_trait::async_trait;
@@ -56,6 +60,44 @@ pub trait ApplicationOperations: Send + Sync {
 /// Shared remote foundation; transports authenticate the caller before invoking it.
 #[async_trait]
 pub trait RemoteApplicationOperations: ApplicationOperations {
+    async fn note_snapshot(&self, reference: RecordRef) -> ApplicationResult<RemoteNoteSnapshot> {
+        let _ = reference;
+        Err(ApplicationError::Validation(
+            "Remote note editing is unavailable.".into(),
+        ))
+    }
+    async fn edit_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteEditRequest,
+        cancellation: ActionCancellation,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        let _ = (caller, request, cancellation);
+        Err(ApplicationError::Validation(
+            "Remote note editing is unavailable.".into(),
+        ))
+    }
+    async fn delete_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteDeleteRequest,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        let _ = (caller, request);
+        Err(ApplicationError::Validation(
+            "Remote note deletion is unavailable.".into(),
+        ))
+    }
+    async fn decide_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteDecisionRequest,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        let _ = (caller, request);
+        Err(ApplicationError::Validation(
+            "Remote proposal decisions are unavailable.".into(),
+        ))
+    }
+
     async fn build_context(
         &self,
         request: BuildContextRequest,

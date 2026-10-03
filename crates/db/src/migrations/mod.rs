@@ -20,6 +20,7 @@ mod v013_reindex_ownership;
 mod v014_reindex_input_snapshots;
 mod v015_chat_metadata;
 mod v016_remote_capture_receipts;
+mod v017_remote_mutation_receipts;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -32,7 +33,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 16;
+pub const LATEST_SCHEMA_VERSION: u32 = 17;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -64,6 +65,7 @@ const MIGRATIONS: &[Migration] = &[
     v014_reindex_input_snapshots::MIGRATION,
     v015_chat_metadata::MIGRATION,
     v016_remote_capture_receipts::MIGRATION,
+    v017_remote_mutation_receipts::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -579,7 +581,7 @@ mod tests {
         let notes_before: Vec<serde_json::Value> = db.select("note").await.unwrap();
         let sources_before: Vec<serde_json::Value> = db.select("source").await.unwrap();
         let history_before = load_applied_migrations(&db).await.unwrap();
-        apply_all(&db).await.unwrap();
+        apply_migrations(&db, &MIGRATIONS[..16]).await.unwrap();
         let notes_after: Vec<serde_json::Value> = db.select("note").await.unwrap();
         let sources_after: Vec<serde_json::Value> = db.select("source").await.unwrap();
         assert_eq!(notes_after, notes_before);
@@ -593,6 +595,37 @@ mod tests {
         }
         let receipts: Vec<serde_json::Value> = db.select("remote_capture_receipt").await.unwrap();
         assert!(receipts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn v017_adds_mutation_journal_without_rewriting_capture_receipts() {
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..16]).await.unwrap();
+        db.query("CREATE remote_capture_receipt SET instance_id='legacy',request_id='capture',payload_fingerprint='original',payload={content:'preserved'},result={revision:'original'},note_id=note:retired,source_id=source:retired,created_at=time::now(),updated_at=time::now(); CREATE note SET content='existing knowledge';").await.unwrap().check().unwrap();
+        let receipts: Vec<serde_json::Value> = db.select("remote_capture_receipt").await.unwrap();
+        let notes: Vec<serde_json::Value> = db.select("note").await.unwrap();
+        let history = load_applied_migrations(&db).await.unwrap();
+        apply_migrations(&db, &MIGRATIONS[..17]).await.unwrap();
+        assert_eq!(current_version(&db).await.unwrap(), 17);
+        assert_eq!(
+            db.select::<Vec<serde_json::Value>>("remote_capture_receipt")
+                .await
+                .unwrap(),
+            receipts
+        );
+        assert_eq!(
+            db.select::<Vec<serde_json::Value>>("note").await.unwrap(),
+            notes
+        );
+        assert!(db
+            .select::<Vec<serde_json::Value>>("remote_mutation_receipt")
+            .await
+            .unwrap()
+            .is_empty());
+        let after = load_applied_migrations(&db).await.unwrap();
+        for (before, after) in history.iter().zip(after.iter()) {
+            assert_eq!(before.checksum, after.checksum);
+        }
     }
 
     #[tokio::test]

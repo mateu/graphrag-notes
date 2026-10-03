@@ -34,13 +34,17 @@ pub(crate) struct Cli {
     )]
     pub(crate) credential_env: String,
 
-    /// Stable request identity for remote capture; reuse it with the same content after uncertainty.
+    /// Stable identity for a remote write; reuse it with the identical payload after uncertainty.
     #[arg(long, global = true, value_name = "ID")]
     pub(crate) request_id: Option<String>,
 
     /// Adopt a private --content-file recovery draft and remove it after verified remote success.
     #[arg(long, global = true, requires = "request_id")]
     pub(crate) recover_draft: bool,
+
+    /// Revision from remote notes show or garden review; required for remote mutations.
+    #[arg(long, global = true, value_name = "REVISION")]
+    pub(crate) expected_revision: Option<String>,
 
     /// Database path (overrides the resolved configuration)
     #[arg(short, long, global = true)]
@@ -749,6 +753,14 @@ pub(crate) enum ProposalCommand {
         #[arg(long)]
         reason: Option<String>,
         /// Confirm a mutating rejection.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Undo an accepted proposal and preserve its review audit.
+    Undo {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
         #[arg(long)]
         yes: bool,
     },

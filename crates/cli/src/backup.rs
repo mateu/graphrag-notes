@@ -357,7 +357,7 @@ fn opaque_client_fields(
     record: &serde_json::Value,
 ) -> &'static [(&'static str, &'static str)] {
     match table {
-        "remote_capture_receipt" => &[("", "payload"), ("", "result")],
+        "remote_capture_receipt" | "remote_mutation_receipt" => &[("", "payload"), ("", "result")],
         "source"
             if record["source_type"] == "manual"
                 && record["uri"]
@@ -622,6 +622,7 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
         "note_from_conversation" => &[("in", Some("note")), ("out", Some("conversation"))],
         "note_from_message" => &[("in", Some("note")), ("out", Some("message"))],
         "remote_capture_receipt" => &[("note_id", Some("note")), ("source_id", Some("source"))],
+        "remote_mutation_receipt" => &[("target", None)],
         _ => &[],
     };
     let object = record
@@ -652,6 +653,7 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
         }
         if (historical_proposal && matches!(*field, "in" | "out"))
             || table == "remote_capture_receipt"
+            || table == "remote_mutation_receipt"
         {
             // Terminal proposals and successful capture receipts retain IDs
             // after source/note cleanup. Validate their shape without requiring
@@ -937,6 +939,66 @@ mod tests {
             .unwrap();
         assert_eq!(inspection.provenance, original_inspection.provenance);
         assert_eq!(inspection.revision, original_inspection.revision);
+    }
+
+    #[tokio::test]
+    async fn remote_mutation_backup_preserves_deleted_target_replay_and_opaque_payload() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let capture = remote_capture_fixture();
+        let saved = repo
+            .capture_remote_note(capture.clone(), vec![], vec![])
+            .await
+            .unwrap();
+        let id = saved.result["id"].as_str().unwrap();
+        let input = graphrag_db::RemoteMutationInput {
+            instance_id: "hermes-reviewer".into(),
+            request_id: "delete-original".into(),
+            operation: "delete".into(),
+            payload_fingerprint: "b".repeat(64),
+            payload: serde_json::json!({"id":id,"confirmed":true,"token":"opaque user text","uri":"file:///client-owned/context.md"}),
+            result: serde_json::json!({"id":id,"operation":"delete","original":"exact original outcome","embedding":"opaque user vocabulary"}),
+        };
+        let guard = repo.mutation_guard().await;
+        let note = repo.mutation_note_snapshot(&guard, id).await.unwrap().note;
+        let original = repo
+            .apply_remote_mutation(
+                &guard,
+                input.clone(),
+                graphrag_db::RemoteMutationEffect::Delete {
+                    expected: Box::new(note),
+                },
+            )
+            .await
+            .unwrap();
+        drop(guard);
+        let path = temp.path().join("mutation-backup");
+        let created = create_backup(&repo, &path, false).await.unwrap();
+        assert_eq!(verify_backup(&path).unwrap(), created);
+        let records = fs::read_to_string(path.join(RECORDS_FILE)).unwrap();
+        assert!(records.contains("opaque user text"));
+        assert!(records.contains("file:///client-owned/context.md"));
+        let target = temp.path().join("mutation-restored");
+        restore_backup(&path, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        assert_eq!(restored.get_stats().await.unwrap().note_count, 0);
+        let replay = restored
+            .find_remote_mutation_receipt(&input)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.result, original.result);
+        let captured = restored
+            .find_remote_capture_receipt(
+                &capture.authenticated_instance_id,
+                &capture.request_id,
+                &capture.payload_fingerprint,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(captured.result, saved.result);
     }
 
     #[tokio::test]

@@ -13,6 +13,7 @@ impl Repository {
         metadata: serde_json::Value,
         summary_embedding: Option<Vec<f32>>,
     ) -> Result<RecordId> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         #[derive(Debug, Deserialize, SurrealValue)]
         struct ConversationIdRow {
             id: RecordId,
@@ -88,6 +89,7 @@ impl Repository {
         message: &ChatMessage,
         embedding: Option<Vec<f32>>,
     ) -> Result<RecordId> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         #[derive(Debug, Deserialize, SurrealValue)]
         struct MessageIdRow {
             id: RecordId,

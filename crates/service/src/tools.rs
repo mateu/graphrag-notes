@@ -21,9 +21,9 @@ use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 pub(crate) struct ToolService {
-    application: Arc<dyn RemoteApplicationOperations>,
-    writes: Arc<Writes>,
-    write_gate: Arc<Semaphore>,
+    pub(crate) application: Arc<dyn RemoteApplicationOperations>,
+    pub(crate) writes: Arc<Writes>,
+    pub(crate) write_gate: Arc<Semaphore>,
 }
 
 impl ToolService {
@@ -240,7 +240,7 @@ struct MessageOutput {
     revision: String,
 }
 
-fn definition<I: JsonSchema + 'static, O: JsonSchema + 'static>(
+pub(crate) fn definition<I: JsonSchema + 'static, O: JsonSchema + 'static>(
     name: &'static str,
     description: &'static str,
     read_only: bool,
@@ -258,12 +258,14 @@ fn definition<I: JsonSchema + 'static, O: JsonSchema + 'static>(
 }
 
 fn catalog() -> Vec<(Capability, Tool)> {
-    vec![
+    let mut tools = vec![
         (Capability::Read, definition::<SearchInput, SearchOutput>("search_notes", "Search shared notes and chat records. Use mode=keyword and graph=off for provider-free retrieval. Source URIs describe the server's corpus.", true)),
         (Capability::Read, definition::<InspectInput, InspectionOutput>("get_record", "Inspect an exact record ID with bounded chat context. Supply the search revision to reject stale selection. Server source paths are provenance, never client file actions.", true)),
         (Capability::Read, definition::<ContextInput, ContextResponse>("build_context", "Build bounded, cited context from shared notes and chats using server-owned providers and defaults.", true)),
         (Capability::Capture, definition::<CaptureInput, RemoteCaptureResponse>("capture_note", "Capture a new shared note. Reuse the same request_id and identical payload after interruption; authenticated instance identity is supplied by the server. Changed payloads under the same request_id are rejected.", false)),
-    ]
+    ];
+    tools.extend(crate::mutations::catalog());
+    tools
 }
 
 fn principal(context: &RequestContext<RoleServer>) -> Result<&Principal, ErrorData> {
@@ -276,7 +278,7 @@ fn principal(context: &RequestContext<RoleServer>) -> Result<&Principal, ErrorDa
         })
 }
 
-fn parse<T: DeserializeOwned>(
+pub(crate) fn parse<T: DeserializeOwned>(
     arguments: Option<serde_json::Map<String, Value>>,
 ) -> Result<T, CallToolResult> {
     serde_json::from_value(Value::Object(arguments.unwrap_or_default())).map_err(|_| {
@@ -341,7 +343,7 @@ fn encoding_failure(error: EncodingFailure) -> CallToolResult {
     }
 }
 
-fn success<T: Serialize>(data: T) -> CallToolResult {
+pub(crate) fn success<T: Serialize>(data: T) -> CallToolResult {
     match bounded_value(Envelope {
         schema_version: 1,
         data: Some(data),
@@ -358,19 +360,19 @@ fn success<T: Serialize>(data: T) -> CallToolResult {
     }
 }
 
-fn failure(code: &str, message: &str, retryable: bool) -> CallToolResult {
+pub(crate) fn failure(code: &str, message: &str, retryable: bool) -> CallToolResult {
     CallToolResult::structured_error(
         json!({"schema_version":1,"data":null,"error":{"code":code,"message":message,"retryable":retryable}}),
     )
 }
 
-fn application_failure(error: ApplicationError) -> CallToolResult {
+pub(crate) fn application_failure(error: ApplicationError) -> CallToolResult {
     // Application/provider diagnostics may contain host paths or secrets. The
     // network boundary exposes stable categories and recovery guidance only.
     match error {
         ApplicationError::Validation(_) => failure("invalid_input", "The operation rejected these arguments; check the tool schema and request bounds.", false),
         ApplicationError::NotFound(_) => failure("not_found", "The selected record is unavailable. Search again to refresh its ID.", false),
-        ApplicationError::RevisionConflict(_) => failure("revision_conflict", "The record or request payload changed. Refresh the record, or use a new capture request_id for a changed draft.", false),
+        ApplicationError::RevisionConflict(_) => failure("revision_conflict", "The record or request payload changed. Refresh the snapshot; retain the same request_id and payload for an uncertain outcome. A new intent requires a new request_id.", false),
         ApplicationError::ProviderUnavailable(_) => failure("provider_unavailable", "A server provider is unavailable. For retrieval, retry search_notes with mode=keyword and graph=off; keep capture drafts and their request_id for retry.", true),
         ApplicationError::Compatibility(_) => failure("compatibility", "The server's corpus and embedding configuration differ. Use search_notes with mode=keyword and graph=off, or contact the corpus owner.", false),
         ApplicationError::ServiceUnreachable(_) => failure("service_unreachable", "An upstream service is unreachable; retry later and retain capture drafts with their request_id.", true),
@@ -411,7 +413,9 @@ impl ServerHandler for ToolService {
         Ok(ListToolsResult {
             tools: catalog()
                 .into_iter()
-                .filter(|(capability, _)| principal.allows(*capability))
+                .filter(|(capability, tool)| {
+                    crate::mutations::allows_catalog(&principal, *capability, tool.name.as_ref())
+                })
                 .map(|(_, tool)| tool)
                 .collect(),
             ..Default::default()
@@ -463,7 +467,7 @@ impl ToolService {
                 None,
             ));
         };
-        if !principal.allows(required) {
+        if !crate::mutations::allows_catalog(&principal, required, request.name.as_ref()) {
             return Ok(failure(
                 "forbidden",
                 "This instance token does not grant the required capability.",
@@ -647,7 +651,7 @@ impl ToolService {
                     Err(_) => failure("internal", "Capture outcome is uncertain; retain the identical draft and request_id for a safe retry.", true),
                 }
             }
-            _ => unreachable!("catalog and dispatch agree"),
+            _ => crate::mutations::call(self, request, principal).await,
         };
         Ok(result.into())
     }

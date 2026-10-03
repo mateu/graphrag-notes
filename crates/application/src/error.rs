@@ -28,9 +28,13 @@ impl From<DbError> for ApplicationError {
     fn from(error: DbError) -> Self {
         match error {
             DbError::NotFound(..) => Self::NotFound(error.to_string()),
-            DbError::NoteRevisionConflict(_) => Self::RevisionConflict(error.to_string()),
+            DbError::NoteRevisionConflict(_) | DbError::MutationRevisionConflict(_) => {
+                Self::RevisionConflict(error.to_string())
+            }
             DbError::RemoteRequestConflict { .. } => Self::RevisionConflict(error.to_string()),
-            DbError::InvalidRemoteRequest(_) => Self::Validation(error.to_string()),
+            DbError::InvalidRemoteRequest(_) | DbError::InvalidMutationRequest(_) => {
+                Self::Validation(error.to_string())
+            }
             DbError::EmbeddingCompatibility { .. }
             | DbError::LegacyEmbeddingMetadata { .. }
             | DbError::UnsupportedSchemaVersion { .. } => Self::Compatibility(error.to_string()),

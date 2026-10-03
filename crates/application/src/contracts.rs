@@ -119,7 +119,7 @@ pub struct ProposalCard {
 }
 
 /// Client interaction chooses an explicit decision before invoking the policy.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalAction {
     Accept,

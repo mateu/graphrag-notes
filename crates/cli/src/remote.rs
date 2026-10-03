@@ -57,12 +57,12 @@ fn graph(value: &GraphModeArg) -> &'static str {
     }
 }
 
-struct Invocation {
-    tool: &'static str,
-    arguments: Value,
-    format: OutputFormat,
-    raw: bool,
-    draft: Option<Draft>,
+pub(super) struct Invocation {
+    pub(super) tool: &'static str,
+    pub(super) arguments: Value,
+    pub(super) format: OutputFormat,
+    pub(super) raw: bool,
+    pub(super) draft: Option<Draft>,
 }
 
 struct CaptureInput<'a> {
@@ -174,7 +174,15 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
     })
 }
 
-fn invocation(cli: &Cli, server: &str) -> Result<Invocation> {
+async fn invocation(cli: &Cli, server: &str) -> Result<Invocation> {
+    if let Some(invocation) = crate::remote_mutations::prepare(cli, server).await? {
+        return Ok(invocation);
+    }
+    if cli.expected_revision.is_some() {
+        anyhow::bail!(
+            "--expected-revision is only valid for remote edit/delete/proposal decisions"
+        );
+    }
     if cli.recover_draft && !matches!(cli.command, Commands::Capture { .. }) {
         anyhow::bail!("--recover-draft requires a supported remote write with --content-file");
     }
@@ -218,7 +226,47 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         anyhow::bail!("remote mode uses host configuration; omit local database, config, inference and explain overrides");
     }
     let url = endpoint(server)?;
-    let mut invocation = invocation(cli, url.as_str())?;
+    let mut invocation = invocation(cli, url.as_str()).await?;
+    let value = call_tool(
+        cli,
+        url.as_str(),
+        invocation.tool,
+        invocation.arguments.clone(),
+    )
+    .await?;
+    validate_read_result(invocation.tool, &value)?;
+    crate::remote_mutations::validate_result(&invocation, &value)?;
+    // Remove recovery only after the authoritative successful result arrived,
+    // before rendering: a broken output pipe must not invite a new mutation.
+    if invocation.tool == "capture_note" {
+        acknowledge_capture(&mut invocation, &value)?;
+    } else if let Some(draft) = &mut invocation.draft {
+        let id = invocation.arguments["id"]
+            .as_str()
+            .context("mutation target missing")?;
+        draft.discard(Some(id));
+    }
+    if invocation.raw {
+        let context = value
+            .pointer("/data/rendered_context")
+            .or_else(|| value.get("rendered_context"))
+            .and_then(Value::as_str)
+            .context("incompatible context response")?;
+        print!("{context}");
+        return Ok(());
+    }
+    let human = serde_json::to_string_pretty(&value)?;
+    output::print(invocation.format, invocation.tool, value, |writer| {
+        writeln!(writer, "{}", output::safe_text(&human, true))
+    })
+}
+
+pub(super) async fn call_tool(
+    cli: &Cli,
+    server: &str,
+    tool: &str,
+    arguments: Value,
+) -> Result<Value> {
     let token = std::env::var(&cli.credential_env)
         .map_err(|_| anyhow::anyhow!("remote credential environment variable is missing"))?;
     if token.is_empty()
@@ -236,14 +284,14 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         .build()?;
     let transport = StreamableHttpClientTransport::with_client(
         http,
-        StreamableHttpClientTransportConfig::with_uri(url.as_str().to_owned()).auth_header(token),
+        StreamableHttpClientTransportConfig::with_uri(server.to_owned()).auth_header(token),
     );
     let client = ClientConfig::default().serve(transport).await.map_err(|_|ApplicationError::ServiceUnreachable("service_unreachable: connection or MCP authentication/negotiation failed; check endpoint and credential".into()))?;
-    let mut request = CallToolRequestParams::new(invocation.tool);
-    request.arguments = invocation.arguments.as_object().cloned();
+    let mut request = CallToolRequestParams::new(tool.to_owned());
+    request.arguments = arguments.as_object().cloned();
     let response = client.call_tool(request).await;
     let _ = client.cancel().await;
-    let response = response.map_err(|_|ApplicationError::ServiceUnreachable("service_unreachable: tool response was lost; retain the capture request ID and draft when retrying".into()))?;
+    let response = response.map_err(|_|ApplicationError::ServiceUnreachable("service_unreachable: tool response was lost; retain the original write request ID and any recovery draft when retrying".into()))?;
     let value = response
         .structured_content
         .context("incompatible service: structured MCP result is missing")?;
@@ -280,23 +328,7 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         )
         .into());
     }
-    validate_read_result(invocation.tool, &value)?;
-    // Remove recovery only after the authoritative successful result arrived,
-    // before rendering: a broken output pipe must not invite a new mutation.
-    acknowledge_capture(&mut invocation, &value)?;
-    if invocation.raw {
-        let context = value
-            .pointer("/data/rendered_context")
-            .or_else(|| value.get("rendered_context"))
-            .and_then(Value::as_str)
-            .context("incompatible context response")?;
-        print!("{context}");
-        return Ok(());
-    }
-    let human = serde_json::to_string_pretty(&value)?;
-    output::print(invocation.format, invocation.tool, value, |writer| {
-        writeln!(writer, "{}", output::safe_text(&human, true))
-    })
+    Ok(value)
 }
 
 fn validate_envelope(value: &Value) -> Result<()> {
@@ -322,7 +354,19 @@ fn validate_read_result(tool: &str, value: &Value) -> Result<()> {
             serde_json::from_value::<graphrag_application::ContextResponse>(value["data"].clone())
                 .is_ok()
         }
-        "capture_note" => true,
+        "get_note" => serde_json::from_value::<graphrag_application::RemoteNoteSnapshot>(
+            value["data"].clone(),
+        )
+        .is_ok(),
+        "get_proposal" => {
+            serde_json::from_value::<graphrag_application::ProposalCard>(value["data"].clone())
+                .is_ok()
+        }
+        "list_proposals" => {
+            serde_json::from_value::<Vec<graphrag_application::ProposalCard>>(value["data"].clone())
+                .is_ok()
+        }
+        "capture_note" | "edit_note" | "delete_note" | "decide_proposal" => true,
         _ => false,
     };
     if !valid {

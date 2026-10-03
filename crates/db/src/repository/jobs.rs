@@ -761,6 +761,7 @@ impl Repository {
         validate_full_scope_membership: bool,
         completed_count: u64,
     ) -> Result<()> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         let mut notes = Vec::new();
         let mut messages = Vec::new();
         let mut conversations = Vec::new();

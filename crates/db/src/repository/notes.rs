@@ -348,6 +348,7 @@ impl Repository {
     /// Update a note
     #[instrument(skip(self, note))]
     pub async fn update_note(&self, id: &str, note: Note) -> Result<Note> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
         let existing = self
             .get_note(raw_id)
@@ -749,6 +750,7 @@ impl Repository {
         id: &surrealdb::types::RecordId,
         embedding: Vec<f32>,
     ) -> Result<()> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         self.db
             .query(
                 "UPDATE note SET embedding = $embedding, updated_at = time::now() WHERE id = $id",

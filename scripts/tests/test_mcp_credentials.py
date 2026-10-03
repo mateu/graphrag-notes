@@ -146,6 +146,18 @@ class CredentialProvisioning(unittest.TestCase):
                 self.assertEqual(token_file.read_bytes(), original_token)
                 self.assertTrue(pending.exists() or pending.is_symlink())
 
+    def test_additional_capabilities_require_explicit_valid_grants(self):
+        with tempfile.TemporaryDirectory() as base:
+            path = Path(base) / "private"
+            for grant in ["missing=edit", "a=unknown", "a=read", "a=edit,edit"]:
+                with self.assertRaises(ValueError):
+                    credentials.provision(path, ["a"], [], [grant])
+                self.assertFalse(path.exists())
+            credentials.provision(path, ["a"], ["reader"], ["a=edit,delete", "reader=reject"])
+            entries = json.loads((path / "credentials.json").read_text())["credentials"]
+            self.assertEqual(entries[0]["capabilities"], ["read", "capture", "edit", "delete"])
+            self.assertEqual(entries[1]["capabilities"], ["read", "reject"])
+
     def test_refuses_overwrite_and_invalid_ids_before_writing(self):
         with tempfile.TemporaryDirectory() as base:
             path = Path(base) / "private"

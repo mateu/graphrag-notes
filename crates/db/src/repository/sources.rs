@@ -124,6 +124,11 @@ impl Repository {
     /// Create a source and return its database-assigned id.
     #[instrument(skip(self, source))]
     pub async fn create_source(&self, source: Source) -> Result<Source> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
+        self.create_source_locked(source).await
+    }
+
+    async fn create_source_locked(&self, source: Source) -> Result<Source> {
         let created: Option<Source> = self
             .db
             .query("CREATE source CONTENT $source RETURN AFTER")
@@ -172,6 +177,7 @@ impl Repository {
         content_hash: String,
         force: bool,
     ) -> Result<SourceImportPlan> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         if let Some(mut existing) = self.get_source(&normalized_uri).await? {
             if existing.source_type == SourceType::Manual {
                 return Err(DbError::QueryFailed(format!(
@@ -186,7 +192,9 @@ impl Repository {
                 // cleanup. An otherwise unchanged retry is the natural
                 // recovery path; finish that deferred cleanup before reporting
                 // a no-op so stale records cannot accumulate indefinitely.
-                let cleanup = self.cleanup_non_successful_generations(&existing).await?;
+                let cleanup = self
+                    .cleanup_non_successful_generations_locked(&existing)
+                    .await?;
                 return Ok(SourceImportPlan {
                     source: existing,
                     action: SourceImportAction::Unchanged,
@@ -231,7 +239,7 @@ impl Repository {
             last_ingested_at: None,
         };
         Ok(SourceImportPlan {
-            source: self.create_source(source).await?,
+            source: self.create_source_locked(source).await?,
             action: SourceImportAction::Created,
             cleanup: SourceDeleteSummary::default(),
         })
@@ -405,11 +413,10 @@ impl Repository {
             .await
     }
 
-    async fn cleanup_non_successful_generations(
+    async fn cleanup_non_successful_generations_locked(
         &self,
         source: &Source,
     ) -> Result<SourceDeleteSummary> {
-        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let source_id = source
             .id
             .as_ref()
@@ -428,11 +435,12 @@ impl Repository {
     /// last successful generation. The source remains resumable via reimport.
     #[instrument(skip(self, source, error))]
     pub async fn fail_file_import(&self, source: &mut Source, error: impl ToString) -> Result<()> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
         let source_id = source
             .id
             .as_ref()
             .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
-        self.delete_source_notes(source_id, Some(source.generation), false)
+        self.delete_source_notes_locked(source_id, Some(source.generation), false)
             .await?;
         source.status = SourceIngestionStatus::Failed;
         source.last_error = Some(error.to_string());
@@ -523,19 +531,6 @@ impl Repository {
             .await?
             .check()?;
         Ok(())
-    }
-
-    async fn delete_source_notes(
-        &self,
-        source_id: &RecordId,
-        generation: Option<u64>,
-        older_than_generation: bool,
-    ) -> Result<SourceDeleteSummary> {
-        // Source cleanup shares the same endpoint/acceptance critical section
-        // as single-note deletion.
-        let _completion_guard = self.proposal_acceptance_lock.lock().await;
-        self.delete_source_notes_locked(source_id, generation, older_than_generation)
-            .await
     }
 
     async fn delete_source_notes_locked(
