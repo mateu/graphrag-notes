@@ -120,6 +120,27 @@ impl Draft {
         Ok(bytes)
     }
 
+    /// Pin the final remote payload after any editor changes. Acknowledgment
+    /// cleanup must preserve later saves for fresh drafts as well as retries.
+    /// Embedded editor flows keep their existing ownership and cleanup rules.
+    pub fn pin_remote_submission(&mut self, bytes: &[u8]) -> Result<()> {
+        if let Some(recovered) = &self.recovery {
+            if recovered.bytes != bytes {
+                anyhow::bail!("remote submission differs from the adopted recovery draft; retain it and review before sending");
+            }
+            return Ok(());
+        }
+        let mut file = Self::open_recovery_file(&self.path)?;
+        if !Self::matches_recovery_bytes(&mut file, bytes)? {
+            anyhow::bail!("remote draft changed while preparing submission; retain it and review before sending");
+        }
+        self.recovery = Some(RecoveredInput {
+            file,
+            bytes: bytes.to_vec(),
+        });
+        Ok(())
+    }
+
     fn open_recovery_file(path: &Path) -> Result<std::fs::File> {
         #[cfg(unix)]
         {

@@ -160,6 +160,7 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
     if content.trim().is_empty() || content.len() > 65_536 {
         anyhow::bail!("remote capture content must contain text and be at most 65536 bytes");
     }
+    draft.pin_remote_submission(content.as_bytes())?;
     eprintln!(
         "Capture request ID: {}",
         output::safe_text(&request_id, false)
