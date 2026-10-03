@@ -16,7 +16,11 @@ use std::{
     time::Duration,
 };
 use tempfile::TempDir;
-use tokio::{net::TcpListener, sync::Notify};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    sync::Notify,
+};
 use tokio_util::sync::CancellationToken;
 
 const TOKEN_A: &str = "a-fixed-test-token-with-32-or-more-bytes";
@@ -615,6 +619,68 @@ async fn disconnected_capture_finishes_and_shutdown_drains_it() {
         records.keys().next().unwrap(),
         &("openclaw-a".into(), "disconnect-id".into())
     );
+}
+
+#[tokio::test]
+async fn authenticated_stalled_bodies_release_capacity_and_bound_shutdown() {
+    for shutting_down in [false, true] {
+        let fixture = Fixture::new(TestApplication::default()).await;
+        let url = reqwest::Url::parse(&fixture.url).unwrap();
+        let address = (url.host_str().unwrap(), url.port().unwrap());
+        let mut stalled = Vec::new();
+        for _ in 0..ServiceOptions::default().max_concurrent_requests {
+            let mut stream = TcpStream::connect(address).await.unwrap();
+            let headers = format!(
+                "POST /mcp HTTP/1.1\r\nHost: {}:{}\r\nAuthorization: Bearer {TOKEN_READ}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: 2\r\n\r\n{{",
+                address.0, address.1
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stalled.push(stream);
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let response = fixture
+                    .request(
+                        TOKEN_READ,
+                        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+                    )
+                    .send()
+                    .await
+                    .unwrap();
+                if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if shutting_down {
+            fixture.shutdown.cancel();
+        }
+        // Keep every incomplete connection open. Only server-side deadlines
+        // may release their slots or let graceful shutdown finish.
+        tokio::time::timeout(Duration::from_secs(7), async {
+            for stream in &mut stalled {
+                let mut status = [0; 12];
+                stream.read_exact(&mut status).await.unwrap();
+                assert_eq!(&status, b"HTTP/1.1 408");
+            }
+        })
+        .await
+        .unwrap();
+        if shutting_down {
+            tokio::time::timeout(Duration::from_secs(2), fixture.task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        } else {
+            let response = fixture.tool(TOKEN_READ, "search_notes", search()).await;
+            assert!(response["result"]["structuredContent"]["error"].is_null());
+            fixture.stop().await;
+        }
+    }
 }
 
 #[test]

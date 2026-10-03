@@ -1,7 +1,8 @@
 use crate::{credentials::CredentialError, tools::ToolService, CredentialFile};
 use axum::{
+    body::{to_bytes, Body},
     extract::{Request, State},
-    http::{header, StatusCode},
+    http::{header, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     Json, Router,
@@ -131,6 +132,7 @@ fn valid_host(host: &str) -> bool {
 struct AuthState {
     credentials_file: PathBuf,
     requests: Arc<Semaphore>,
+    body_limit: usize,
     shutdown: CancellationToken,
 }
 
@@ -188,6 +190,34 @@ async fn authenticate(
             )
         }
     };
+    // Bound body ingress before dispatch without timing out accepted provider
+    // work. Spawned mutations retain their permits and shutdown drain guards.
+    if request.method() == Method::POST {
+        let (parts, body) = request.into_parts();
+        let bytes = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            to_bytes(body, state.body_limit),
+        )
+        .await
+        {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(_)) => {
+                return http_failure(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "request_too_large",
+                    "The request body exceeds the configured limit.",
+                )
+            }
+            Err(_) => {
+                return http_failure(
+                    StatusCode::REQUEST_TIMEOUT,
+                    "request_timeout",
+                    "The request body did not arrive within the allowed time.",
+                )
+            }
+        };
+        request = Request::from_parts(parts, Body::from(bytes));
+    }
     request.extensions_mut().insert(principal);
     // Only this boundary needs the bearer. SDK request contexts and diagnostic
     // logging receive trusted identity without retaining the raw credential.
@@ -336,6 +366,7 @@ pub async fn serve(
     let auth = AuthState {
         credentials_file: options.credentials_file,
         requests: Arc::new(Semaphore::new(options.max_concurrent_requests)),
+        body_limit: options.max_request_body_bytes,
         shutdown: shutdown.clone(),
     };
     let router = Router::new()

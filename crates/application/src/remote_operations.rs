@@ -57,6 +57,9 @@ fn credential_key(key: &str) -> bool {
             "authorization",
             "bearer",
             "signature",
+            "session",
+            "cookie",
+            "jwt",
         ]
         .iter()
         .any(|marker| normalized.contains(marker))

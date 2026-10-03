@@ -301,8 +301,16 @@ async fn source_uri_credentials_are_rejected_before_providers_or_persistence() {
         "https://example.test/notes?api-key=secret",
         "https://example.test/notes?key=secret",
         "https://example.test/notes?authorization=secret",
+        "https://example.test/notes?session=secret",
+        "https://example.test/notes?sessionid=secret",
+        "https://example.test/notes?%73ession_id=secret",
+        "https://example.test/notes?Cookie=secret",
+        "https://example.test/notes?JWT=secret",
         "https://example.test/notes#access_token=secret",
         "https://example.test/notes#/oauth?token=secret",
+        "https://example.test/notes#session_id=secret",
+        "https://example.test/notes#/oauth?cookie=secret",
+        "https://example.test/notes#jwt=secret",
     ] {
         let mut request = capture_request();
         request.provenance.as_mut().unwrap().uri = Some(uri.into());
