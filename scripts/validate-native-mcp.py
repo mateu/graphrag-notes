@@ -19,6 +19,7 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,42 @@ def redact(text, tokens):
     for token in tokens:
         text = text.replace(token, "[REDACTED SYNTHETIC CREDENTIAL]")
     return text
+
+
+def sanitize_logs(directory, tokens):
+    """Reject child-created links/special files without reading their targets."""
+    rejected = False
+    for path in directory.glob("*.std*"):
+        descriptor = None
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ValidationError("Unsafe retained log path")
+            # The second check closes the lstat/open race; nonblocking prevents
+            # a swapped-in FIFO from hanging cleanup before fstat rejects it.
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ValidationError("Unsafe retained log path")
+            with os.fdopen(descriptor, "r", encoding="utf-8", errors="replace") as stream:
+                descriptor = None
+                text = stream.read()
+            private_write(path, redact(text, tokens))
+        except (OSError, ValidationError):
+            rejected = True
+            # Unlink removes only the local entry, including a link/FIFO; an
+            # empty directory can be removed without traversing its contents.
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    path.rmdir()
+                else:
+                    path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    return ["Rejected an unsafe retained log path without reading it"] if rejected else []
 
 
 def binary_digest(path):
@@ -410,11 +447,10 @@ level = "warn"
                 provider.close()
             except Exception:
                 evidence["cleanup_errors"].append("Synthetic inference fixture cleanup failed")
-        evidence["success"] = evidence["success"] and not evidence["cleanup_errors"]
         # Server logs also remain private; redact every generated credential
         # defensively before retaining any process evidence.
-        for path in directory.glob("*.std*"):
-            private_write(path, redact(path.read_text(), tokens.values()))
+        evidence["cleanup_errors"].extend(sanitize_logs(directory, tokens.values()))
+        evidence["success"] = evidence["success"] and not evidence["cleanup_errors"]
         private_write(directory / "evidence.json", json.dumps(evidence, indent=2) + "\n")
         print(json.dumps({"success": evidence["success"], "evidence": str(directory / "evidence.json"),
                           "error": evidence.get("error"), "cleanup_errors": evidence["cleanup_errors"]}))

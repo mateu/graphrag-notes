@@ -187,6 +187,30 @@ class NativeRuntimeHarness(unittest.TestCase):
             "tool": "capture_note", "expected_error": None, "status": "attempted"}])
         self.assertFalse(report["connection_decisions_exercised"])
 
+    def test_log_cleanup_rejects_symbolic_and_hard_links_without_copying_external_content(self):
+        with tempfile.TemporaryDirectory(prefix="native-external-fixture-") as external:
+            target = Path(external) / "synthetic-external.txt"
+            target.write_text("synthetic external content must never become evidence")
+            (self.directory / "child.stdout").symlink_to(target)
+            os.link(target, self.directory / "child.stderr")
+            ordinary = self.directory / "server.stdout"
+            ordinary.write_text("ordinary log with generated-secret")
+            errors = HARNESS.sanitize_logs(self.directory, ["generated-secret"])
+            self.assertTrue(errors)
+            self.assertFalse((self.directory / "child.stdout").exists())
+            self.assertFalse((self.directory / "child.stderr").exists())
+            self.assertEqual(target.read_text(), "synthetic external content must never become evidence")
+            self.assertIn("REDACTED", ordinary.read_text())
+            self.assertNotIn("synthetic external content", ordinary.read_text())
+
+    def test_log_cleanup_rejects_fifo_without_blocking_for_a_writer(self):
+        fifo = self.directory / "child.stderr"
+        os.mkfifo(fifo, 0o600)
+        started = time.monotonic()
+        self.assertTrue(HARNESS.sanitize_logs(self.directory, []))
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(fifo.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

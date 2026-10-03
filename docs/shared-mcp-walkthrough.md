@@ -48,6 +48,9 @@ and whole-scenario deadlines are bounded and configurable. On timeout/startup
 failure, private subprocess groups are stopped and partial sanitized logs are
 retained. The generated policy contains token hashes only; runtime tokens pass
 through stdin/configuration memory and are redacted from retained process logs.
+Cleanup rejects linked or non-regular log paths before reading them, so a
+client-created symlink, hard link or FIFO cannot copy external file content or
+block the retained-log sanitization step. Such a path fails the run.
 
 The final JSON line gives the private `evidence.json` path and success status.
 The report includes actual catalogs and calls, cross-principal reads, cited

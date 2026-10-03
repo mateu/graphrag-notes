@@ -53,10 +53,15 @@ The foundation checks also repeated cited context, independent capture
 namespaces, read-only denial and revocation against a healthy native control.
 Every private client, service and synthetic inference process stopped cleanly.
 
-The final authored harness gate passed all 24 Python tests, including eleven
-native harness isolation/failure regressions. Node syntax, Python compilation
-and diff checks passed. An independent read-only harness audit found no
-concrete isolation or proof-correctness issues.
+The original authored-worktree gate passed 24 Python tests, including eleven
+native harness isolation/failure regressions. Rebasing onto the combined stack
+added an ancestor credential test, bringing that gate to 25. Copilot review
+then identified a retained-log symlink issue: cleanup now rejects symbolic and
+hard links and special files before reading them, with two dedicated
+regressions. The post-review stacked gate passed 27 tests, including thirteen
+native harness regressions. Node syntax, Python compilation and diff checks
+passed. The installed-client extended smoke passed again after this hardening
+against the same pinned candidate, with clean process and log cleanup.
 
 No real corpus, personal profile, remote host or conversational LLM session was
 used. Proposal decisions, source refresh, entity extraction, restart during a
