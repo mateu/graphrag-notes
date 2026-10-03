@@ -1,0 +1,192 @@
+"""Failure/cleanup and isolation contracts for the opt-in native harness."""
+import contextlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from unittest import mock
+
+SCRIPT = Path(__file__).resolve().parents[1] / "validate-native-mcp.py"
+SPEC = importlib.util.spec_from_file_location("native_mcp_validation", SCRIPT)
+HARNESS = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(HARNESS)
+
+def helper_module(name):
+    spec = importlib.util.spec_from_file_location("native_" + name, SCRIPT.parent / "native-mcp" / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+ENVELOPE = helper_module("envelope")
+EXTENDED = helper_module("extended")
+
+
+class NativeRuntimeHarness(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="native-mcp-contract-")
+        self.directory = Path(self.temporary.name)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def executable(self, name, code):
+        path = self.directory / name
+        path.write_text("#!" + sys.executable + "\n" + code)
+        path.chmod(0o700)
+        return path
+
+    def run_child(self, path, label="fixture", timeout=2, tokens=()):
+        return HARNESS.run_child([str(path)], {}, self.directory, label,
+            HARNESS.private_environment(self.directory, "server"), tokens, timeout)
+
+    def test_private_environments_do_not_inherit_personal_configuration_or_secrets(self):
+        with mock.patch.dict(os.environ, {"NATIVE_TEST_SECRET": "secret", "OPENCLAW_CONFIG_PATH": "/personal/config", "HERMES_HOME": "/personal/hermes"}):
+            node = HARNESS.private_environment(self.directory, "openclaw-a")
+            hermes = HARNESS.private_environment(self.directory, "hermes", Path("/installed/code"))
+        self.assertNotIn("NATIVE_TEST_SECRET", node)
+        self.assertNotIn("NATIVE_TEST_SECRET", hermes)
+        self.assertNotIn("HERMES_HOME", node)
+        self.assertTrue(Path(node["OPENCLAW_CONFIG_PATH"]).is_relative_to(self.directory))
+        self.assertEqual(json.loads(Path(node["OPENCLAW_CONFIG_PATH"]).read_text()), {})
+        self.assertTrue(Path(hermes["HERMES_HOME"]).is_relative_to(self.directory))
+        self.assertEqual(hermes["PYTHONPATH"], "/installed/code")
+        self.assertEqual(stat.S_IMODE(Path(hermes["HERMES_HOME"]).stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(Path(node["OPENCLAW_CONFIG_PATH"]).stat().st_mode), 0o600)
+
+    def test_runtime_credential_leak_is_rejected_and_only_redacted_logs_survive(self):
+        credential = "synthetic-bearer-must-not-be-retained"
+        binary = self.executable("leaking-runtime", f"import sys\nprint({credential!r})\nprint({credential!r}, file=sys.stderr)\n")
+        with self.assertRaisesRegex(HARNESS.ValidationError, "printed a synthetic credential"):
+            self.run_child(binary, tokens=[credential])
+        for suffix in ("stdout", "stderr"):
+            content = (self.directory / ("fixture." + suffix)).read_text()
+            self.assertNotIn(credential, content)
+            self.assertIn("REDACTED", content)
+            self.assertEqual(stat.S_IMODE((self.directory / ("fixture." + suffix)).stat().st_mode), 0o600)
+
+    def test_failed_runtime_preserves_sanitized_diagnostic_and_not_success_evidence(self):
+        binary = self.executable("failed-runtime", "import sys\nprint('partial evidence',flush=True)\nprint('runtime entry changed',file=sys.stderr,flush=True)\nsys.exit(7)\n")
+        with self.assertRaisesRegex(HARNESS.ValidationError, "failed; inspect its private sanitized log"):
+            self.run_child(binary)
+        self.assertIn("partial evidence", (self.directory / "fixture.stdout").read_text())
+        self.assertIn("runtime entry changed", (self.directory / "fixture.stderr").read_text())
+
+    def test_timeout_stops_child_process_group_and_preserves_partial_output(self):
+        child = self.executable("descendant", "import signal,time\nsignal.signal(signal.SIGTERM,lambda *_: exit(0))\ntime.sleep(30)\n")
+        pid_path = self.directory / "descendant.pid"
+        binary = self.executable("blocked-runtime", "import pathlib,subprocess,time\n"
+            + f"child=subprocess.Popen([{str(child)!r}])\npathlib.Path({str(pid_path)!r}).write_text(str(child.pid))\n"
+            + "print('entered before timeout',flush=True)\ntime.sleep(30)\n")
+        started = time.monotonic()
+        with self.assertRaisesRegex(HARNESS.ValidationError, "bounded deadline"):
+            self.run_child(binary, timeout=0.3)
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertIn("entered before timeout", (self.directory / "fixture.stdout").read_text())
+        pid = int(pid_path.read_text())
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("Timed-out native runtime left a live descendant")
+
+    def test_service_startup_failure_closes_process_and_log_handles(self):
+        binary = self.executable("bad-service", "import sys\nprint('startup refused',file=sys.stderr,flush=True)\nsys.exit(4)\n")
+        real_popen = subprocess.Popen
+        spawned = []
+        def capture(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            spawned.append((process, kwargs["stdout"], kwargs["stderr"]))
+            return process
+        with mock.patch.object(HARNESS.subprocess, "Popen", side_effect=capture):
+            with self.assertRaisesRegex(HARNESS.ValidationError, "stopped during startup"):
+                HARNESS.PrivateServer(binary, self.directory, 1)
+        self.assertEqual(len(spawned), 1)
+        self.assertIsNotNone(spawned[0][0].poll())
+        self.assertTrue(spawned[0][1].closed)
+        self.assertTrue(spawned[0][2].closed)
+        self.assertIn("startup refused", next(self.directory.glob("server-*.stderr")).read_text())
+
+    def test_invalid_deadlines_are_rejected_before_starting_runtimes(self):
+        required = ["--binary", "/absent", "--openclaw-root", "/absent", "--hermes-root", "/absent"]
+        for flag in ("--command-timeout", "--deadline-seconds"):
+            for value in ("0", "-1", "nan", "inf"):
+                with self.subTest(flag=flag, value=value):
+                    with mock.patch.object(HARNESS, "PrivateServer") as server:
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            with self.assertRaises(SystemExit) as error:
+                                HARNESS.main([*required,flag,value])
+                    self.assertEqual(error.exception.code, 2)
+                    server.assert_not_called()
+
+    def test_python_venv_executable_symlink_is_preserved(self):
+        binary=self.executable("fixture-binary", "pass\n")
+        openclaw=self.directory/"openclaw"
+        entry=openclaw/"dist/agents/agent-bundle-mcp-runtime.js"
+        entry.parent.mkdir(parents=True); entry.write_text("export {};\n")
+        (openclaw/"package.json").write_text('{"version":"fixture"}')
+        hermes=self.directory/"hermes"
+        (hermes/"tools").mkdir(parents=True)
+        (hermes/"tools/mcp_tool_discovery.py").write_text("")
+        python=hermes/"venv/bin/python"
+        python.parent.mkdir(parents=True)
+        python.symlink_to(sys.executable)
+        options=HARNESS.parser_options(["--binary",str(binary),"--openclaw-root",str(openclaw),
+            "--node",str(binary),"--hermes-root",str(hermes),"--hermes-python",str(python)])
+        self.assertTrue(options.hermes_python.is_symlink())
+        self.assertEqual(options.hermes_python,python)
+
+    def test_native_service_error_survives_hermes_rendering_and_requires_exact_category(self):
+        envelope = {"schema_version": 1, "data": None,
+                    "error": {"code": "revision_conflict", "message": "Refresh the snapshot.", "retryable": False}}
+        rendered = json.dumps({"error": json.dumps(envelope)})
+        self.assertEqual(ENVELOPE.checked_result(rendered, "revision_conflict"),
+                         {"error_code": "revision_conflict", "retryable": False})
+        with self.assertRaises(ValueError):
+            ENVELOPE.checked_result(rendered, "not_found")
+        with self.assertRaises(ValueError):
+            ENVELOPE.checked_result(rendered)
+        successful = {"schema_version": 1, "data": {"id": "note:synthetic"}, "error": None}
+        self.assertEqual(ENVELOPE.checked_result(json.dumps({"result": json.dumps(successful)})), successful["data"])
+
+    def test_transport_or_partial_envelope_cannot_count_as_native_policy_denial(self):
+        for value in ({"error": "revision_conflict: server disconnected"},
+                      {"error": "tool approval required"},
+                      {"schema_version": 1, "error": {"code": "not_found"}},
+                      {"schema_version": 2, "data": None, "error": {"code": "not_found"}}):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    ENVELOPE.checked_result(json.dumps(value), "not_found")
+
+    def test_extended_provider_pause_is_released_when_native_call_fails(self):
+        provider = mock.Mock()
+        provider.release = threading.Event()
+        with self.assertRaisesRegex(RuntimeError, "native runtime failure"):
+            with EXTENDED.provider_pause(provider):
+                raise RuntimeError("native runtime failure")
+        provider.arm.assert_called_once_with()
+        self.assertTrue(provider.release.is_set())
+
+    def test_failed_extended_native_call_retains_attempt_without_claiming_success(self):
+        report = {}
+        with self.assertRaisesRegex(RuntimeError, "native failed"):
+            EXTENDED.run_extended(mock.Mock(side_effect=RuntimeError("native failed")), mock.Mock(),
+                                  HARNESS.require, lambda: 10, report)
+        self.assertEqual(report["native_calls"], [{"client": "openclaw", "instance_id": "writer",
+            "tool": "capture_note", "expected_error": None, "status": "attempted"}])
+        self.assertFalse(report["connection_decisions_exercised"])
+
+
+if __name__ == "__main__":
+    unittest.main()

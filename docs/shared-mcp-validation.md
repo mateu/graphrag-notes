@@ -52,6 +52,13 @@ service restart, without duplicate captures. Opaque client `file://` attribution
 survived host export; no authenticated bearer credential appeared in the corpus.
 
 This proves compatibility with installed native tool runtimes on one computer.
+The [opt-in repository harness and two-host walkthrough](shared-mcp-walkthrough.md)
+make that distinction explicit and provide reproducible validation without
+personal profiles or notes.
+Later packaged checkpoints cover [revision-aware reads](validation/mcp-native-clients-76.md)
+and the [combined mutation/upload-job candidate](validation/mcp-native-clients-77.md).
+Each report identifies its tested binary, observed schema and exact native calls;
+the original foundation evidence above remains a separate historical result.
 The two-computer deployment and full conversational agent walkthrough remain
 [#78](https://github.com/mateu/graphrag-notes/issues/78). Revision-checked remote
-editing/review and uploaded sources/jobs remain #76 and #77; #56 stays open.
+editing/review and uploaded sources/jobs are tracked in #76 and #77; #56 stays open.
