@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ctypes
 import hashlib
 import importlib.util
 import json
@@ -28,6 +29,7 @@ import time
 
 SCRIPTS = Path(__file__).resolve().parent
 RUNTIMES = SCRIPTS / "native-mcp"
+LINUX_SUBREAPER_PID = None
 
 
 class ValidationError(RuntimeError):
@@ -209,6 +211,39 @@ def private_environment(directory, client, hermes_root=None):
     return environment
 
 
+def enable_linux_subreaper():
+    """Own orphaned private descendants instead of relying on Linux PID 1."""
+    global LINUX_SUBREAPER_PID
+    if platform.system() != "Linux" or LINUX_SUBREAPER_PID == os.getpid():
+        return
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        prctl = libc.prctl
+        prctl.argtypes = [ctypes.c_int] + [ctypes.c_ulong] * 4
+        prctl.restype = ctypes.c_int
+        # PR_SET_CHILD_SUBREAPER, available on supported Linux kernels.
+        require(prctl(36, 1, 0, 0, 0) == 0, "Linux private descendant adoption is unavailable")
+    except (AttributeError, OSError):
+        raise ValidationError("Linux private descendant adoption is unavailable") from None
+    LINUX_SUBREAPER_PID = os.getpid()
+
+
+def reap_group_descendants(process):
+    # Popen owns the direct child's exit status. Reap adopted children only
+    # after Popen has reaped that parent, and only from its private group.
+    if platform.system() != "Linux" or process.poll() is None:
+        return
+    # Bound one probe even if a faulty descendant keeps creating children;
+    # the surrounding group loop retains the cleanup deadline.
+    for _ in range(256):
+        try:
+            child, _ = os.waitpid(-process.pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if child == 0:
+            return
+
+
 def terminate_group(process, timeout=5):
     """Stop a private subprocess group; report whether intervention was needed."""
     deadline = time.monotonic() + max(0, timeout)
@@ -234,6 +269,7 @@ def terminate_group(process, timeout=5):
     # interval for exiting children to be reaped before testing the whole group.
     reap_deadline = min(deadline, time.monotonic() + 0.25)
     while True:
+        reap_group_descendants(process)
         try:
             os.killpg(process.pid, 0)
         except ProcessLookupError:
@@ -247,6 +283,7 @@ def terminate_group(process, timeout=5):
             break
         time.sleep(min(0.01, max(0, reap_deadline - time.monotonic())))
     intervened = True
+    killed_reap_deadline = max(deadline, time.monotonic() + 1)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -260,11 +297,22 @@ def terminate_group(process, timeout=5):
             raise denied
     # Deadline expiry must still reap a killed child. This fixed emergency
     # allowance is independent of (and never restarts) the work budget.
-    process.wait(timeout=max(1, deadline - time.monotonic()))
-    return intervened
+    process.wait(timeout=max(0, killed_reap_deadline - time.monotonic()))
+    while True:
+        reap_group_descendants(process)
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return intervened
+        except PermissionError:
+            pass
+        require(time.monotonic() < killed_reap_deadline,
+                "Private subprocess group remained after bounded forced cleanup")
+        time.sleep(min(0.01, max(0, killed_reap_deadline - time.monotonic())))
 
 
 def run_child(command, payload, directory, label, environment, tokens, timeout):
+    enable_linux_subreaper()
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, cwd=directory,
@@ -320,6 +368,7 @@ def free_port():
 
 class PrivateServer:
     def __init__(self, binary, directory, timeout):
+        enable_linux_subreaper()
         self.directory = directory
         self.port = free_port()
         self.process = None

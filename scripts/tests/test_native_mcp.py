@@ -1,5 +1,6 @@
 """Failure/cleanup and isolation contracts for the opt-in native harness."""
 import contextlib
+import ctypes
 import importlib.util
 import io
 import json
@@ -203,6 +204,40 @@ class NativeRuntimeHarness(unittest.TestCase):
         with self.assertRaisesRegex(HARNESS.ValidationError, "forced cleanup was required"):
             self.run_child(binary)
         self.assertIn("parent exited successfully", (self.directory / "fixture.stdout").read_text())
+        self.assert_process_stopped(int(pid_path.read_text()))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux child adoption contract")
+    def test_clean_runtime_reaps_orphan_zombies_without_relying_on_pid_one(self):
+        # This supervisor delays orphan reaping until the inner harness exits.
+        # That reproduces a non-reaping PID 1 without leaving test zombies there.
+        self.assertEqual(ctypes.CDLL(None).prctl(36, 1, 0, 0, 0), 0)
+        pid_path = self.directory / "completed-descendant.pid"
+        binary = self.executable("successful-orphaning-runtime",
+            "import pathlib,subprocess,sys,time\n"
+            + "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(0.02)'],"
+              "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            + f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid))\n"
+            + "time.sleep(0.1)\nprint('completed synthetic runtime')\n")
+        controller = self.executable("orphan-zombie-controller",
+            "import importlib.util,pathlib\n"
+            + f"spec=importlib.util.spec_from_file_location('harness',{str(SCRIPT)!r})\n"
+            + "harness=importlib.util.module_from_spec(spec);spec.loader.exec_module(harness)\n"
+            + f"directory=pathlib.Path({str(self.directory)!r})\n"
+            + f"output=harness.run_child([{str(binary)!r}],{{}},directory,'orphan-probe',"
+              "harness.private_environment(directory,'server'),(),2)\n"
+            + "assert output == 'completed synthetic runtime\\n'\n")
+        result = None
+        try:
+            result = subprocess.run([str(controller)], capture_output=True, text=True, timeout=8)
+        finally:
+            if pid_path.exists():
+                # A broken inner harness leaves its exited child with this
+                # supervisor; reap that known fixture before asserting failure.
+                try:
+                    os.waitpid(int(pid_path.read_text()), 0)
+                except ChildProcessError:
+                    pass
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_process_stopped(int(pid_path.read_text()))
 
     def test_successful_service_exit_with_leaked_descendant_is_not_clean(self):
