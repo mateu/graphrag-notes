@@ -73,7 +73,9 @@ graph_allow_inbound = true
 graph_min_confidence = 0.0
 graph_per_hop_decay = 0.8
 graph_candidate_cap = 32
-graph_seed_score = 0.03
+# Graph strength relative to the strongest base channel, before hop/confidence
+# decay (divide by rrf_k + 1 for RRF, clamp to [0, 1] for weighted fusion).
+graph_seed_score = 1.0
 
 [augment]
 # Defaults for `augment` and `eval-augment` when their flags are omitted.

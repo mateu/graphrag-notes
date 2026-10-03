@@ -191,6 +191,7 @@ impl AugmentChunk {
             schema_version: crate::EXPLANATION_SCHEMA_VERSION,
             result_id: self.id.clone(),
             title: self.title.clone(),
+            exact_title_match: self.fusion.exact_title_match,
             rank: self.fusion.final_rank,
             context_rank: Some(rank),
             hit_type: self.hit_type.into(),

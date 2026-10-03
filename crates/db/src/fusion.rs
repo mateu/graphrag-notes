@@ -54,6 +54,13 @@ impl FusionConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SurrealValue)]
 pub struct FusionEvidence {
+    /// An enabled text channel names this note's complete title after case
+    /// folding and trimming only its outer whitespace. Keep this intent signal
+    /// separate from BM25/vector scores so zero-IDF matches remain useful.
+    /// Scope callers clear it when the note hit-type weight is disabled.
+    #[serde(default)]
+    #[surreal(default)]
+    pub exact_title_match: bool,
     pub vector_rank: Option<usize>,
     pub vector_distance: Option<f32>,
     pub fulltext_rank: Option<usize>,
@@ -69,6 +76,9 @@ pub trait FusionRecord: Clone {
     fn fusion_id(&self) -> String;
     fn vector_distance(&self) -> Option<f32>;
     fn fulltext_score(&self) -> Option<f32>;
+    fn exact_title_match(&self) -> bool {
+        false
+    }
     fn set_fusion_evidence(&mut self, evidence: FusionEvidence);
 }
 
@@ -77,6 +87,7 @@ struct Candidate<T> {
     result: T,
     vector_rank: Option<usize>,
     fulltext_rank: Option<usize>,
+    exact_title_match: bool,
 }
 
 /// Merge vector and full-text candidate lists and return a deterministic,
@@ -99,8 +110,11 @@ where
     });
     let mut fulltext = fulltext;
     fulltext.sort_by(|left, right| {
-        component_fulltext_score(right)
-            .total_cmp(&component_fulltext_score(left))
+        (config.fulltext_weight > 0.0 && right.exact_title_match())
+            .cmp(&(config.fulltext_weight > 0.0 && left.exact_title_match()))
+            .then_with(|| {
+                component_fulltext_score(right).total_cmp(&component_fulltext_score(left))
+            })
             .then_with(|| left.fusion_id().cmp(&right.fusion_id()))
     });
 
@@ -108,32 +122,38 @@ where
 
     for (index, result) in vector.into_iter().enumerate() {
         let id = result.fusion_id();
+        let exact_title_match = result.exact_title_match();
         candidates
             .entry(id)
             .and_modify(|candidate| {
                 if candidate.vector_rank.is_none() {
                     candidate.vector_rank = Some(index + 1);
                 }
+                candidate.exact_title_match |= exact_title_match;
             })
             .or_insert(Candidate {
                 result,
                 vector_rank: Some(index + 1),
                 fulltext_rank: None,
+                exact_title_match,
             });
     }
 
     for (index, result) in fulltext.into_iter().enumerate() {
         let id = result.fusion_id();
+        let exact_title_match = result.exact_title_match();
         candidates
             .entry(id)
             .and_modify(|candidate| {
                 candidate.fulltext_rank.get_or_insert(index + 1);
+                candidate.exact_title_match |= exact_title_match;
                 merge(&mut candidate.result, result.clone());
             })
             .or_insert(Candidate {
                 result,
                 vector_rank: None,
                 fulltext_rank: Some(index + 1),
+                exact_title_match,
             });
     }
 
@@ -141,6 +161,7 @@ where
         .into_iter()
         .map(|(id, candidate)| {
             let evidence = FusionEvidence {
+                exact_title_match: candidate.exact_title_match && config.fulltext_weight > 0.0,
                 vector_rank: candidate.vector_rank,
                 vector_distance: candidate.result.vector_distance(),
                 fulltext_rank: candidate.fulltext_rank,
@@ -158,13 +179,15 @@ where
         })
         .collect();
 
-    // Contract: score descending, then the strongest component rank, then
-    // canonical record id. The BTreeMap also eliminates HashMap iteration
+    // Contract: enabled exact-title matches first, then score descending,
+    // the strongest component rank, and canonical record id. The BTreeMap
+    // also eliminates HashMap iteration
     // order before this comparison is applied.
     fused.sort_by(|(left_id, _, left), (right_id, _, right)| {
         right
-            .fused_score
-            .total_cmp(&left.fused_score)
+            .exact_title_match
+            .cmp(&left.exact_title_match)
+            .then_with(|| right.fused_score.total_cmp(&left.fused_score))
             .then_with(|| best_rank(left).cmp(&best_rank(right)))
             .then_with(|| left_id.cmp(right_id))
     });
@@ -232,7 +255,8 @@ pub fn best_rank(evidence: &FusionEvidence) -> usize {
 /// Score and order already-fused results from distinct hit types. The caller
 /// supplies a fixed hit-type ordinal (note, message, summary) and canonical
 /// record id; this keeps `scope=all` deterministic without comparing raw
-/// retriever scores from different tables.
+/// retriever scores from different tables. Exact-title evidence already
+/// reflects enabled channels; a zero native score alone does not disable it.
 #[allow(clippy::too_many_arguments)]
 pub fn compare_scoped(
     left_score: f32,
@@ -244,8 +268,10 @@ pub fn compare_scoped(
     right_hit_type: usize,
     right_id: &str,
 ) -> Ordering {
-    right_score
-        .total_cmp(&left_score)
+    right
+        .exact_title_match
+        .cmp(&left.exact_title_match)
+        .then_with(|| right_score.total_cmp(&left_score))
         .then_with(|| best_rank(left).cmp(&best_rank(right)))
         .then_with(|| left_hit_type.cmp(&right_hit_type))
         .then_with(|| left_id.cmp(right_id))
@@ -276,6 +302,9 @@ mod tests {
         }
         fn fulltext_score(&self) -> Option<f32> {
             self.fulltext
+        }
+        fn exact_title_match(&self) -> bool {
+            self.evidence.exact_title_match
         }
         fn set_fusion_evidence(&mut self, evidence: FusionEvidence) {
             self.evidence = evidence;
@@ -318,6 +347,173 @@ mod tests {
         assert!(results.iter().any(|result| result.id == "text"
             && result.evidence.fulltext_rank == Some(1)
             && result.evidence.vector_rank.is_none()));
+    }
+
+    #[test]
+    fn exact_title_priority_survives_both_fusion_strategies_and_payload_merging() {
+        for strategy in [FusionStrategy::ReciprocalRank, FusionStrategy::Weighted] {
+            let mut exact = result("named-note", None, Some(0.01));
+            exact.evidence.exact_title_match = true;
+            let distractors = (0..8)
+                .map(|index| result(format!("distractor-{index}"), Some(0.01), Some(10.0)))
+                .collect::<Vec<_>>();
+            let mut vector = distractors.clone();
+            // A vector copy has no title-query evidence. Fusion must retain
+            // the independently discovered full-text signal even if a caller
+            // only merges the original component scores.
+            vector.push(result("named-note", Some(1.5), None));
+            let mut fulltext = distractors;
+            fulltext.push(exact);
+            let results = fuse(
+                vector,
+                fulltext,
+                &FusionConfig {
+                    strategy,
+                    ..FusionConfig::default()
+                },
+                |existing, incoming| existing.fulltext = incoming.fulltext,
+            );
+            assert_eq!(results[0].id, "named-note", "{strategy:?}");
+            assert!(results[0].evidence.exact_title_match);
+            assert_eq!(results[0].evidence.fulltext_rank, Some(1));
+            assert_eq!(results[0].evidence.final_rank, 1);
+            assert!(results[0].evidence.fused_score < results[1].evidence.fused_score);
+        }
+    }
+
+    #[test]
+    fn disabled_exact_title_hits_do_not_override_enabled_scoped_results() {
+        let exact = FusionEvidence {
+            exact_title_match: true,
+            fused_score: 0.1,
+            ..FusionEvidence::default()
+        };
+        let ordinary = FusionEvidence {
+            fused_score: 0.5,
+            ..FusionEvidence::default()
+        };
+        assert_eq!(
+            compare_scoped(
+                0.1,
+                &exact,
+                0,
+                "note:named",
+                0.5,
+                &ordinary,
+                1,
+                "message:hit"
+            ),
+            Ordering::Less
+        );
+        assert_eq!(
+            // An enabled title may have zero BM25 when its terms appear in
+            // every indexed title. Native score zero does not disable intent.
+            compare_scoped(
+                0.0,
+                &exact,
+                0,
+                "note:named",
+                0.5,
+                &ordinary,
+                1,
+                "message:hit"
+            ),
+            Ordering::Less
+        );
+        let disabled = FusionEvidence {
+            exact_title_match: false,
+            ..exact
+        };
+        assert_eq!(
+            // Scope callers clear priority when their hit-type weight is
+            // disabled; the comparator must honor that explicit decision.
+            compare_scoped(
+                0.0,
+                &disabled,
+                0,
+                "note:named",
+                0.5,
+                &ordinary,
+                1,
+                "message:hit"
+            ),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn zero_fulltext_scores_keep_enabled_title_priority_but_zero_weight_disables_it() {
+        let mut exact = result("named-note", None, Some(0.0));
+        exact.evidence.exact_title_match = true;
+        for fulltext_weight in [0.3, 0.0] {
+            let results = fuse(
+                vec![result("ordinary", Some(0.1), None)],
+                vec![exact.clone()],
+                &FusionConfig {
+                    strategy: FusionStrategy::Weighted,
+                    fulltext_weight,
+                    ..FusionConfig::default()
+                },
+                |_, _| {},
+            );
+            if fulltext_weight > 0.0 {
+                assert_eq!(results[0].id, "named-note");
+                assert_eq!(results[0].evidence.fused_score, 0.0);
+                assert!(results[0].evidence.exact_title_match);
+            } else {
+                assert_eq!(results[0].id, "ordinary");
+                assert!(!results[1].evidence.exact_title_match);
+            }
+        }
+    }
+
+    #[test]
+    fn disabled_text_channel_does_not_reorder_equal_vector_scores_via_title_ranks() {
+        let vector = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .map(|id| result(id, Some(0.2), None))
+            .collect::<Vec<_>>();
+        let fulltext = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| result(id, None, Some(index as f32 + 1.0)))
+            .collect::<Vec<_>>();
+        let mut title_match = fulltext.clone();
+        title_match[1].evidence.exact_title_match = true;
+        for strategy in [FusionStrategy::ReciprocalRank, FusionStrategy::Weighted] {
+            let config = FusionConfig {
+                strategy,
+                vector_weight: 1.0,
+                fulltext_weight: 0.0,
+                ..FusionConfig::default()
+            };
+            let fuse_results = |fulltext| {
+                fuse(vector.clone(), fulltext, &config, |existing, incoming| {
+                    existing.fulltext = incoming.fulltext;
+                })
+                .into_iter()
+                .map(|result| (result.id, result.evidence))
+                .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                fuse_results(fulltext.clone()),
+                fuse_results(title_match.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_evidence_defaults_to_no_exact_title_match() {
+        let evidence: FusionEvidence = serde_json::from_value(serde_json::json!({
+            "vector_rank": null,
+            "vector_distance": null,
+            "fulltext_rank": 1,
+            "fulltext_score": 1.0,
+            "fused_score": 0.1,
+            "final_rank": 1
+        }))
+        .unwrap();
+        assert!(!evidence.exact_title_match);
     }
 
     #[test]
