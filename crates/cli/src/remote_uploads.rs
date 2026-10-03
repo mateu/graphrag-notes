@@ -64,16 +64,22 @@ pub(super) fn prepare(cli: &Cli, server: &str) -> Result<Option<Invocation>> {
                     .join(".graphrag/remote-drafts")
             });
             let directory_text = path_text(&directory)?.to_owned();
-            let mut bytes = Vec::new();
-            std::fs::File::open(content_file)
-                .context("could not read client upload file")?
-                .take(65_537)
-                .read_to_end(&mut bytes)?;
+            let recovery_path = cli.recover_draft.then_some(content_file.as_path());
+            let bytes = if recovery_path.is_some() {
+                Draft::read_recovery_input(content_file, 65_537)?
+            } else {
+                let mut bytes = Vec::new();
+                std::fs::File::open(content_file)
+                    .context("could not read client upload file")?
+                    .take(65_537)
+                    .read_to_end(&mut bytes)?;
+                bytes
+            };
             if bytes.len() > 65_536 {
                 anyhow::bail!("uploaded Markdown must be at most 65536 UTF-8 bytes");
             }
-            let draft = Draft::save(&bytes, &directory, |path| {
-                let mut command=format!("graphrag --server={} --credential-env={} --request-id={} upload --document-key={} --content-file={} --draft-dir={} --format {}",shell_quote(server),shell_quote(&cli.credential_env),shell_quote(&request),shell_quote(document_key),shell_quote(&path.to_string_lossy()),shell_quote(&directory_text),format_flag(*format));
+            let draft = Draft::save_or_recover(&bytes, &directory, recovery_path, |path| {
+                let mut command=format!("graphrag --server={} --credential-env={} --request-id={} --recover-draft upload --document-key={} --content-file={} --draft-dir={} --format {}",shell_quote(server),shell_quote(&cli.credential_env),shell_quote(&request),shell_quote(document_key),shell_quote(&path.to_string_lossy()),shell_quote(&directory_text),format_flag(*format));
                 if let Some(title) = title {
                     command.push_str(&format!(" --title={}", shell_quote(title)));
                 }
@@ -130,6 +136,9 @@ pub(super) fn prepare(cli: &Cli, server: &str) -> Result<Option<Invocation>> {
         }
         _ => return Ok(None),
     };
+    if cli.recover_draft {
+        anyhow::bail!("--recover-draft requires a supported remote write with --content-file");
+    }
     Ok(Some(Invocation {
         tool,
         arguments,
