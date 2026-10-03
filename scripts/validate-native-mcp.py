@@ -158,7 +158,8 @@ def private_environment(directory, client, hermes_root=None):
 
 
 def terminate_group(process, timeout=5):
-    """Stop a private subprocess and its descendants, including after timeout."""
+    """Stop a private subprocess group; report whether intervention was needed."""
+    intervened = process.poll() is None
     if process.poll() is None:
         try:
             os.killpg(process.pid, signal.SIGTERM)
@@ -168,7 +169,23 @@ def terminate_group(process, timeout=5):
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             pass
-    # A parent can exit while a descendant still owns the private process group.
+    # A successful parent can leave descendants behind. Allow a brief bounded
+    # interval for exiting children to be reaped before testing the whole group.
+    deadline = time.monotonic() + 0.25
+    while True:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            process.wait(timeout=timeout)
+            return intervened
+        except PermissionError:
+            # A remaining private group must not count as a clean shutdown,
+            # even if the platform will not let us signal it while reaping.
+            pass
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    intervened = True
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -179,6 +196,7 @@ def terminate_group(process, timeout=5):
         if process.poll() is None:
             raise
     process.wait(timeout=timeout)
+    return intervened
 
 
 def run_child(command, payload, directory, label, environment, tokens, timeout):
@@ -186,25 +204,29 @@ def run_child(command, payload, directory, label, environment, tokens, timeout):
                                stderr=subprocess.PIPE, text=True, cwd=directory,
                                env=environment, start_new_session=True)
     timed_out = False
+    forced_cleanup = False
     stdout = stderr = ""
     try:
         stdout, stderr = process.communicate(json.dumps(payload) if payload is not None else None,
                                              timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        terminate_group(process)
+        forced_cleanup = terminate_group(process)
         stdout, stderr = process.communicate(timeout=5)
     finally:
-        terminate_group(process)
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None:
-                stream.close()
+        try:
+            forced_cleanup = terminate_group(process) or forced_cleanup
+        finally:
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
     leaked = any(token in stdout + stderr for token in tokens)
     private_write(directory / f"{label}.stdout", redact(stdout, tokens))
     private_write(directory / f"{label}.stderr", redact(stderr, tokens))
     require(not leaked, "Installed runtime printed a synthetic credential; logs were redacted")
     require(not timed_out, f"{label} exceeded its bounded deadline; private logs retained")
     require(process.returncode == 0, f"{label} failed; inspect its private sanitized log")
+    require(not forced_cleanup, f"{label} left a private process group after exiting; forced cleanup was required")
     return stdout
 
 
@@ -272,7 +294,8 @@ class PrivateServer:
                     except subprocess.TimeoutExpired:
                         clean = False
                 clean = clean and self.process.poll() == 0
-                terminate_group(self.process)
+                forced_cleanup = terminate_group(self.process)
+                clean = clean and not forced_cleanup
         finally:
             for stream in self.streams:
                 stream.close()

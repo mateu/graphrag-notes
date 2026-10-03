@@ -51,7 +51,9 @@ An existing mode-0700 directory can be supplied with `--runspace-root`. Every
 run creates a new private child directory, never an existing corpus. Per-child
 and whole-scenario deadlines are bounded and configurable. On timeout/startup
 failure, private subprocess groups are stopped and partial sanitized logs are
-retained. The generated policy contains token hashes only; runtime tokens pass
+retained. An otherwise successful client or service that leaves descendants
+requiring forced cleanup fails the run instead of reporting clean shutdown.
+The generated policy contains token hashes only; runtime tokens pass
 through stdin/configuration memory and are redacted from retained process logs.
 Cleanup rejects linked or non-regular log paths before reading them, so a
 client-created symlink, hard link or FIFO cannot copy external file content or

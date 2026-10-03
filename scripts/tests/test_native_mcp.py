@@ -118,6 +118,47 @@ class NativeRuntimeHarness(unittest.TestCase):
         self.assertTrue(spawned[0][2].closed)
         self.assertIn("startup refused", next(self.directory.glob("server-*.stderr")).read_text())
 
+    def assert_process_stopped(self, pid):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.02)
+        self.fail("Cleanup left a live private descendant")
+
+    def test_successful_runtime_with_leaked_descendant_fails_after_cleanup(self):
+        child = self.executable("leaked-child", "import time\ntime.sleep(30)\n")
+        pid_path = self.directory / "leaked.pid"
+        binary = self.executable("successful-leaking-runtime",
+            "import pathlib,subprocess\n"
+            + f"child=subprocess.Popen([{str(child)!r}],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            + f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid))\n"
+            + "print('parent exited successfully',flush=True)\n")
+        with self.assertRaisesRegex(HARNESS.ValidationError, "forced cleanup was required"):
+            self.run_child(binary)
+        self.assertIn("parent exited successfully", (self.directory / "fixture.stdout").read_text())
+        self.assert_process_stopped(int(pid_path.read_text()))
+
+    def test_successful_service_exit_with_leaked_descendant_is_not_clean(self):
+        child = self.executable("server-leaked-child", "import time\ntime.sleep(30)\n")
+        pid_path = self.directory / "server-leaked.pid"
+        binary = self.executable("leaking-service",
+            "import pathlib,signal,socket,subprocess,sys,time\n"
+            + "signal.signal(signal.SIGINT,lambda *_: sys.exit(0))\n"
+            + f"child=subprocess.Popen([{str(child)!r}],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            + f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid))\n"
+            + "host,port=sys.argv[sys.argv.index('--listen')+1].split(':')\n"
+            + "listener=socket.socket(); listener.bind((host,int(port))); listener.listen()\n"
+            + "while True: time.sleep(0.1)\n")
+        server = HARNESS.PrivateServer(binary, self.directory, 2)
+        with self.assertRaisesRegex(HARNESS.ValidationError, "did not shut down cleanly"):
+            server.stop()
+        self.assertEqual(server.process.returncode, 0)
+        self.assertTrue(all(stream.closed for stream in server.streams))
+        self.assert_process_stopped(int(pid_path.read_text()))
+
     def test_invalid_deadlines_are_rejected_before_starting_runtimes(self):
         required = ["--binary", "/absent", "--openclaw-root", "/absent", "--hermes-root", "/absent"]
         for flag in ("--command-timeout", "--deadline-seconds"):
