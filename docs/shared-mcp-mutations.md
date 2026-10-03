@@ -44,6 +44,11 @@ current note and reconcile the draft before submitting a *new* request ID with
 that current revision. After an uncertain outcome, retry the exact original
 request ID and payload to recover its authoritative result.
 
+Copied recovery commands include `--recover-draft`: this explicitly adopts the
+private regular file supplied with `--content-file` and removes that same file
+after a verified acknowledgment. Ordinary input files stay untouched. A draft
+changed after submission is retained so unsent edits are not lost.
+
 Only manual notes are editable/deletable remotely. Imported file chunks, chat
 messages and generated chat notes remain source-owned; change their original
 source. Remote `--detach` is rejected. Metadata-only edits need no inference

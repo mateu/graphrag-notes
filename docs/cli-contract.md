@@ -236,5 +236,7 @@ edits keep a private recovery draft until a matching authoritative outcome.
 Remote `garden review` and `garden proposals list/show` return proposal cards.
 `garden proposals accept/reject/undo --yes` select one proposal and require its
 reviewed revision. Global `--request-id` is valid for these writes and capture;
-it is rejected on read commands. Both global mutation flags require remote mode.
+it is rejected on read commands. Global `--recover-draft` explicitly adopts a
+private `--content-file` recovery file for verified-success cleanup; ordinary
+input files remain caller-owned. These global mutation flags require remote mode.
 See [remote mutations](shared-mcp-mutations.md) for precise recovery semantics.

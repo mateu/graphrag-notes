@@ -325,6 +325,10 @@ async fn accept_reject_undo_use_trusted_audit_and_atomic_journals() {
         .unwrap();
     assert_eq!(undone.status, ProposedEdgeStatus::Superseded);
     assert_eq!(undone.reviewer.as_deref(), Some("mcp:openclaw-a"));
+    assert_eq!(
+        undone.supersession_reason.as_deref(),
+        Some("accepted edge undone by authenticated remote reviewer")
+    );
     assert!(rows(&repo, "related_to").await.is_empty());
     assert_eq!(rows(&repo, "remote_mutation_receipt").await.len(), 2);
 }

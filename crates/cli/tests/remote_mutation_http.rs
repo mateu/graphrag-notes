@@ -1,6 +1,7 @@
 //! Real CLI/HTTP/repository checks for revision guards and draft cleanup.
 use graphrag_agents::{
-    DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
+    DeterministicEmbedder, Embedder, FixtureEntityExtractor, InferenceCapabilities,
+    LibrarianRuntimeConfig, SearchAgent, SharedEmbedder,
 };
 use graphrag_application::EmbeddedApplication;
 use graphrag_core::{record_id_to_string, Note};
@@ -8,7 +9,12 @@ use graphrag_db::{init_memory, Repository};
 use graphrag_service::{serve, Capability, Credential, CredentialFile, ServiceOptions};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use std::time::Duration;
+use tokio::sync::Notify;
 
 struct Fixture {
     temp: tempfile::TempDir,
@@ -18,6 +24,9 @@ struct Fixture {
 const TOKEN: &str = "synthetic-cli-http-mutation-token-1234567890";
 impl Fixture {
     async fn new(repo: &Repository) -> Self {
+        Self::with_embedder(repo, Arc::new(DeterministicEmbedder::default())).await
+    }
+    async fn with_embedder(repo: &Repository, embedder: SharedEmbedder) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let credentials_file = temp.path().join("credentials.json");
         let policy = CredentialFile {
@@ -25,7 +34,12 @@ impl Fixture {
             credentials: vec![Credential {
                 instance_id: "cli-synthetic".into(),
                 token_sha256: format!("{:x}", Sha256::digest(TOKEN.as_bytes())),
-                capabilities: vec![Capability::Read, Capability::Edit, Capability::Delete],
+                capabilities: vec![
+                    Capability::Read,
+                    Capability::Edit,
+                    Capability::Delete,
+                    Capability::Capture,
+                ],
             }],
         };
         std::fs::write(&credentials_file, serde_json::to_vec(&policy).unwrap()).unwrap();
@@ -35,7 +49,6 @@ impl Fixture {
             std::fs::set_permissions(&credentials_file, std::fs::Permissions::from_mode(0o600))
                 .unwrap();
         }
-        let embedder = Arc::new(DeterministicEmbedder::default());
         let application = Arc::new(EmbeddedApplication::new(
             repo.clone(),
             SearchAgent::new(repo.clone(), embedder.clone()),
@@ -60,8 +73,9 @@ impl Fixture {
             task,
         }
     }
-    async fn cli(&self, args: &[&str]) -> std::process::Output {
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_graphrag"))
+    fn command(&self, args: &[&str]) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_graphrag"));
+        command
             .current_dir(self.temp.path())
             .env("GRAPHRAG_TOKEN", TOKEN)
             .env(
@@ -73,10 +87,11 @@ impl Fixture {
                 self.temp.path().join("must-not-create-client-db"),
             )
             .args(["--server", &self.endpoint])
-            .args(args)
-            .output()
-            .await
-            .unwrap()
+            .args(args);
+        command
+    }
+    async fn cli(&self, args: &[&str]) -> std::process::Output {
+        self.command(args).output().await.unwrap()
     }
     async fn success(&self, args: &[&str]) -> Value {
         let output = self.cli(args).await;
@@ -89,6 +104,137 @@ impl Fixture {
         assert_eq!(value["success"], true);
         assert_eq!(value["data"]["error"], Value::Null);
         value["data"]["data"].clone()
+    }
+}
+
+#[cfg(unix)]
+struct BlockedEmbedder {
+    started: Notify,
+    released: Notify,
+    calls: AtomicUsize,
+}
+#[cfg(unix)]
+#[async_trait::async_trait]
+impl Embedder for BlockedEmbedder {
+    async fn embed(&self, text: &str, query: bool) -> graphrag_agents::Result<Vec<f32>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        self.released.notified().await;
+        DeterministicEmbedder::default().embed(text, query).await
+    }
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        query: bool,
+    ) -> graphrag_agents::Result<Vec<Vec<f32>>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        self.released.notified().await;
+        DeterministicEmbedder::default()
+            .embed_batch(texts, query)
+            .await
+    }
+    async fn health(&self) -> graphrag_agents::Result<bool> {
+        Ok(true)
+    }
+    fn capabilities(&self) -> InferenceCapabilities {
+        DeterministicEmbedder::default().capabilities()
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lost_ack_edit_and_capture_retries_adopt_original_private_draft_only_after_verified_replay()
+{
+    for operation in ["edit", "capture"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("original manual content"))
+            .await
+            .unwrap();
+        let id = record_id_to_string(note.id.as_ref().unwrap());
+        let provider = Arc::new(BlockedEmbedder {
+            started: Notify::new(),
+            released: Notify::new(),
+            calls: AtomicUsize::new(0),
+        });
+        let fixture = Fixture::with_embedder(&repo, provider.clone()).await;
+        let snapshot = fixture
+            .success(&["notes", "show", &id, "--format", "json"])
+            .await;
+        let revision = snapshot["revision"].as_str().unwrap();
+        let input = fixture.temp.path().join("ordinary-input.md");
+        let drafts = fixture.temp.path().join("private drafts");
+        let body = "valuable recovery body after an actual lost acknowledgment";
+        std::fs::write(&input, body).unwrap();
+        let request = format!("lost-{operation}");
+        let mut args = vec!["--request-id", &request];
+        if operation == "edit" {
+            args.extend(["--expected-revision", revision, "notes", "edit", &id]);
+        } else {
+            args.push("capture");
+        }
+        args.extend([
+            "--content-file",
+            input.to_str().unwrap(),
+            "--draft-dir",
+            drafts.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let mut command = fixture.command(&args);
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut child = command.spawn().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), provider.started.notified())
+            .await
+            .unwrap();
+        let retained = std::fs::read_dir(&drafts)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read_to_string(&retained).unwrap(), body);
+        child.kill().await.unwrap();
+        provider.released.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let committed = if operation == "edit" {
+                    repo.get_note(&id).await.unwrap().unwrap().content == body
+                } else {
+                    repo.get_stats().await.unwrap().note_count == 2
+                };
+                if committed {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let calls = provider.calls.load(Ordering::SeqCst);
+        let mut retry = vec!["--recover-draft", "--request-id", &request];
+        if operation == "edit" {
+            retry.extend(["--expected-revision", revision, "notes", "edit", &id]);
+        } else {
+            retry.push("capture");
+        }
+        retry.extend([
+            "--content-file",
+            retained.to_str().unwrap(),
+            "--draft-dir",
+            drafts.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        let replay = fixture.success(&retry).await;
+        assert_eq!(replay["replayed"], true, "{operation}");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), calls);
+        assert!(!retained.exists());
+        assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 0);
+        assert_eq!(std::fs::read_to_string(&input).unwrap(), body);
     }
 }
 impl Drop for Fixture {

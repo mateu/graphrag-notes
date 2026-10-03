@@ -282,7 +282,7 @@ async fn proposal_actions_are_separate_capabilities_and_cannot_spoof_reviewer() 
         .tool("reader", "get_proposal", json!({"id":pid}))
         .await;
     assert_eq!(data(&current)["reviewer"], "mcp:acceptor");
-    let undo = json!({"request_id":"undo-1","id":pid,"revision":data(&current)["revision"],"action":"undo","confirmed":true});
+    let undo = json!({"request_id":"undo-1","id":pid,"revision":data(&current)["revision"],"action":"undo","reason":"New evidence changes the decision","confirmed":true});
     assert_eq!(
         error(
             &fixture
@@ -292,8 +292,25 @@ async fn proposal_actions_are_separate_capabilities_and_cannot_spoof_reviewer() 
         "forbidden"
     );
     assert_eq!(
-        data(&fixture.tool("undoer", "decide_proposal", undo).await)["outcome"]["status"],
+        data(
+            &fixture
+                .tool("undoer", "decide_proposal", undo.clone())
+                .await
+        )["outcome"]["status"],
         "superseded"
+    );
+    let undone = fixture
+        .tool("reader", "get_proposal", json!({"id":pid}))
+        .await;
+    assert_eq!(
+        data(&undone)["supersession_reason"],
+        "New evidence changes the decision"
+    );
+    assert_eq!(data(&undone)["action_reason"], "Human reviewed");
+    assert_eq!(data(&undone)["reviewer"], "mcp:acceptor");
+    assert_eq!(
+        data(&fixture.tool("undoer", "decide_proposal", undo).await)["replayed"],
+        true
     );
     assert_eq!(
         data(&fixture.tool("acceptor", "decide_proposal", decision).await)["replayed"],

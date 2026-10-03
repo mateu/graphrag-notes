@@ -151,6 +151,9 @@ pub(super) async fn prepare(cli: &Cli, server: &str) -> Result<Option<Invocation
         },
         _ => return Ok(None),
     };
+    if cli.recover_draft && invocation.tool != "edit_note" {
+        anyhow::bail!("--recover-draft requires a remote edit with --content-file");
+    }
     if !matches!(
         invocation.tool,
         "edit_note" | "delete_note" | "decide_proposal"
@@ -196,6 +199,15 @@ async fn prepare_edit(cli: &Cli, server: &str, command: &NotesCommand) -> Result
             "remote edits support manual notes; source-owned notes must be changed at their source"
         );
     }
+    let recovery_path = if cli.recover_draft {
+        let path = content_file
+            .as_deref()
+            .context("--recover-draft requires --content-file")?;
+        Draft::validate_recovery_path(path)?;
+        Some(path)
+    } else {
+        None
+    };
     let revision = revision(cli)?;
     let request_id = request_id(cli);
     let mut invocation = read(
@@ -232,10 +244,14 @@ async fn prepare_edit(cli: &Cli, server: &str, command: &NotesCommand) -> Result
     } else {
         let mut bytes = Vec::new();
         if let Some(path) = content_file {
-            std::fs::File::open(path)
-                .context("could not read client edit file")?
-                .take(65_537)
-                .read_to_end(&mut bytes)?;
+            if recovery_path.is_some() {
+                bytes = Draft::read_recovery_input(path, 65_537)?;
+            } else {
+                std::fs::File::open(path)
+                    .context("could not read client edit file")?
+                    .take(65_537)
+                    .read_to_end(&mut bytes)?;
+            }
         } else {
             std::io::stdin().take(65_537).read_to_end(&mut bytes)?;
         }
@@ -250,8 +266,8 @@ async fn prepare_edit(cli: &Cli, server: &str, command: &NotesCommand) -> Result
             .unwrap_or_else(std::env::temp_dir)
             .join(".graphrag/remote-drafts")
     });
-    let mut draft = Draft::save(&original, &directory, |path| {
-        let mut retry = format!("graphrag --server {} --credential-env {} --request-id {} --expected-revision {} notes edit {} --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(revision), shell_quote(id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(*format));
+    let mut draft = Draft::save_or_recover(&original, &directory, recovery_path, |path| {
+        let mut retry = format!("graphrag --server {} --credential-env {} --request-id {} --expected-revision {} --recover-draft notes edit {} --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(revision), shell_quote(id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(*format));
         if let Some(directory) = &editor.draft_dir {
             retry.push_str(&format!(
                 " --draft-dir {}",

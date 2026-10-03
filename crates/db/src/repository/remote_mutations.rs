@@ -305,7 +305,7 @@ impl Repository {
                         let edge = expected.resulting_edge_id.clone().ok_or_else(conflict)?;
                         if !matches!(edge.table.as_str(),"supports"|"contradicts"|"derived_from"|"related_to") { return Err(conflict()); }
                         edge_id=Some(edge);
-                        sql.push_str("IF array::len((SELECT VALUE id FROM $edge WHERE proposal_id=$target)) != 1 { THROW 'remote-mutation-revision-conflict'; }; DELETE $edge; UPDATE $target SET status='superseded',superseded_at=time::now(),supersession_reason='accepted edge undone by authenticated remote reviewer',resulting_edge_id=NONE,updated_at=time::now(); ");
+                        sql.push_str("IF array::len((SELECT VALUE id FROM $edge WHERE proposal_id=$target)) != 1 { THROW 'remote-mutation-revision-conflict'; }; DELETE $edge; UPDATE $target SET status='superseded',superseded_at=time::now(),supersession_reason=($reason ?? 'accepted edge undone by authenticated remote reviewer'),resulting_edge_id=NONE,updated_at=time::now(); ");
                     }
                     _ => return Err(conflict()),
                 }
