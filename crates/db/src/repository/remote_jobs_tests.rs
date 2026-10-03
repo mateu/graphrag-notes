@@ -1051,13 +1051,18 @@ async fn malformed_queued_input_is_rejected_before_claim_and_repair_needs_no_res
             .claim_remote_upload_job("owner", id, "epoch", "worker")
             .await
             .is_err());
+        assert_eq!(table(&repo, "processing_job").await, damaged);
         assert!(repo
             .claim_next_remote_upload("epoch", "worker")
             .await
-            .is_err());
-        assert_eq!(table(&repo, "processing_job").await, damaged);
-        assert_eq!(damaged[0]["status"], "queued");
-        assert!(damaged[0].get("remote_service_epoch").is_none());
+            .unwrap()
+            .is_none());
+        let quarantined = table(&repo, "processing_job").await;
+        assert_eq!(quarantined[0]["status"], "failed");
+        assert_eq!(quarantined[0]["last_error"], "validation");
+        assert_eq!(quarantined[0]["remote_input"], damaged[0]["remote_input"]);
+        assert!(quarantined[0].get("remote_service_epoch").is_none());
+        assert!(quarantined[0].get("remote_worker_token").is_none());
         repo.db
             .query("UPDATE $id SET remote_input = $input")
             .bind(("id", job_id(id).unwrap()))
@@ -1066,6 +1071,13 @@ async fn malformed_queued_input_is_rejected_before_claim_and_repair_needs_no_res
             .unwrap()
             .check()
             .unwrap();
+        // Repair alone must never silently restart a quarantined admission.
+        assert!(repo
+            .claim_next_remote_upload("epoch", "worker")
+            .await
+            .unwrap()
+            .is_none());
+        repo.resume_remote_upload_job("owner", id).await.unwrap();
         let claimed = repo
             .claim_next_remote_upload("epoch", "worker")
             .await
@@ -1075,6 +1087,105 @@ async fn malformed_queued_input_is_rejected_before_claim_and_repair_needs_no_res
         assert_eq!(claimed.input, original);
         assert_eq!(claimed.job.id, Some(job_id(id).unwrap()));
         assert_eq!(claimed.worker_token.as_deref(), Some("worker"));
+    }
+}
+
+#[tokio::test]
+async fn malformed_restored_input_is_quarantined_without_blocking_a_healthy_upload() {
+    for malformed in [
+        serde_json::json!({"missing_fields":true}),
+        serde_json::json!({"semantic_blank":true}),
+    ] {
+        let original = Repository::new(init_memory().await.unwrap());
+        let invalid_input = input("owner", "damaged-oldest", "Original admitted input");
+        let damaged = original
+            .admit_remote_upload(invalid_input.clone())
+            .await
+            .unwrap();
+        let healthy_input = input("other-owner", "healthy-next", "Healthy uploaded input");
+        let healthy = original
+            .admit_remote_upload(healthy_input.clone())
+            .await
+            .unwrap();
+        let damaged_id = damaged.result["job_id"].as_str().unwrap();
+        let healthy_id = healthy.result["job_id"].as_str().unwrap();
+        let restored = Repository::new(init_memory().await.unwrap());
+        for mut record in table(&original, "processing_job").await {
+            if record["remote_request_id"] == "damaged-oldest" {
+                record["remote_input"] = if malformed.get("semantic_blank").is_some() {
+                    let mut invalid = invalid_input.clone();
+                    invalid.markdown = "   ".into();
+                    serde_json::to_value(invalid).unwrap()
+                } else {
+                    malformed.clone()
+                };
+            }
+            restored
+                .restore_portable_record("processing_job", record)
+                .await
+                .unwrap();
+        }
+        // A failed quarantine write remains a storage error. It cannot be
+        // treated as settled input corruption or acquire an untracked lease.
+        restored
+            .db
+            .query("DEFINE FIELD OVERWRITE status ON processing_job TYPE string ASSERT $value != 'failed'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(restored
+            .claim_next_remote_upload("restored-epoch", "healthy-worker")
+            .await
+            .is_err());
+        for record in table(&restored, "processing_job").await {
+            assert_eq!(record["status"], "queued");
+            assert!(record.get("remote_service_epoch").is_none());
+            assert!(record.get("remote_worker_token").is_none());
+        }
+        restored
+            .db
+            .query("DEFINE FIELD OVERWRITE status ON processing_job TYPE string")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let claimed = restored
+            .claim_next_remote_upload("restored-epoch", "healthy-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.job.id, Some(job_id(healthy_id).unwrap()));
+        assert_eq!(claimed.input, healthy_input);
+        let damaged = table(&restored, "processing_job")
+            .await
+            .into_iter()
+            .find(|record| record["remote_request_id"] == "damaged-oldest")
+            .unwrap();
+        assert_eq!(damaged["status"], "failed");
+        assert_eq!(damaged["last_error"], "validation");
+        assert!(damaged.get("remote_service_epoch").is_none());
+        assert!(damaged.get("remote_worker_token").is_none());
+        let lease = RemoteJobLease {
+            job_id: claimed.job.id.unwrap(),
+            instance_id: claimed.instance_id,
+            service_epoch: "restored-epoch".into(),
+            worker_token: "healthy-worker".into(),
+        };
+        assert_eq!(
+            complete(&restored, &lease, "Healthy uploaded chunk")
+                .await
+                .job
+                .status,
+            "completed"
+        );
+        // A different authenticated instance cannot resume the quarantined job.
+        assert!(matches!(
+            restored
+                .resume_remote_upload_job("other-owner", damaged_id)
+                .await,
+            Err(DbError::NotFound(_, _))
+        ));
     }
 }
 

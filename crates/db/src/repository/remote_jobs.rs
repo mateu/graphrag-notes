@@ -12,6 +12,7 @@ mod tests;
 pub const MAX_REMOTE_UPLOAD_BYTES: usize = 65_536;
 pub const MAX_REMOTE_UPLOAD_CHUNKS: usize = 200;
 const MAX_REMOTE_JSON_BYTES: usize = 16 * 1024;
+const MAX_REMOTE_CLAIM_SCAN: usize = 100;
 const FENCE: &str = "remote-upload-worker-fence";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,10 +100,17 @@ struct RecoveryFence {
     remote_cancel_requested: bool,
 }
 
+#[derive(Debug, Deserialize, SurrealValue)]
+struct QueuedJobIdentity {
+    id: RecordId,
+    remote_instance_id: String,
+}
+
 impl JobRow {
     fn public(self) -> Result<RemoteUploadJob> {
-        let input = serde_json::from_value(self.remote_input)
-            .map_err(|error| DbError::QueryFailed(format!("remote upload input shape: {error}")))?;
+        let input = serde_json::from_value(self.remote_input).map_err(|error| {
+            DbError::InvalidRemoteRequest(format!("stored upload input shape: {error}"))
+        })?;
         Ok(RemoteUploadJob {
             job: ProcessingJob {
                 id: Some(self.id),
@@ -438,14 +446,28 @@ impl Repository {
         identity(epoch)?;
         identity(worker)?;
         let _gate = self.remote_job_transition_lock.lock().await;
-        let rows: Vec<JobRow> = self.db.query("SELECT * FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'queued' AND remote_cancel_requested = false ORDER BY created_at ASC, id ASC LIMIT 1").await?.take(0)?;
-        match rows.into_iter().next() {
-            Some(row) => {
-                self.claim_remote_upload_locked(&row.remote_instance_id, &row.id, epoch, worker)
-                    .await
+        // Read only identities first, so a malformed immutable input does not
+        // prevent other queued jobs from reaching validation and ownership.
+        let rows: Vec<QueuedJobIdentity> = self.db.query("SELECT id, remote_instance_id, created_at FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'queued' AND remote_cancel_requested = false ORDER BY created_at ASC, id ASC LIMIT $limit")
+            .bind(("limit", MAX_REMOTE_CLAIM_SCAN)).await?.take(0)?;
+        for row in rows {
+            match self
+                .claim_remote_upload_locked(&row.remote_instance_id, &row.id, epoch, worker)
+                .await
+            {
+                Ok(Some(job)) => return Ok(Some(job)),
+                Ok(None) => continue,
+                Err(DbError::InvalidRemoteRequest(_)) => {
+                    // Deterministic saved-input errors are terminal before a
+                    // worker fence is acquired. Retain the input/checkpoint for
+                    // repair followed by explicit resume; never hide DB faults.
+                    self.db.query("UPDATE $id SET status = 'failed', last_error = 'validation', finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false")
+                        .bind(("id", row.id)).bind(("instance", row.remote_instance_id)).await?.check()?;
+                }
+                Err(error) => return Err(error),
             }
-            None => Ok(None),
         }
+        Ok(None)
     }
     async fn owned_remote_upload(
         &self,
