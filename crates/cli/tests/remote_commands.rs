@@ -239,6 +239,72 @@ fn option_like_capture_request_identity_survives_the_printed_recovery_command() 
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn relative_capture_draft_recovery_works_from_another_working_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let original_directory = temp.path().join("original working directory");
+    let retry_directory = temp.path().join("different working directory");
+    let home = temp.path().join("private-home");
+    for directory in [&original_directory, &retry_directory, &home] {
+        fs::create_dir(directory).unwrap();
+    }
+    // macOS getcwd resolves the /var -> /private/var temporary-directory alias.
+    let drafts = fs::canonicalize(&original_directory)
+        .unwrap()
+        .join("private drafts");
+    let token = "synthetic-cross-directory-token-12345678";
+    let failure = graphrag()
+        .current_dir(&original_directory)
+        .env("HOME", &home)
+        .env("GRAPHRAG_TOKEN", token)
+        .args([
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--request-id=cross-directory-001",
+            "capture",
+            "synthetic retained cross-directory draft",
+            "--draft-dir",
+            "private drafts",
+        ])
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&failure.get_output().stderr);
+    let recovery = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Recover: "))
+        .expect("failed capture must print its retry command");
+    assert!(recovery.contains(&format!("--draft-dir '{}'", drafts.display())));
+    let original = fs::read_dir(&drafts)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let binary_directory = std::path::Path::new(env!("CARGO_BIN_EXE_graphrag"))
+        .parent()
+        .unwrap();
+    Command::new("/bin/sh")
+        .current_dir(&retry_directory)
+        .env_remove("GRAPHRAG_SERVER")
+        .env_remove("GRAPHRAG_CONFIG")
+        .env("HOME", &home)
+        .env("PATH", binary_directory)
+        .env("GRAPHRAG_TOKEN", token)
+        .args(["-c", recovery])
+        .timeout(std::time::Duration::from_secs(5))
+        .assert()
+        .failure()
+        .stderr(contains("Capture request ID: cross-directory-001"))
+        .stderr(contains("service_unreachable"));
+    assert_eq!(
+        fs::read_to_string(original).unwrap(),
+        "synthetic retained cross-directory draft"
+    );
+    assert_eq!(fs::read_dir(&retry_directory).unwrap().count(), 0);
+}
+
 #[test]
 fn invalid_service_security_policy_is_rejected_before_database_creation() {
     let temp = tempfile::tempdir().unwrap();

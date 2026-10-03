@@ -176,7 +176,11 @@ impl Drop for Draft {
 pub fn directory(options: &EditorOptions, database: &Path) -> Result<PathBuf> {
     let mut default = database.as_os_str().to_os_string();
     default.push(".drafts");
-    let directory = absolute(options.draft_dir.as_deref().unwrap_or(Path::new(&default)))?;
+    recovery_directory(options.draft_dir.as_deref().unwrap_or(Path::new(&default)))
+}
+
+pub fn recovery_directory(path: &Path) -> Result<PathBuf> {
+    let directory = absolute(path)?;
     recovery_path(&directory)?;
     Ok(directory)
 }

@@ -87,6 +87,13 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
         .request_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let directory = options.draft_dir.clone().unwrap_or_else(|| {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".graphrag/remote-drafts")
+    });
+    let directory = crate::commands::editor::recovery_directory(&directory)?;
     let bytes = if let Some(content) = content {
         content.as_bytes().to_vec()
     } else if let Some(file) = file {
@@ -106,15 +113,9 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
     if bytes.len() > 65_536 {
         anyhow::bail!("remote capture content must be at most 65536 bytes");
     }
-    let directory = options.draft_dir.clone().unwrap_or_else(|| {
-        std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join(".graphrag/remote-drafts")
-    });
     let mut draft = Draft::save(&bytes, &directory, |path| {
         let mut command = format!("graphrag --server {} --credential-env {} --request-id={} capture --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(format));
-        if let Some(directory) = &options.draft_dir {
+        if options.draft_dir.is_some() {
             command.push_str(&format!(
                 " --draft-dir {}",
                 shell_quote(&directory.to_string_lossy())
