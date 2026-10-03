@@ -4,6 +4,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Frozen durable payload version, independent of the local application interface.
+/// Changes require explicit receipt replay compatibility.
+pub const REMOTE_CAPTURE_PAYLOAD_VERSION: u32 = 1;
+
 pub const MAX_REMOTE_CAPTURE_BYTES: usize = 64 * 1024;
 pub const MAX_REMOTE_QUERY_CHARS: usize = 1024;
 /// A bounded lookback avoids overflowing Chrono date arithmetic.

@@ -10,7 +10,7 @@ use std::sync::Arc;
 /// Stable payload identity excludes transport request ID and generated state.
 pub fn remote_capture_fingerprint(request: &RemoteCaptureRequest) -> ApplicationResult<String> {
     let payload = serde_json::to_vec(&(
-        APPLICATION_CONTRACT_VERSION,
+        REMOTE_CAPTURE_PAYLOAD_VERSION,
         &request.content,
         &request.title,
         &request.tags,
@@ -40,18 +40,26 @@ pub(crate) fn validate_since_days(days: Option<u32>) -> ApplicationResult<()> {
 }
 
 fn credential_key(key: &str) -> bool {
-    let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
-    matches!(
-        normalized.as_str(),
-        "token"
-            | "accesstoken"
-            | "refreshtoken"
-            | "clientsecret"
-            | "password"
-            | "apikey"
-            | "key"
-            | "authorization"
-    )
+    let normalized: String = key
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+    matches!(normalized.as_str(), "key" | "auth" | "sig")
+        || [
+            "token",
+            "secret",
+            "password",
+            "credential",
+            "privatekey",
+            "accesskey",
+            "apikey",
+            "authorization",
+            "bearer",
+            "signature",
+        ]
+        .iter()
+        .any(|marker| normalized.contains(marker))
 }
 
 fn validate_source_uri(uri: &str) -> ApplicationResult<()> {

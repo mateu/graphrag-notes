@@ -58,6 +58,13 @@ class CredentialProvisioning(unittest.TestCase):
                 self.assertIn(pending["token"], (path / "openclaw-a.env").read_text())
                 self.assertFalse((path / "openclaw-a.rotation.json").exists())
 
+    def test_rejects_over_service_identity_limit_before_writing(self):
+        with tempfile.TemporaryDirectory() as base:
+            path = Path(base) / "private"
+            with self.assertRaises(ValueError):
+                credentials.provision(path, [f"client-{i}" for i in range(129)], [])
+            self.assertFalse(path.exists())
+
     def test_refuses_overwrite_and_invalid_ids_before_writing(self):
         with tempfile.TemporaryDirectory() as base:
             path = Path(base) / "private"

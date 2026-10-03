@@ -432,3 +432,54 @@ async fn excessive_date_filters_fail_before_inference_or_date_arithmetic() {
         Err(ApplicationError::Validation(_))
     ));
 }
+
+#[tokio::test]
+async fn credential_aliases_in_query_and_fragment_are_rejected_before_inference() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let app = offline(&repo);
+    for key in [
+        "secret",
+        "auth",
+        "bearer",
+        "credential",
+        "credentials",
+        "private-key",
+        "private_key",
+        "AWSAccessKeyId",
+        "X-Amz-Signature",
+        "%73ecret",
+        "auth.token",
+    ] {
+        for location in ["?", "#", "#/oauth?"] {
+            let mut request = capture_request();
+            request.provenance.as_mut().unwrap().uri = Some(format!(
+                "https://example.test/notes{location}{key}=private-value"
+            ));
+            let error = app
+                .capture_remote(
+                    caller("credential-tests"),
+                    request,
+                    ActionCancellation::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, ApplicationError::Validation(_)),
+                "{location}{key}"
+            );
+            assert!(!error.to_string().contains("private-value"));
+        }
+    }
+    assert!(repo.list_notes(1).await.unwrap().is_empty());
+}
+
+#[test]
+fn capture_fingerprint_has_a_frozen_durable_payload_version() {
+    assert_eq!(REMOTE_CAPTURE_PAYLOAD_VERSION, 1);
+    let fingerprint = remote_capture_fingerprint(&capture_request()).unwrap();
+    // Fixture protects persisted receipt identity from unrelated API changes.
+    assert_eq!(
+        fingerprint,
+        "34f1314d19f98e5104f1b5ab4f3170b45b4ff985dfcb5787c1dbbfbd9d3809fa"
+    );
+}

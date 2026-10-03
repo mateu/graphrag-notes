@@ -37,8 +37,8 @@ def private_write(path, text):
 def provision(directory, writers, readers):
     writers, readers = [instance_id(i) for i in writers], [instance_id(i) for i in readers]
     identities = writers + readers
-    if not identities or len(set(identities)) != len(identities):
-        raise ValueError("provide at least one unique client ID")
+    if not identities or len(identities) > 128 or len(set(identities)) != len(identities):
+        raise ValueError("provide 1–128 unique client IDs")
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     policy = {"schema_version": 1, "credentials": []}
     for identity in identities:
