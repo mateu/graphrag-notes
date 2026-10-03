@@ -23,10 +23,14 @@ const OTHER: &str = "other-fixed-synthetic-test-token-1234567890";
 const READER: &str = "reader-fixed-synthetic-test-token-1234567890";
 struct GateEmbedder {
     blocked: AtomicBool,
+    blocked_text: Option<&'static str>,
     started: Notify,
     released: Notify,
 }
 impl GateEmbedder {
+    fn blocks(&self, text: &str) -> bool {
+        self.blocked_text.is_none_or(|marker| text.contains(marker))
+    }
     fn release(&self) {
         self.blocked.store(false, Ordering::SeqCst);
         self.released.notify_waiters();
@@ -45,7 +49,9 @@ impl GateEmbedder {
 #[async_trait]
 impl Embedder for GateEmbedder {
     async fn embed(&self, text: &str, query: bool) -> graphrag_agents::Result<Vec<f32>> {
-        self.wait().await;
+        if self.blocks(text) {
+            self.wait().await;
+        }
         DeterministicEmbedder::default().embed(text, query).await
     }
     async fn embed_batch(
@@ -53,7 +59,9 @@ impl Embedder for GateEmbedder {
         texts: &[String],
         query: bool,
     ) -> graphrag_agents::Result<Vec<Vec<f32>>> {
-        self.wait().await;
+        if texts.iter().any(|text| self.blocks(text)) {
+            self.wait().await;
+        }
         DeterministicEmbedder::default()
             .embed_batch(texts, query)
             .await
@@ -79,6 +87,9 @@ impl Fixture {
         Self::with_capacity(2).await
     }
     async fn with_capacity(capacity: usize) -> Self {
+        Self::with_blocked_text(capacity, None).await
+    }
+    async fn with_blocked_text(capacity: usize, blocked_text: Option<&'static str>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let credentials = temp.path().join("credentials.json");
         let entries = [
@@ -119,6 +130,7 @@ impl Fixture {
         let repo = Repository::new(init_memory().await.unwrap());
         let provider = Arc::new(GateEmbedder {
             blocked: AtomicBool::new(true),
+            blocked_text,
             started: Notify::new(),
             released: Notify::new(),
         });
@@ -204,6 +216,90 @@ fn data(value: &Value) -> &Value {
 }
 fn error(value: &Value) -> &Value {
     &value["result"]["structuredContent"]["error"]
+}
+
+#[tokio::test]
+async fn same_document_uploads_queue_while_another_document_completes() {
+    let fixture = Fixture::with_blocked_text(2, Some("blockedfirstversion")).await;
+    let mut first_input = upload("same-document-first");
+    first_input["content"] = json!("# First version\n\nblockedfirstversion waits for preparation");
+    first_input["title"] = json!("First supplied title");
+    let first = fixture
+        .call(OWNER, "upload_source", first_input.clone())
+        .await;
+    assert!(error(&first).is_null(), "{first}");
+    let first_id = data(&first)["job_id"].as_str().unwrap();
+    let source_id = data(&first)["source_id"].as_str().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), fixture.provider.started.notified())
+        .await
+        .unwrap();
+
+    let mut second_input = upload("same-document-second");
+    second_input["content"] =
+        json!("# Second version\n\nqueuedsecondversion replaces the first supplied content");
+    second_input["title"] = json!("/Projects/topic");
+    let second = fixture
+        .call(OWNER, "upload_source", second_input.clone())
+        .await;
+    assert!(error(&second).is_null(), "{second}");
+    let second_id = data(&second)["job_id"].as_str().unwrap();
+    assert_ne!(first_id, second_id);
+    assert_eq!(data(&second)["source_id"], source_id);
+    let mut unrelated_input = upload("other-document");
+    unrelated_input["document_key"] = json!("unrelated-document");
+    unrelated_input["content"] = json!(
+        "# Independent upload\n\nunrelatedprogress completes while another document is blocked"
+    );
+    let unrelated = fixture.call(OWNER, "upload_source", unrelated_input).await;
+    assert!(error(&unrelated).is_null(), "{unrelated}");
+    let unrelated_id = data(&unrelated)["job_id"].as_str().unwrap();
+    assert_ne!(data(&unrelated)["source_id"], source_id);
+    let independent_done = fixture.terminal(unrelated_id).await;
+    assert_eq!(data(&independent_done)["status"], "completed");
+    assert_eq!(data(&independent_done)["generation"], 1);
+
+    // The second worker has had time to finish independent work, while the
+    // first provider call remains blocked. Accepted same-document input must
+    // still be queued, without a source generation or terminal conflict.
+    let first_running = fixture.call(OWNER, "get_job", json!({"id":first_id})).await;
+    assert_eq!(data(&first_running)["status"], "running");
+    assert_eq!(data(&first_running)["phase"], "preparing");
+    assert_eq!(data(&first_running)["generation"], 1);
+    let second_queued = fixture
+        .call(OWNER, "get_job", json!({"id":second_id}))
+        .await;
+    assert_eq!(data(&second_queued)["status"], "queued", "{second_queued}");
+    assert!(data(&second_queued)["generation"].is_null());
+    assert!(data(&second_queued)["error_code"].is_null());
+
+    fixture.provider.release();
+    let first_done = fixture.terminal(first_id).await;
+    let second_done = fixture.terminal(second_id).await;
+    assert_eq!(data(&first_done)["id"], first_id);
+    assert_eq!(data(&first_done)["status"], "completed");
+    assert_eq!(data(&first_done)["generation"], 1);
+    assert_eq!(data(&first_done)["result"]["generation"], 1);
+    assert_eq!(data(&first_done)["result"]["source_id"], source_id);
+    assert_eq!(data(&second_done)["id"], second_id);
+    assert_eq!(data(&second_done)["status"], "completed");
+    assert_eq!(data(&second_done)["generation"], 2);
+    assert_eq!(data(&second_done)["result"]["generation"], 2);
+    assert_eq!(data(&second_done)["result"]["source_id"], source_id);
+    let source = fixture
+        .call(READER, "get_source", json!({"id":source_id}))
+        .await;
+    assert_eq!(data(&source)["generation"], 2);
+    assert_eq!(data(&source)["successful_generation"], 2);
+    assert_eq!(data(&source)["status"], "ready");
+    assert_eq!(data(&source)["content"], second_input["content"]);
+    assert_eq!(data(&source)["title"], second_input["title"]);
+    for (input, id) in [(first_input, first_id), (second_input, second_id)] {
+        let replay = fixture.call(OWNER, "upload_source", input).await;
+        assert_eq!(data(&replay)["job_id"], id);
+        assert_eq!(data(&replay)["replayed"], true);
+    }
+    assert_eq!(fixture.repo.get_stats().await.unwrap().note_count, 2);
+    fixture.stop().await;
 }
 
 #[tokio::test]
