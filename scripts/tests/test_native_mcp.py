@@ -233,7 +233,15 @@ class NativeRuntimeHarness(unittest.TestCase):
             marker.write_text("synthetic external marker")
             link = self.directory / "child.stderr"
             link.symlink_to(target, target_is_directory=True)
-            with mock.patch.object(Path, "is_dir", side_effect=AssertionError("A rejected log must not follow its target")):
+            actual_is_dir = Path.is_dir
+            def checked_is_dir(path):
+                # Python 3.12 glob checks its root before listing entries.
+                # Only that known private root may be inspected; checking a
+                # rejected link or its external target remains a failure.
+                if path != self.directory:
+                    raise AssertionError("A rejected log must not follow its target")
+                return actual_is_dir(path)
+            with mock.patch.object(Path, "is_dir", autospec=True, side_effect=checked_is_dir):
                 self.assertTrue(HARNESS.sanitize_logs(self.directory, []))
             self.assertFalse(link.is_symlink())
             self.assertEqual(marker.read_text(), "synthetic external marker")
