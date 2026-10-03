@@ -647,3 +647,148 @@ async fn cli_upload_recovery_replays_and_removes_only_the_explicit_owned_draft()
         .join("must-not-create-client-db")
         .exists());
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_upload_acknowledgment_preserves_draft_changes_after_durable_admission() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let repo = Repository::new(init_memory().await.unwrap());
+    let mut fixture = Fixture::new(&repo).await;
+    let upstream = fixture.endpoint.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    fixture.endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let admitted = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let admission_ready = admitted.clone();
+    let release_acknowledgment = release.clone();
+    // Hold the real server's successful upload response after its durable
+    // admission, while forwarding the MCP handshake and all other requests.
+    let proxy = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let upstream = upstream.clone();
+            let admitted = admission_ready.clone();
+            let release = release_acknowledgment.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let header_end = loop {
+                    let mut bytes = [0; 4096];
+                    let read = stream.read(&mut bytes).await.unwrap();
+                    assert!(read > 0 && request.len() < 128 * 1024);
+                    request.extend_from_slice(&bytes[..read]);
+                    if let Some(index) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                        break index + 4;
+                    }
+                };
+                let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+                let mut forwarded = reqwest::header::HeaderMap::new();
+                let mut content_length = 0;
+                for line in headers.lines().skip(1) {
+                    let Some((name, value)) = line.split_once(':') else {
+                        continue;
+                    };
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse::<usize>().unwrap();
+                    } else if !matches!(name.to_ascii_lowercase().as_str(), "host" | "connection") {
+                        forwarded.append(
+                            reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                            reqwest::header::HeaderValue::from_str(value.trim()).unwrap(),
+                        );
+                    }
+                }
+                while request.len() < header_end + content_length {
+                    let mut bytes = [0; 4096];
+                    let read = stream.read(&mut bytes).await.unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&bytes[..read]);
+                }
+                let body = request[header_end..header_end + content_length].to_vec();
+                let rpc: Value = serde_json::from_slice(&body).unwrap();
+                let response = reqwest::Client::new()
+                    .post(upstream)
+                    .headers(forwarded)
+                    .body(body)
+                    .send()
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let mut response_headers = String::new();
+                for (name, value) in response.headers() {
+                    if !matches!(
+                        name.as_str(),
+                        "content-length" | "connection" | "transfer-encoding"
+                    ) {
+                        response_headers
+                            .push_str(&format!("{name}: {}\r\n", value.to_str().unwrap()));
+                    }
+                }
+                let body = response.bytes().await.unwrap();
+                if rpc["method"] == "tools/call" && rpc["params"]["name"] == "upload_source" {
+                    assert!(status.is_success());
+                    admitted.notify_one();
+                    release.notified().await;
+                }
+                let header = format!("HTTP/1.1 {} OK\r\n{response_headers}Content-Length: {}\r\nConnection: close\r\n\r\n", status.as_u16(), body.len());
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+        }
+    });
+    let input = fixture.temp.path().join("ordinary-upload.md");
+    let drafts = fixture.temp.path().join("fresh-upload-drafts");
+    let submitted = "# Synthetic uploaded document\n\nAdmitted Markdown must remain exact.";
+    let unsent = "# Synthetic uploaded document\n\nUnsent edits made after admission.";
+    std::fs::write(&input, submitted).unwrap();
+    let mut command = fixture.command(&[
+        "--request-id=fresh-upload",
+        "upload",
+        "--document-key=fresh-upload-document",
+        "--content-file",
+        input.to_str().unwrap(),
+        "--draft-dir",
+        drafts.to_str().unwrap(),
+        "--format=json",
+    ]);
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let child = command.spawn().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), admitted.notified())
+        .await
+        .unwrap();
+    let retained = std::fs::read_dir(&drafts)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(std::fs::read_to_string(&retained).unwrap(), submitted);
+    std::fs::write(&retained, unsent).unwrap();
+    release.notify_one();
+    let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    proxy.abort();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let response = &envelope["data"]["data"];
+    assert_eq!(response["replayed"], false);
+    let job = repo
+        .get_remote_upload_job("cli-synthetic", response["job_id"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.input.markdown, submitted);
+    assert_eq!(std::fs::read_to_string(&retained).unwrap(), unsent);
+    assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 1);
+    assert_eq!(std::fs::read_to_string(&input).unwrap(), submitted);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Recover:"));
+}
