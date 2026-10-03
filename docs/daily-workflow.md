@@ -1,13 +1,13 @@
 # A repeatable daily workflow
 
-Use current source for this workflow. The forthcoming `0.1.0-rc.2` Apple Silicon
-candidate collects these commands; its assets are not published yet. The
-published `rc.1` supports the older onboarding path. See [getting started](getting-started.md)
-and the [candidate release guide](releases/0.1.0-rc.2.md) for installation.
+Use the published `0.1.0-rc.2` Apple Silicon prerelease or current source for
+this workflow. The published `rc.1` supports the older onboarding path.
+See [getting started](getting-started.md) and the
+[candidate release guide](releases/0.1.0-rc.2.md) for installation.
 
 For normal use, keep your usual selected configuration and database. The
 practice run below creates a separate fictional Atlas notebook and leaves
-personal notes untouched. Run it after building source and configuring the
+personal notes untouched. Run it after installing the CLI and configuring the
 local Ollama models described in getting started.
 
 ## Prepare the practice notebook

@@ -106,7 +106,7 @@ release build, local package validation, live source walkthrough, and install
 from a published asset are separate checks. Record each result with its binary
 and source provenance in [daily workflow validation](daily-workflow-validation.md).
 The [rc.2 release guide](releases/0.1.0-rc.2.md) defines packaging, checksums,
-compiled-input identity, and prospective post-publication installation.
+compiled-input identity, and published version-pinned installation.
 
 The candidate acceptance platform is macOS Apple Silicon (macOS 15+ deployment
 target). Native Linux and Intel macOS asset/live acceptance remains in

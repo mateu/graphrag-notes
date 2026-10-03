@@ -1,15 +1,16 @@
 # Daily terminal workspace
 
-Run the latest source build with your usual configuration:
+Run rc.2 or current source with your usual configuration:
 
 ```sh
 graphrag workspace
 graphrag --config /path/to/config.toml workspace
 ```
 
-`interactive` remains an alias. Use current source until the forthcoming
-Apple Silicon `0.1.0-rc.2` candidate is published; `v0.1.0-rc.1` predates this
-workspace. See the [daily workflow](daily-workflow.md) for the connected practice
+`interactive` remains an alias. The published Apple Silicon `0.1.0-rc.2`
+prerelease includes this workspace; `v0.1.0-rc.1` predates it.
+See [getting started](getting-started.md) for installation and the
+[daily workflow](daily-workflow.md) for the connected practice
 run. Native Linux and Intel macOS release acceptance is tracked in
 [#66](https://github.com/mateu/graphrag-notes/issues/66).
 

@@ -2,7 +2,7 @@
 
 This guide defines the combined acceptance procedure for
 [#64](https://github.com/mateu/graphrag-notes/issues/64). It covers the
-[daily workflow](daily-workflow.md) and forthcoming Apple Silicon `0.1.0-rc.2`
+[daily workflow](daily-workflow.md) and published Apple Silicon `0.1.0-rc.2`
 candidate. It does not replace the historical setup, navigation, keyword,
 folder-sync, capture, review, or workspace validation records.
 
@@ -104,11 +104,13 @@ and public CLI commands; no direct SQL or personal corpus is needed. A
 deterministic offline pass does not establish live-model success. A live source
 run also does not establish installation from a published release asset.
 
-## Candidate evidence
+## Historical preparation evidence
 
 The following automated walkthroughs passed on 2026-10-03 UTC (2026-10-02
 America/Denver), on macOS 27.0.1 Apple Silicon. Both executables used native
-release profiles. The candidate is prepared locally; `rc.2` is not published.
+release profiles. These were preparation runs before publication, when the
+candidate was available locally. Their original measurements are preserved
+below; the subsequent published-asset checks have a separate record.
 
 - Candidate: `graphrag 0.1.0-rc.2`, built from `4028e129829cf7cf225406b787fec03820de07c7`.
   Binary SHA-256: `5c5045d0f6106949bcd367e3de59a594897b0dfb09bc53aee9572937f21390d4`.
@@ -147,7 +149,7 @@ The before/after walkthrough uses these public operations:
 
 | Task | Published rc.1 | Candidate rc.2 | Offline/live outcome |
 | --- | --- | --- | --- |
-| Install | Actual HTTPS asset install, one installer invocation, 1.702 seconds excluding script download | Native package and unchanged installer with local transport fixture, one fresh install invocation, 0.288 seconds; published candidate download pending | Both checksum/version passed; transports differ, so elapsed times are not a network speedup comparison |
+| Install | Actual HTTPS asset install, one installer invocation, 1.702 seconds excluding script download | Native package and unchanged installer with local transport fixture, one fresh install invocation, 0.288 seconds; published download had not yet run | Both checksum/version passed; transports differ, so elapsed times are not a network speedup comparison |
 | Capture/edit | `add`, then `notes list` to obtain the ID; `notes edit/show` | `capture --stdin --format json`, guarded edit/show; recoverable provider-failure draft | Both saved exact edited text; rc.2 replayed its printed Recover command, retained private input, and preserved previous content |
 | Folder refresh | Import one file, repeat import, `sources reimport` after change | Register three-file folder, initial/unchanged/changed `sync` | Both refreshed; rc.2 preserved IDs on unchanged sync, made no offline provider requests, refreshed exactly one source, and refused stale inspection |
 | Find a source | Hybrid `search`, copy canonical ID to `notes show`; source-open absent | Provider-free keyword search, revision-bound `inspect`, literal-argv `open` | Both located the expected source; rc.2 opened the exact file without shell interpolation |
@@ -176,9 +178,71 @@ and folder-job interruption/resume; these are reported unavailable, not passed.
 | Native Apple Silicon candidate build | Passed | Locked release build, version/help, architecture, deployment and system-library checks; sealed build record. Build host 27.0.1 does not establish a live macOS 15 walkthrough. |
 | Native package and local asset installation | Passed locally | Preflight package at `75d072a13b4b42f1c59adbe28b16339e9099a990` installed the sealed binary in 0.288 seconds with local transport; overwrite refusal, force reinstall, and edited sample preservation passed. Final source/archive identity is recorded separately in `BUILDINFO.json`. |
 | Live Ollama daily workflow | Passed | Nine candidate scenarios and available rc.1 equivalents, including actual provider failure/recovery and SIGINT checkpoint/resume. |
-| Published candidate asset install and repeat smoke | Pending publication | Validate the downloaded artifact after publication, separately from source/package checks. |
+| Published candidate asset install and repeat smoke | Not run during preparation | The completed publication checks are recorded separately below. |
 | Linux and Intel macOS native/live acceptance | Deferred to [#66](https://github.com/mateu/graphrag-notes/issues/66) | Offline Linux CI is separate evidence. |
 | Network/MCP integration | Deferred to [#56](https://github.com/mateu/graphrag-notes/issues/56) | Local prompt-context reuse does not establish remote access. |
+
+## Published-asset verification
+
+[v0.1.0-rc.2](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.2)
+was published on **2026-10-03 at 03:57:30 UTC** as an Apple Silicon prerelease.
+The tag points to reviewed source commit
+`7a8deb859037e396e3314976aa57ea4b58de6e39`, tree
+`64b01927f10096e4723eef636a3d19c40b9dcce0`. The binary remains the original
+native build from `4028e129829cf7cf225406b787fec03820de07c7`.
+
+Actual HTTPS downloads of the archive, `BUILDINFO.json`, and `SHA256SUMS`
+matched the sealed local assets byte for byte. The version-pinned installer
+also matched the reviewed tagged source. A fresh install passed checksum,
+payload, exact version/help, existing-binary refusal, explicit force reinstall,
+and edited-sample preservation checks. Its fresh installer invocation took
+**1.313188 seconds**, excluding the earlier installer-script download and
+verification setup. The installer ran three times in total: fresh install,
+refusal, and force reinstall. This is observed automated installation time,
+not a human task time or a network performance comparison.
+
+| Published payload | SHA-256 |
+| --- | --- |
+| Installed executable | `5c5045d0f6106949bcd367e3de59a594897b0dfb09bc53aee9572937f21390d4` |
+| Apple Silicon archive | `e88a426c0f140aa364ff1b56bb5dbc9a30fd77021f6e232894e8255e596064d6` |
+| `BUILDINFO.json` | `e51e5cee2fa36c2a9ee304347c32d5f8f0cf662b97d5516dd88723f25784f4c0` |
+| `SHA256SUMS` | `304287d87a849f294d5d9790204484c66ba371501e84a99a814578c546e9c91f` |
+| Tagged installer | `d10f4f16ff86ab10aaf5ef4b9c86d5ec2db8bf2a9a2983d6f1dd1c133f5f2d43` |
+
+The installed, downloaded executable then passed all nine candidate scenarios
+in both offline and live Ollama modes on macOS 27.0.1 Apple Silicon. Each mode
+also exercised six available or legacy rc.1 scenarios successfully; four
+unsupported capabilities remain explicitly unavailable.
+
+| Downloaded-binary run | Success | Local elapsed seconds | CLI subprocesses | Workspace input lines | Automated canonical-ID transfers |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Offline rc.2 | Passed | 1.934 | 37 | 6 | 16 |
+| Offline rc.1 | Passed | 0.840 | 21 | 0 | 7 |
+| Live rc.2 | Passed | 8.851 | 37 | 6 | 16 |
+| Live rc.1 | Passed | 5.362 | 21 | 0 | 7 |
+
+These repetitions used fresh fictional corpora and the same documented live
+models described above. They confirm the downloaded artifact's workflow and
+recovery behavior. Different task coverage and model/cache state still prevent
+interpreting total elapsed time as a usability speedup. Human copying and
+human elapsed time remain null; six supplied workspace lines are counted
+separately from the one workspace process.
+
+Retained operator evidence is under `dist/releases/0.1.0-rc.2-publication/`
+in the validation operator's checkout:
+
+- `published-https/published-install-report.json` records the actual HTTPS installation.
+- `evidence/published-assets-equality.json` records all three asset comparisons.
+- `evidence/published-offline-workflow.json` and `evidence/published-live-workflow.json`
+  retain the downloaded-binary comparison reports; their adjacent logs and
+  printed private directories retain command output and recovery evidence.
+
+The published tag and assets remain unchanged. Released `BUILDINFO.json`
+keeps `published_asset_install.status = "not_run"`, accurately reflecting
+its preparation-time state. This later verification is recorded here rather
+than replacing sealed metadata or creating a circular hash/commit dependency.
+Published installation and both repeat workflows are now **passed**. Native
+Linux/Intel acceptance remains in #66, and network/MCP access remains in #56.
 
 Before upgrading an existing corpus, create and verify a portable backup.
 The current source applies additive schema migrations when it opens the

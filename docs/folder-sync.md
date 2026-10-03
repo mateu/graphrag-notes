@@ -1,7 +1,7 @@
 # Explicit Markdown folder sync
 
-Use current source for folder sync until the forthcoming Apple Silicon
-`0.1.0-rc.2` assets are published. The published `v0.1.0-rc.1` predates this
+Use current source or the published Apple Silicon `0.1.0-rc.2` prerelease
+for folder sync. The published `v0.1.0-rc.1` predates this
 workflow. [Daily workflow](daily-workflow.md) connects registration and refresh
 to capture, retrieval, and recovery; [getting started](getting-started.md)
 describes installation. Native Linux and Intel macOS release acceptance

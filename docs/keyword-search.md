@@ -1,8 +1,8 @@
 # Keyword search without inference services
 
-These commands are available in current source and the forthcoming Apple
-Silicon `0.1.0-rc.2` candidate. Its assets are not published yet; use the
-[source-build path](getting-started.md#build-from-source). The published
+These commands are available in current source and the published Apple
+Silicon `0.1.0-rc.2` prerelease. See [getting started](getting-started.md)
+for installation. The published
 `v0.1.0-rc.1` predates keyword mode. See the [daily workflow](daily-workflow.md)
 for a repeatable capture-to-reuse example.
 

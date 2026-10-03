@@ -1,9 +1,10 @@
 # Getting started
 
-Use a current source build for capture, folder sync, keyword search, source
-navigation, review, and the terminal workspace. **0.1.0-rc.2 is a forthcoming
-macOS Apple Silicon candidate; its assets are not published yet.** The published
-`v0.1.0-rc.1` remains a first-run baseline with import and hybrid search.
+The published [0.1.0-rc.2 prerelease](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.2)
+includes capture, folder sync, keyword search, source navigation, review, and
+the terminal workspace. Its binary targets **macOS Apple Silicon, macOS 15 or
+newer**. The published `v0.1.0-rc.1` remains a historical first-run baseline
+with import and hybrid search.
 Native Linux and Intel macOS release acceptance is tracked in
 [follow-up #66](https://github.com/mateu/graphrag-notes/issues/66); Windows is
 outside this candidate's scope. You need memory and disk space for the two
@@ -13,9 +14,36 @@ models and internet access for downloads. The sample contains no personal notes.
 
 | Use case | Installation path |
 | --- | --- |
-| Current daily-use commands | [Build from source](#build-from-source) |
+| Apple Silicon daily-use binary | [Install rc.2](#published-daily-use-prerelease) |
+| Development, Intel Macs, or Linux | [Build from source](#build-from-source) |
 | Reproduce the published first-run baseline | [Install rc.1](#published-onboarding-baseline) |
-| Forthcoming Apple Silicon rc.2 binary | Follow the [release guide](releases/0.1.0-rc.2.md) after publication |
+
+### Published daily-use prerelease
+
+Download the installer from the exact `v0.1.0-rc.2` tag, inspect it, and install
+this candidate explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.2/scripts/install.sh \
+  -o /tmp/graphrag-install.sh
+bash /tmp/graphrag-install.sh --help
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.2
+export PATH="$HOME/.local/bin:$PATH"
+graphrag --version
+```
+
+Expect `graphrag 0.1.0-rc.2`. The installer verifies `SHA256SUMS` and installs
+the binary to `~/.local/bin/graphrag` and starter notes to
+`~/.local/share/graphrag-notes/samples/first-notes.md`. Use `--bin-dir` and
+`--data-dir` for other destinations. It refuses to replace an existing binary;
+follow [the upgrade steps](#upgrade-an-existing-installation) before using
+`--force`. Existing starter notes are preserved.
+
+The latest-release lookup selects stable releases and excludes prereleases,
+so keep the explicit `--version 0.1.0-rc.2`. See the
+[release guide](releases/0.1.0-rc.2.md) for archive contents and verification.
+For a new configuration, continue with step 2. For an existing one, inspect it
+with `graphrag init` without `--backend` or `--write`.
 
 ### Published onboarding baseline
 
@@ -61,10 +89,9 @@ before extracting and installing it.
 
 ### Build from source
 
-This is the current installation path for the daily-use features on `main`
-while rc.2 is being prepared. It also provides a source path for Intel Macs
-and Linux, whose native release acceptance remains in #66. If you already have
-the candidate checkout, run setup from that checkout instead of cloning again.
+Build the published candidate's source for development, Intel Macs, or Linux,
+whose native release acceptance remains in #66. If you already have the
+candidate checkout, run setup from that checkout instead of cloning again.
 
 Install [Rust](https://rustup.rs/) 1.97.1 or newer. The repository toolchain pins
 1.97.1. Install these native build prerequisites before running setup:
@@ -76,7 +103,7 @@ Install [Rust](https://rustup.rs/) 1.97.1 or newer. The repository toolchain pin
 | Other Linux | Install the equivalent compiler/build tools, CMake, pkg-config, OpenSSL development headers, and Clang/libclang packages for your distribution. |
 
 ```bash
-git clone https://github.com/mateu/graphrag-notes.git
+git clone --branch v0.1.0-rc.2 https://github.com/mateu/graphrag-notes.git
 cd graphrag-notes
 ./setup.sh
 export PATH="$PWD/target/release:$PATH"
@@ -89,7 +116,8 @@ does not run a package manager, install Rust, download models, or start services
 `sccache` is optional. The PATH command above applies to the current terminal;
 add the absolute `target/release` directory to your shell configuration if you
 want to use this source build from other directories. Build dependencies may
-need to be downloaded on the first build.
+need to be downloaded on the first build. Omit `--branch v0.1.0-rc.2` when
+cloning if you want current development source instead of the tagged candidate.
 
 ## 2. Preview and create configuration
 
@@ -195,7 +223,7 @@ applies application schema migrations. Repeating an unchanged file import is a
 no-op. Finish with `graphrag doctor` to check the initialized database and active
 embedding identity.
 
-In the current source build, each result prints an
+In rc.2 and current source, each result prints an
 `Inspect` command for its full content, source heading/lines, and chat context,
 plus an `Open source` command when it names a local file. Copy these commands;
 they retain the selected configuration/database and check that the result has
@@ -203,8 +231,7 @@ not changed. Use full `note:`, `message:`, or `conversation:` IDs rather than
 display numbers. Inspection and source opening work with providers stopped.
 See [the navigation contract](cli-contract.md) for editor configuration and
 bounded neighboring messages. The published `v0.1.0-rc.1` binary predates these
-commands. They are included in the forthcoming rc.2 candidate; use current
-source until its versioned assets are published.
+commands.
 
 You can now use `graphrag add "your note"`, `graphrag import your-notes.md`, and
 `graphrag search "your question"`. Database-only commands such as
@@ -214,7 +241,7 @@ search already indexed content offline using
 `graphrag search "Atlas launch" --mode keyword --scope all`. This explicit mode
 searches notes, original messages, and conversation summaries without requiring
 vectors; hybrid remains the default. This mode requires current source or the
-forthcoming rc.2 binary. Continue with the [daily workflow](daily-workflow.md),
+published rc.2 binary. Continue with the [daily workflow](daily-workflow.md),
 or see [keyword search](keyword-search.md) for its exact contract.
 
 ## Using TEI and TGI instead
@@ -260,6 +287,29 @@ applies additive schema migrations when it opens the existing database.
 to an older binary requires a compatible pre-upgrade archive restored into a
 fresh database. Do not lower schema metadata or remove fields with SQL.
 
+After verifying the backup, download and inspect the rc.2 installer as shown
+above. Deliberately replace the installed binary with:
+
+```bash
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.2 --force
+export PATH="$HOME/.local/bin:$PATH"
+graphrag --version
+graphrag init
+```
+
+Plain `init` inspects the existing configuration. Do not add `--backend` or
+`--write` to that command. To keep a separate executable instead of replacing
+one, select another directory and invoke that binary explicitly:
+
+```bash
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.2 \
+  --bin-dir "$HOME/.local/graphrag-rc2/bin"
+"$HOME/.local/graphrag-rc2/bin/graphrag" --version
+```
+
+Separate executable directories do not make an upgraded database compatible
+with the older binary; use a fresh database when comparing versions.
+
 Portable backups preserve logical identities and source content while
 redacting host-local paths. Restore may therefore need deliberate source
 reconfiguration; keep original Markdown files separately. Follow the
@@ -273,6 +323,7 @@ binaries; it never opens an upgraded corpus with the old binary.
 | --- | --- |
 | `cargo` or native build prerequisites missing | Install the prerequisite reported by `setup.sh`, then run it again. |
 | `graphrag` not found | Add the source `target/release` directory or installer `~/.local/bin` directory to PATH, or use the absolute executable path. |
+| Installed binary already exists | Verify a backup, then follow the explicit `--force` upgrade or choose another `--bin-dir`. |
 | Config already exists | Run `graphrag init` to inspect it. Edit that file deliberately, or select a new path with `--config`; `--write` never overwrites it. |
 | Config validation fails | Correct the reported setting in the selected TOML or environment, then run `graphrag config validate`. |
 | Ollama is unreachable | Start `ollama serve` on the configured host, then rerun `graphrag init --check`. |

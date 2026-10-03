@@ -4,28 +4,35 @@ A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, a
 
 ## Get your first result
 
-The current source includes the daily workflow: recoverable capture, explicit
-Markdown folder sync, offline keyword search, source inspection/opening,
-connection review, and a terminal workspace. **0.1.0-rc.2 is the forthcoming
-macOS Apple Silicon candidate** (macOS 15+); its assets are not published yet.
-Install the native prerequisites in [getting started](docs/getting-started.md#build-from-source),
-then build current source to use these features now.
+The published [0.1.0-rc.2 prerelease](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.2)
+includes recoverable capture, explicit Markdown folder sync, offline keyword
+search, source inspection/opening, connection review, and a terminal workspace.
+Its binary targets **macOS Apple Silicon, macOS 15 or newer**. Download the
+versioned installer, inspect it, and select this prerelease explicitly:
 
 For an existing installation, [create and verify a portable backup before
 switching binaries](docs/getting-started.md#upgrade-an-existing-installation).
 
 ```bash
-git clone https://github.com/mateu/graphrag-notes.git
-cd graphrag-notes
-./setup.sh
-export PATH="$PWD/target/release:$PATH"
+curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.2/scripts/install.sh \
+  -o /tmp/graphrag-install.sh
+bash /tmp/graphrag-install.sh --help
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.2
+export PATH="$HOME/.local/bin:$PATH"
 graphrag --version
+```
+
+For a new configuration, choose the local Ollama preset:
+
+```bash
 graphrag init --backend ollama
 graphrag init --backend ollama --write
 ```
 
 For an existing configuration, run `graphrag init` to inspect it;
 `--write` creates a new file and refuses to overwrite one.
+The [source-build path](docs/getting-started.md#build-from-source) remains
+available for development, Intel Macs, and Linux.
 
 Use [Ollama](https://ollama.com/download) for the local inference backend.
 Start Ollama in another terminal with `ollama serve` if it is not already
@@ -36,7 +43,7 @@ ollama pull bge-m3:latest
 ollama pull phi4-mini:latest
 graphrag init --check
 graphrag doctor
-graphrag import samples/first-notes.md
+graphrag import "$HOME/.local/share/graphrag-notes/samples/first-notes.md"
 graphrag search "What is the Atlas project launch plan?" --limit 3
 ```
 
@@ -64,7 +71,7 @@ The published [v0.1.0-rc.1](https://github.com/mateu/graphrag-notes/releases/tag
 remains an onboarding baseline and predates these daily-use commands. Its
 [versioned install instructions](docs/getting-started.md#published-onboarding-baseline)
 remain available. See the [rc.2 release guide](docs/releases/0.1.0-rc.2.md) for
-candidate scope and the installation procedure to use after publication.
+candidate scope, installation, and publication verification.
 Prereleases need an explicit `--version`; default installer lookup selects stable releases.
 
 [Operating runbooks](docs/operations.md) cover existing database migration,
