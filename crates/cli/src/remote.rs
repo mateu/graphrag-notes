@@ -94,15 +94,26 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
             .join(".graphrag/remote-drafts")
     });
     let directory = crate::commands::editor::recovery_directory(&directory)?;
+    let recovery_path = if cli.recover_draft {
+        let path = file.context("--recover-draft requires --content-file")?;
+        Draft::validate_recovery_path(path)?;
+        Some(path)
+    } else {
+        None
+    };
     let bytes = if let Some(content) = content {
         content.as_bytes().to_vec()
     } else if let Some(file) = file {
-        let mut bytes = Vec::new();
-        std::fs::File::open(file)
-            .context("could not read client capture file")?
-            .take(65_537)
-            .read_to_end(&mut bytes)?;
-        bytes
+        if recovery_path.is_some() {
+            Draft::read_recovery_input(file, 65_537)?
+        } else {
+            let mut bytes = Vec::new();
+            std::fs::File::open(file)
+                .context("could not read client capture file")?
+                .take(65_537)
+                .read_to_end(&mut bytes)?;
+            bytes
+        }
     } else if options.editor {
         Vec::new()
     } else {
@@ -113,8 +124,8 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
     if bytes.len() > 65_536 {
         anyhow::bail!("remote capture content must be at most 65536 bytes");
     }
-    let mut draft = Draft::save(&bytes, &directory, |path| {
-        let mut command = format!("graphrag --server {} --credential-env {} --request-id={} capture --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(format));
+    let mut draft = Draft::save_or_recover(&bytes, &directory, recovery_path, |path| {
+        let mut command = format!("graphrag --server {} --credential-env {} --request-id={} --recover-draft capture --content-file {} --format {}", shell_quote(server), shell_quote(&cli.credential_env), shell_quote(&request_id), shell_quote(&path.to_string_lossy()), crate::commands::editor::format_flag(format));
         if options.draft_dir.is_some() {
             command.push_str(&format!(
                 " --draft-dir {}",
@@ -163,6 +174,9 @@ fn prepare_capture(cli: &Cli, server: &str, input: CaptureInput<'_>) -> Result<I
 }
 
 fn invocation(cli: &Cli, server: &str) -> Result<Invocation> {
+    if cli.recover_draft && !matches!(cli.command, Commands::Capture { .. }) {
+        anyhow::bail!("--recover-draft requires a supported remote write with --content-file");
+    }
     if cli.request_id.is_some()
         && !matches!(cli.command, Commands::Capture { .. } | Commands::Add { .. })
     {

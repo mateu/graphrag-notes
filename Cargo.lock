@@ -1743,6 +1743,7 @@ version = "0.1.0-rc.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "chrono",
  "clap",
  "dotenvy",
@@ -1752,6 +1753,7 @@ dependencies = [
  "graphrag-core",
  "graphrag-db",
  "graphrag-service",
+ "libc",
  "predicates",
  "reqwest 0.12.28",
  "reqwest 0.13.5",

@@ -321,6 +321,7 @@ fn option_like_capture_request_identity_survives_the_printed_recovery_command() 
         .find_map(|line| line.strip_prefix("Recover: "))
         .expect("failed capture must print its retry command");
     assert!(recovery.contains("--request-id='-custom'"));
+    assert!(recovery.contains("--recover-draft"));
     let original = fs::read_dir(&drafts)
         .unwrap()
         .next()
@@ -350,6 +351,7 @@ fn option_like_capture_request_identity_survives_the_printed_recovery_command() 
         fs::read_to_string(original).unwrap(),
         "synthetic replay draft"
     );
+    assert_eq!(fs::read_dir(&drafts).unwrap().count(), 1);
 }
 
 #[cfg(unix)]
@@ -416,6 +418,7 @@ fn relative_capture_draft_recovery_works_from_another_working_directory() {
         "synthetic retained cross-directory draft"
     );
     assert_eq!(fs::read_dir(&retry_directory).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(&drafts).unwrap().count(), 1);
 }
 
 #[test]
@@ -503,4 +506,42 @@ fn cancelled_editor_preserves_changed_remote_draft_without_sending() {
         fs::read_to_string(&paths[0]).unwrap(),
         "valuable edited draft"
     );
+}
+
+#[test]
+fn recovery_requires_remote_file_write_and_explicit_original_request_identity() {
+    for args in [
+        vec!["--recover-draft", "capture", "text"],
+        vec![
+            "--recover-draft",
+            "--request-id",
+            "retry-1",
+            "capture",
+            "text",
+        ],
+        vec![
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--recover-draft",
+            "--request-id",
+            "retry-1",
+            "search",
+            "text",
+        ],
+        vec![
+            "--server",
+            "http://127.0.0.1:0/mcp",
+            "--recover-draft",
+            "--request-id",
+            "retry-1",
+            "capture",
+            "text",
+        ],
+    ] {
+        graphrag()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(contains("--recover-draft"));
+    }
 }

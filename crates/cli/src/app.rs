@@ -589,8 +589,8 @@ pub(crate) async fn run() -> Result<()> {
     }
     // Load local database/provider configuration from .env if present.
     dotenvy::dotenv().ok();
-    if cli.request_id.is_some() {
-        anyhow::bail!("--request-id requires --server and a remote capture command");
+    if cli.request_id.is_some() || cli.recover_draft {
+        anyhow::bail!("--request-id/--recover-draft require --server and a remote capture command");
     }
     if let Commands::Serve {
         listen,

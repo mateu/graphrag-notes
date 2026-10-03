@@ -38,6 +38,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "ID")]
     pub(crate) request_id: Option<String>,
 
+    /// Adopt a private --content-file recovery draft and remove it after verified remote success.
+    #[arg(long, global = true, requires = "request_id")]
+    pub(crate) recover_draft: bool,
+
     /// Database path (overrides the resolved configuration)
     #[arg(short, long, global = true)]
     pub(crate) db_path: Option<PathBuf>,

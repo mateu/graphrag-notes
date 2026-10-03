@@ -32,8 +32,10 @@ uuid.workspace = true
 rmcp.workspace = true
 reqwest-mcp.workspace = true
 rustyline = { version = "18.0.1", default-features = false }
+libc.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 chrono.workspace = true

@@ -105,6 +105,11 @@ If a response is lost, retain the emitted request ID and use the recovery comman
 with the unchanged draft. A generated ID is printed before sending when omitted.
 Only an authoritative successful response removes recovery; rendering failure
 does not make a committed capture safe to repeat under a new ID.
+Copied recovery commands include `--recover-draft` to adopt and clean up the
+original private file after a matching successful acknowledgement. Ordinary
+`--content-file` inputs remain caller-owned and are never removed. Recovery
+refuses exposed files, symlinks and non-files; a file changed since submission
+remains available for review rather than being deleted.
 
 ## OpenClaw
 
