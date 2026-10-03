@@ -588,9 +588,9 @@ mod tests {
         let sources_after: Vec<serde_json::Value> = db.select("source").await.unwrap();
         assert_eq!(notes_after, notes_before);
         assert_eq!(sources_after, sources_before);
-        assert_eq!(current_version(&db).await.unwrap(), LATEST_SCHEMA_VERSION);
+        assert_eq!(current_version(&db).await.unwrap(), 16);
         let history_after = load_applied_migrations(&db).await.unwrap();
-        assert_eq!(history_after.len(), LATEST_SCHEMA_VERSION as usize);
+        assert_eq!(history_after.len(), 16);
         for (before, after) in history_before.iter().zip(history_after.iter()) {
             assert_eq!(before.version, after.version);
             assert_eq!(before.checksum, after.checksum);
