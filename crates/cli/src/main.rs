@@ -11,6 +11,7 @@ mod explain;
 mod init;
 mod interactive;
 mod output;
+mod remote;
 mod search_recovery;
 
 #[tokio::main]

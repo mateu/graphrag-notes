@@ -13,8 +13,9 @@ pub use error::{DbError, Result};
 pub use repository::{
     parse_portable_record_id, parse_record_id, InferenceCacheEntry, InspectedConversation,
     InspectedMessage, InspectionProvenance, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
-    ProcessingJobUpdate, RecordInspection, Repository, SourceDeleteSummary, SourceImportAction,
-    SourceImportPlan, MAX_INSPECTION_NEIGHBORS, PORTABLE_TABLES,
+    ProcessingJobUpdate, RecordInspection, RemoteCaptureInput, RemoteCaptureReceipt, Repository,
+    SourceDeleteSummary, SourceImportAction, SourceImportPlan, MAX_INSPECTION_NEIGHBORS,
+    PORTABLE_TABLES,
 };
 
 use std::ops::Deref;

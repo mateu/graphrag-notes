@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "success": true,
+  "scope": "installed native tool runtimes on one macOS host",
+  "different_computers_tested": false,
+  "real_agent_llm_sessions_tested": false,
+  "synthetic_inference": true,
+  "real_user_profiles_used": false,
+  "binary_sha256": "03dfe3809b1222df400ba30a5c3225baf1b4096ab67c1589324af7f249d8c61d",
+  "openclaw": {
+    "version": "2026.9.7",
+    "catalog": [
+      "build_context",
+      "capture_note",
+      "get_record",
+      "search_notes"
+    ],
+    "native_runtime_api": "createSessionMcpRuntime/getCatalog/callTool",
+    "openclaw_b_read_openclaw_a": true,
+    "same_instance_replay": true,
+    "native_context_citations": true,
+    "native_context_tokens": 114,
+    "independent_principals": [
+      "openclaw-a",
+      "openclaw-b"
+    ],
+    "record": {
+      "content": "nativeclientatlas synthetic shared client runtime note.",
+      "created_at": "2026-10-03T14:50:50.736820+00:00",
+      "id": "note:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+      "provenance": {
+        "conversation_id": null,
+        "conversation_uuid": null,
+        "end_line": null,
+        "heading_path": [],
+        "instance_id": "openclaw-a",
+        "message_index": null,
+        "message_key": null,
+        "message_uuid": null,
+        "role": null,
+        "source": {
+          "label": "synthetic",
+          "metadata": {
+            "session": "synthetic-native-client-session"
+          },
+          "uri": "file:///client-only/native-source.md"
+        },
+        "source_generation": null,
+        "source_id": "source:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+        "source_type": "manual",
+        "source_uri": "mcp://capture/b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+        "start_line": null
+      },
+      "revision": "269528ad051ef90098b88980b2dbac4725e06a5a7321397cc9ab0ea1ff07f922",
+      "tags": [
+        "native-client-walkthrough"
+      ],
+      "title": "Synthetic native clients",
+      "updated_at": "2026-10-03T14:50:50.736820+00:00"
+    },
+    "second_record_id": "note:5229e7ac1c82c8ea24685a7b85c336e2031850ceb2b335a8e8feeb80489c4841"
+  },
+  "hermes": {
+    "version": "0.21.2",
+    "mcp_sdk_version": "2.0.0",
+    "catalog": [
+      "build_context",
+      "capture_note",
+      "get_record",
+      "search_notes"
+    ],
+    "registry_names": [
+      "mcp__graphrag__build_context",
+      "mcp__graphrag__capture_note",
+      "mcp__graphrag__get_record",
+      "mcp__graphrag__search_notes"
+    ],
+    "native_runtime_api": "register_mcp_servers/tools.registry.dispatch",
+    "hermes_read_openclaw_a": true,
+    "same_instance_replay": true,
+    "native_context_citations": true,
+    "native_context_tokens": 114,
+    "trusted_principal": "hermes",
+    "note_count": 3,
+    "record_id": "note:9fec8d82bc3d9b72d177f428336d3877031601ddfe1468dbbe6db616fb4ed18d"
+  },
+  "service_restart": {
+    "version": "2026.9.7",
+    "catalog": [
+      "build_context",
+      "capture_note",
+      "get_record",
+      "search_notes"
+    ],
+    "replay_after_restart": true,
+    "note_count": 3,
+    "record": {
+      "content": "nativeclientatlas synthetic shared client runtime note.",
+      "created_at": "2026-10-03T14:50:50.736820+00:00",
+      "id": "note:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+      "provenance": {
+        "conversation_id": null,
+        "conversation_uuid": null,
+        "end_line": null,
+        "heading_path": [],
+        "instance_id": "openclaw-a",
+        "message_index": null,
+        "message_key": null,
+        "message_uuid": null,
+        "role": null,
+        "source": {
+          "label": "synthetic",
+          "metadata": {
+            "session": "synthetic-native-client-session"
+          },
+          "uri": "file:///client-only/native-source.md"
+        },
+        "source_generation": null,
+        "source_id": "source:b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+        "source_type": "manual",
+        "source_uri": "mcp://capture/b9af8aa38ad70b91ddd8a3e5c4f5bd3ca9b7a78edc0676fc35ac6bc1e4bb2c83",
+        "start_line": null
+      },
+      "revision": "269528ad051ef90098b88980b2dbac4725e06a5a7321397cc9ab0ea1ff07f922",
+      "tags": [
+        "native-client-walkthrough"
+      ],
+      "title": "Synthetic native clients",
+      "updated_at": "2026-10-03T14:50:50.736820+00:00"
+    }
+  },
+  "durable_receipt_count": 3,
+  "durable_note_count": 3,
+  "independent_instances": [
+    "hermes",
+    "openclaw-a",
+    "openclaw-b"
+  ],
+  "provider_request_count": 16,
+  "source_provenance_preserved_by_export": true
+}

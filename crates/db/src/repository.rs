@@ -13,6 +13,7 @@ mod metadata;
 mod models;
 mod notes;
 mod portable;
+mod remote_capture;
 mod sources;
 mod stats;
 
@@ -33,6 +34,7 @@ pub use models::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };
 pub use portable::{parse_portable_record_id, PORTABLE_TABLES};
+pub use remote_capture::{RemoteCaptureInput, RemoteCaptureReceipt};
 pub use stats::DbStats;
 
 use crate::{

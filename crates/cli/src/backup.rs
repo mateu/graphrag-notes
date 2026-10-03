@@ -322,7 +322,7 @@ async fn write_records(
             }
             offset = offset.saturating_add(page.len());
             for mut record in page {
-                sanitize_record(&mut record, include_embeddings);
+                sanitize_portable_record(table, &mut record, include_embeddings);
                 if *table == "source" {
                     strip_source_title_path(&mut record);
                 }
@@ -346,6 +346,58 @@ async fn write_records(
         bytes,
         records,
     })
+}
+
+/// Immutable capture outcomes and caller provenance are user content, like
+/// note bodies. Walking them would change the identity of a committed request
+/// and make its original response unrecoverable after restore. Authentication
+/// credentials are never part of these database fields.
+fn opaque_client_fields(
+    table: &str,
+    record: &serde_json::Value,
+) -> &'static [(&'static str, &'static str)] {
+    match table {
+        "remote_capture_receipt" => &[("", "payload"), ("", "result")],
+        "source"
+            if record["source_type"] == "manual"
+                && record["uri"]
+                    .as_str()
+                    .is_some_and(|uri| uri.starts_with("mcp://capture/")) =>
+        {
+            &[("/metadata/remote_capture", "source")]
+        }
+        _ => &[],
+    }
+}
+
+fn take_opaque_client_fields(
+    table: &str,
+    record: &mut serde_json::Value,
+) -> Vec<(&'static str, &'static str, serde_json::Value)> {
+    opaque_client_fields(table, record)
+        .iter()
+        .filter_map(|&(parent, key)| {
+            record
+                .pointer_mut(parent)?
+                .as_object_mut()?
+                .remove(key)
+                .map(|value| (parent, key, value))
+        })
+        .collect()
+}
+
+fn sanitize_portable_record(table: &str, record: &mut serde_json::Value, include_embeddings: bool) {
+    let opaque = take_opaque_client_fields(table, record);
+    sanitize_record(record, include_embeddings);
+    for (parent, key, value) in opaque {
+        // These known parent fields are retained by the generic sanitizer.
+        if let Some(object) = record
+            .pointer_mut(parent)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            object.insert(key.into(), value);
+        }
+    }
 }
 
 fn sanitize_record(value: &mut serde_json::Value, include_embeddings: bool) {
@@ -467,7 +519,7 @@ fn inspect_records(path: &Path, manifest: &PortableBackupManifest) -> Result<Rec
                 record.table
             );
         }
-        validate_record_embeddings(&record.record, manifest)?;
+        validate_record_embeddings(&record.table, &record.record, manifest)?;
         let id = canonical_record_id(record.record.get("id"))
             .context("portable payload record is missing a usable id")?;
         if !id.starts_with(&format!("{}:", record.table)) {
@@ -490,6 +542,7 @@ fn inspect_records(path: &Path, manifest: &PortableBackupManifest) -> Result<Rec
 }
 
 fn validate_record_embeddings(
+    table: &str,
     record: &serde_json::Value,
     manifest: &PortableBackupManifest,
 ) -> Result<()> {
@@ -523,8 +576,12 @@ fn validate_record_embeddings(
         }
         Ok(())
     }
+    // A caller metadata key named `embedding` is opaque text, not a stored
+    // vector. Apply vector validation only to application-owned fields.
+    let mut owned_fields = record.clone();
+    take_opaque_client_fields(table, &mut owned_fields);
     visit(
-        record,
+        &owned_fields,
         manifest
             .embedding_identity
             .as_ref()
@@ -564,6 +621,7 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
         "mentions" => &[("in", Some("note")), ("out", Some("entity"))],
         "note_from_conversation" => &[("in", Some("note")), ("out", Some("conversation"))],
         "note_from_message" => &[("in", Some("note")), ("out", Some("message"))],
+        "remote_capture_receipt" => &[("note_id", Some("note")), ("source_id", Some("source"))],
         _ => &[],
     };
     let object = record
@@ -592,12 +650,14 @@ fn record_references(table: &str, record: &serde_json::Value) -> Result<Vec<(Str
                 expected_table.expect("checked above")
             );
         }
-        if historical_proposal && matches!(*field, "in" | "out") {
-            // Terminal proposals retain their original endpoint IDs as audit
-            // evidence after source/note cleanup. Validate their shape, but do
-            // not require the retired notes to exist or recreate them during
-            // restore. Resulting edges and every active proposal remain strict.
-            graphrag_db::parse_portable_record_id(&id, Some("note")).with_context(|| {
+        if (historical_proposal && matches!(*field, "in" | "out"))
+            || table == "remote_capture_receipt"
+        {
+            // Terminal proposals and successful capture receipts retain IDs
+            // after source/note cleanup. Validate their shape without requiring
+            // retired records to exist or recreating them during restore.
+            // Resulting edges and every active proposal remain strict.
+            graphrag_db::parse_portable_record_id(&id, *expected_table).with_context(|| {
                 format!("portable {table} record has invalid reference in {field}")
             })?;
             continue;
@@ -774,6 +834,184 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    fn remote_capture_fixture() -> graphrag_db::RemoteCaptureInput {
+        graphrag_db::RemoteCaptureInput {
+            authenticated_instance_id: "openclaw-office".into(),
+            request_id: "backup-retry".into(),
+            payload_fingerprint: "a".repeat(64),
+            content: "Portable shared capture body.".into(),
+            title: Some("Shared capture".into()),
+            tags: vec!["shared".into()],
+            source_provenance: serde_json::json!({
+                "uri": "file:///client-owned/notes.md",
+                "label": "Client document",
+                "metadata": {
+                    "token": "opaque client vocabulary",
+                    "embedding": "a user label, not a vector",
+                },
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_capture_backup_preserves_exact_replay_and_client_provenance() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let input = remote_capture_fixture();
+        let original = repo
+            .capture_remote_note(input.clone(), vec![], vec![])
+            .await
+            .unwrap();
+        let original_inspection = repo
+            .inspect_record(original.result["id"].as_str().unwrap(), 0)
+            .await
+            .unwrap();
+        let receipt = repo
+            .portable_records_page("remote_capture_receipt", 0, 10)
+            .await
+            .unwrap()
+            .remove(0);
+        let mut host_source = Source::manual().with_title("ordinary host source");
+        host_source.uri = Some("file:///private/server/folder.md".into());
+        host_source.normalized_uri = host_source.uri.clone();
+        host_source.metadata = serde_json::json!({
+            "token": "server-secret-is-stripped",
+            "api_key": "server-provider-key-is-stripped",
+            // Matching object names alone must not bypass ordinary sanitization.
+            "remote_capture": {"source": {"uri": "file:///private/server/nested.md", "password": "host-password-is-stripped"}},
+        });
+        repo.create_source(host_source).await.unwrap();
+        let path = temp.path().join("shared-capture");
+        let summary = create_backup(&repo, &path, false).await.unwrap();
+        assert_eq!(verify_backup(&path).unwrap(), summary);
+        let payload = fs::read_to_string(path.join(RECORDS_FILE)).unwrap();
+        let records = payload
+            .lines()
+            .map(|line| serde_json::from_str::<PortableRecord>(line).unwrap())
+            .collect::<Vec<_>>();
+        let archived = &records
+            .iter()
+            .find(|record| record.table == "remote_capture_receipt")
+            .unwrap()
+            .record;
+        assert_eq!(archived["payload"], receipt["payload"]);
+        assert_eq!(archived["result"], original.result);
+        for secret_or_host_path in [
+            "/private/server",
+            "server-secret-is-stripped",
+            "server-provider-key-is-stripped",
+            "host-password-is-stripped",
+        ] {
+            assert!(!payload.contains(secret_or_host_path));
+        }
+        // Authentication material is not accepted by capture storage; only the
+        // trusted instance ID and opaque caller provenance form the journal.
+        assert!(!payload.contains("token_sha256"));
+        assert!(!payload.contains("Authorization"));
+        let target = temp.path().join("shared-restored");
+        restore_backup(&path, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        let replay = restored
+            .find_remote_capture_receipt(
+                &input.authenticated_instance_id,
+                &input.request_id,
+                &input.payload_fingerprint,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.result, original.result);
+        let replay = restored
+            .capture_remote_note(input, vec![], vec![])
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.result, original.result);
+        assert_eq!(restored.get_stats().await.unwrap().note_count, 1);
+        let inspection = restored
+            .inspect_record(original.result["id"].as_str().unwrap(), 0)
+            .await
+            .unwrap();
+        assert_eq!(inspection.provenance, original_inspection.provenance);
+        assert_eq!(inspection.revision, original_inspection.revision);
+    }
+
+    #[tokio::test]
+    async fn deleted_remote_capture_records_keep_historical_receipts_after_backup_restore() {
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let input = remote_capture_fixture();
+        let original = repo
+            .capture_remote_note(input.clone(), vec![], vec![])
+            .await
+            .unwrap();
+        let id = original.result["id"].as_str().unwrap();
+        let source_id = original.result["provenance"]["source_id"].as_str().unwrap();
+        let source = repo.get_source(source_id).await.unwrap().unwrap();
+        repo.delete_note(id).await.unwrap();
+        repo.delete_source(&source).await.unwrap();
+        assert!(repo.get_source(source_id).await.unwrap().is_none());
+        let path = temp.path().join("historical-capture");
+        let summary = create_backup(&repo, &path, false).await.unwrap();
+        assert_eq!(summary.records, 1);
+        assert_eq!(verify_backup(&path).unwrap(), summary);
+        let target = temp.path().join("historical-restored");
+        restore_backup(&path, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        let replay = restored
+            .capture_remote_note(input, vec![], vec![])
+            .await
+            .unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.result, original.result);
+        assert_eq!(restored.get_stats().await.unwrap().note_count, 0);
+        assert_eq!(restored.get_stats().await.unwrap().source_count, 0);
+        for invalid in ["note:`unterminated", "source:wrong-table"] {
+            let mut receipt = repo
+                .portable_records_page("remote_capture_receipt", 0, 10)
+                .await
+                .unwrap()
+                .remove(0);
+            receipt["note_id"] = serde_json::json!(invalid);
+            assert!(record_references("remote_capture_receipt", &receipt).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn schema_fifteen_v1_backup_remains_restorable_without_capture_table() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("schema-fifteen");
+        let repo = populated_repo().await;
+        create_backup(&repo, &path, false).await.unwrap();
+        // The pre-service v1 format is identical and simply has no receipt
+        // records. Its recorded application schema must remain accepted.
+        let mut manifest = read_manifest(&path).unwrap();
+        manifest.schema_version = 15;
+        assert_eq!(manifest.format_version, 1);
+        assert!(!manifest
+            .record_counts
+            .contains_key("remote_capture_receipt"));
+        fs::write(
+            path.join(MANIFEST_FILE),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        verify_backup(&path).unwrap();
+        let target = temp.path().join("old-restored");
+        restore_backup(&path, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        assert_eq!(
+            count_repository_records(&restored).await.unwrap(),
+            manifest.record_counts
+        );
+        manifest.schema_version = migrations::latest_version() + 1;
+        assert!(validate_manifest_schema(&manifest)
+            .unwrap_err()
+            .to_string()
+            .contains("supports"));
     }
 
     #[tokio::test]

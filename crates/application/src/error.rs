@@ -1,5 +1,7 @@
 use graphrag_agents::AgentError;
 use graphrag_db::DbError;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -12,6 +14,10 @@ pub enum ApplicationError {
     RevisionConflict(String),
     #[error("{0}")]
     ProviderUnavailable(String),
+    #[error("{0}")]
+    Compatibility(String),
+    #[error("{0}")]
+    ServiceUnreachable(String),
     #[error("Action cancelled before persistence; retain the draft and retry when ready.")]
     Cancelled,
     #[error("{0}")]
@@ -23,6 +29,11 @@ impl From<DbError> for ApplicationError {
         match error {
             DbError::NotFound(..) => Self::NotFound(error.to_string()),
             DbError::NoteRevisionConflict(_) => Self::RevisionConflict(error.to_string()),
+            DbError::RemoteRequestConflict { .. } => Self::RevisionConflict(error.to_string()),
+            DbError::InvalidRemoteRequest(_) => Self::Validation(error.to_string()),
+            DbError::EmbeddingCompatibility { .. }
+            | DbError::LegacyEmbeddingMetadata { .. }
+            | DbError::UnsupportedSchemaVersion { .. } => Self::Compatibility(error.to_string()),
             _ => Self::Internal(error.to_string()),
         }
     }
@@ -43,3 +54,36 @@ impl From<AgentError> for ApplicationError {
 }
 
 pub type ApplicationResult<T> = Result<T, ApplicationError>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ApplicationFailure {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl ApplicationError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Validation(_) => "validation",
+            Self::NotFound(_) => "not_found",
+            Self::RevisionConflict(_) => "conflict",
+            Self::ProviderUnavailable(_) => "provider_unavailable",
+            Self::Compatibility(_) => "compatibility",
+            Self::ServiceUnreachable(_) => "service_unreachable",
+            Self::Cancelled => "cancelled",
+            Self::Internal(_) => "internal",
+        }
+    }
+
+    pub fn failure(&self) -> ApplicationFailure {
+        ApplicationFailure {
+            code: self.code().into(),
+            message: self.to_string(),
+            retryable: matches!(
+                self,
+                Self::ProviderUnavailable(_) | Self::ServiceUnreachable(_)
+            ),
+        }
+    }
+}

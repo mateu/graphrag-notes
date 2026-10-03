@@ -61,6 +61,7 @@ pub(crate) async fn execute(
     } = context;
 
     match command {
+        Commands::Serve { .. } => unreachable!("serve owns its long-running service in bootstrap"),
         Commands::Export {
             path,
             format: PortableDataFormat::Jsonl,

@@ -79,9 +79,11 @@ backups, and reindexing. [Daily workflow validation](docs/daily-workflow-validat
 describes automated measurements and live smoke testing; older feature
 validation records retain their original evidence. Native Linux and Intel macOS
 release acceptance follows in [#66](https://github.com/mateu/graphrag-notes/issues/66).
-Network/MCP access from OpenClaw and Hermes follows in
-[#56](https://github.com/mateu/graphrag-notes/issues/56); exported prompt context
-can be reused manually today.
+Current source adds an optional [shared MCP service](docs/shared-mcp.md) for
+OpenClaw, Hermes and the remote CLI, with per-instance authorization and durable
+capture retries. Published rc.2 predates these commands. The remaining remote
+editing, uploads/jobs and two-computer deployment work is tracked under
+[#56](https://github.com/mateu/graphrag-notes/issues/56).
 
 ## Architecture
 

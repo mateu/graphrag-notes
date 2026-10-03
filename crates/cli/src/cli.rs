@@ -21,6 +21,27 @@ pub(crate) struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) config: Option<PathBuf>,
 
+    /// Shared MCP endpoint (or GRAPHRAG_SERVER). Remote commands never open a local database.
+    #[arg(long, global = true, value_name = "URL")]
+    pub(crate) server: Option<String>,
+
+    /// Environment variable containing the remote bearer credential.
+    #[arg(
+        long,
+        global = true,
+        default_value = "GRAPHRAG_TOKEN",
+        value_name = "NAME"
+    )]
+    pub(crate) credential_env: String,
+
+    /// Stable request identity for remote capture; reuse it with the same content after uncertainty.
+    #[arg(long, global = true, value_name = "ID")]
+    pub(crate) request_id: Option<String>,
+
+    /// Adopt a private --content-file recovery draft and remove it after verified remote success.
+    #[arg(long, global = true, requires = "request_id")]
+    pub(crate) recover_draft: bool,
+
     /// Database path (overrides the resolved configuration)
     #[arg(short, long, global = true)]
     pub(crate) db_path: Option<PathBuf>,
@@ -56,6 +77,24 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// Own this host's database and expose authenticated Streamable HTTP MCP.
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:3000", value_name = "ADDRESS")]
+        listen: std::net::SocketAddr,
+        /// Private JSON credential policy containing token hashes, never raw credentials.
+        #[arg(long, value_name = "PATH")]
+        credentials_file: PathBuf,
+        /// Confirm an encrypted proxy or private tunnel protects non-loopback access.
+        #[arg(long)]
+        external_encryption: bool,
+        /// Explicit allowed HTTP Host headers (repeat for each hostname).
+        #[arg(long = "allowed-host", value_name = "HOST")]
+        allowed_hosts: Vec<String>,
+        #[arg(long, default_value_t = 131_072)]
+        max_request_body_bytes: usize,
+        #[arg(long, default_value_t = 8)]
+        max_concurrent_requests: usize,
+    },
     /// Preview first-run settings; explicitly create a new config or check providers
     Init {
         /// Preset for a NEW config; environment overrides still apply at runtime.
