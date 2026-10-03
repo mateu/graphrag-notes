@@ -24,7 +24,7 @@ python3 scripts/package-release.py record-build \
 
 Use a complete commit SHA and a fresh build-record filename. `record-build` rejects dirty or untracked compiled inputs, a mismatched version/toolchain/architecture, missing features, a wrong deployment target, or non-system runtime libraries. Docs and validation scripts can still be prepared while building. Seal only the binary produced by the recorded locked build, after that build exits successfully.
 
-The compiled-input identity includes workspace manifests/lock/toolchain, `.cargo` configuration and workspace crate sources/manifests/build scripts. Final documentation or integration-test commits may advance the release commit without rebuilding only when this identity remains identical. Binary bytes must still match the sealed build hash. Git provenance documents this relationship; it does not promise bit-identical compiler outputs across different machines or SDKs.
+The compiled-input identity includes workspace manifests/lock/toolchain, `.cargo` configuration and workspace crate sources/manifests/build scripts. Final documentation or integration-test commits may advance the release commit without rebuilding only when this identity remains identical. Binary bytes must still match the sealed build hash. Packaging rechecks the recorded build commit/tree/timestamp, package versions and toolchain against Git and the validated compiled inputs. It rereads architecture, runtime libraries and deployment requirements from the binary, compares those facts and the current version/help results with the sealed record, and rejects inconsistent records. Git provenance documents this relationship; it does not promise bit-identical compiler outputs across different machines or SDKs.
 
 ## Package and verify local assets
 
@@ -43,7 +43,7 @@ bash scripts/verify-local-release.sh \
 
 The installer verification uses the real archive and checksums, the unchanged installer, a fresh HOME and system tools in PATH. Only the download transport is doubled to read those local assets. It checks installed payload equality, exact version, overwrite refusal, explicit force reinstallation and edited-sample preservation. This demonstrates local asset compatibility; published HTTPS installation is verified separately after release creation.
 
-Archives have a fixed two-file allowlist, modes 755/644, zero UID/GID, fixed commit timestamps and a gzip header without a filename or wall-clock timestamp. Repackaging identical inputs at the same final commit produces identical archive bytes. No metadata file is inserted into the installer archive.
+Archives have a fixed two-file allowlist, modes 755/644, zero UID/GID, fixed commit timestamps and a gzip header without a filename or wall-clock timestamp. Repackaging identical inputs at the same final commit produces identical archive bytes. No metadata file is inserted into the installer archive. Packaging needs the native inspection tools for the selected target, but does not require the build environment variables to be exported again. `rustc`, build-host version and build-environment entries remain historical operator-recorded build facts; packaging does not claim a new build at the final commit. Linux runtime inspection normalizes ASLR addresses while preserving library names/paths and required glibc versions.
 
 ## Attach validation evidence
 

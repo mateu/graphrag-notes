@@ -52,9 +52,38 @@ class ReleaseTests(unittest.TestCase):
         self.binary.write_text(f'#!/bin/sh\nif [ "$1" = "--version" ]; then printf "graphrag {self.version}\\n"; else printf "%s\\n" "{tokens}"; fi\n')
         self.binary.chmod(0o755)
         self.build_record = self.root / "build.json"
-        self.facts = {"target": "aarch64-apple-darwin", "rustc": "rustc 1.97.1 fixture",
-                      "minimum_macos": "15.0", "runtime_libraries": ["/usr/lib/libSystem.B.dylib"],
-                      "system_libraries_only": True}
+        platform = (os.uname().sysname, os.uname().machine)
+        self.target = {
+            ("Darwin", "arm64"): "aarch64-apple-darwin",
+            ("Darwin", "x86_64"): "x86_64-apple-darwin",
+            ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+        }.get(platform)
+        if self.target is None:
+            self.skipTest(f"No native release fixture for {platform}")
+        family, architecture = release.TARGETS[self.target]
+        self.native_outputs = {
+            ("file", "-b"): f"{family} 64-bit executable {architecture}",
+            ("otool", "-L"): "fixture:\n /usr/lib/libSystem.B.dylib (compatibility version 1.0.0)",
+            ("otool", "-l"): " minos 15.0",
+            ("ldd",): "linux-vdso.so.1 (0x00000001)\nlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00000002)",
+            ("readelf", "--version-info"): "GLIBC_2.35",
+        }
+        original_run = release.run
+
+        def fixture_tools(argv, repo=None, env=None):
+            for prefix, output in self.native_outputs.items():
+                if tuple(argv[:len(prefix)]) == prefix:
+                    return output
+            return original_run(argv, repo, env)
+
+        native_tools = patch.object(release, "run", side_effect=fixture_tools)
+        native_tools.start()
+        self.addCleanup(native_tools.stop)
+        self.facts = {**release.inspect_binary(self.binary, self.target), "rustc": "rustc 1.97.1 fixture",
+                      "build_environment": {"OPENSSL_STATIC": "1", "MACOSX_DEPLOYMENT_TARGET": "15.0",
+                                            "CARGO_BUILD_JOBS": "2", "RUSTC_WRAPPER": ""}}
+        if self.target.endswith("apple-darwin"):
+            self.facts["build_host_macos"] = "15.0"
         self.seal_build()
 
     def git(self, *args):
@@ -231,6 +260,81 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(release.ReleaseError):
                 release.validate_native_facts("x86_64-unknown-linux-gnu", "ELF 64-bit executable x86-64", libraries, glibc_versions=glibc)
 
+    def test_tampered_build_record_native_source_and_smoke_are_rejected(self):
+        original = json.loads(self.build_record.read_text())
+        other = next(target for target in release.TARGETS if target != self.target)
+        cases = [
+            ("native", "target", other, "architecture/format"),
+            ("native", "binary_description", "forged description", "native facts differ"),
+            ("native", "runtime_libraries", ["/opt/private/libssl.dylib"], "native facts differ"),
+            ("native", "system_libraries_only", False, "native facts differ"),
+            ("native", "source_commit", "0" * 40, "unexpected native fields"),
+            ("native", "rustc", "rustc 1.96.0 forged", "historical toolchain"),
+            ("source", "tree", "0" * 40, "source tree differs"),
+            ("source", "source_date_epoch", original["source"]["source_date_epoch"] + 1, "source timestamp differs"),
+            ("source", "rust_toolchain", "1.96.0", "toolchain/packages differ"),
+            ("source", "workspace_packages", {"graphrag-cli": "9.9.9"}, "toolchain/packages differ"),
+            ("source", "commit", "HEAD", "complete commit SHA"),
+            ("binary_smoke", "status", "not_run", "smoke results differ"),
+            ("binary_smoke", "help_sha256", {"root": "0" * 64}, "smoke results differ"),
+        ]
+        if self.target.endswith("apple-darwin"):
+            cases.append(("native", "minimum_macos", "27.0", "native facts differ"))
+        else:
+            cases.extend([
+                ("native", "maximum_required_glibc", "2.36", "native facts differ"),
+                ("native", "glibc_baseline", "2.36", "native facts differ"),
+            ])
+        for index, (section, field, value, diagnostic) in enumerate(cases):
+            with self.subTest(section=section, field=field):
+                altered = json.loads(json.dumps(original))
+                altered[section][field] = value
+                self.build_record.write_text(json.dumps(altered))
+                output = f"tampered-{index}"
+                with self.assertRaisesRegex(release.ReleaseError, diagnostic):
+                    release.package(self.package_args(output))
+                self.assertFalse((self.root / output).exists())
+        self.build_record.write_text(json.dumps(original))
+        info = release.package(self.package_args("untampered"))
+        self.assertEqual(info["target"], self.target)
+        self.assertEqual(info["build_source_tree"], original["source"]["tree"])
+        self.assertEqual(info["validation"]["binary_version_and_help"], release.smoke_binary(self.binary, self.version))
+
+    def test_packaging_reinspects_changed_intrinsic_binary_facts(self):
+        # The sealed record stays unchanged. New native-tool output must be
+        # rejected, even though the executable fixture's byte hash is identical.
+        if self.target.endswith("apple-darwin"):
+            key, output = ("otool", "-l"), " minos 27.0"
+        else:
+            key, output = ("readelf", "--version-info"), "GLIBC_2.36"
+        self.native_outputs[key] = output
+        with self.assertRaisesRegex(release.ReleaseError, "deployment target|glibc newer"):
+            release.package(self.package_args())
+        self.assertFalse((self.root / "dist").exists())
+
+    def test_binary_replacement_after_smoke_cannot_change_sealed_archive(self):
+        actual_smoke = release.smoke_binary
+
+        def replace_after_smoke(binary, version):
+            smoke = actual_smoke(binary, version)
+            binary.write_text(binary.read_text() + "# replaced after inspection\n")
+            return smoke
+
+        with patch.object(release, "smoke_binary", side_effect=replace_after_smoke):
+            with self.assertRaisesRegex(release.ReleaseError, "contents differ"):
+                release.package(self.package_args())
+        self.assertFalse((self.root / "dist").exists())
+
+    def test_linux_runtime_facts_ignore_only_aslr_addresses(self):
+        libraries = "linux-vdso.so.1 (0x123456)\nlibc.so.6 => /lib/libc.so.6 (0x456789)"
+        first = release.validate_native_facts("x86_64-unknown-linux-gnu", "ELF 64-bit executable x86-64",
+                                             libraries, glibc_versions="GLIBC_2.35")
+        second = release.validate_native_facts("x86_64-unknown-linux-gnu", "ELF 64-bit executable x86-64",
+                                              libraries.replace("0x123456", "0xabcdef").replace("0x456789", "0x987654"),
+                                              glibc_versions="GLIBC_2.35")
+        self.assertEqual(first, second)
+        self.assertIn("libc.so.6 => /lib/libc.so.6", first["runtime_libraries"])
+
     def test_archive_links_extra_paths_and_altered_payload_are_rejected(self):
         info = release.package(self.package_args())
         bad = self.root / "malicious.tar.gz"
@@ -244,16 +348,17 @@ class ReleaseTests(unittest.TestCase):
             release.inspect_archive(self.root / "dist" / info["archive"], "0" * 64, info["sample_sha256"])
 
     def test_assembly_requires_all_targets_consistent_provenance_and_valid_checksums(self):
-        release.package(self.package_args("arm"))
+        release.package(self.package_args("native"))
+        other = next(target for target in release.TARGETS if target != self.target)
         args = argparse.Namespace(input=self.root, output=self.root / "assembly", tag=self.tag,
-                                  targets=["aarch64-apple-darwin", "x86_64-apple-darwin"])
+                                  targets=[self.target, other])
         with self.assertRaisesRegex(release.ReleaseError, "missing targets"):
             release.assemble(args)
-        args.targets = ["aarch64-apple-darwin"]
+        args.targets = [self.target]
         assembled = release.assemble(args)
         self.assertEqual(assembled["targets"], args.targets)
-        self.assertTrue((args.output / "BUILDINFO-aarch64-apple-darwin.json").is_file())
-        info_path = self.root / "arm/BUILDINFO.json"
+        self.assertTrue((args.output / f"BUILDINFO-{self.target}.json").is_file())
+        info_path = self.root / "native/BUILDINFO.json"
         info_path.write_text(info_path.read_text() + "\n")
         args.output = self.root / "tampered-assembly"
         with self.assertRaisesRegex(release.ReleaseError, "metadata checksum"):
@@ -262,14 +367,6 @@ class ReleaseTests(unittest.TestCase):
     def test_real_packaged_archive_works_with_existing_installer_local_transport(self):
         # Only native-inspection output is doubled; the archive, checksum,
         # installer publication, refusal and sample preservation are real.
-        if os.uname().sysname == "Linux":
-            data = json.loads(self.build_record.read_text())
-            data["native"]["target"] = "x86_64-unknown-linux-gnu"
-            self.build_record.write_text(json.dumps(data))
-        elif os.uname().machine == "x86_64":
-            data = json.loads(self.build_record.read_text())
-            data["native"]["target"] = "x86_64-apple-darwin"
-            self.build_record.write_text(json.dumps(data))
         info = release.package(self.package_args())
         evidence = self.root / "installed.json"
         subprocess.run(["bash", str(SCRIPT.with_name("verify-local-release.sh")), str(self.root / "dist"), self.version, str(evidence)], check=True, capture_output=True)

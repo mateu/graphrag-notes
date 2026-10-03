@@ -167,8 +167,22 @@ def validate_native_facts(target: str, description: str, libraries: str, load_co
             "Linux release requires a non-system shared library")
     versions = [tuple(map(int, value.split("."))) for value in re.findall(r"GLIBC_([0-9.]+)", glibc_versions)]
     require(not versions or max(versions) <= (2, 35), "Linux release requires glibc newer than Ubuntu 22.04 (2.35)")
-    return {"runtime_libraries": libraries.splitlines(), "maximum_required_glibc": ".".join(map(str, max(versions))) if versions else None,
+    return {"runtime_libraries": [re.sub(r"\s+\(0x[0-9a-fA-F]+\)", "", line).strip()
+                                  for line in libraries.splitlines()], "maximum_required_glibc": ".".join(map(str, max(versions))) if versions else None,
             "glibc_baseline": "2.35", "system_libraries_only": True}
+
+
+def inspect_binary(binary: Path, target: str) -> dict:
+    """Read intrinsic binary facts without treating packaging as another build."""
+    require(target in TARGETS, "unsupported release target")
+    description = run(["file", "-b", str(binary)])
+    if target.endswith("apple-darwin"):
+        facts = validate_native_facts(target, description, run(["otool", "-L", str(binary)]),
+                                      run(["otool", "-l", str(binary)]))
+    else:
+        facts = validate_native_facts(target, description, run(["ldd", str(binary)]),
+                                      glibc_versions=run(["readelf", "--version-info", str(binary)]))
+    return {"target": target, "binary_description": description, **facts}
 
 
 def native_facts(binary: Path, target: str, repo: Path, toolchain: str) -> dict:
@@ -176,19 +190,12 @@ def native_facts(binary: Path, target: str, repo: Path, toolchain: str) -> dict:
     verbose = run(["rustc", "-vV"], repo)
     require(rustc.startswith(f"rustc {toolchain} "), "active Rust toolchain differs from the declared exact toolchain")
     require(f"host: {target}" in verbose.splitlines(), "build must be native to the selected target")
-    description = run(["file", "-b", str(binary)])
+    facts = inspect_binary(binary, target)
     if target.endswith("apple-darwin"):
         require(os.environ.get("MACOSX_DEPLOYMENT_TARGET") == "15.0", "MACOSX_DEPLOYMENT_TARGET must be 15.0")
-        libraries = run(["otool", "-L", str(binary)])
-        loads = run(["otool", "-l", str(binary)])
-        facts = validate_native_facts(target, description, libraries, loads)
         facts["build_host_macos"] = run(["sw_vers", "-productVersion"])
-    else:
-        facts = validate_native_facts(target, description, run(["ldd", str(binary)]),
-                                      glibc_versions=run(["readelf", "--version-info", str(binary)]))
     require(os.environ.get("OPENSSL_STATIC") == "1", "OPENSSL_STATIC must be 1")
-    facts.update({"target": target, "binary_description": description, "rustc": rustc,
-                  "build_environment": {name: os.environ.get(name) for name in (
+    facts.update({"rustc": rustc, "build_environment": {name: os.environ.get(name) for name in (
                       "OPENSSL_STATIC", "MACOSX_DEPLOYMENT_TARGET", "CARGO_BUILD_JOBS", "RUSTC_WRAPPER")}})
     return facts
 
@@ -311,16 +318,34 @@ def package(args) -> dict:
     require(record.get("schema_version") == 1, "unsupported build record")
     built = record["source"]
     require(built["version"] == source["version"] and built["tag"] == source["tag"], "build record version/tag differs from release source")
+    require(re.fullmatch(r"[0-9a-f]{40}", built["commit"]) is not None, "build source needs a complete commit SHA")
+    require(built["tree"] == run(["git", "rev-parse", f"{built['commit']}^{{tree}}"], repo),
+            "build source tree differs from the actual Git commit")
+    require(built["source_date_epoch"] == int(run(["git", "show", "-s", "--format=%ct", built["commit"]], repo)),
+            "build source timestamp differs from the actual Git commit")
+    require(built["rust_toolchain"] == source["rust_toolchain"]
+            and built["workspace_packages"] == source["workspace_packages"],
+            "build source toolchain/packages differ from the validated compiled inputs")
     require(input_identity(repo, built["commit"]) == built["compile_inputs_sha256"] == source["compile_inputs_sha256"],
             "compiled source inputs differ from the final release commit; rebuild the binary")
     binary = regular_file(args.binary.absolute(), "binary")
     require(sha256(binary) == record["binary_sha256"], "binary differs from the sealed native build record")
-    require(record["native"]["target"] in TARGETS and record["binary_smoke"]["status"] == "passed", "build record lacks a supported native smoke test")
-    smoke_binary(binary, source["version"])
+    native = record["native"]
+    require(isinstance(native, dict), "build record native facts must be an object")
+    target = native["target"]
+    intrinsic = inspect_binary(binary, target)
+    require(all(native.get(name) == value for name, value in intrinsic.items()),
+            "build record native facts differ from the actual binary")
+    historical = {"rustc", "build_environment"} | ({"build_host_macos"} if target.endswith("apple-darwin") else set())
+    require(set(native) == set(intrinsic) | historical, "build record contains missing or unexpected native fields")
+    require(isinstance(native["rustc"], str) and native["rustc"].startswith(f"rustc {source['rust_toolchain']} ")
+            and isinstance(native["build_environment"], dict), "build record has invalid historical toolchain/environment facts")
+    native = {**{name: native[name] for name in historical}, **intrinsic}
+    smoke = smoke_binary(binary, source["version"])
+    require(record["binary_smoke"] == smoke, "build record smoke results differ from the actual binary")
     sample = regular_file(repo / "samples/first-notes.md", "starter sample")
-    target = record["native"]["target"]
     asset = f"graphrag-notes-{args.tag}-{target}.tar.gz"
-    binary_hash, sample_hash = sha256(binary), sha256(sample)
+    binary_hash, sample_hash = record["binary_sha256"], sha256(sample)
     with tempfile.TemporaryDirectory(prefix=".graphrag-package-", dir=output.parent) as temp:
         staged = Path(temp)
         deterministic_archive(staged / asset, binary, sample, source["source_date_epoch"])
@@ -335,9 +360,9 @@ def package(args) -> dict:
                 "compile_inputs_sha256": source["compile_inputs_sha256"],
                 "build_source_commit": built["commit"], "build_source_tree": built["tree"],
                 "workspace_packages": source["workspace_packages"], "source_date_epoch": source["source_date_epoch"],
-                **record["native"], "binary_sha256": binary_hash, "sample_sha256": sample_hash,
+                **native, "binary_sha256": binary_hash, "sample_sha256": sample_hash,
                 "archive": asset, "archive_sha256": archive_hash,
-                "validation": {**checks, "binary_version_and_help": record["binary_smoke"], "archive_integrity": {"status": "passed"}}}
+                "validation": {**checks, "binary_version_and_help": smoke, "archive_integrity": {"status": "passed"}}}
         write_json(staged / "BUILDINFO.json", info)
         (staged / "SHA256SUMS").write_text(
             "".join(f"{sha256(staged / name)}  {name}\n" for name in sorted([asset, "BUILDINFO.json"])), encoding="utf-8")
