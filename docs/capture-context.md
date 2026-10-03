@@ -93,8 +93,10 @@ no `source_generation` or chat ownership relationships, so subsequent manual
 edits remain allowed even when they keep the original chat tags and source
 type. Chat-import ownership uses stored `note_from_conversation` and
 `note_from_message` relationships, including when the linked chat record is
-missing. Refused chat edits print an `inspect` command and explicit detach
-command before any editor or inference work.
+missing. New chat notes and their conversation ownership commit together,
+before entity extraction or message-specific links. Interrupted imports
+therefore keep visible chat notes protected. Refused chat edits print an
+`inspect` command and explicit detach command before any editor or inference work.
 
 Historical chat imports that have neither generation ownership nor stored
 chat relationships cannot be distinguished automatically from old detached

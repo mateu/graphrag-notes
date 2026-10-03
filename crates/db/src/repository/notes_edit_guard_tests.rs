@@ -30,6 +30,17 @@ async fn all_notes(repo: &Repository) -> Vec<Note> {
     repo.db.select("note").await.unwrap()
 }
 
+async fn conversation_edge_ids(repo: &Repository) -> Vec<String> {
+    let edges: Vec<RecordId> = repo
+        .db
+        .query("SELECT VALUE id FROM note_from_conversation ORDER BY id")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    edges.iter().map(record_id_to_string).collect()
+}
+
 async fn entity_snapshot(repo: &Repository) -> serde_json::Value {
     let mut entities: Vec<Entity> = repo.db.select("entity").await.unwrap();
     entities.sort_by(|left, right| left.canonical_name.cmp(&right.canonical_name));
@@ -86,6 +97,134 @@ fn assert_conflict(result: Result<Note>) {
         matches!(result, Err(DbError::NoteRevisionConflict(_))),
         "expected a typed editor snapshot conflict, got {result:?}"
     );
+}
+
+#[tokio::test]
+async fn chat_creation_commits_ownership_and_preserves_manual_copy_semantics() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = repo
+        .create_source(Source::chat_export("Owned chat", None))
+        .await
+        .unwrap();
+    let chat = repo
+        .create_chat_note(
+            Note::new("Imported chat body")
+                .with_type(NoteType::Synthesis)
+                .with_source(source.id.clone().unwrap())
+                .with_title("Imported title")
+                .with_tags(vec!["chat-export".into(), "summary".into()]),
+            &RecordId::new("conversation", "missing-chat-target"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(chat.source_generation, None);
+    assert!(repo.get_visible_note(&id(&chat)).await.unwrap().is_some());
+    assert!(repo
+        .note_has_chat_provenance(chat.id.as_ref().unwrap())
+        .await
+        .unwrap());
+    assert!(repo.note_requires_detach(&chat).await.unwrap());
+    assert_eq!(conversation_edge_ids(&repo).await.len(), 1);
+    assert_eq!(repo.preview_source_delete(&source).await.unwrap().notes, 0);
+    assert_conflict(
+        repo.update_note_and_replace_entities_if_unchanged(
+            &id(&chat),
+            chat.clone(),
+            Vec::new(),
+            &chat,
+        )
+        .await,
+    );
+
+    let copy = Note::new("Manual chat copy")
+        .with_source(chat.source_id.clone().unwrap())
+        .with_tags(chat.tags.clone());
+    let detached = repo
+        .create_note_and_replace_entities_if_unchanged(copy, Vec::new(), &chat)
+        .await
+        .unwrap();
+    assert!(!repo.note_requires_detach(&detached).await.unwrap());
+    let mut edited = detached.clone();
+    edited.content = "Edited manual chat copy".into();
+    repo.update_note_and_replace_entities_if_unchanged(
+        &id(&detached),
+        edited,
+        Vec::new(),
+        &detached,
+    )
+    .await
+    .unwrap();
+    let capture = repo
+        .create_note_and_replace_entities(Note::new("Captured manual note"), Vec::new())
+        .await
+        .unwrap();
+    assert!(!repo.note_requires_detach(&capture).await.unwrap());
+    assert_eq!(conversation_edge_ids(&repo).await.len(), 1);
+    assert_snapshot(&repo.get_note(&id(&chat)).await.unwrap().unwrap(), &chat);
+}
+
+#[tokio::test]
+async fn chat_creation_rolls_back_ownership_notes_and_entities_on_storage_failures() {
+    for failure in ["ownership", "note", "mention"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let original = initial(&repo).await;
+        let conversation = RecordId::new("conversation", "new-chat-target");
+        repo.link_note_to_conversation(
+            original.id.as_ref().unwrap(),
+            &RecordId::new("conversation", "existing-chat-target"),
+        )
+        .await
+        .unwrap();
+        let blocked = repo
+            .upsert_entity(entity("Blocked chat mention"))
+            .await
+            .unwrap();
+        let entities_before = entity_snapshot(&repo).await;
+        let edges_before = conversation_edge_ids(&repo).await;
+        let constraint = match failure {
+            "ownership" => format!(
+                "DEFINE FIELD OVERWRITE out ON note_from_conversation TYPE record<conversation> ASSERT $value != {}",
+                conversation.to_sql(),
+            ),
+            "note" => "DEFINE FIELD OVERWRITE content ON note TYPE string ASSERT $value != 'rejected chat body'".into(),
+            "mention" => format!(
+                "DEFINE FIELD OVERWRITE out ON mentions TYPE record<entity> ASSERT $value != {}",
+                blocked.id.as_ref().unwrap().to_sql(),
+            ),
+            _ => unreachable!(),
+        };
+        repo.db.query(constraint).await.unwrap().check().unwrap();
+        // The shared helper supplies entities here so failures on either side
+        // of the ownership/note writes also exercise full entity rollback.
+        let result = repo
+            .create_note_and_replace_entities_guarded(
+                Note::new("rejected chat body"),
+                vec![
+                    entity("New chat orphan"),
+                    changed_original_entity(),
+                    changed_entity("Blocked chat mention"),
+                ],
+                None,
+                Some(&conversation),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(DbError::QueryFailed(_))),
+            "{failure}: {result:?}"
+        );
+        assert_eq!(entity_snapshot(&repo).await, entities_before, "{failure}");
+        assert_eq!(
+            conversation_edge_ids(&repo).await,
+            edges_before,
+            "{failure}"
+        );
+        assert_eq!(all_notes(&repo).await.len(), 1, "{failure}");
+        assert_snapshot(
+            &repo.get_note(&id(&original)).await.unwrap().unwrap(),
+            &original,
+        );
+        assert_eq!(mentions(&repo, &original).await, ["Original mention"]);
+    }
 }
 
 #[tokio::test]

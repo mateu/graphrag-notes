@@ -199,7 +199,17 @@ impl Repository {
         note: Note,
         entities: Vec<Entity>,
     ) -> Result<Note> {
-        self.create_note_and_replace_entities_guarded(note, entities, None)
+        self.create_note_and_replace_entities_guarded(note, entities, None, None)
+            .await
+    }
+
+    /// Create a chat-derived note and its conversation ownership together.
+    /// A note is never visible without the relationship that distinguishes it
+    /// from a detached manual copy, even if later extraction or message linking
+    /// fails. Source-generation and source-lifecycle semantics stay unchanged.
+    #[instrument(skip(self, note))]
+    pub async fn create_chat_note(&self, note: Note, conversation_id: &RecordId) -> Result<Note> {
+        self.create_note_and_replace_entities_guarded(note, Vec::new(), None, Some(conversation_id))
             .await
     }
 
@@ -213,7 +223,7 @@ impl Repository {
         entities: Vec<Entity>,
         expected: &Note,
     ) -> Result<Note> {
-        self.create_note_and_replace_entities_guarded(note, entities, Some(expected))
+        self.create_note_and_replace_entities_guarded(note, entities, Some(expected), None)
             .await
     }
 
@@ -222,6 +232,7 @@ impl Repository {
         note: Note,
         entities: Vec<Entity>,
         expected: Option<&Note>,
+        conversation_id: Option<&RecordId>,
     ) -> Result<Note> {
         let editor_source = expected.map(editor_source_id).transpose()?;
         let guard = expected
@@ -238,6 +249,9 @@ impl Repository {
             .db
             .query(format!(
                 "BEGIN TRANSACTION; {guard}{replacement_entities}\
+                 IF $chat_conversation != NONE {{ \
+                    CREATE note_from_conversation SET in = $id, out = $chat_conversation; \
+                 }}; \
                  CREATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, source_id = $source_id, \
@@ -255,6 +269,7 @@ impl Repository {
             ))
             .bind(("editor_source", editor_source))
             .bind(("editor_expected", expected.cloned()))
+            .bind(("chat_conversation", conversation_id.cloned()))
             .bind(("id", note_id.clone()))
             .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
             .bind(("title", note.title.clone()))

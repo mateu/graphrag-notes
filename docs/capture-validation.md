@@ -5,10 +5,10 @@ configuration, database, draft directory, and localhost provider endpoint.
 They never read the user's corpus or require live models.
 
 On 2026-10-02, the latest Apple Silicon macOS 27.0.1 run passed 20 CLI
-subprocess tests and the full workspace suite (533 passed, 5 ignored live or
+subprocess tests and the full workspace suite (536 passed, 5 ignored live or
 fixture-only cases), including unchanged-session cleanup output for JSON/JSONL,
-chat-import ownership protection, and creation/update success without a
-separate read.
+chat-import ownership and interrupted-import protection, and creation/update
+success without a separate read.
 A separate macOS walkthrough passed 14 recorded command steps before the
 chat-ownership follow-up, including atomic editor saves, retry from another
 directory, source detach, and raw context reuse.
@@ -31,7 +31,7 @@ explanations and round-trip JSON citation escaping.
 The CLI unit regression passes an opening snapshot through the complete
 guarded Librarian edit path after a concurrent same-timestamp change. DB
 regressions verify the transaction-level current/stale/missing/hidden and
-detach cases, including rollback of note and entity changes. Thirteen DB regressions
+detach cases, including rollback of note and entity changes. Fifteen DB regressions
 cover existing-entity metadata and complete entity-set rollback for rejected
 snapshots and mention, note, and entity storage failures; successful duplicate
 alias merging retains existing entity identity/type/creation time. Ownership
@@ -39,6 +39,13 @@ relationships added after the editor snapshot reject an in-place transaction
 without changing notes or entities, while guarded detach remains permitted.
 The Librarian service also refuses imported edits before embedding, for both
 legacy and guarded manual-content API calls.
+
+Chat-note creation commits conversation ownership with the note for every
+summary, message, Q&A, and fallback path. A controlled extraction interruption
+verifies current imports remain protected while inference is blocked and after
+cancellation, while explicit detach still creates an editable manual copy.
+Transaction regressions prove failed owner-edge, note, and mention writes
+leave no partial ownership records or note/entity mutations.
 
 Atomic creation and body updates return the schema-normalized note from their
 committing query, after checking every transaction result. Record-permission
