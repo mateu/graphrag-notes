@@ -79,7 +79,7 @@ pub(super) fn prepare(cli: &Cli, server: &str) -> Result<Option<Invocation>> {
             if bytes.len() > 65_536 {
                 anyhow::bail!("uploaded Markdown must be at most 65536 UTF-8 bytes");
             }
-            let draft = Draft::save_or_recover(&bytes, &directory, recovery_path, |path| {
+            let mut draft = Draft::save_or_recover(&bytes, &directory, recovery_path, |path| {
                 let mut command=format!("graphrag --server={} --credential-env={} --request-id={} --recover-draft upload --document-key={} --content-file={} --draft-dir={} --format {}",shell_quote(server),shell_quote(&cli.credential_env),shell_quote(&request),shell_quote(document_key),shell_quote(&path.to_string_lossy()),shell_quote(&directory_text),format_flag(*format));
                 if let Some(title) = title {
                     command.push_str(&format!(" --title={}", shell_quote(title)));
@@ -95,6 +95,7 @@ pub(super) fn prepare(cli: &Cli, server: &str) -> Result<Option<Invocation>> {
                     "uploaded Markdown must contain text without NUL; private draft retained"
                 );
             }
+            draft.pin_remote_submission(content.as_bytes())?;
             eprintln!(
                 "Upload request ID: {}\nDocument key: {}",
                 output::safe_text(&request, false),
@@ -196,6 +197,47 @@ fn canonical_hash_id(id: &str, table: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn upload_admission_cleanup_preserves_later_draft_saves() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("caller-document.md");
+        let drafts = temp.path().join("drafts");
+        let sent = "# Synthetic upload\n\nOriginal submitted Markdown.";
+        std::fs::write(&input, sent).unwrap();
+        let cli = Cli::try_parse_from([
+            "graphrag",
+            "--request-id=changed-draft",
+            "upload",
+            "--document-key=synthetic-document",
+            "--content-file",
+            input.to_str().unwrap(),
+            "--draft-dir",
+            drafts.to_str().unwrap(),
+        ])
+        .unwrap();
+        let mut invocation = prepare(&cli, "https://synthetic.example/mcp")
+            .unwrap()
+            .unwrap();
+        assert_eq!(invocation.arguments["content"], sent);
+        let later = "# Synthetic upload\n\nLater unsent edits must be retained.";
+        let mut draft = invocation.draft.take().unwrap();
+        std::fs::write(&draft.path, later).unwrap();
+        let acknowledgment = json!({"data":{
+            "request_id":"changed-draft",
+            "job_id":format!("processing_job:{}", "a".repeat(64)),
+            "source_id":format!("source:{}", "b".repeat(64)),
+            "source_uri":format!("mcp://upload/{}", "b".repeat(64)),
+            "replayed":false
+        }});
+        let job_id = validate_result(&invocation, &acknowledgment).unwrap();
+        assert!(!draft.discard(Some(&job_id)));
+        assert_eq!(std::fs::read_to_string(&draft.path).unwrap(), later);
+        assert_eq!(std::fs::read_to_string(&input).unwrap(), sent);
+        assert!(draft.recoverable_command().is_none());
+    }
+
     #[test]
     fn upload_acknowledgment_must_match_request_before_discarding_draft() {
         let invocation = Invocation {
