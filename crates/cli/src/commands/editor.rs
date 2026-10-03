@@ -263,6 +263,49 @@ impl Draft {
         Self::matches_recovery_bytes(&mut current, &recovered.bytes)
     }
 
+    fn restore_claimed_entry(entry: &Path, path: &Path) -> std::io::Result<()> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let from = CString::new(entry.as_os_str().as_bytes()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "draft path contains NUL")
+            })?;
+            let to = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "draft path contains NUL")
+            })?;
+            // Rename the entry itself, including directories and symlinks,
+            // only if the destination remains absent at the atomic write.
+            #[cfg(target_os = "macos")]
+            let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+            #[cfg(target_os = "linux")]
+            let result = unsafe {
+                libc::renameat2(
+                    libc::AT_FDCWD,
+                    from.as_ptr(),
+                    libc::AT_FDCWD,
+                    to.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            };
+            if result == 0 {
+                Ok(())
+            } else {
+                // Unsupported kernels/filesystems also retain the quarantine;
+                // a check followed by plain rename could overwrite a new save.
+                Err(std::io::Error::last_os_error())
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = (entry, path);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "atomic draft restoration is unsupported on this platform",
+            ))
+        }
+    }
+
     fn discard_after_claim(
         &mut self,
         note_id: Option<&str>,
@@ -294,12 +337,10 @@ impl Draft {
                 let _ = std::fs::remove_dir(directory);
                 return true;
             }
-            // Link restoration is atomic and refuses an occupied original
-            // pathname. Keep the private quarantine if another save won it.
-            if std::fs::hard_link(&entry, &self.path).is_ok() {
-                if std::fs::remove_file(&entry).is_ok() {
-                    let _ = std::fs::remove_dir(directory);
-                }
+            // Restore any replacement entry without overwriting a later save.
+            // Keep the private quarantine if another save won the original path.
+            if Self::restore_claimed_entry(&entry, &self.path).is_ok() {
+                let _ = std::fs::remove_dir(directory);
             } else {
                 self.path = entry;
             }
@@ -397,6 +438,129 @@ fn recovery_path(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn replace_draft_entry(path: &Path, kind: &str) {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        match kind {
+            "directory" => {
+                std::fs::create_dir(path).unwrap();
+                std::fs::write(path.join("unsent.md"), b"unsent directory contents").unwrap();
+            }
+            "symlink" => symlink("never-follow-this-dangling-link", path).unwrap(),
+            "fifo" => {
+                let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            }
+            "regular" => {
+                std::fs::write(path, b"another unsent save").unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            _ => panic!("unknown fixture kind"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_same_entry(path: &Path, before: &std::fs::Metadata, kind: &str) {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let after = std::fs::symlink_metadata(path).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        assert_eq!(after.file_type(), before.file_type());
+        match kind {
+            "directory" => assert_eq!(
+                std::fs::read(path.join("unsent.md")).unwrap(),
+                b"unsent directory contents"
+            ),
+            "symlink" => assert_eq!(
+                std::fs::read_link(path).unwrap(),
+                Path::new("never-follow-this-dangling-link")
+            ),
+            "fifo" => assert!(after.file_type().is_fifo()),
+            "regular" => assert_eq!(std::fs::read(path).unwrap(), b"another unsent save"),
+            _ => panic!("unknown fixture kind"),
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn remote_cleanup_restores_nonregular_replacements_to_unoccupied_original_path() {
+        for kind in ["directory", "symlink", "fifo"] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut draft =
+                Draft::save(b"submitted body", temp.path(), |_| "retry".into()).unwrap();
+            draft.pin_remote_submission(b"submitted body").unwrap();
+            let path = draft.path.clone();
+            std::fs::remove_file(&path).unwrap();
+            replace_draft_entry(&path, kind);
+            let before = std::fs::symlink_metadata(&path).unwrap();
+            assert!(!draft.discard(Some("note:committed")), "{kind}");
+            assert_eq!(draft.path, path, "{kind}");
+            assert_same_entry(&path, &before, kind);
+            assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+            assert!(draft.recoverable_command().is_none());
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn remote_cleanup_restores_symlink_without_touching_its_target() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("sensitive-canary.md");
+        std::fs::write(&target, b"unrelated sensitive fixture content").unwrap();
+        let target_before = std::fs::metadata(&target).unwrap();
+        let mut draft = Draft::save(b"submitted body", temp.path(), |_| "retry".into()).unwrap();
+        draft.pin_remote_submission(b"submitted body").unwrap();
+        let path = draft.path.clone();
+        std::fs::remove_file(&path).unwrap();
+        symlink(&target, &path).unwrap();
+        let link_before = std::fs::symlink_metadata(&path).unwrap();
+        assert!(!draft.discard(Some("note:committed")));
+        assert_eq!(draft.path, path);
+        assert_eq!(
+            std::fs::symlink_metadata(&path).unwrap().ino(),
+            link_before.ino()
+        );
+        assert_eq!(std::fs::read_link(&path).unwrap(), target);
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().ino(),
+            target_before.ino()
+        );
+        assert_eq!(
+            std::fs::read(target).unwrap(),
+            b"unrelated sensitive fixture content"
+        );
+        assert!(draft.recoverable_command().is_none());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn remote_cleanup_never_overwrites_a_new_entry_while_restoring_replacements() {
+        for replacement in ["directory", "symlink", "fifo"] {
+            for occupied in ["regular", "directory", "symlink", "fifo"] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut draft =
+                    Draft::save(b"submitted body", temp.path(), |_| "retry".into()).unwrap();
+                draft.pin_remote_submission(b"submitted body").unwrap();
+                let path = draft.path.clone();
+                std::fs::remove_file(&path).unwrap();
+                replace_draft_entry(&path, replacement);
+                let replacement_before = std::fs::symlink_metadata(&path).unwrap();
+                let mut occupied_before = None;
+                assert!(!draft.discard_after_claim(Some("note:committed"), |_| {
+                    replace_draft_entry(&path, occupied);
+                    occupied_before = Some(std::fs::symlink_metadata(&path).unwrap());
+                }));
+                assert_same_entry(&path, &occupied_before.unwrap(), occupied);
+                assert_ne!(draft.path, path);
+                assert_same_entry(&draft.path, &replacement_before, replacement);
+                let retained = draft.path.clone();
+                assert!(draft.recoverable_command().is_none());
+                drop(draft);
+                assert!(std::fs::symlink_metadata(retained).is_ok());
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[test]
