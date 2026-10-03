@@ -60,6 +60,35 @@ pub struct RemoteUploadJob {
     pub result: Option<serde_json::Value>,
 }
 
+/// Owner-scoped progress without decoding the saved execution input. Damaged
+/// input must remain inspectable after validation quarantine or recovery.
+#[derive(Debug, Clone)]
+pub struct RemoteUploadJobStatus {
+    pub job: ProcessingJob,
+    pub instance_id: String,
+    pub source_id: Option<RecordId>,
+    pub source_generation: Option<u64>,
+    pub phase: String,
+    pub cancel_requested: bool,
+    pub admission: serde_json::Value,
+    pub result: Option<serde_json::Value>,
+}
+
+impl From<RemoteUploadJob> for RemoteUploadJobStatus {
+    fn from(job: RemoteUploadJob) -> Self {
+        Self {
+            job: job.job,
+            instance_id: job.instance_id,
+            source_id: job.source_id,
+            source_generation: job.source_generation,
+            phase: job.phase,
+            cancel_requested: job.cancel_requested,
+            admission: job.admission,
+            result: job.result,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, SurrealValue)]
 struct JobRow {
     id: RecordId,
@@ -107,33 +136,51 @@ struct QueuedJobIdentity {
 }
 
 impl JobRow {
+    fn processing_job(&self) -> ProcessingJob {
+        ProcessingJob {
+            id: Some(self.id.clone()),
+            job_type: self.job_type.clone(),
+            source_generation: self.source_generation.clone(),
+            scope: self.scope.clone(),
+            item_ids: self.item_ids.clone(),
+            status: self.status.clone(),
+            total_count: self.total_count,
+            completed_count: self.completed_count,
+            failed_count: self.failed_count,
+            checkpoint: self.checkpoint.clone(),
+            last_error: self.last_error.clone(),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            finished_at: self.finished_at,
+            target_embedding_provider: None,
+            target_embedding_model: None,
+            target_embedding_dimension: None,
+            reindex_item_fingerprints: None,
+            reindex_lease_owner: None,
+            reindex_lease_expires_at: None,
+        }
+    }
+
+    fn status(self) -> RemoteUploadJobStatus {
+        RemoteUploadJobStatus {
+            job: self.processing_job(),
+            instance_id: self.remote_instance_id,
+            source_id: self.remote_source_id,
+            source_generation: self.remote_source_generation,
+            phase: self.remote_phase,
+            cancel_requested: self.remote_cancel_requested,
+            admission: self.remote_admission,
+            result: self.remote_result,
+        }
+    }
+
     fn public(self) -> Result<RemoteUploadJob> {
+        let job = self.processing_job();
         let input = serde_json::from_value(self.remote_input).map_err(|error| {
             DbError::InvalidRemoteRequest(format!("stored upload input shape: {error}"))
         })?;
         Ok(RemoteUploadJob {
-            job: ProcessingJob {
-                id: Some(self.id),
-                job_type: self.job_type,
-                source_generation: self.source_generation,
-                scope: self.scope,
-                item_ids: self.item_ids,
-                status: self.status,
-                total_count: self.total_count,
-                completed_count: self.completed_count,
-                failed_count: self.failed_count,
-                checkpoint: self.checkpoint,
-                last_error: self.last_error,
-                created_at: self.created_at,
-                updated_at: self.updated_at,
-                finished_at: self.finished_at,
-                target_embedding_provider: None,
-                target_embedding_model: None,
-                target_embedding_dimension: None,
-                reindex_item_fingerprints: None,
-                reindex_lease_owner: None,
-                reindex_lease_expires_at: None,
-            },
+            job,
             instance_id: self.remote_instance_id,
             request_id: self.remote_request_id,
             source_uri: self.remote_source_uri,
@@ -335,26 +382,56 @@ impl Repository {
             .map(JobRow::public)
             .transpose()
     }
-    pub async fn list_remote_upload_jobs(
+
+    pub async fn get_remote_upload_job_status(
         &self,
         instance: &str,
-        limit: usize,
-    ) -> Result<Vec<RemoteUploadJob>> {
+        id: &str,
+    ) -> Result<Option<RemoteUploadJobStatus>> {
+        identity(instance)?;
+        Ok(self
+            .remote_job_row(instance, &job_id(id)?)
+            .await?
+            .map(JobRow::status))
+    }
+
+    async fn remote_job_rows(&self, instance: &str, limit: usize) -> Result<Vec<JobRow>> {
         identity(instance)?;
         if !(1..=200).contains(&limit) {
             return Err(DbError::InvalidRemoteRequest(
                 "job limit must be 1–200".into(),
             ));
         }
-        let rows: Vec<JobRow> = self.db.query("SELECT * FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance ORDER BY updated_at DESC, id ASC LIMIT $limit")
-            .bind(("instance", instance.to_string())).bind(("limit", limit)).await?.take(0)?;
-        rows.into_iter().map(JobRow::public).collect()
+        Ok(self.db.query("SELECT * FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance ORDER BY updated_at DESC, id ASC LIMIT $limit")
+            .bind(("instance", instance.to_string())).bind(("limit", limit)).await?.take(0)?)
     }
-    pub async fn cancel_remote_upload_job(
+
+    pub async fn list_remote_upload_jobs(
         &self,
         instance: &str,
-        id: &str,
-    ) -> Result<RemoteUploadJob> {
+        limit: usize,
+    ) -> Result<Vec<RemoteUploadJob>> {
+        self.remote_job_rows(instance, limit)
+            .await?
+            .into_iter()
+            .map(JobRow::public)
+            .collect()
+    }
+
+    pub async fn list_remote_upload_job_statuses(
+        &self,
+        instance: &str,
+        limit: usize,
+    ) -> Result<Vec<RemoteUploadJobStatus>> {
+        Ok(self
+            .remote_job_rows(instance, limit)
+            .await?
+            .into_iter()
+            .map(JobRow::status)
+            .collect())
+    }
+
+    async fn cancel_remote_upload_row(&self, instance: &str, id: &str) -> Result<JobRow> {
         identity(instance)?;
         let id = job_id(id)?;
         // Deliberately no transition/lifecycle mutex. A provider-blocked worker
@@ -363,8 +440,23 @@ impl Repository {
             .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.check()?;
         self.remote_job_row(instance, &id)
             .await?
-            .ok_or_else(|| DbError::NotFound("remote upload job".into(), record_id_to_string(&id)))?
-            .public()
+            .ok_or_else(|| DbError::NotFound("remote upload job".into(), record_id_to_string(&id)))
+    }
+
+    pub async fn cancel_remote_upload_job(
+        &self,
+        instance: &str,
+        id: &str,
+    ) -> Result<RemoteUploadJob> {
+        self.cancel_remote_upload_row(instance, id).await?.public()
+    }
+
+    pub async fn cancel_remote_upload_job_status(
+        &self,
+        instance: &str,
+        id: &str,
+    ) -> Result<RemoteUploadJobStatus> {
+        Ok(self.cancel_remote_upload_row(instance, id).await?.status())
     }
     pub async fn resume_remote_upload_job(
         &self,

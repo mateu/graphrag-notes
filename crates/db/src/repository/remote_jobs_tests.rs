@@ -1190,6 +1190,163 @@ async fn malformed_restored_input_is_quarantined_without_blocking_a_healthy_uplo
 }
 
 #[tokio::test]
+async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
+    let original = Repository::new(init_memory().await.unwrap());
+    let damaged = original
+        .admit_remote_upload(input("owner", "damaged-status", "Damaged admitted input"))
+        .await
+        .unwrap();
+    let healthy = original
+        .admit_remote_upload(input("owner", "healthy-status", "Healthy admitted input"))
+        .await
+        .unwrap();
+    let foreign = original
+        .admit_remote_upload(input(
+            "other-owner",
+            "foreign-status",
+            "Foreign admitted input",
+        ))
+        .await
+        .unwrap();
+    let damaged_id = damaged.result["job_id"].as_str().unwrap();
+    let healthy_id = healthy.result["job_id"].as_str().unwrap();
+    let foreign_id = foreign.result["job_id"].as_str().unwrap();
+    let restored = Repository::new(init_memory().await.unwrap());
+    for mut record in table(&original, "processing_job").await {
+        if record["remote_request_id"] == "damaged-status" {
+            record["remote_input"] = serde_json::json!({"missing_fields":true});
+        }
+        restored
+            .restore_portable_record("processing_job", record)
+            .await
+            .unwrap();
+    }
+    let claimed = restored
+        .claim_next_remote_upload("restored-epoch", "healthy-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.job.id, Some(job_id(healthy_id).unwrap()));
+    let damaged = restored
+        .get_remote_upload_job_status("owner", damaged_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(damaged.job.status, "failed");
+    assert_eq!(damaged.job.last_error.as_deref(), Some("validation"));
+    assert!(damaged.job.finished_at.is_some());
+    let jobs = restored
+        .list_remote_upload_job_statuses("owner", 10)
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 2);
+    assert!(jobs
+        .iter()
+        .any(|job| job.job.id == Some(job_id(damaged_id).unwrap())));
+    assert!(jobs
+        .iter()
+        .any(|job| job.job.id == Some(job_id(healthy_id).unwrap())));
+    assert!(restored
+        .get_remote_upload_job_status("other-owner", damaged_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(restored
+        .get_remote_upload_job_status("owner", foreign_id)
+        .await
+        .unwrap()
+        .is_none());
+    let other_jobs = restored
+        .list_remote_upload_job_statuses("other-owner", 10)
+        .await
+        .unwrap();
+    assert_eq!(other_jobs.len(), 1);
+    assert_eq!(other_jobs[0].job.id, Some(job_id(foreign_id).unwrap()));
+    assert!(matches!(
+        restored
+            .cancel_remote_upload_job_status("other-owner", damaged_id)
+            .await,
+        Err(DbError::NotFound(_, _))
+    ));
+    // Cancellation of an already quarantined job is a readable no-op. It
+    // neither erases its validation error nor queues an unrepaired input.
+    let cancelled = restored
+        .cancel_remote_upload_job_status("owner", damaged_id)
+        .await
+        .unwrap();
+    assert_eq!(cancelled.job.status, "failed");
+    assert_eq!(cancelled.job.last_error.as_deref(), Some("validation"));
+    assert!(!cancelled.cancel_requested);
+    assert_eq!(cancelled.job.updated_at, damaged.job.updated_at);
+    // The status API never substitutes an executable payload for corruption.
+    assert!(matches!(
+        restored.get_remote_upload_job("owner", damaged_id).await,
+        Err(DbError::InvalidRemoteRequest(_))
+    ));
+    assert!(matches!(
+        restored.resume_remote_upload_job("owner", damaged_id).await,
+        Err(DbError::InvalidRemoteRequest(_))
+    ));
+    assert_eq!(
+        restored
+            .get_remote_upload_job_status("owner", damaged_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .job
+            .status,
+        "failed"
+    );
+    for limit in [0, 201] {
+        assert!(matches!(
+            restored
+                .list_remote_upload_job_statuses("owner", limit)
+                .await,
+            Err(DbError::InvalidRemoteRequest(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn malformed_queued_input_can_be_cancelled_without_decoding_it() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let admission = repo
+        .admit_remote_upload(input("owner", "damaged-cancel", "Admitted input"))
+        .await
+        .unwrap();
+    let id = admission.result["job_id"].as_str().unwrap();
+    let damaged_input = serde_json::json!({"missing_fields":true});
+    repo.db
+        .query("UPDATE $id SET remote_input = $input")
+        .bind(("id", job_id(id).unwrap()))
+        .bind(("input", damaged_input.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let cancelled = repo
+        .cancel_remote_upload_job_status("owner", id)
+        .await
+        .unwrap();
+    assert_eq!(cancelled.job.status, "cancelled");
+    assert!(cancelled.cancel_requested);
+    assert!(cancelled.job.finished_at.is_some());
+    assert_eq!(
+        table(&repo, "processing_job").await[0]["remote_input"],
+        damaged_input
+    );
+    assert!(repo
+        .claim_next_remote_upload("epoch", "worker")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(matches!(
+        repo.resume_remote_upload_job("owner", id).await,
+        Err(DbError::InvalidRemoteRequest(_))
+    ));
+}
+
+#[tokio::test]
 async fn minimal_recovery_fence_settles_damaged_post_claim_input_without_restarting() {
     for cancelled in [false, true] {
         let repo = Repository::new(init_memory().await.unwrap());

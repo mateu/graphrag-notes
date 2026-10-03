@@ -15,9 +15,9 @@ pub use repository::{
     InspectedMessage, InspectionProvenance, MutationGuard, MutationNoteSnapshot, ProcessingJob,
     ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, RecordInspection,
     RemoteCaptureInput, RemoteCaptureReceipt, RemoteJobAdmission, RemoteJobLease,
-    RemoteMutationEffect, RemoteMutationInput, RemoteUploadInput, RemoteUploadJob, Repository,
-    SourceDeleteSummary, SourceImportAction, SourceImportPlan, MAX_INSPECTION_NEIGHBORS,
-    MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
+    RemoteMutationEffect, RemoteMutationInput, RemoteUploadInput, RemoteUploadJob,
+    RemoteUploadJobStatus, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
+    MAX_INSPECTION_NEIGHBORS, MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
 };
 
 use std::ops::Deref;
