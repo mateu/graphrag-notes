@@ -674,6 +674,61 @@ impl LibrarianAgent {
         Ok(note)
     }
 
+    /// Capture a manual note only after all required provider work succeeds.
+    /// Reuse the atomic note/mention operation so failed capture creates no
+    /// partial manual source or visible note. Legacy `ingest_text` stays compatible.
+    #[instrument(skip(self, content, title, tags))]
+    pub async fn capture_manual_note(
+        &self,
+        content: String,
+        title: Option<String>,
+        tags: Vec<String>,
+    ) -> Result<Note> {
+        if content.trim().is_empty() {
+            return Err(crate::AgentError::Processing(
+                "note content cannot be empty".into(),
+            ));
+        }
+        let embedding = self.embed_text(&content).await?;
+        let entities = if self.runtime.skip_entity_extraction {
+            Vec::new()
+        } else {
+            let extraction = self
+                .extractor
+                .extract(&truncate_for_extraction(
+                    &content,
+                    self.runtime.extract_max_chars,
+                ))
+                .await?;
+            extracted_entities_to_domain(extraction.entities)
+        };
+        let title = title.or_else(|| {
+            content
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| {
+                    line.split_whitespace()
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .chars()
+                        .take(48)
+                        .collect()
+                })
+        });
+        let mut note = Note::new(content)
+            .with_type(NoteType::Raw)
+            .with_embedding(embedding)
+            .with_tags(tags);
+        if let Some(title) = title {
+            note = note.with_title(title);
+        }
+        Ok(self
+            .repo
+            .create_note_and_replace_entities(note, entities)
+            .await?)
+    }
+
     /// Reprocess edited manual-note content before replacing the persisted
     /// searchable record. Provider work happens first, so an embedding or
     /// extraction failure leaves the existing note and its mentions intact.
@@ -685,9 +740,37 @@ impl LibrarianAgent {
         title: Option<String>,
         tags: Option<Vec<String>>,
     ) -> Result<Note> {
+        self.update_manual_note_content_impl(existing, content, title, tags, false)
+            .await
+    }
+
+    pub async fn update_manual_note_content_guarded(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        self.update_manual_note_content_impl(existing, content, title, tags, true)
+            .await
+    }
+
+    async fn update_manual_note_content_impl(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+        guard_snapshot: bool,
+    ) -> Result<Note> {
         let id = existing.id.as_ref().ok_or_else(|| {
             crate::AgentError::Processing("cannot edit a note without an id".into())
         })?;
+        if self.repo.note_requires_detach(existing).await? {
+            return Err(crate::AgentError::Processing(
+                "refusing to edit a source-generated note in place; use --detach to create a manual copy".into(),
+            ));
+        }
         let embedding = self.embed_text(&content).await?;
         // A content change invalidates all prior mention evidence. When
         // extraction is explicitly skipped, persist the replacement note and
@@ -716,10 +799,22 @@ impl LibrarianAgent {
             replacement.tags = tags;
         }
         replacement.updated_at = chrono::Utc::now();
-        Ok(self
-            .repo
-            .update_note_and_replace_entities(&record_id_to_string(id), replacement, entities)
-            .await?)
+        if guard_snapshot {
+            Ok(self
+                .repo
+                .update_note_and_replace_entities_if_unchanged(
+                    &record_id_to_string(id),
+                    replacement,
+                    entities,
+                    existing,
+                )
+                .await?)
+        } else {
+            Ok(self
+                .repo
+                .update_note_and_replace_entities(&record_id_to_string(id), replacement, entities)
+                .await?)
+        }
     }
 
     /// Detach a source-generated note into a new manual note. The source id
@@ -733,6 +828,29 @@ impl LibrarianAgent {
         content: String,
         title: Option<String>,
         tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        self.detach_note_to_manual_impl(existing, content, title, tags, false)
+            .await
+    }
+
+    pub async fn detach_note_to_manual_guarded(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Note> {
+        self.detach_note_to_manual_impl(existing, content, title, tags, true)
+            .await
+    }
+
+    async fn detach_note_to_manual_impl(
+        &self,
+        existing: &Note,
+        content: String,
+        title: Option<String>,
+        tags: Option<Vec<String>>,
+        guard_snapshot: bool,
     ) -> Result<Note> {
         let embedding = self.embed_text(&content).await?;
         let entities = if self.runtime.skip_entity_extraction {
@@ -758,10 +876,17 @@ impl LibrarianAgent {
         if let Some(source_id) = existing.source_id.clone() {
             detached = detached.with_source(source_id);
         }
-        Ok(self
-            .repo
-            .create_note_and_replace_entities(detached, entities)
-            .await?)
+        if guard_snapshot {
+            Ok(self
+                .repo
+                .create_note_and_replace_entities_if_unchanged(detached, entities, existing)
+                .await?)
+        } else {
+            Ok(self
+                .repo
+                .create_note_and_replace_entities(detached, entities)
+                .await?)
+        }
     }
 
     /// Ingest from a markdown file
@@ -1878,6 +2003,7 @@ impl LibrarianAgent {
         content: &str,
         source_id: Option<RecordId>,
         source_generation: Option<u64>,
+        chat_conversation: Option<&RecordId>,
     ) -> Result<Vec<Note>> {
         // Split by paragraphs and apply the resolved size limits. Long
         // paragraphs are bounded by characters to keep embedding requests
@@ -1902,7 +2028,11 @@ impl LibrarianAgent {
                 note = note.with_source_generation(generation);
             }
 
-            let note = self.repo.create_note(note).await?;
+            let note = if let Some(conversation_id) = chat_conversation {
+                self.repo.create_chat_note(note, conversation_id).await?
+            } else {
+                self.repo.create_note(note).await?
+            };
             return Ok(vec![note]);
         }
 
@@ -1923,7 +2053,11 @@ impl LibrarianAgent {
                 note = note.with_source_generation(generation);
             }
 
-            let note = self.repo.create_note(note).await?;
+            let note = if let Some(conversation_id) = chat_conversation {
+                self.repo.create_chat_note(note, conversation_id).await?
+            } else {
+                self.repo.create_note(note).await?
+            };
             notes.push(note);
         }
 
@@ -1945,7 +2079,7 @@ impl LibrarianAgent {
     ) -> Result<Vec<Note>> {
         let Some(source_id) = source_id else {
             return self
-                .chunk_and_create_notes(content, None, source_generation)
+                .chunk_and_create_notes(content, None, source_generation, None)
                 .await;
         };
         let chunker = MarkdownChunker::new(ChunkingConfig {
@@ -2385,13 +2519,16 @@ impl LibrarianAgent {
                 if qa.pairs.is_empty() {
                     let markdown = conversation.to_markdown();
                     let fallback_notes = self
-                        .chunk_and_create_notes(&markdown, source_id, None)
+                        .chunk_and_create_notes(
+                            &markdown,
+                            source_id,
+                            None,
+                            Some(&conversation_record_id),
+                        )
                         .await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
-                    outcome.note_conversation_links_created += self
-                        .link_notes_to_conversation(&fallback_notes, &conversation_record_id)
-                        .await?;
+                    outcome.note_conversation_links_created += fallback_notes.len();
                 } else {
                     let stats = self
                         .create_qa_notes(
@@ -2413,13 +2550,16 @@ impl LibrarianAgent {
                 if conversation.messages.is_empty() {
                     let markdown = conversation.to_markdown();
                     let fallback_notes = self
-                        .chunk_and_create_notes(&markdown, source_id, None)
+                        .chunk_and_create_notes(
+                            &markdown,
+                            source_id,
+                            None,
+                            Some(&conversation_record_id),
+                        )
                         .await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
-                    outcome.note_conversation_links_created += self
-                        .link_notes_to_conversation(&fallback_notes, &conversation_record_id)
-                        .await?;
+                    outcome.note_conversation_links_created += fallback_notes.len();
                 } else {
                     let selection: Vec<usize> = (0..conversation.messages.len()).collect();
                     let stats = self
@@ -2492,13 +2632,16 @@ impl LibrarianAgent {
                 if outcome.notes_from_qa == 0 && outcome.notes_from_messages == 0 {
                     let markdown = conversation.to_markdown();
                     let fallback_notes = self
-                        .chunk_and_create_notes(&markdown, source_id, None)
+                        .chunk_and_create_notes(
+                            &markdown,
+                            source_id,
+                            None,
+                            Some(&conversation_record_id),
+                        )
                         .await?;
                     outcome.notes_created += fallback_notes.len();
                     outcome.notes_from_fallback += fallback_notes.len();
-                    outcome.note_conversation_links_created += self
-                        .link_notes_to_conversation(&fallback_notes, &conversation_record_id)
-                        .await?;
+                    outcome.note_conversation_links_created += fallback_notes.len();
                 }
             }
         }
@@ -2558,17 +2701,20 @@ impl LibrarianAgent {
                 note = note.with_source(sid.clone());
             }
 
-            let note = self.repo.create_note(note).await?;
+            let note = self
+                .repo
+                .create_chat_note(note, conversation_record_id)
+                .await?;
 
+            // Ownership commits with the note before any best-effort provider
+            // work, so interruption cannot expose a writable imported note.
             // Extract and link entities (best effort)
             if let Err(e) = self.extract_and_link_entities(&note).await {
                 debug!("Entity extraction failed (non-fatal): {}", e);
             }
 
             stats.notes_created += 1;
-            stats.note_conversation_links_created += self
-                .link_note_to_conversation(&note, conversation_record_id)
-                .await?;
+            stats.note_conversation_links_created += 1;
 
             if let Some(message_id) = message_record_ids.get(qa_pairs[idx].human_idx) {
                 stats.note_message_links_created +=
@@ -2606,7 +2752,10 @@ impl LibrarianAgent {
             note = note.with_source(sid);
         }
 
-        let note = self.repo.create_note(note).await?;
+        let note = self
+            .repo
+            .create_chat_note(note, conversation_record_id)
+            .await?;
         if let Err(e) = self.extract_and_link_entities(&note).await {
             debug!("Entity extraction failed (non-fatal): {}", e);
         }
@@ -2615,9 +2764,7 @@ impl LibrarianAgent {
             notes_created: 1,
             ..Default::default()
         };
-        stats.note_conversation_links_created += self
-            .link_note_to_conversation(&note, conversation_record_id)
-            .await?;
+        stats.note_conversation_links_created += 1;
 
         Ok(stats)
     }
@@ -2712,14 +2859,15 @@ impl LibrarianAgent {
                 note = note.with_source(sid.clone());
             }
 
-            let note = self.repo.create_note(note).await?;
+            let note = self
+                .repo
+                .create_chat_note(note, conversation_record_id)
+                .await?;
             if let Err(e) = self.extract_and_link_entities(&note).await {
                 debug!("Entity extraction failed (non-fatal): {}", e);
             }
             stats.notes_created += 1;
-            stats.note_conversation_links_created += self
-                .link_note_to_conversation(&note, conversation_record_id)
-                .await?;
+            stats.note_conversation_links_created += 1;
             if let Some(message_id) = message_record_ids.get(message_idx) {
                 stats.note_message_links_created +=
                     self.link_note_to_message(&note, message_id).await?;
@@ -2727,35 +2875,6 @@ impl LibrarianAgent {
         }
 
         Ok(stats)
-    }
-
-    async fn link_notes_to_conversation(
-        &self,
-        notes: &[Note],
-        conversation_record_id: &surrealdb::types::RecordId,
-    ) -> Result<usize> {
-        let mut created = 0usize;
-        for note in notes {
-            created += self
-                .link_note_to_conversation(note, conversation_record_id)
-                .await?;
-        }
-        Ok(created)
-    }
-
-    async fn link_note_to_conversation(
-        &self,
-        note: &Note,
-        conversation_record_id: &surrealdb::types::RecordId,
-    ) -> Result<usize> {
-        if let Some(note_id) = &note.id {
-            let linked = self
-                .repo
-                .link_note_to_conversation(note_id, conversation_record_id)
-                .await?;
-            return Ok(if linked { 1 } else { 0 });
-        }
-        Ok(0)
     }
 
     async fn link_note_to_message(
@@ -5092,6 +5211,190 @@ mod tests {
             .unwrap();
         assert!(!imported.notes.is_empty());
         assert!(imported.notes.iter().all(|note| note.split_fenced_code));
+    }
+
+    #[tokio::test]
+    async fn interrupted_chat_import_keeps_visible_notes_source_owned_before_extraction() {
+        struct BlockingChatExtractor {
+            started: Arc<tokio::sync::Notify>,
+        }
+        #[async_trait::async_trait]
+        impl crate::EntityExtractor for BlockingChatExtractor {
+            async fn extract(&self, _text: &str) -> crate::Result<EntityExtraction> {
+                self.started.notify_one();
+                std::future::pending().await
+            }
+            async fn health(&self) -> crate::Result<bool> {
+                Ok(true)
+            }
+            fn capabilities(&self) -> InferenceCapabilities {
+                crate::EntityExtractor::capabilities(&FixtureEntityExtractor::default())
+            }
+        }
+        for (case, mode) in [
+            ("summary", super::ChatImportMode::Qa),
+            ("qa", super::ChatImportMode::Qa),
+            ("message", super::ChatImportMode::Message),
+            ("hybrid", super::ChatImportMode::Hybrid),
+        ] {
+            let repo = Repository::new(init_memory().await.unwrap());
+            let started = Arc::new(tokio::sync::Notify::new());
+            let librarian = LibrarianAgent::new(
+                repo.clone(),
+                Arc::new(DeterministicEmbedder::default()),
+                Arc::new(BlockingChatExtractor {
+                    started: started.clone(),
+                }),
+            );
+            let messages = if case == "summary" {
+                serde_json::json!([])
+            } else {
+                serde_json::json!([
+                    {"sender":"human", "text":"How should the imported Atlas project be used daily?"},
+                    {"sender":"assistant", "text":"The Atlas project should keep source content immutable and support explicit manual copies."}
+                ])
+            };
+            let export = graphrag_core::ChatExport::from_json(
+                &serde_json::json!([{
+                    "uuid": format!("interrupted-{case}"), "name":"Interrupted ownership",
+                    "summary": if case == "summary" { "Imported summary owned before extraction." } else { "" },
+                    "created_at":"2026-01-01T00:00:00Z", "updated_at":"2026-01-01T00:00:00Z",
+                    "chat_messages":messages
+                }]).to_string(),
+            ).unwrap();
+            let import =
+                tokio::spawn(async move { librarian.ingest_chat_export(export, None, mode).await });
+            tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+                .await
+                .expect("chat extraction should reach its controlled interruption");
+            let notes = repo.list_notes(10).await.unwrap();
+            assert_eq!(notes.len(), 1, "{case}");
+            let opening = repo
+                .get_visible_note(&record_id_to_string(&notes[0].id))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(repo.note_requires_detach(&opening).await.unwrap(), "{case}");
+            let manual_editor = LibrarianAgent::new(
+                repo.clone(),
+                Arc::new(DeterministicEmbedder::default().fail_next_requests(1, "must not embed")),
+                Arc::new(FixtureEntityExtractor::default()),
+            );
+            let error = manual_editor
+                .update_manual_note_content_guarded(
+                    &opening,
+                    "Concurrent editor must not overwrite import".into(),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("refusing to edit"),
+                "{case}: {error}"
+            );
+            import.abort();
+            assert!(import.await.unwrap_err().is_cancelled());
+            let retained = repo
+                .get_visible_note(&record_id_to_string(&notes[0].id))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retained.content, opening.content);
+            assert!(
+                repo.note_requires_detach(&retained).await.unwrap(),
+                "{case}"
+            );
+            let detached = LibrarianAgent::new(
+                repo.clone(),
+                Arc::new(DeterministicEmbedder::default()),
+                Arc::new(FixtureEntityExtractor::default()),
+            )
+            .detach_note_to_manual_guarded(
+                &retained,
+                "Explicit detached copy after interrupted import".into(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(!repo.note_requires_detach(&detached).await.unwrap());
+            assert_eq!(detached.source_id, retained.source_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_content_apis_reject_imported_ownership_before_embedding() {
+        for guarded in [false, true] {
+            for chat in [false, true] {
+                let repo = Repository::new(init_memory().await.unwrap());
+                let source = repo
+                    .create_source(Source::chat_export("Imported chat", None))
+                    .await
+                    .unwrap();
+                let mut imported = Note::new("Imported body")
+                    .with_source(source.id.unwrap())
+                    .with_tags(vec!["chat-export".into()]);
+                if !chat {
+                    imported = imported.with_source_generation(0);
+                }
+                let imported = repo.create_note(imported).await.unwrap();
+                if chat {
+                    repo.link_note_to_conversation(
+                        imported.id.as_ref().unwrap(),
+                        &surrealdb::types::RecordId::new("conversation", "missing"),
+                    )
+                    .await
+                    .unwrap();
+                }
+                let embedder = DeterministicEmbedder::default()
+                    .fail_next_requests(1, "first embedding request");
+                let librarian = LibrarianAgent::new(
+                    repo.clone(),
+                    Arc::new(embedder),
+                    Arc::new(FixtureEntityExtractor::default()),
+                );
+                let error = if guarded {
+                    librarian
+                        .update_manual_note_content_guarded(
+                            &imported,
+                            "Must not replace imported body".into(),
+                            None,
+                            None,
+                        )
+                        .await
+                        .unwrap_err()
+                } else {
+                    librarian
+                        .update_manual_note_content(
+                            &imported,
+                            "Must not replace imported body".into(),
+                            None,
+                            None,
+                        )
+                        .await
+                        .unwrap_err()
+                };
+                assert!(error.to_string().contains("refusing to edit"), "{error}");
+                let stored = repo
+                    .get_note(&record_id_to_string(imported.id.as_ref().unwrap()))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(stored.content, imported.content);
+                let manual = repo.create_note(Note::new("Manual body")).await.unwrap();
+                // The first provider failure is still pending: refusal above
+                // must not consume an embedding request.
+                let error = librarian
+                    .update_manual_note_content(&manual, "Manual replacement".into(), None, None)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    error.to_string().contains("first embedding request"),
+                    "{error}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

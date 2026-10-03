@@ -16,6 +16,9 @@ pub enum DbError {
     #[error("Query failed: {0}")]
     QueryFailed(String),
 
+    #[error("Note {0} changed or became unavailable while the editor was open. Inspect the current note before applying the retained draft.")]
+    NoteRevisionConflict(String),
+
     #[error("Schema initialization failed: {0}")]
     SchemaInit(String),
 

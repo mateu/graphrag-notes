@@ -67,6 +67,14 @@ this candidate. Linux and Intel macOS release validation follows in
 [#66](https://github.com/mateu/graphrag-notes/issues/66); broader stable binary
 releases follow later.
 
+For day-to-day use, [capture and revise notes in an editor, then reuse clean
+prompt context](docs/capture-context.md). The latest source build adds:
+
+```bash
+graphrag capture --editor
+graphrag augment "Atlas launch plan" --raw > atlas-context.txt
+```
+
 ## Architecture
 
 For daily Markdown use, [register a folder and sync explicitly](docs/folder-sync.md).

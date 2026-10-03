@@ -135,6 +135,12 @@ pub(crate) enum Commands {
         command: NotesCommand,
     },
 
+    /// Capture multiline text or a blocking editor draft with recoverable failures.
+    Capture {
+        #[command(flatten)]
+        args: crate::commands::capture::CaptureArgs,
+    },
+
     /// Add a new note
     Add {
         /// Note content (reads from stdin if not provided)
@@ -303,6 +309,10 @@ pub(crate) enum Commands {
         /// Accepted-edge graph retrieval policy
         #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
         graph: GraphModeArg,
+
+        /// Print only packed prompt context and citations for redirection.
+        #[arg(long, conflicts_with = "format")]
+        raw: bool,
 
         /// Render results for people, JSON consumers, or JSONL pipelines.
         #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
@@ -825,5 +835,5 @@ pub(crate) fn notes_edit_requires_inference(command: &NotesCommand) -> bool {
             ..
         } | NotesCommand::Edit { stdin: true, .. }
             | NotesCommand::Edit { detach: true, .. }
-    )
+    ) || matches!(command, NotesCommand::Edit { editor, .. } if editor.editor)
 }

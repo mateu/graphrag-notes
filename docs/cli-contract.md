@@ -48,6 +48,16 @@ changes plus `--content-file PATH` or explicit `--stdin`; changing content
 re-embeds and re-extracts before replacing the persisted note. A provider
 failure therefore leaves the old searchable note untouched.
 
+`notes edit ID --editor` uses a persistent private draft and a blocking argv
+editor. Unchanged or cancelled sessions never change content, metadata, or
+ownership. Changed editor sessions compare the opening note snapshot inside
+the final write transaction; concurrent changes exit 2 and retain the draft.
+`capture` adds multiline stdin and editor capture with versioned JSON/JSONL
+output. `augment --raw` emits only packed prompt context and citations; explain
+diagnostics go to stderr, and explicit `--format` is incompatible. See
+[capture and context reuse](capture-context.md) for commands, editor arguments,
+recovery paths, and the additive schema-version-1 output fields.
+
 Source-generated notes cannot be edited in place. `notes edit ID --detach`
 creates a new manual note; it retains the original `source_id` as provenance
 but has no source generation, so reimport cannot overwrite it.

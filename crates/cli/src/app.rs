@@ -36,6 +36,7 @@ pub(crate) struct AppContext {
     pub(crate) librarian_config: LibrarianRuntimeConfig,
     pub(crate) cancellation_requested: Option<Arc<AtomicBool>>,
     pub(crate) prepared_notes_edit: Option<commands::notes::PreparedEdit>,
+    pub(crate) prepared_capture: Option<commands::capture::PreparedCapture>,
 }
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
@@ -268,6 +269,7 @@ fn provider_requirements(
         || matches!(
             command,
             Commands::Add { .. }
+                | Commands::Capture { .. }
                 | Commands::Import { .. }
                 | Commands::Sources {
                     command: SourcesCommand::Reimport { .. },
@@ -282,6 +284,7 @@ fn provider_requirements(
         || matches!(
             command,
             Commands::Add { .. }
+                | Commands::Capture { .. }
                 | Commands::Import { .. }
                 | Commands::Sources {
                     command: SourcesCommand::Reimport { .. },
@@ -492,6 +495,12 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
             return output::ExitCode::Validation;
         }
         if cause
+            .downcast_ref::<commands::capture::CaptureValidationError>()
+            .is_some()
+        {
+            return output::ExitCode::Validation;
+        }
+        if cause
             .downcast_ref::<graphrag_config::ConfigError>()
             .is_some()
         {
@@ -503,6 +512,7 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
         }
         if let Some(error) = cause.downcast_ref::<graphrag_db::DbError>() {
             return match error {
+                graphrag_db::DbError::NoteRevisionConflict(_) => output::ExitCode::Validation,
                 graphrag_db::DbError::NotFound(_, _) => output::ExitCode::NotFound,
                 graphrag_db::DbError::EmbeddingCompatibility { .. }
                 | graphrag_db::DbError::LegacyEmbeddingMetadata { .. } => {
@@ -513,6 +523,9 @@ pub(crate) fn exit_code_for(error: &anyhow::Error) -> output::ExitCode {
         }
         if let Some(error) = cause.downcast_ref::<graphrag_agents::AgentError>() {
             return match error {
+                graphrag_agents::AgentError::Database(
+                    graphrag_db::DbError::NoteRevisionConflict(_),
+                ) => output::ExitCode::Validation,
                 graphrag_agents::AgentError::NotFound(_) => output::ExitCode::NotFound,
                 graphrag_agents::AgentError::Database(graphrag_db::DbError::NotFound(_, _)) => {
                     output::ExitCode::NotFound
@@ -716,6 +729,43 @@ pub(crate) async fn run() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
+    let recoverable_command = match &cli.command {
+        Commands::Capture { .. } => true,
+        Commands::Notes {
+            command:
+                commands::notes::NotesCommand::Edit {
+                    editor,
+                    content_file,
+                    stdin,
+                    ..
+                },
+        } => editor.editor || content_file.is_some() || *stdin,
+        _ => false,
+    };
+    if cli.memory && recoverable_command {
+        return Err(commands::capture::CaptureValidationError(
+            "recoverable capture and note content/editor edits require a persistent database; remove --memory".into(),
+        ).into());
+    }
+
+    // Capture input and durable editor drafts before database/provider startup.
+    // An unchanged or cancelled new-note editor never opens the corpus.
+    let selected_config = commands::navigation::selected_config_path(cli.config.as_deref());
+    let mut prepared_capture = match &cli.command {
+        Commands::Capture { args } => Some(commands::capture::prepare(
+            args,
+            selected_config.as_deref(),
+            &config.database.path,
+        )?),
+        _ => None,
+    };
+    if let (Some(prepared), Commands::Capture { args }) = (prepared_capture.as_mut(), &cli.command)
+    {
+        if prepared.outcome != commands::editor::EditorOutcome::Changed {
+            return commands::capture::print_noop(prepared, args.format);
+        }
+    }
+
     // Initialize database
     if let Commands::ResetDb { db_path } = &cli.command {
         let path = db_path
@@ -762,10 +812,25 @@ pub(crate) async fn run() -> Result<()> {
     let repo = Repository::new(db);
     // Resolve local notes-edit validation before provider health checks so an
     // offline service cannot mask a deterministic validation/not-found error.
-    let prepared_notes_edit = match &cli.command {
-        Commands::Notes { command } => commands::notes::prepare_edit(&repo, command).await?,
+    let mut prepared_notes_edit = match &cli.command {
+        Commands::Notes { command } => {
+            commands::notes::prepare_edit(
+                &repo,
+                command,
+                selected_config.as_deref(),
+                &config.database.path,
+            )
+            .await?
+        }
         _ => None,
     };
+    if let (Some(prepared), Commands::Notes { command }) =
+        (prepared_notes_edit.as_mut(), &cli.command)
+    {
+        if commands::notes::print_editor_noop(prepared, command)? {
+            return Ok(());
+        }
+    }
     let providers = InferenceProviders::from_config(&inference_config);
     let processing = processing_config(&config, cli.concurrency, cli.retry_attempts, cli.no_cache)?;
     let extraction_processing =
@@ -785,7 +850,16 @@ pub(crate) async fn run() -> Result<()> {
     ));
 
     // Check inference services only when needed.
-    let requirements = provider_requirements(&cli.command, cli.explain, &config, skip_extraction);
+    let mut requirements =
+        provider_requirements(&cli.command, cli.explain, &config, skip_extraction);
+    if let (Some(prepared), Commands::Notes { command }) = (&prepared_notes_edit, &cli.command) {
+        if !prepared.needs_inference(command) {
+            requirements = ProviderRequirements {
+                embedder: false,
+                extractor: false,
+            };
+        }
+    }
     let keyword_recovery = crate::search_recovery::keyword_command(&cli, &config);
 
     if requirements.embedder {
@@ -837,6 +911,7 @@ pub(crate) async fn run() -> Result<()> {
             librarian_config,
             cancellation_requested,
             prepared_notes_edit,
+            prepared_capture: prepared_capture.take(),
         },
         cli.command,
         cli.explain,
@@ -1218,6 +1293,7 @@ mod tests {
             title: Some("Retitled".into()),
             content_file: None,
             stdin: false,
+            editor: Default::default(),
             tags: None,
             detach: false,
             format: output::OutputFormat::Human,
@@ -1229,6 +1305,7 @@ mod tests {
             title: None,
             content_file: Some(PathBuf::from("replacement.md")),
             stdin: false,
+            editor: Default::default(),
             tags: None,
             detach: false,
             format: output::OutputFormat::Human,
@@ -1240,6 +1317,7 @@ mod tests {
             title: None,
             content_file: None,
             stdin: false,
+            editor: Default::default(),
             tags: None,
             detach: true,
             format: output::OutputFormat::Human,
@@ -1265,6 +1343,7 @@ mod tests {
                 title: Some("renamed".into()),
                 content_file: None,
                 stdin: false,
+                editor: Default::default(),
                 tags: None,
                 detach: false,
                 format: output::OutputFormat::Human,
@@ -1447,6 +1526,17 @@ mod tests {
             "note:missing".into(),
         ));
         assert_eq!(exit_code_for(&not_found), output::ExitCode::NotFound);
+
+        for conflict in [
+            anyhow::Error::new(graphrag_db::DbError::NoteRevisionConflict(
+                "note:stale".into(),
+            )),
+            anyhow::Error::new(graphrag_agents::AgentError::Database(
+                graphrag_db::DbError::NoteRevisionConflict("note:stale".into()),
+            )),
+        ] {
+            assert_eq!(exit_code_for(&conflict), output::ExitCode::Validation);
+        }
 
         let compatibility =
             anyhow::Error::new(graphrag_db::DbError::LegacyEmbeddingMetadata { vector_records: 1 });
