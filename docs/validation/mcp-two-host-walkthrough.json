@@ -5149,5 +5149,3828 @@
     "historical_observed_checkpoint": true,
     "subsequent_source_changes_require_separate_acceptance_attribution": true,
     "github_review_approval_claimed": false
-  }
+  },
+  "post_queue_restore_checkpoint": {
+    "observed_date": "2026-10-03",
+    "status": "Completed observed queue scheduling and fresh-restore checkpoint with three actual conversational clients",
+    "historical_observed_checkpoint": true,
+    "subsequent_source_changes_require_separate_acceptance_attribution": true,
+    "rust_source_commit": "24b2d0c095c7b5c3158e8ce954cdd8e7cb6eef19",
+    "binary_sha256": "60d349c33df481e16fd747ccdf77341f5deb887c7657c585710eba17d483f35f",
+    "binary_hash_independently_checked": true,
+    "report_worktree_production_crates_and_cargo_match_tested_source": true,
+    "report_worktree_scripts_identical_to_previously_tested_harness": true,
+    "earlier_source_runtime_attribution_preserved": true,
+    "fresh_vector_restored_corpus": true,
+    "runtime_scope": "Private foreground-managed acceptance run; permanent installation, personal profile changes and final runtime cleanup are separate operator follow-up",
+    "reported_rust_gate": {
+      "passed": 721,
+      "failed": 0,
+      "ignored": 5,
+      "targets": 33,
+      "nonempty_targets": 26
+    },
+    "reported_workspace_checks": {
+      "workspace_clippy": "passed",
+      "format": "passed",
+      "build": "passed",
+      "workspace_tests": "passed"
+    },
+    "focused_regressions": {
+      "database_remote_jobs_passed": 26,
+      "service_upload_http_passed": 4,
+      "independent_codex_source_review": "No actionable findings in a58f497 and24b2d0c after resolving mixed-history total precedence and tied-legacy resume fencing",
+      "covered_cases": [
+        "Claim holds source ownership before generation and through terminal settlement",
+        "Queued versions follow total legacy/numbered precedence without clock rollback cycles",
+        "Running cancellation holds the source until terminalization",
+        "Failed older resume cannot enter underneath a newer running owner",
+        "Over100 blocked updates do not hide eligible unrelated document heads",
+        "Malformed input quarantine advances to the next eligible head",
+        "Principal-scoped source URIs preserve isolation"
+      ],
+      "http_fixture_scope": "Two-worker HTTP service with a synthetic gate provider proves an unrelated document completes while first-source provider work remains held"
+    },
+    "queue_rpc_orchestration": {
+      "orchestration": "direct host-side authenticated MCP RPC with real shiva inference; no conversational upload/cancel/resume claimed",
+      "source_commit": "24b2d0c095c7b5c3158e8ce954cdd8e7cb6eef19",
+      "binary_sha256": "60d349c33df481e16fd747ccdf77341f5deb887c7657c585710eba17d483f35f",
+      "attempt": "002; original completed attempt retained in queue-reviewed-wrapper-failure.json",
+      "manual_resume_calls": 0,
+      "first_request": {
+        "request_id": "queue-reviewed-first-002",
+        "document_key": "queue-reviewed-document-002",
+        "content": "# First version\n\nqueuefirstretry002 The fictional Orion Workshop meets Monday at 10:00.\n",
+        "title": "/Projects/serialized",
+        "extract_entities": false,
+        "provenance": {
+          "label": "synthetic same-document queue acceptance retry"
+        }
+      },
+      "second_request": {
+        "request_id": "queue-reviewed-second-002",
+        "document_key": "queue-reviewed-document-002",
+        "content": "# Second version\n\nqueuesecondretry002 The fictional Orion Workshop now meets Tuesday at 11:00.\n",
+        "title": "/Projects/serialized",
+        "extract_entities": false,
+        "provenance": {
+          "label": "synthetic same-document queue acceptance retry"
+        }
+      },
+      "independent_request": {
+        "request_id": "queue-reviewed-independent-002",
+        "document_key": "queue-reviewed-unrelated-002",
+        "content": "# Independent document\n\nqueueindependentretry002 Nova organizes the fictional Birch Symposium on Wednesday.\n",
+        "title": "Independent queue document",
+        "extract_entities": false,
+        "provenance": {
+          "label": "synthetic same-document queue acceptance retry"
+        }
+      },
+      "admissions": [
+        {
+          "data": {
+            "job_id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+            "replayed": false,
+            "request_id": "queue-reviewed-first-002",
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "replayed": false,
+            "request_id": "queue-reviewed-second-002",
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+            "replayed": false,
+            "request_id": "queue-reviewed-independent-002",
+            "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+            "source_uri": "mcp://upload/bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "first_running": {
+        "data": {
+          "cancellation_requested": false,
+          "checkpoint": null,
+          "completed": 0,
+          "created_at": "2026-10-03T18:38:56.598349+00:00",
+          "error_code": null,
+          "failed": 0,
+          "generation": 1,
+          "id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+          "instance_id": "openclaw-clawd",
+          "job_type": "remote_upload",
+          "phase": "preparing",
+          "result": null,
+          "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+          "status": "running",
+          "total": 0,
+          "updated_at": "2026-10-03T18:38:56.647776+00:00"
+        },
+        "error": null,
+        "schema_version": 1
+      },
+      "second_queued_samples": [
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 0,
+            "created_at": "2026-10-03T18:38:56.718779+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": null,
+            "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "admitted",
+            "result": null,
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "queued",
+            "total": 0,
+            "updated_at": "2026-10-03T18:38:56.718779+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 0,
+            "created_at": "2026-10-03T18:38:56.718779+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": null,
+            "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "admitted",
+            "result": null,
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "queued",
+            "total": 0,
+            "updated_at": "2026-10-03T18:38:56.718779+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 0,
+            "created_at": "2026-10-03T18:38:56.718779+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": null,
+            "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "admitted",
+            "result": null,
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "queued",
+            "total": 0,
+            "updated_at": "2026-10-03T18:38:56.718779+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 0,
+            "created_at": "2026-10-03T18:38:56.718779+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": null,
+            "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "admitted",
+            "result": null,
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "queued",
+            "total": 0,
+            "updated_at": "2026-10-03T18:38:56.718779+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 0,
+            "created_at": "2026-10-03T18:38:56.718779+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": null,
+            "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "admitted",
+            "result": null,
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "queued",
+            "total": 0,
+            "updated_at": "2026-10-03T18:38:56.718779+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "unrelated_running_during_pause": {
+        "data": {
+          "cancellation_requested": false,
+          "checkpoint": null,
+          "completed": 0,
+          "created_at": "2026-10-03T18:38:56.723895+00:00",
+          "error_code": null,
+          "failed": 0,
+          "generation": 1,
+          "id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+          "instance_id": "openclaw-clawd",
+          "job_type": "remote_upload",
+          "phase": "preparing",
+          "result": null,
+          "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+          "status": "running",
+          "total": 0,
+          "updated_at": "2026-10-03T18:38:56.755727+00:00"
+        },
+        "error": null,
+        "schema_version": 1
+      },
+      "pause_markers": {
+        "first": {
+          "path": "/api/embeddings",
+          "at": 1791052736.658771,
+          "proxy_request_id": "795f8ca5-4175-4a21-8b11-67499cb2a2af"
+        },
+        "independent": {
+          "path": "/api/embeddings",
+          "at": 1791052736.766279,
+          "proxy_request_id": "08fe9dca-4ee9-4d47-bd5f-99a989f8db2d"
+        }
+      },
+      "completed": [
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:38:56.598349+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:f23f1bc1dfa1de246ddef63efa16852d8b52d41102bfb31d7cc9e03791e59577"
+              ],
+              "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+            },
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:38:57.956290+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:38:56.718779+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 2,
+            "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "updated",
+              "extracted": false,
+              "generation": 2,
+              "note_ids": [
+                "note:0e07f4869e285d10e0edc0dbaea80030e12273abe265e6d5ba77a4e79f3f9749"
+              ],
+              "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+            },
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:38:58.057169+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:38:56.723895+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:3bb743bd9a9bac8eb445f810d5c1829cc290421ec110663d9404423c326a7e21"
+              ],
+              "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+              "source_uri": "mcp://upload/bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e"
+            },
+            "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:38:57.973768+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "current_source": {
+        "data": {
+          "content": "# Second version\n\nqueuesecondretry002 The fictional Orion Workshop now meets Tuesday at 11:00.\n",
+          "content_hash": "sha256:c8b4404c468125234b02e382d494f6f8852a8741a495c620ae9371abb8bdde8f",
+          "document_key": "queue-reviewed-document-002",
+          "generation": 2,
+          "id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+          "instance_id": "openclaw-clawd",
+          "provenance": {
+            "label": "synthetic same-document queue acceptance retry",
+            "metadata": {},
+            "uri": null
+          },
+          "revision": "b1571d18a48f258527f0c33ebf0bd7f24969d580fcf5d039f0f00d24de10bc47",
+          "status": "ready",
+          "successful_generation": 2,
+          "title": "/Projects/serialized",
+          "uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+        },
+        "error": null,
+        "schema_version": 1
+      },
+      "admission_replays": [
+        {
+          "data": {
+            "job_id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+            "replayed": true,
+            "request_id": "queue-reviewed-first-002",
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "replayed": true,
+            "request_id": "queue-reviewed-second-002",
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+            "replayed": true,
+            "request_id": "queue-reviewed-independent-002",
+            "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+            "source_uri": "mcp://upload/bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "full_admission_replay_preserved": true
+    },
+    "provider_pause": {
+      "scope": "private inference forwarder only",
+      "released": true,
+      "pause_file_absent_after_acceptance": true
+    },
+    "gate_timing_scope": {
+      "proxy_auto_release_seconds": 150,
+      "maximum_marker_age_at_queued_sample_seconds": 0.964418888092041,
+      "both_markers_observed_with_gate_present": true,
+      "queued_samples": [
+        {
+          "sample_at": 1791052736.782572,
+          "marker_ages_seconds": {
+            "first": 0.12380099296569824,
+            "independent": 0.016293048858642578
+          },
+          "seconds_before_controlled_release": 1.0458359718322754,
+          "status": "queued",
+          "generation": null
+        },
+        {
+          "sample_at": 1791052736.9934669,
+          "marker_ages_seconds": {
+            "first": 0.33469581604003906,
+            "independent": 0.2271878719329834
+          },
+          "seconds_before_controlled_release": 0.8349411487579346,
+          "status": "queued",
+          "generation": null
+        },
+        {
+          "sample_at": 1791052737.2057369,
+          "marker_ages_seconds": {
+            "first": 0.5469658374786377,
+            "independent": 0.43945789337158203
+          },
+          "seconds_before_controlled_release": 0.6226711273193359,
+          "status": "queued",
+          "generation": null
+        },
+        {
+          "sample_at": 1791052737.414421,
+          "marker_ages_seconds": {
+            "first": 0.7556500434875488,
+            "independent": 0.6481420993804932
+          },
+          "seconds_before_controlled_release": 0.4139869213104248,
+          "status": "queued",
+          "generation": null
+        },
+        {
+          "sample_at": 1791052737.62319,
+          "marker_ages_seconds": {
+            "first": 0.964418888092041,
+            "independent": 0.8569109439849854
+          },
+          "seconds_before_controlled_release": 0.20521807670593262,
+          "status": "queued",
+          "generation": null
+        }
+      ],
+      "all_queued_samples_before_controlled_release": true,
+      "no_automatic_release_possible_during_queued_samples": true,
+      "gate_exists_individually_recorded_in_each_sample": false,
+      "scope_limit": "Gate presence was checked when both pause markers were obtained; each queued sample records its timestamp and envelope. No concurrent private pause controller was authorized or run. Proxy forwarded events are response-completion records; hold proof uses pause markers and ages well below the automatic release threshold."
+    },
+    "queue_host_inference_window": {
+      "source_commit": "24b2d0c095c7b5c3158e8ce954cdd8e7cb6eef19",
+      "binary_sha256": "60d349c33df481e16fd747ccdf77341f5deb887c7657c585710eba17d483f35f",
+      "started_at": 1791052736.5895302,
+      "finished_at": 1791052738.1577358,
+      "pause_markers": {
+        "first": {
+          "path": "/api/embeddings",
+          "at": 1791052736.658771,
+          "proxy_request_id": "795f8ca5-4175-4a21-8b11-67499cb2a2af"
+        },
+        "independent": {
+          "path": "/api/embeddings",
+          "at": 1791052736.766279,
+          "proxy_request_id": "08fe9dca-4ee9-4d47-bd5f-99a989f8db2d"
+        }
+      },
+      "pause_release": {
+        "before_unlink_at": 1791052737.828408,
+        "after_unlink_at": 1791052737.828529
+      },
+      "distinct_first_and_unrelated_real_embeddings_held": true,
+      "full_admission_replay_preserved": true,
+      "completion_generations": [
+        1,
+        2,
+        1
+      ],
+      "source_actor": "openclaw-clawd",
+      "manual_resume_calls": 0,
+      "pause_file_absent": true,
+      "inference_events": [
+        {
+          "proxy_request_id": "bf3e3513-0754-41ca-8590-8727d9a2049a",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052736.652684,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "bf3e3513-0754-41ca-8590-8727d9a2049a",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052736.6575942,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 3226
+        },
+        {
+          "proxy_request_id": "795f8ca5-4175-4a21-8b11-67499cb2a2af",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 124,
+          "at": 1791052736.6586711,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "ef01c603-810f-45fd-a96c-6d197434b14e",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052736.76083,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "ef01c603-810f-45fd-a96c-6d197434b14e",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052736.7651289,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 3226
+        },
+        {
+          "proxy_request_id": "08fe9dca-4ee9-4d47-bd5f-99a989f8db2d",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 144,
+          "at": 1791052736.7661061,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "795f8ca5-4175-4a21-8b11-67499cb2a2af",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 124,
+          "at": 1791052737.885609,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 20239
+        },
+        {
+          "proxy_request_id": "08fe9dca-4ee9-4d47-bd5f-99a989f8db2d",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 144,
+          "at": 1791052737.9014652,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 20245
+        },
+        {
+          "proxy_request_id": "ab395699-50f9-41a6-afed-7d28cc0b95f8",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052737.981791,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "ab395699-50f9-41a6-afed-7d28cc0b95f8",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052737.984834,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 3226
+        },
+        {
+          "proxy_request_id": "dd3ae00a-10f9-493d-9567-17750110cfd3",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 131,
+          "at": 1791052737.9866939,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "dd3ae00a-10f9-493d-9567-17750110cfd3",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 131,
+          "at": 1791052738.007977,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 20262
+        }
+      ]
+    },
+    "instrumentation_failure": {
+      "source_commit": "24b2d0c095c7b5c3158e8ce954cdd8e7cb6eef19",
+      "binary_sha256": "60d349c33df481e16fd747ccdf77341f5deb887c7657c585710eba17d483f35f",
+      "outcome": "three jobs completed; acceptance wrapper failed during final replay instrumentation before saving queued response envelopes",
+      "failure": "second-admission marker hook also fired on replay after pause removal",
+      "historical_queued_response_envelopes_saved": false,
+      "pause_file_absent": true,
+      "completed_current_statuses": [
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:35:06.596470+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:23ecf2f93f514463228fc196a9639bd618d2c9589073be18836255c7546599d3"
+              ],
+              "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+            },
+            "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:35:08.930545+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:35:06.758162+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 2,
+            "id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "updated",
+              "extracted": false,
+              "generation": 2,
+              "note_ids": [
+                "note:1042844736fab06350e687e23bf21fba10d6ce2a2f70158090c821ce8215a132"
+              ],
+              "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+            },
+            "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:35:09.020811+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:35:06.763570+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:25a954480e616f688786fa605f305ec83445e0807e452c9055ff2593dfcd68d9"
+              ],
+              "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+              "source_uri": "mcp://upload/4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c"
+            },
+            "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:35:08.928775+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "immutable_admission_replays": [
+        {
+          "data": {
+            "job_id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+            "replayed": true,
+            "request_id": "queue-reviewed-first-001",
+            "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+            "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+            "replayed": true,
+            "request_id": "queue-reviewed-second-001",
+            "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+            "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+            "replayed": true,
+            "request_id": "queue-reviewed-independent-001",
+            "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+            "source_uri": "mcp://upload/4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "owner_listing": {
+        "data": {
+          "jobs": [
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:35:06.758162+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 2,
+              "id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "updated",
+                "extracted": false,
+                "generation": 2,
+                "note_ids": [
+                  "note:1042844736fab06350e687e23bf21fba10d6ce2a2f70158090c821ce8215a132"
+                ],
+                "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+                "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+              },
+              "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:35:09.020811+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:35:06.596470+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:23ecf2f93f514463228fc196a9639bd618d2c9589073be18836255c7546599d3"
+                ],
+                "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+                "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+              },
+              "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:35:08.930545+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:35:06.763570+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:25a954480e616f688786fa605f305ec83445e0807e452c9055ff2593dfcd68d9"
+                ],
+                "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+                "source_uri": "mcp://upload/4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c"
+              },
+              "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:35:08.928775+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:13:34.655448+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:5125df6f8394921b2bb749a4d8ffd7b22ac77ddfc4791f15e450d5c0867fadf3"
+                ],
+                "source_id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+                "source_uri": "mcp://upload/38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191"
+              },
+              "source_id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:13:35.620276+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T17:47:20.344033+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 2,
+              "id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "updated",
+                "extracted": false,
+                "generation": 2,
+                "note_ids": [
+                  "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb"
+                ],
+                "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+              },
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T17:47:20.652388+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+              "completed": 1,
+              "created_at": "2026-10-03T17:46:05.611764+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": true,
+                "generation": 1,
+                "note_ids": [
+                  "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724"
+                ],
+                "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+                "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+              },
+              "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T17:46:35.473421+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T17:43:59.981923+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742"
+                ],
+                "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+              },
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T17:45:41.267757+00:00"
+            }
+          ]
+        },
+        "error": null,
+        "schema_version": 1
+      },
+      "inference_events": [
+        {
+          "proxy_request_id": "ee24d51f-a6a6-4c45-9302-89073ce9743d",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052506.655564,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "ee24d51f-a6a6-4c45-9302-89073ce9743d",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052506.66541,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 3226
+        },
+        {
+          "proxy_request_id": "b0a91673-1fbd-45b9-aacd-d290edb8df74",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 121,
+          "at": 1791052506.6665978,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "e10750f3-b3b7-4494-b4a0-83d93f705b8d",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052506.871827,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "e10750f3-b3b7-4494-b4a0-83d93f705b8d",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052506.876896,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 3226
+        },
+        {
+          "proxy_request_id": "94f6a396-8063-415f-9752-e5bc5ba87611",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 136,
+          "at": 1791052506.878012,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "94f6a396-8063-415f-9752-e5bc5ba87611",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 136,
+          "at": 1791052508.8335428,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 20232
+        },
+        {
+          "proxy_request_id": "b0a91673-1fbd-45b9-aacd-d290edb8df74",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 121,
+          "at": 1791052508.845259,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 20217
+        },
+        {
+          "proxy_request_id": "d251995d-a351-4d68-8666-6d883e8f80ca",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052508.9424498,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "d251995d-a351-4d68-8666-6d883e8f80ca",
+          "host": "shiva",
+          "method": "GET",
+          "path": "/api/tags",
+          "model": null,
+          "request_bytes": 0,
+          "at": 1791052508.947979,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 3226
+        },
+        {
+          "proxy_request_id": "79374543-3027-434a-8368-a348a631ef74",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 128,
+          "at": 1791052508.950526,
+          "stage": "ingress"
+        },
+        {
+          "proxy_request_id": "79374543-3027-434a-8368-a348a631ef74",
+          "host": "shiva",
+          "method": "POST",
+          "path": "/api/embeddings",
+          "model": "bge-m3:latest",
+          "request_bytes": 128,
+          "at": 1791052508.97141,
+          "stage": "forwarded",
+          "response_status": 200,
+          "response_bytes": 20235
+        }
+      ]
+    },
+    "portable_maintenance": {
+      "attribution": "CLI create/verify/fresh vector restore followed by host-side authenticated MCP RPC; real clients then used the restored service",
+      "archive_operations": {
+        "create": {
+          "schema_version": 18,
+          "records": 69,
+          "record_counts": {
+            "entity": 14,
+            "graphrag_metadata": 1,
+            "mentions": 21,
+            "note": 10,
+            "processing_job": 10,
+            "remote_capture_receipt": 3,
+            "source": 10
+          },
+          "includes_embeddings": true,
+          "dry_run": false
+        },
+        "verify": {
+          "schema_version": 18,
+          "records": 69,
+          "record_counts": {
+            "entity": 14,
+            "graphrag_metadata": 1,
+            "mentions": 21,
+            "note": 10,
+            "processing_job": 10,
+            "remote_capture_receipt": 3,
+            "source": 10
+          },
+          "includes_embeddings": true,
+          "dry_run": false
+        },
+        "restore": {
+          "schema_version": 18,
+          "records": 69,
+          "record_counts": {
+            "entity": 14,
+            "graphrag_metadata": 1,
+            "mentions": 21,
+            "note": 10,
+            "processing_job": 10,
+            "remote_capture_receipt": 3,
+            "source": 10
+          },
+          "includes_embeddings": true,
+          "dry_run": false
+        }
+      },
+      "archive_records_sha256": "e9dc4332f0b9e3b6a4f8341b81e22508bdf4aaf9849e541467cd88e05b496bd4",
+      "archived_job_statuses": {
+        "completed": 10
+      },
+      "provider_identity": {
+        "source_commit": "24b2d0c095c7b5c3158e8ce954cdd8e7cb6eef19",
+        "binary_sha256": "60d349c33df481e16fd747ccdf77341f5deb887c7657c585710eba17d483f35f",
+        "records": 69,
+        "completed_jobs": 10,
+        "jobs_with_both_64_hex_endpoint_identities": [
+          {
+            "job_id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+            "endpoint_identities": {
+              "embedding": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256",
+              "extraction": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256"
+            },
+            "status": "completed"
+          },
+          {
+            "job_id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+            "endpoint_identities": {
+              "embedding": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256",
+              "extraction": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256"
+            },
+            "status": "completed"
+          },
+          {
+            "job_id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+            "endpoint_identities": {
+              "embedding": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256",
+              "extraction": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256"
+            },
+            "status": "completed"
+          },
+          {
+            "job_id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+            "endpoint_identities": {
+              "embedding": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256",
+              "extraction": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256"
+            },
+            "status": "completed"
+          },
+          {
+            "job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "endpoint_identities": {
+              "embedding": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256",
+              "extraction": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256"
+            },
+            "status": "completed"
+          },
+          {
+            "job_id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+            "endpoint_identities": {
+              "embedding": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256",
+              "extraction": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256"
+            },
+            "status": "completed"
+          },
+          {
+            "job_id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+            "endpoint_identities": {
+              "embedding": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256",
+              "extraction": "9a91eca425985fc36112ff458f570fcbb8e961fbf36aa1527d46d83b6d9fd256"
+            },
+            "status": "completed"
+          }
+        ],
+        "legacy_completed_jobs_without_identity_preserved": [
+          "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+          "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+          "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270"
+        ],
+        "raw_provider_urls_in_processing_options": false,
+        "raw_service_credentials_in_records": false,
+        "records_sha256": "e9dc4332f0b9e3b6a4f8341b81e22508bdf4aaf9849e541467cd88e05b496bd4"
+      },
+      "capture_replays": [
+        {
+          "data": {
+            "record": {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "created_at": "2026-10-03T17:43:21.595366+00:00",
+              "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-clawd",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                "start_line": null
+              },
+              "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+              "tags": [
+                "walkthrough"
+              ],
+              "title": "Atlas launch",
+              "updated_at": "2026-10-03T17:43:21.595366+00:00"
+            },
+            "replayed": true,
+            "request_id": "two-host-final-001"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "record": {
+              "content": "twohostatlas: The fictional Atlas launch meeting is Monday at 10:00.",
+              "created_at": "2026-10-03T17:29:13.231601+00:00",
+              "id": "note:20fa836424b37cd65375ca82ce89dce76984b4f6362fafa8103d9ecf08c4a9c9",
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-shiva",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:20fa836424b37cd65375ca82ce89dce76984b4f6362fafa8103d9ecf08c4a9c9",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/20fa836424b37cd65375ca82ce89dce76984b4f6362fafa8103d9ecf08c4a9c9",
+                "start_line": null
+              },
+              "revision": "dcffd1961811928047defd1dc00b0ababc5118f0db4da0b51c7ab95a9581e6a6",
+              "tags": [
+                "walkthrough"
+              ],
+              "title": "Atlas launch",
+              "updated_at": "2026-10-03T17:29:13.231601+00:00"
+            },
+            "replayed": true,
+            "request_id": "two-host-capture-001"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "record": {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "created_at": "2026-10-03T17:39:52.533801+00:00",
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-shiva",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "start_line": null
+              },
+              "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+              "tags": [
+                "walkthrough"
+              ],
+              "title": "Atlas launch",
+              "updated_at": "2026-10-03T17:39:52.533801+00:00"
+            },
+            "replayed": true,
+            "request_id": "two-host-final-001"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "upload_replays": [
+        {
+          "data": {
+            "job_id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+            "replayed": true,
+            "request_id": "queue-reviewed-first-002",
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+            "replayed": true,
+            "request_id": "queue-reviewed-independent-002",
+            "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+            "source_uri": "mcp://upload/bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+            "replayed": true,
+            "request_id": "queue-reviewed-second-001",
+            "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+            "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+            "replayed": true,
+            "request_id": "network-jobs-d8c23a3492a5-refresh",
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+            "replayed": true,
+            "request_id": "queue-reviewed-independent-001",
+            "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+            "source_uri": "mcp://upload/4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "replayed": true,
+            "request_id": "queue-reviewed-second-002",
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+            "replayed": true,
+            "request_id": "network-jobs-d8c23a3492a5-base",
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+            "replayed": true,
+            "request_id": "queue-reviewed-first-001",
+            "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+            "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+            "replayed": true,
+            "request_id": "endpoint-reviewed-real-upload-001",
+            "source_id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+            "source_uri": "mcp://upload/38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "job_id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+            "replayed": true,
+            "request_id": "network-jobs-d8c23a3492a5-restart",
+            "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+            "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "completed_statuses": [
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:38:56.598349+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:f23f1bc1dfa1de246ddef63efa16852d8b52d41102bfb31d7cc9e03791e59577"
+              ],
+              "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+            },
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:38:57.956290+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:38:56.723895+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:3bb743bd9a9bac8eb445f810d5c1829cc290421ec110663d9404423c326a7e21"
+              ],
+              "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+              "source_uri": "mcp://upload/bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e"
+            },
+            "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:38:57.973768+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:35:06.758162+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 2,
+            "id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "updated",
+              "extracted": false,
+              "generation": 2,
+              "note_ids": [
+                "note:1042844736fab06350e687e23bf21fba10d6ce2a2f70158090c821ce8215a132"
+              ],
+              "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+            },
+            "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:35:09.020811+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T17:47:20.344033+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 2,
+            "id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "updated",
+              "extracted": false,
+              "generation": 2,
+              "note_ids": [
+                "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb"
+              ],
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:47:20.652388+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:35:06.763570+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:25a954480e616f688786fa605f305ec83445e0807e452c9055ff2593dfcd68d9"
+              ],
+              "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+              "source_uri": "mcp://upload/4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c"
+            },
+            "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:35:08.928775+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:38:56.718779+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 2,
+            "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "updated",
+              "extracted": false,
+              "generation": 2,
+              "note_ids": [
+                "note:0e07f4869e285d10e0edc0dbaea80030e12273abe265e6d5ba77a4e79f3f9749"
+              ],
+              "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+            },
+            "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:38:58.057169+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T17:43:59.981923+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742"
+              ],
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:45:41.267757+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:35:06.596470+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:23ecf2f93f514463228fc196a9639bd618d2c9589073be18836255c7546599d3"
+              ],
+              "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+            },
+            "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:35:08.930545+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T18:13:34.655448+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:5125df6f8394921b2bb749a4d8ffd7b22ac77ddfc4791f15e450d5c0867fadf3"
+              ],
+              "source_id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+              "source_uri": "mcp://upload/38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191"
+            },
+            "source_id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T18:13:35.620276+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        },
+        {
+          "data": {
+            "cancellation_requested": false,
+            "checkpoint": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+            "completed": 1,
+            "created_at": "2026-10-03T17:46:05.611764+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": true,
+              "generation": 1,
+              "note_ids": [
+                "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724"
+              ],
+              "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+            },
+            "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:46:35.473421+00:00"
+          },
+          "error": null,
+          "schema_version": 1
+        }
+      ],
+      "foreign_job_denials": [
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "hermes-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "not_found",
+              "message": "The selected record is unavailable. Search again to refresh its ID.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "get_job",
+          "job_id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        },
+        {
+          "instance": "openclaw-shiva",
+          "tool": "cancel_job",
+          "job_id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+          "envelope": {
+            "data": null,
+            "error": {
+              "code": "forbidden",
+              "message": "This instance token does not grant the required capability.",
+              "retryable": false
+            },
+            "schema_version": 1
+          }
+        }
+      ],
+      "foreign_denial_counts": {
+        "not_found": 20,
+        "forbidden": 20
+      },
+      "owner_listing": {
+        "data": {
+          "jobs": [
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:38:56.718779+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 2,
+              "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "updated",
+                "extracted": false,
+                "generation": 2,
+                "note_ids": [
+                  "note:0e07f4869e285d10e0edc0dbaea80030e12273abe265e6d5ba77a4e79f3f9749"
+                ],
+                "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+                "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+              },
+              "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:38:58.057169+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:38:56.723895+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:9ef97f4a3f0ae41876d84a9ef99bf1b48d00c3e5f49808695fdc82952e20e797",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:3bb743bd9a9bac8eb445f810d5c1829cc290421ec110663d9404423c326a7e21"
+                ],
+                "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+                "source_uri": "mcp://upload/bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e"
+              },
+              "source_id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:38:57.973768+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:38:56.598349+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:054496141ee5d20eeb10524b3eaa780143d340697077d4805cbc70cb39dd94ff",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:f23f1bc1dfa1de246ddef63efa16852d8b52d41102bfb31d7cc9e03791e59577"
+                ],
+                "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+                "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+              },
+              "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:38:57.956290+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:35:06.758162+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 2,
+              "id": "processing_job:a0908ff7d45917b12c7666e326333e5c9f50490d6a93103318d1dc61130b1be8",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "updated",
+                "extracted": false,
+                "generation": 2,
+                "note_ids": [
+                  "note:1042844736fab06350e687e23bf21fba10d6ce2a2f70158090c821ce8215a132"
+                ],
+                "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+                "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+              },
+              "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:35:09.020811+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:35:06.596470+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:c84c07a403ba05d8b7f8d24287fbabfdaa8696ed1cdb72fb19644cfa695e4bc5",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:23ecf2f93f514463228fc196a9639bd618d2c9589073be18836255c7546599d3"
+                ],
+                "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+                "source_uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+              },
+              "source_id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:35:08.930545+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:35:06.763570+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:b7296106cc12676130d34ee0b8837f8d3869e0cfae28a68ad254b88690f7c83d",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:25a954480e616f688786fa605f305ec83445e0807e452c9055ff2593dfcd68d9"
+                ],
+                "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+                "source_uri": "mcp://upload/4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c"
+              },
+              "source_id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:35:08.928775+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T18:13:34.655448+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:df4759c517bbf360dee86c35ff8e276a205d30d8ea86c958c1b3fd3315fee89c",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:5125df6f8394921b2bb749a4d8ffd7b22ac77ddfc4791f15e450d5c0867fadf3"
+                ],
+                "source_id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+                "source_uri": "mcp://upload/38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191"
+              },
+              "source_id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T18:13:35.620276+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T17:47:20.344033+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 2,
+              "id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "updated",
+                "extracted": false,
+                "generation": 2,
+                "note_ids": [
+                  "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb"
+                ],
+                "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+              },
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T17:47:20.652388+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+              "completed": 1,
+              "created_at": "2026-10-03T17:46:05.611764+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": true,
+                "generation": 1,
+                "note_ids": [
+                  "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724"
+                ],
+                "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+                "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+              },
+              "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T17:46:35.473421+00:00"
+            },
+            {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T17:43:59.981923+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742"
+                ],
+                "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+              },
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T17:45:41.267757+00:00"
+            }
+          ]
+        },
+        "error": null,
+        "schema_version": 1
+      },
+      "hermes_owner_listing": {
+        "data": {
+          "jobs": []
+        },
+        "error": null,
+        "schema_version": 1
+      },
+      "openclaw_shiva_listing": {
+        "data": null,
+        "error": {
+          "code": "forbidden",
+          "message": "This instance token does not grant the required capability.",
+          "retryable": false
+        },
+        "schema_version": 1
+      },
+      "restored_sources": [
+        {
+          "owner": {
+            "data": {
+              "content": "# Second version\n\nqueuesecondretry002 The fictional Orion Workshop now meets Tuesday at 11:00.\n",
+              "content_hash": "sha256:c8b4404c468125234b02e382d494f6f8852a8741a495c620ae9371abb8bdde8f",
+              "document_key": "queue-reviewed-document-002",
+              "generation": 2,
+              "id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic same-document queue acceptance retry",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "b1571d18a48f258527f0c33ebf0bd7f24969d580fcf5d039f0f00d24de10bc47",
+              "status": "ready",
+              "successful_generation": 2,
+              "title": "/Projects/serialized",
+              "uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+            },
+            "error": null,
+            "schema_version": 1
+          },
+          "shared_reader": {
+            "data": {
+              "content": "# Second version\n\nqueuesecondretry002 The fictional Orion Workshop now meets Tuesday at 11:00.\n",
+              "content_hash": "sha256:c8b4404c468125234b02e382d494f6f8852a8741a495c620ae9371abb8bdde8f",
+              "document_key": "queue-reviewed-document-002",
+              "generation": 2,
+              "id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic same-document queue acceptance retry",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "b1571d18a48f258527f0c33ebf0bd7f24969d580fcf5d039f0f00d24de10bc47",
+              "status": "ready",
+              "successful_generation": 2,
+              "title": "/Projects/serialized",
+              "uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "owner": {
+            "data": {
+              "content": "# Independent document\n\nqueueindependentretry002 Nova organizes the fictional Birch Symposium on Wednesday.\n",
+              "content_hash": "sha256:e6066ddc49a02cc08f6dca2dc097c8891ae30e40e918644107167bb6f7c19726",
+              "document_key": "queue-reviewed-unrelated-002",
+              "generation": 1,
+              "id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic same-document queue acceptance retry",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "a6c719a39c9868c72a5ecab025050b44502cab5c91edd33947e6309015cf19a2",
+              "status": "ready",
+              "successful_generation": 1,
+              "title": "Independent queue document",
+              "uri": "mcp://upload/bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e"
+            },
+            "error": null,
+            "schema_version": 1
+          },
+          "shared_reader": {
+            "data": {
+              "content": "# Independent document\n\nqueueindependentretry002 Nova organizes the fictional Birch Symposium on Wednesday.\n",
+              "content_hash": "sha256:e6066ddc49a02cc08f6dca2dc097c8891ae30e40e918644107167bb6f7c19726",
+              "document_key": "queue-reviewed-unrelated-002",
+              "generation": 1,
+              "id": "source:bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic same-document queue acceptance retry",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "a6c719a39c9868c72a5ecab025050b44502cab5c91edd33947e6309015cf19a2",
+              "status": "ready",
+              "successful_generation": 1,
+              "title": "Independent queue document",
+              "uri": "mcp://upload/bf22a69b977433c3c5bf3d577ded0282374e776caccaf691f50d106b9b9beb9e"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "owner": {
+            "data": {
+              "content": "# Second version\n\nqueuesecondorbit The fictional Orion Workshop now meets Tuesday at 11:00.\n",
+              "content_hash": "sha256:c46c578ba27d4cd78704a3750f295cb062b97b0f09f371995fbe7d5b61745b5f",
+              "document_key": "queue-reviewed-document",
+              "generation": 2,
+              "id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic same-document queue acceptance",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "226c138c0c8188c114e5f6197284b1797faf02dce0ce8417c49d502f70a5ef15",
+              "status": "ready",
+              "successful_generation": 2,
+              "title": "/Projects/serialized",
+              "uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+            },
+            "error": null,
+            "schema_version": 1
+          },
+          "shared_reader": {
+            "data": {
+              "content": "# Second version\n\nqueuesecondorbit The fictional Orion Workshop now meets Tuesday at 11:00.\n",
+              "content_hash": "sha256:c46c578ba27d4cd78704a3750f295cb062b97b0f09f371995fbe7d5b61745b5f",
+              "document_key": "queue-reviewed-document",
+              "generation": 2,
+              "id": "source:b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic same-document queue acceptance",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "226c138c0c8188c114e5f6197284b1797faf02dce0ce8417c49d502f70a5ef15",
+              "status": "ready",
+              "successful_generation": 2,
+              "title": "/Projects/serialized",
+              "uri": "mcp://upload/b7497e4d80365f2ee61db3b7b2b7545c76632af3a3e71cb78d240627267fc86f"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "owner": {
+            "data": {
+              "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+              "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+              "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+              "generation": 2,
+              "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+              "status": "ready",
+              "successful_generation": 2,
+              "title": "/Projects/topic",
+              "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "error": null,
+            "schema_version": 1
+          },
+          "shared_reader": {
+            "data": {
+              "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+              "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+              "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+              "generation": 2,
+              "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+              "status": "ready",
+              "successful_generation": 2,
+              "title": "/Projects/topic",
+              "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "owner": {
+            "data": {
+              "content": "# Independent document\n\nqueueindependent Nova organizes the fictional Birch Symposium on Wednesday.\n",
+              "content_hash": "sha256:78426463dc2fd5fa223f889cab7aa096161b543c64bd1d7a04d833d06fa9fb27",
+              "document_key": "queue-reviewed-unrelated",
+              "generation": 1,
+              "id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic same-document queue acceptance",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "ab1599ae75c784f466f41bbd5eb05d11b3b45f63a1b3b66985cb12b581df5229",
+              "status": "ready",
+              "successful_generation": 1,
+              "title": "Independent queue document",
+              "uri": "mcp://upload/4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c"
+            },
+            "error": null,
+            "schema_version": 1
+          },
+          "shared_reader": {
+            "data": {
+              "content": "# Independent document\n\nqueueindependent Nova organizes the fictional Birch Symposium on Wednesday.\n",
+              "content_hash": "sha256:78426463dc2fd5fa223f889cab7aa096161b543c64bd1d7a04d833d06fa9fb27",
+              "document_key": "queue-reviewed-unrelated",
+              "generation": 1,
+              "id": "source:4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic same-document queue acceptance",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "ab1599ae75c784f466f41bbd5eb05d11b3b45f63a1b3b66985cb12b581df5229",
+              "status": "ready",
+              "successful_generation": 1,
+              "title": "Independent queue document",
+              "uri": "mcp://upload/4ac301d61efb48e0bcda61e5b3ee452a3ceb66a36ee052079451d37b479ca80c"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "owner": {
+            "data": {
+              "content": "# Reviewed provider identity\n\nendpointreviewed Orion schedules the fictional Cedar Workshop for Tuesday at 11:00.\n",
+              "content_hash": "sha256:2514f8f48e3f4b5d7fe8cc0541de0588362f00b8c5faa8da9f79110f69f157f7",
+              "document_key": "endpoint-reviewed-real-upload",
+              "generation": 1,
+              "id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic post-Codex endpoint walkthrough",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "335f8f7890b3837ff95072a4540663aa77de588e30654882f2fcac505123cc3a",
+              "status": "ready",
+              "successful_generation": 1,
+              "title": "/Projects/reviewed-provider",
+              "uri": "mcp://upload/38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191"
+            },
+            "error": null,
+            "schema_version": 1
+          },
+          "shared_reader": {
+            "data": {
+              "content": "# Reviewed provider identity\n\nendpointreviewed Orion schedules the fictional Cedar Workshop for Tuesday at 11:00.\n",
+              "content_hash": "sha256:2514f8f48e3f4b5d7fe8cc0541de0588362f00b8c5faa8da9f79110f69f157f7",
+              "document_key": "endpoint-reviewed-real-upload",
+              "generation": 1,
+              "id": "source:38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "synthetic post-Codex endpoint walkthrough",
+                "metadata": {},
+                "uri": null
+              },
+              "revision": "335f8f7890b3837ff95072a4540663aa77de588e30654882f2fcac505123cc3a",
+              "status": "ready",
+              "successful_generation": 1,
+              "title": "/Projects/reviewed-provider",
+              "uri": "mcp://upload/38a87b5430f2c87ba0589f630171a1c0c0ee89e2dc2547e6cf4d04b56e4a5191"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "owner": {
+            "data": {
+              "content": "# Observatory handoff\n\nMira Sol leads the Cedar Observatory in Boulder, Colorado. Cedar Observatory uses GraphRAG to organize astronomy research. Mira Sol coordinates the research team and works with Leo Hart on telescope operations.\n",
+              "content_hash": "sha256:c4f44519ca56e34d4df9af4d457e76cd3e38ae053839a052785c961d6bd446c5",
+              "document_key": "network-jobs-d8c23a3492a5/restart-source",
+              "generation": 1,
+              "id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "revision": "bdb3bcaf6cf602f9f2d6e9ca587482a4c96ed2248c1a559be6b66e76a41234e2",
+              "status": "ready",
+              "successful_generation": 1,
+              "title": "/Projects/topic",
+              "uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+            },
+            "error": null,
+            "schema_version": 1
+          },
+          "shared_reader": {
+            "data": {
+              "content": "# Observatory handoff\n\nMira Sol leads the Cedar Observatory in Boulder, Colorado. Cedar Observatory uses GraphRAG to organize astronomy research. Mira Sol coordinates the research team and works with Leo Hart on telescope operations.\n",
+              "content_hash": "sha256:c4f44519ca56e34d4df9af4d457e76cd3e38ae053839a052785c961d6bd446c5",
+              "document_key": "network-jobs-d8c23a3492a5/restart-source",
+              "generation": 1,
+              "id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "revision": "bdb3bcaf6cf602f9f2d6e9ca587482a4c96ed2248c1a559be6b66e76a41234e2",
+              "status": "ready",
+              "successful_generation": 1,
+              "title": "/Projects/topic",
+              "uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        }
+      ],
+      "original_inspection_revision_preserved": {
+        "data": {
+          "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+          "conversations": [],
+          "hit_type": "note",
+          "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+          "messages": [],
+          "messages_truncated": false,
+          "provenance": {
+            "conversation_id": null,
+            "conversation_uuid": null,
+            "end_line": null,
+            "heading_path": [],
+            "instance_id": "openclaw-shiva",
+            "message_index": null,
+            "message_key": null,
+            "message_uuid": null,
+            "role": null,
+            "source": {
+              "label": "synthetic two-host walkthrough",
+              "metadata": {},
+              "uri": null
+            },
+            "source_generation": null,
+            "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "source_type": "manual",
+            "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "start_line": null
+          },
+          "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+          "title": "Atlas launch",
+          "warnings": []
+        },
+        "error": null,
+        "schema_version": 1
+      },
+      "receipt_replay_inference_posts": 0,
+      "original_instrumentation_attempt_preserved": true,
+      "restore_of_inflight_worker_lease_exercised": false
+    },
+    "native_conversational_sessions": {
+      "openclaw_a": {
+        "session_id": "87946f63-b9ba-43f3-8adb-3938b8735636",
+        "observed_models": [
+          {
+            "provider": "google",
+            "model": "gemini-3.8-flash",
+            "api": "google-generative-ai"
+          }
+        ],
+        "process_exit_code_reported_by_launcher": 0,
+        "outer_transcript_calls": 3,
+        "outer_bridge_errors": 0,
+        "service_errors": 0,
+        "original_immutable_receipt_replayed": true,
+        "api_discovery_warnings": [],
+        "actual_successful_mcp_calls": [
+          {
+            "bridge_call_id": "call_671620",
+            "tool": "capture_note"
+          }
+        ],
+        "service_envelopes": [
+          {
+            "seq": 13,
+            "tool_call_id": "call_671620",
+            "envelope": {
+              "data": {
+                "record": {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "created_at": "2026-10-03T17:39:52.533801+00:00",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": [],
+                    "instance_id": "openclaw-shiva",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": {
+                      "label": "synthetic two-host walkthrough",
+                      "metadata": {},
+                      "uri": null
+                    },
+                    "source_generation": null,
+                    "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "start_line": null
+                  },
+                  "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                  "tags": [
+                    "walkthrough"
+                  ],
+                  "title": "Atlas launch",
+                  "updated_at": "2026-10-03T17:39:52.533801+00:00"
+                },
+                "replayed": true,
+                "request_id": "two-host-final-001"
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          }
+        ]
+      },
+      "hermes": {
+        "session_id": "20261003_124158_436c14",
+        "observed_models": [
+          {
+            "model": "deepseek-v4.1-flash",
+            "billing_provider": "ollama-cloud"
+          }
+        ],
+        "process_exit_code_reported_by_launcher": 0,
+        "outer_transcript_calls": 6,
+        "outer_bridge_errors": 1,
+        "service_errors": 0,
+        "rejected_batch_bridge_calls": [
+          {
+            "bridge_call_id": "call_qfcpjtch",
+            "error": "Local tools require one entry per tool_call; mixed and multi-local batches are not supported."
+          }
+        ],
+        "current_writer_record_matches_original_all_fields": true,
+        "inspected_record_ids": [
+          "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+          "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84"
+        ],
+        "actual_successful_mcp_calls": [
+          {
+            "bridge_call_id": "call_v3zr9a6k",
+            "tool": "mcp__graphrag__search_notes",
+            "arguments": {
+              "graph": "off",
+              "mode": "keyword",
+              "query": "twohostatlasfinal"
+            }
+          },
+          {
+            "bridge_call_id": "call_zsnlasle",
+            "tool": "mcp__graphrag__get_record",
+            "arguments": {
+              "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+              "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8"
+            }
+          },
+          {
+            "bridge_call_id": "call_nqbadohq",
+            "tool": "mcp__graphrag__get_record",
+            "arguments": {
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720"
+            }
+          },
+          {
+            "bridge_call_id": "call_0b4fq3xa",
+            "tool": "mcp__graphrag__build_context",
+            "arguments": {
+              "graph": "off",
+              "max_chunk_tokens": 120,
+              "max_chunks": 3,
+              "max_total_tokens": 300,
+              "query": "twohostatlasfinal"
+            }
+          }
+        ],
+        "service_envelopes": [
+          {
+            "seq": 71,
+            "tool_call_id": "call_v3zr9a6k",
+            "envelope": {
+              "data": {
+                "records": [
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": [],
+                      "instance_id": "openclaw-clawd",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": {
+                        "label": "synthetic two-host walkthrough",
+                        "metadata": {},
+                        "uri": null
+                      },
+                      "source_generation": null,
+                      "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "start_line": null
+                    },
+                    "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+                    "score": 1.2127655744552612,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  },
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": [],
+                      "instance_id": "openclaw-shiva",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": {
+                        "label": "synthetic two-host walkthrough",
+                        "metadata": {},
+                        "uri": null
+                      },
+                      "source_generation": null,
+                      "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "start_line": null
+                    },
+                    "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                    "score": 1.2127655744552612,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  }
+                ]
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 75,
+            "tool_call_id": "call_zsnlasle",
+            "envelope": {
+              "data": {
+                "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                "conversations": [],
+                "hit_type": "note",
+                "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                "messages": [],
+                "messages_truncated": false,
+                "provenance": {
+                  "conversation_id": null,
+                  "conversation_uuid": null,
+                  "end_line": null,
+                  "heading_path": [],
+                  "instance_id": "openclaw-clawd",
+                  "message_index": null,
+                  "message_key": null,
+                  "message_uuid": null,
+                  "role": null,
+                  "source": {
+                    "label": "synthetic two-host walkthrough",
+                    "metadata": {},
+                    "uri": null
+                  },
+                  "source_generation": null,
+                  "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                  "source_type": "manual",
+                  "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                  "start_line": null
+                },
+                "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+                "title": "Atlas launch",
+                "warnings": []
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 77,
+            "tool_call_id": "call_nqbadohq",
+            "envelope": {
+              "data": {
+                "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                "conversations": [],
+                "hit_type": "note",
+                "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "messages": [],
+                "messages_truncated": false,
+                "provenance": {
+                  "conversation_id": null,
+                  "conversation_uuid": null,
+                  "end_line": null,
+                  "heading_path": [],
+                  "instance_id": "openclaw-shiva",
+                  "message_index": null,
+                  "message_key": null,
+                  "message_uuid": null,
+                  "role": null,
+                  "source": {
+                    "label": "synthetic two-host walkthrough",
+                    "metadata": {},
+                    "uri": null
+                  },
+                  "source_generation": null,
+                  "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "source_type": "manual",
+                  "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "start_line": null
+                },
+                "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                "title": "Atlas launch",
+                "warnings": []
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 79,
+            "tool_call_id": "call_0b4fq3xa",
+            "envelope": {
+              "data": {
+                "chunks": [
+                  {
+                    "approx_tokens": 73,
+                    "citation": 1,
+                    "conversation_uuid": null,
+                    "created_at": "2026-10-03T17:43:21.595366+00:00",
+                    "graph": null,
+                    "hit_type": "note",
+                    "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "message_index": null,
+                    "rendered_tokens": 120,
+                    "role": null,
+                    "score": 0.016393441706895828,
+                    "selected_span_end": 73,
+                    "selected_span_start": 0,
+                    "snippet": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "title": "Atlas launch",
+                    "truncated": false
+                  },
+                  {
+                    "approx_tokens": 76,
+                    "citation": 2,
+                    "conversation_uuid": null,
+                    "created_at": "2026-10-03T18:38:58.010636+00:00",
+                    "graph": null,
+                    "hit_type": "note",
+                    "id": "note:0e07f4869e285d10e0edc0dbaea80030e12273abe265e6d5ba77a4e79f3f9749",
+                    "message_index": null,
+                    "rendered_tokens": 101,
+                    "role": null,
+                    "score": 0.010937499813735485,
+                    "selected_span_end": 76,
+                    "selected_span_start": 0,
+                    "snippet": "queuesecondretry002 The fictional Orion Workshop now meets Tuesday at 11:00.",
+                    "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+                    "title": null,
+                    "truncated": false
+                  },
+                  {
+                    "approx_tokens": 34,
+                    "citation": 3,
+                    "conversation_uuid": null,
+                    "created_at": "2026-10-03T17:47:20.571574+00:00",
+                    "graph": null,
+                    "hit_type": "note",
+                    "id": "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb",
+                    "message_index": null,
+                    "rendered_tokens": 59,
+                    "role": null,
+                    "score": 0.010294117033481598,
+                    "selected_span_end": 52,
+                    "selected_span_start": 26,
+                    "snippet": "\u2026 Leo Hart manages the Aspen \u2026",
+                    "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                    "title": null,
+                    "truncated": true
+                  }
+                ],
+                "diagnostics": {
+                  "dropped_duplicates": 0,
+                  "dropped_for_budget": 0,
+                  "dropped_for_entity_filter": 0,
+                  "dropped_for_relevance": 0,
+                  "dropped_near_duplicates": 1,
+                  "graph_candidates_considered": 0,
+                  "graph_candidates_dropped": 0,
+                  "graph_candidates_selected": 0,
+                  "header_tokens": 97,
+                  "token_count_mode": "estimated"
+                },
+                "query": "twohostatlasfinal",
+                "rendered_context": "<context>\n[C1] [note] Atlas launch\ntwohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.\n\n[C2] [note] (untitled)\nqueuesecondretry002 The fictional Orion Workshop now meets Tuesday at 11:00.\n\n[C3] [note] (untitled)\n\u2026 Leo Hart manages the Aspen \u2026\n\n</context>",
+                "scope": "all",
+                "total_tokens": 280
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          }
+        ],
+        "context": {
+          "total_tokens": 280,
+          "maximum_tokens": 300,
+          "maximum_chunk_tokens": 120,
+          "maximum_chunks": 3,
+          "token_count_mode": "estimated",
+          "citations": [
+            {
+              "citation": 1,
+              "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+              "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+              "rendered_tokens": 120,
+              "truncated": false
+            },
+            {
+              "citation": 2,
+              "id": "note:0e07f4869e285d10e0edc0dbaea80030e12273abe265e6d5ba77a4e79f3f9749",
+              "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+              "rendered_tokens": 101,
+              "truncated": false
+            },
+            {
+              "citation": 3,
+              "id": "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "rendered_tokens": 59,
+              "truncated": true
+            }
+          ]
+        }
+      },
+      "openclaw_b": {
+        "session_id": "96b25061-07fd-404b-9783-53b8bf093b0d",
+        "observed_models": [
+          {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "api": "anthropic-messages"
+          }
+        ],
+        "process_exit_code_reported_by_launcher": 0,
+        "outer_transcript_calls": 9,
+        "outer_bridge_errors": 0,
+        "service_errors": 0,
+        "current_writer_record_matches_original_all_fields": true,
+        "job_read_scope": "Second accepted upload in successful002 queue run, completed generation2; all ten statuses are separate RPC proof",
+        "completed_queue_job_id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+        "completed_job_generation": 2,
+        "restored_queue_source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+        "source_generation": 2,
+        "opaque_source_title": "/Projects/serialized",
+        "duplicate_envelope_representations_do_not_count_as_calls": true,
+        "actual_successful_mcp_calls": [
+          {
+            "bridge_call_id": "toolu_017u6zKdXPqvSN5YehJp7NJA",
+            "tool": "mcp:graphrag:graphrag__search_notes",
+            "arguments": {
+              "query": "twohostatlasfinal",
+              "mode": "keyword",
+              "graph": "off"
+            }
+          },
+          {
+            "bridge_call_id": "toolu_013d7eWp8pGeDEWRpgJWRHVC",
+            "tool": "mcp:graphrag:graphrag__get_record",
+            "arguments": {
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720"
+            }
+          },
+          {
+            "bridge_call_id": "toolu_01T6N7Zzd3rF97NTCE8C3WTU",
+            "tool": "mcp:graphrag:graphrag__get_job",
+            "arguments": {
+              "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437"
+            }
+          },
+          {
+            "bridge_call_id": "toolu_013G8geXiQX45fVHQ8kCPHA3",
+            "tool": "mcp:graphrag:graphrag__get_source",
+            "arguments": {
+              "id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+            }
+          }
+        ],
+        "service_envelopes": [
+          {
+            "seq": 16,
+            "tool_call_id": "toolu_017u6zKdXPqvSN5YehJp7NJA",
+            "envelope": {
+              "data": {
+                "records": [
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": [],
+                      "instance_id": "openclaw-clawd",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": {
+                        "label": "synthetic two-host walkthrough",
+                        "metadata": {},
+                        "uri": null
+                      },
+                      "source_generation": null,
+                      "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "start_line": null
+                    },
+                    "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+                    "score": 1.2127655744552612,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  },
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": [],
+                      "instance_id": "openclaw-shiva",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": {
+                        "label": "synthetic two-host walkthrough",
+                        "metadata": {},
+                        "uri": null
+                      },
+                      "source_generation": null,
+                      "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "start_line": null
+                    },
+                    "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                    "score": 1.2127655744552612,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  }
+                ]
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 16,
+            "tool_call_id": "toolu_017u6zKdXPqvSN5YehJp7NJA",
+            "envelope": {
+              "data": {
+                "records": [
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                      "instance_id": "openclaw-clawd",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                      "source_generation": null,
+                      "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "start_line": null
+                    },
+                    "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+                    "score": 1.2127655744552612,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  },
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                      "instance_id": "openclaw-shiva",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                      "source_generation": null,
+                      "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "start_line": null
+                    },
+                    "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                    "score": 1.2127655744552612,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  }
+                ]
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 22,
+            "tool_call_id": "toolu_013d7eWp8pGeDEWRpgJWRHVC",
+            "envelope": {
+              "data": {
+                "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                "conversations": [],
+                "hit_type": "note",
+                "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "messages": [],
+                "messages_truncated": false,
+                "provenance": {
+                  "conversation_id": null,
+                  "conversation_uuid": null,
+                  "end_line": null,
+                  "heading_path": [],
+                  "instance_id": "openclaw-shiva",
+                  "message_index": null,
+                  "message_key": null,
+                  "message_uuid": null,
+                  "role": null,
+                  "source": {
+                    "label": "synthetic two-host walkthrough",
+                    "metadata": {},
+                    "uri": null
+                  },
+                  "source_generation": null,
+                  "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "source_type": "manual",
+                  "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "start_line": null
+                },
+                "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                "title": "Atlas launch",
+                "warnings": []
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 23,
+            "tool_call_id": "toolu_01T6N7Zzd3rF97NTCE8C3WTU",
+            "envelope": {
+              "data": {
+                "cancellation_requested": false,
+                "checkpoint": null,
+                "completed": 1,
+                "created_at": "2026-10-03T18:38:56.718779+00:00",
+                "error_code": null,
+                "failed": 0,
+                "generation": 2,
+                "id": "processing_job:bc6bef5fece45279fb9662fda714169e215ad46d8750808fe0662294126cc437",
+                "instance_id": "openclaw-clawd",
+                "job_type": "remote_upload",
+                "phase": "completed",
+                "result": {
+                  "action": "updated",
+                  "extracted": false,
+                  "generation": 2,
+                  "note_ids": [
+                    "note:0e07f4869e285d10e0edc0dbaea80030e12273abe265e6d5ba77a4e79f3f9749"
+                  ],
+                  "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+                  "source_uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+                },
+                "source_id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+                "status": "completed",
+                "total": 1,
+                "updated_at": "2026-10-03T18:38:58.057169+00:00"
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 24,
+            "tool_call_id": "toolu_013G8geXiQX45fVHQ8kCPHA3",
+            "envelope": {
+              "data": {
+                "content": "# Second version\n\nqueuesecondretry002 The fictional Orion Workshop now meets Tuesday at 11:00.\n",
+                "content_hash": "sha256:c8b4404c468125234b02e382d494f6f8852a8741a495c620ae9371abb8bdde8f",
+                "document_key": "queue-reviewed-document-002",
+                "generation": 2,
+                "id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+                "instance_id": "openclaw-clawd",
+                "provenance": {
+                  "label": "synthetic same-document queue acceptance retry",
+                  "metadata": {},
+                  "uri": null
+                },
+                "revision": "b1571d18a48f258527f0c33ebf0bd7f24969d580fcf5d039f0f00d24de10bc47",
+                "status": "ready",
+                "successful_generation": 2,
+                "title": "/Projects/serialized",
+                "uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 24,
+            "tool_call_id": "toolu_013G8geXiQX45fVHQ8kCPHA3",
+            "envelope": {
+              "data": {
+                "content": "# Second version\n\nqueuesecondretry002 The fictional Orion Workshop now meets Tuesday at 11:00.\n",
+                "content_hash": "sha256:c8b4404c468125234b02e382d494f6f8852a8741a495c620ae9371abb8bdde8f",
+                "document_key": "***",
+                "generation": 2,
+                "id": "source:ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f",
+                "instance_id": "openclaw-clawd",
+                "provenance": {
+                  "label": "synthetic same-document queue acceptance retry",
+                  "metadata": {},
+                  "uri": null
+                },
+                "revision": "b1571d18a48f258527f0c33ebf0bd7f24969d580fcf5d039f0f00d24de10bc47",
+                "status": "ready",
+                "successful_generation": 2,
+                "title": "/Projects/serialized",
+                "uri": "mcp://upload/ac10222fcd222f14802cd013a8a5db75ca342a406c98961d3dc3cb1dd0c9552f"
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          }
+        ]
+      }
+    },
+    "native_conversational_counts": {
+      "sessions": 3,
+      "outer_transcript_calls": 18,
+      "successful_mcp_calls": 9,
+      "service_envelope_representations": 11,
+      "outer_bridge_errors": 1,
+      "outer_api_discovery_warnings": 0,
+      "service_errors": 0,
+      "capture_replays": 1,
+      "keyword_search_calls": 2,
+      "revision_pinned_record_reads": 3,
+      "cited_context_calls": 1,
+      "job_status_reads": 1,
+      "uploaded_source_reads": 1
+    },
+    "lifecycle_observation": {
+      "prior_owner_command_verified_before_sigterm": true,
+      "prior_owner_exit_code": 0,
+      "queue_owner_command_verified_before_sigterm": true,
+      "queue_owner_exit_code": 0,
+      "fresh_restored_owner_command_verified": true,
+      "private_forwarder_and_tunnel_retained": true,
+      "final_acceptance_runtime_cleanup_or_installation_claimed": false
+    },
+    "cumulative_recorded_conversational_counts": {
+      "sessions": 15,
+      "successful_mcp_calls": 41,
+      "outer_transcript_calls": 83,
+      "scope": "Five separately attributed original/default/vector/recovery/queue-restored windows; not one binary run"
+    },
+    "limits_preserved": {
+      "proposal_decisions_exercised": false,
+      "superseded_generation_resume_exercised": false,
+      "provider_outage_categorized_failure_exercised": true,
+      "same_host_sdk_smoke_is_separate": true,
+      "github_review_approval_claimed": false,
+      "issue_closure_claimed": false,
+      "restoration_of_inflight_worker_job_exercised": false,
+      "job_lifecycle_mutations_called_by_real_llm": false,
+      "job_status_read_by_real_llm": true,
+      "uploaded_source_read_by_real_llm": true
+    },
+    "github_review_approval_claimed": false,
+    "source_evidence_sha256": {
+      "queue-reviewed-candidate.json": "cf1fd39379d6a381cff3ae95370043c1017c104de23865d1a774b5a00c400cab",
+      "queue-reviewed-live.json": "5765b1ca627f2738bbb1bcbe64720209530a6418d25a7432ef6ba3ed688c07fb",
+      "queue-reviewed-wrapper-failure.json": "bcff985ffda3c52bfbf5f7e72abb38a6ebfda66d099fe35dd40324f53e7be5a1",
+      "queue-reviewed-inference-window.json": "47a3efea27e34a082cc7fccf78767464986b260aba9ffa7b820a9be9113f045a",
+      "queue-reviewed-gate-timing.json": "267cef6b29896c30862c7846233b6daf149ed7519afa3cd6e2aa2877b12957ae",
+      "queue-reviewed-live-002-checkpoints.jsonl": "f16aaa35cf74f4704d47e01a6a2bf1e1ee5c7980fb624c2a962e0747ea9b64cc",
+      "backup-queue-create.json": "c0e386f3b447944ca6c5883912898ba277d5e25843e84ef6a7fd5cdbb1cd59c6",
+      "backup-queue-verify.json": "c0e386f3b447944ca6c5883912898ba277d5e25843e84ef6a7fd5cdbb1cd59c6",
+      "backup-queue-restore.json": "2793499b268f969aa09dcb59c398787403025b87b3d7167262d4c03dd107d55b",
+      "backup-queue-provider-identity.json": "553a78554bf1c5268184f9d7af6256524276793d9f88b0fd551cd5e90191a24f",
+      "backup-queue-replay.json": "999d017d2b82abbec67eaf7b1a4afe9375fe0aba81290093f4dfb2fc7f63ebb7",
+      "backup-queue-summary.json": "433cd4ec059157b2b14cd241a8ce5c21c452c795a3ed6a84dd43d183a4dec37b",
+      "service-queue-lifecycle.json": "4f246c1eb5df02bfdaa5592c2313d7ccb2bc97e16c29303beb16a2804ec4ac83",
+      "openclaw-clawd-post-queue-restore-tools.json": "d18ba28c9644889151d3bb76471eccdcf4def353503a28bed8816255fb770ce3",
+      "post-queue-restore-sessions.json": "38ada2964da4ff6d51f514bb5107fb02f6bb3faf2b7580a7083d5ea4c41125dd",
+      "openclaw-shiva-87946f63-b9ba-43f3-8adb-3938b8735636.json": "5b5115d1e801a96c178dd9214e3fbd8f8e4f3fdc3d65cb116e81b1506efd6682",
+      "hermes-shiva-20261003_124158_436c14.json": "7db953bc34bfbfb5acb02379011aad1c6863b0ecfa616ee03c7c4a36250128e7"
+    }
+  },
+  "latest_observed_checkpoint_key": "post_queue_restore_checkpoint"
 }
