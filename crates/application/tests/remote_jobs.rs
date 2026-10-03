@@ -559,3 +559,70 @@ async fn incompatible_resume_and_excess_chunk_input_fail_before_claim_or_inferen
         1
     );
 }
+
+#[tokio::test]
+async fn unchanged_line_endings_return_latest_input_without_rewriting_chunk_spans() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let application = healthy(&repo);
+    let mut crlf = request("crlf-original");
+    crlf.content = "# Shared notes\r\n\r\nExact source span bytes remain stable.\r\n".into();
+    let first = application
+        .upload_source(caller("openclaw"), crlf.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let before = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let backing = repo.get_source(&first.source_id).await.unwrap().unwrap();
+    let chunks = repo
+        .get_source_chunks(backing.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert!(!chunks.is_empty());
+    assert_eq!(before.content, crlf.content);
+    assert_eq!(backing.content.as_deref(), Some(crlf.content.as_str()));
+    let mut lf = crlf.clone();
+    lf.request_id = "lf-equivalent".into();
+    lf.content = lf.content.replace("\r\n", "\n");
+    lf.provenance.as_mut().unwrap().label = Some("Latest LF input".into());
+    let latest = application
+        .upload_source(caller("openclaw"), lf.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let after = application
+        .get_uploaded_source(&latest.source_id)
+        .await
+        .unwrap();
+    let status = application
+        .get_remote_job(caller("openclaw"), &latest.job_id)
+        .await
+        .unwrap();
+    assert_eq!(status.result.unwrap()["action"], "unchanged");
+    assert_eq!(after.content, lf.content);
+    assert_eq!(after.provenance["label"], "Latest LF input");
+    assert_ne!(after.revision, before.revision);
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.content_hash, before.content_hash);
+    let saved = repo.get_source(&latest.source_id).await.unwrap().unwrap();
+    assert_eq!(saved.content, backing.content);
+    let stable = repo
+        .get_source_chunks(saved.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(stable.len(), chunks.len());
+    for (original, current) in chunks.iter().zip(&stable) {
+        assert_eq!(current.id, original.id);
+        assert_eq!(current.content, original.content);
+        assert_eq!(current.source_start_byte, original.source_start_byte);
+        assert_eq!(current.source_end_byte, original.source_end_byte);
+        let start = current.source_start_byte.unwrap() as usize;
+        let end = current.source_end_byte.unwrap() as usize;
+        assert_eq!(
+            &saved.content.as_ref().unwrap()[start..end],
+            &backing.content.as_ref().unwrap()[start..end]
+        );
+    }
+}

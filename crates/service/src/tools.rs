@@ -24,6 +24,8 @@ pub(crate) struct ToolService {
     pub(crate) application: Arc<dyn RemoteApplicationOperations>,
     pub(crate) writes: Arc<Writes>,
     pub(crate) write_gate: Arc<Semaphore>,
+    admission_gate: Arc<Semaphore>,
+    cancellation_gate: Arc<Semaphore>,
 }
 
 impl ToolService {
@@ -36,6 +38,8 @@ impl ToolService {
             application,
             writes,
             write_gate: Arc::new(Semaphore::new(concurrency)),
+            admission_gate: Arc::new(Semaphore::new(concurrency)),
+            cancellation_gate: Arc::new(Semaphore::new(crate::server::CANCELLATION_CAPACITY)),
         }
     }
 }
@@ -656,13 +660,21 @@ impl ToolService {
                 // These short durable mutations never share the provider/capture
                 // semaphore. Explicit cancellation remains reachable while a
                 // worker is preparing or inside a guarded atomic write.
+                let gate = if name == "cancel_job" {
+                    &self.cancellation_gate
+                } else {
+                    &self.admission_gate
+                };
+                let Ok(permit) = gate.clone().try_acquire_owned() else {
+                    return Ok(failure("busy", "Job admission or control capacity is busy; retry the identical request shortly.", true).into());
+                };
                 let Some(guard) = self.writes.start() else {
                     return Ok(failure("service_unavailable", "The service is shutting down; preserve the original upload request ID and draft for retry.", true).into());
                 };
                 let application = Arc::clone(&self.application);
                 let name = name.to_owned();
                 let task = tokio::spawn(async move {
-                    let _guard = guard;
+                    let (_permit, _guard) = (permit, guard);
                     crate::uploads::dispatch(
                         application.as_ref(),
                         &principal,

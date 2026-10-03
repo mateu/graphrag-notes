@@ -1020,3 +1020,129 @@ async fn cancellation_accepted_during_lifecycle_wait_wins_terminal_transition() 
         assert!(terminal.worker_token.is_none());
     }
 }
+
+#[tokio::test]
+async fn malformed_queued_input_is_rejected_before_claim_and_repair_needs_no_restart() {
+    for malformed in [
+        serde_json::json!({"missing_fields":true}),
+        serde_json::json!({"semantic_blank":true}),
+    ] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let original = input("owner", "repair-before-claim", "Valid uploaded input");
+        let admission = repo.admit_remote_upload(original.clone()).await.unwrap();
+        let id = admission.result["job_id"].as_str().unwrap();
+        let invalid = if malformed.get("semantic_blank").is_some() {
+            let mut invalid = original.clone();
+            invalid.markdown = "   ".into();
+            serde_json::to_value(invalid).unwrap()
+        } else {
+            malformed
+        };
+        repo.db
+            .query("UPDATE $id SET remote_input = $input")
+            .bind(("id", job_id(id).unwrap()))
+            .bind(("input", invalid))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let damaged = table(&repo, "processing_job").await;
+        assert!(repo
+            .claim_remote_upload_job("owner", id, "epoch", "worker")
+            .await
+            .is_err());
+        assert!(repo
+            .claim_next_remote_upload("epoch", "worker")
+            .await
+            .is_err());
+        assert_eq!(table(&repo, "processing_job").await, damaged);
+        assert_eq!(damaged[0]["status"], "queued");
+        assert!(damaged[0].get("remote_service_epoch").is_none());
+        repo.db
+            .query("UPDATE $id SET remote_input = $input")
+            .bind(("id", job_id(id).unwrap()))
+            .bind(("input", serde_json::to_value(&original).unwrap()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let claimed = repo
+            .claim_next_remote_upload("epoch", "worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.job.status, "running");
+        assert_eq!(claimed.input, original);
+        assert_eq!(claimed.job.id, Some(job_id(id).unwrap()));
+        assert_eq!(claimed.worker_token.as_deref(), Some("worker"));
+    }
+}
+
+#[tokio::test]
+async fn minimal_recovery_fence_settles_damaged_post_claim_input_without_restarting() {
+    for cancelled in [false, true] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let original = input("owner", "damaged-after-claim", "Valid input before claim");
+        let (_, lease) = admit_claim(&repo, original.clone(), "epoch", "worker").await;
+        repo.db
+            .query("UPDATE $id SET remote_input = $input, remote_cancel_requested = $cancel")
+            .bind(("id", lease.job_id.clone()))
+            .bind(("input", serde_json::json!({"damaged_after_claim":true})))
+            .bind(("cancel", cancelled))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(repo
+            .get_remote_upload_job("owner", &record_id_to_string(&lease.job_id))
+            .await
+            .is_err());
+        repo.recover_remote_upload_job(&lease, "internal")
+            .await
+            .unwrap();
+        let rows = table(&repo, "processing_job").await;
+        assert_eq!(
+            rows[0]["status"],
+            if cancelled { "cancelled" } else { "failed" }
+        );
+        assert_eq!(
+            rows[0]["last_error"],
+            if cancelled { "cancelled" } else { "internal" }
+        );
+        assert!(rows[0].get("remote_service_epoch").is_none());
+        assert!(rows[0].get("remote_worker_token").is_none());
+        assert!(table(&repo, "source").await.is_empty());
+        assert!(table(&repo, "note").await.is_empty());
+        repo.db
+            .query("UPDATE $id SET remote_input = $input")
+            .bind(("id", lease.job_id.clone()))
+            .bind(("input", serde_json::to_value(original).unwrap()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let resumed = repo
+            .resume_remote_upload_job("owner", &record_id_to_string(&lease.job_id))
+            .await
+            .unwrap();
+        assert_eq!(resumed.job.status, "queued");
+        assert!(repo
+            .claim_next_remote_upload("epoch", "replacement-worker")
+            .await
+            .unwrap()
+            .is_some());
+        // The old fence can never terminalize the new owner's running attempt.
+        repo.recover_remote_upload_job(&lease, "old-worker-error")
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_remote_upload_job("owner", &record_id_to_string(&lease.job_id))
+                .await
+                .unwrap()
+                .unwrap()
+                .worker_token
+                .as_deref(),
+            Some("replacement-worker")
+        );
+    }
+}

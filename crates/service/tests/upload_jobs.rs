@@ -76,6 +76,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::with_capacity(2).await
+    }
+    async fn with_capacity(capacity: usize) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let credentials = temp.path().join("credentials.json");
         let entries = [
@@ -137,7 +140,7 @@ impl Fixture {
         let options = ServiceOptions {
             listen: address,
             credentials_file: credentials,
-            max_concurrent_requests: 2,
+            max_concurrent_requests: capacity,
             max_job_workers: 2,
             ..Default::default()
         };
@@ -378,4 +381,99 @@ async fn service_shutdown_interrupts_blocked_worker_then_restart_can_resume_save
     assert_eq!(data(&fixture.terminal(&id).await)["status"], "completed");
     assert_eq!(fixture.repo.get_stats().await.unwrap().note_count, 1);
     fixture.stop().await;
+}
+
+#[tokio::test]
+async fn authenticated_cancellation_remains_available_with_all_ordinary_http_slots_occupied() {
+    for capacity in [1, 2] {
+        let fixture = Fixture::with_capacity(capacity).await;
+        let admission = fixture
+            .call(OWNER, "upload_source", upload("capacity-cancel"))
+            .await;
+        let job = data(&admission)["job_id"].as_str().unwrap().to_owned();
+        tokio::time::timeout(Duration::from_secs(2), fixture.provider.started.notified())
+            .await
+            .unwrap();
+        let mut captures = Vec::new();
+        for index in 0..capacity {
+            let request = fixture.request(OWNER, "capture_note", json!({"request_id":format!("occupy-{index}"),"content":format!("Blocked synthetic capture {index}"),"title":null,"tags":[],"provenance":null}));
+            captures.push(tokio::spawn(async move { request.send().await }));
+            tokio::time::timeout(Duration::from_secs(2), fixture.provider.started.notified())
+                .await
+                .unwrap();
+        }
+        let ordinary = fixture
+            .request(OWNER, "get_job", json!({"id":job}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ordinary.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        // A disconnected native MCP runtime must also be able to handshake and
+        // rediscover cancellation while every ordinary request slot is held.
+        for rpc in [
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"capacity-reconnect","version":"1"}}}),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+        ] {
+            let response = fixture
+                .client
+                .post(&fixture.url)
+                .bearer_auth(OWNER)
+                .header("accept", "application/json, text/event-stream")
+                .header("mcp-protocol-version", "2025-11-25")
+                .json(&rpc)
+                .send()
+                .await
+                .unwrap();
+            assert!(
+                response.status().is_success(),
+                "control handshake: {}",
+                response.status()
+            );
+        }
+        let unauthorized = fixture
+            .request("invalid-synthetic-token", "cancel_job", json!({"id":job}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let cancelled = tokio::time::timeout(
+            Duration::from_secs(2),
+            fixture.call(OWNER, "cancel_job", json!({"id":job})),
+        )
+        .await
+        .unwrap();
+        assert!(error(&cancelled).is_null(), "{cancelled}");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if fixture
+                    .repo
+                    .get_remote_upload_job("openclaw", &job)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .job
+                    .status
+                    == "cancelled"
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        fixture.provider.release();
+        for capture in captures {
+            assert_eq!(
+                capture.await.unwrap().unwrap().status(),
+                reqwest::StatusCode::OK
+            );
+        }
+        assert_eq!(
+            data(&fixture.call(OWNER, "get_job", json!({"id":job})).await)["status"],
+            "cancelled"
+        );
+        fixture.stop().await;
+    }
 }

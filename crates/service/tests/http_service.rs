@@ -238,6 +238,9 @@ struct Fixture {
 
 impl Fixture {
     async fn new(application: TestApplication) -> Self {
+        Self::with_capacity(application, 8).await
+    }
+    async fn with_capacity(application: TestApplication, capacity: usize) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("credentials.json");
         credentials(
@@ -261,6 +264,7 @@ impl Fixture {
         let options = ServiceOptions {
             listen,
             credentials_file: path.clone(),
+            max_concurrent_requests: capacity,
             ..ServiceOptions::default()
         };
         let application = Arc::new(application);
@@ -786,4 +790,73 @@ async fn lost_upload_acknowledgment_does_not_drop_accepted_admission_and_shutdow
         .unwrap()
         .unwrap();
     assert_eq!(fixture.application.uploads.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn disconnected_admissions_keep_bounded_capacity_without_blocking_cancellation() {
+    let fixture = Fixture::with_capacity(
+        TestApplication {
+            slow: true,
+            ..Default::default()
+        },
+        1,
+    )
+    .await;
+    credentials(
+        &fixture.credentials,
+        &[(
+            "openclaw-a",
+            TOKEN_A,
+            vec![Capability::Read, Capability::Upload, Capability::Jobs],
+        )],
+    );
+    let message = |request_id: &str| json!({"request_id":request_id,"document_key":"capacity-document","content":"Synthetic bounded admission","title":null,"provenance":null,"extract_entities":false});
+    let first = fixture.request(TOKEN_A, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"upload_source","arguments":message("accepted")}}));
+    let waiter = tokio::spawn(async move { first.send().await });
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.application.started.notified(),
+    )
+    .await
+    .unwrap();
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    // The HTTP slot becomes free while the accepted admission remains blocked.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let response = fixture.request(TOKEN_A, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_notes","arguments":search()}})).send().await.unwrap();
+            if response.status() == StatusCode::OK { break; }
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    for index in 0..20 {
+        let rejected = fixture
+            .tool(
+                TOKEN_A,
+                "upload_source",
+                message(&format!("excess-{index}")),
+            )
+            .await;
+        assert_eq!(error(&rejected)["code"], "busy");
+    }
+    // This adapter deliberately has no job implementation: compatibility proves
+    // the authenticated control call reached it despite full admission capacity.
+    let control = fixture
+        .tool(
+            TOKEN_A,
+            "cancel_job",
+            json!({"id":format!("processing_job:{}", "a".repeat(64))}),
+        )
+        .await;
+    assert_eq!(error(&control)["code"], "compatibility");
+    fixture.application.release.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fixture.application.uploads.load(Ordering::SeqCst) != 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    fixture.stop().await;
 }

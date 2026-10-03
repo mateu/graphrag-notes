@@ -91,6 +91,14 @@ struct JobRow {
     remote_worker_token: Option<String>,
 }
 
+#[derive(Debug, Deserialize, SurrealValue)]
+struct RecoveryFence {
+    status: String,
+    remote_service_epoch: Option<String>,
+    remote_worker_token: Option<String>,
+    remote_cancel_requested: bool,
+}
+
 impl JobRow {
     fn public(self) -> Result<RemoteUploadJob> {
         let input = serde_json::from_value(self.remote_input)
@@ -380,9 +388,34 @@ impl Repository {
         identity(instance)?;
         identity(epoch)?;
         identity(worker)?;
-        let row: Option<JobRow> = self.db.query("UPDATE $id SET status = 'running', remote_service_epoch = $epoch, remote_worker_token = $worker, updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false RETURN AFTER")
-            .bind(("id", id.clone())).bind(("instance", instance.to_string())).bind(("epoch", epoch.to_string())).bind(("worker", worker.to_string())).await?.take(0)?;
-        row.map(JobRow::public).transpose()
+        let Some(row) = self.remote_job_row(instance, id).await? else {
+            return Ok(None);
+        };
+        if row.status != "queued" || row.remote_cancel_requested {
+            return Ok(None);
+        }
+        // Decode and validate durable payload before changing ownership. Keep
+        // the validated snapshot; the committing response carries only the ID,
+        // so no payload decode can lose the newly acquired execution fence.
+        let mut job = row.public()?;
+        validate_input(&job.input)?;
+        if job.input.authenticated_instance_id != instance || job.input.request_id != job.request_id
+        {
+            return Err(DbError::InvalidRemoteRequest(
+                "stored upload identity does not match its owner".into(),
+            ));
+        }
+        let now = Utc::now();
+        let claimed: Vec<RecordId> = self.db.query("UPDATE $id SET status = 'running', remote_service_epoch = $epoch, remote_worker_token = $worker, updated_at = <datetime>$now WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false RETURN VALUE id")
+            .bind(("id", id.clone())).bind(("instance", instance.to_string())).bind(("epoch", epoch.to_string())).bind(("worker", worker.to_string())).bind(("now", now.to_rfc3339())).await?.take(0)?;
+        if claimed.is_empty() {
+            return Ok(None);
+        }
+        job.job.status = "running".into();
+        job.job.updated_at = now;
+        job.service_epoch = Some(epoch.into());
+        job.worker_token = Some(worker.into());
+        Ok(Some(job))
     }
     pub async fn claim_remote_upload_job(
         &self,
@@ -867,6 +900,69 @@ impl Repository {
         row.ok_or_else(|| DbError::RemoteJobOwnershipLost(record_id_to_string(&lease.job_id)))?
             .public()
     }
+    async fn remote_upload_recovery_fence(
+        &self,
+        lease: &RemoteJobLease,
+    ) -> Result<Option<RecoveryFence>> {
+        Ok(self.db.query("SELECT status, remote_service_epoch, remote_worker_token, remote_cancel_requested FROM processing_job WHERE id = $job AND job_type = 'remote_upload' AND remote_instance_id = $instance LIMIT 1")
+            .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).await?.take(0)?)
+    }
+
+    /// Settle a failed execution using only its durable ownership fence. Saved
+    /// input/result decoding is deliberately excluded, so a damaged payload
+    /// cannot strand a committed running claim. Storage errors remain retryable.
+    pub async fn recover_remote_upload_job(
+        &self,
+        lease: &RemoteJobLease,
+        error_code: &str,
+    ) -> Result<()> {
+        identity(&lease.instance_id)?;
+        identity(&lease.service_epoch)?;
+        identity(&lease.worker_token)?;
+        if error_code.is_empty()
+            || error_code.len() > 512
+            || error_code.chars().any(char::is_control)
+        {
+            return Err(DbError::InvalidRemoteRequest(
+                "invalid recovery error category".into(),
+            ));
+        }
+        let _gate = self.remote_job_transition_lock.lock().await;
+        let Some(fence) = self.remote_upload_recovery_fence(lease).await? else {
+            return Ok(());
+        };
+        if fence.status != "running"
+            || fence.remote_service_epoch.as_deref() != Some(&lease.service_epoch)
+            || fence.remote_worker_token.as_deref() != Some(&lease.worker_token)
+        {
+            return Ok(());
+        }
+        // The read validates the minimal persisted boolean, while the UPDATE
+        // below resolves it again atomically after waiting for lifecycle work.
+        let _cancel_was_requested = fence.remote_cancel_requested;
+        let _lifecycle = self.proposal_acceptance_lock.lock().await;
+        let settled: Vec<RecordId> = self.db.query("UPDATE $job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE 'failed' END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE (IF $error = 'cancelled' THEN 'interrupted' ELSE $error END) END, remote_result = NONE, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN VALUE id")
+            .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone())).bind(("error", error_code.to_string())).await?.take(0)?;
+        if settled.is_empty() {
+            // A missing/changed owner is safe; a still-owned fence must never
+            // be mistaken for successful settlement (for example denied writes).
+            if self
+                .remote_upload_recovery_fence(lease)
+                .await?
+                .is_some_and(|current| {
+                    current.status == "running"
+                        && current.remote_service_epoch.as_deref() == Some(&lease.service_epoch)
+                        && current.remote_worker_token.as_deref() == Some(&lease.worker_token)
+                })
+            {
+                return Err(DbError::QueryFailed(
+                    "remote upload terminalization did not settle its owned fence".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub async fn reconcile_interrupted_remote_uploads(&self, current_epoch: &str) -> Result<usize> {
         identity(current_epoch)?;
         let _gate = self.remote_job_transition_lock.lock().await;

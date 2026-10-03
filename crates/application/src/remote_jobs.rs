@@ -223,6 +223,32 @@ pub(crate) async fn source(
         .filter(|uri| uri.starts_with("mcp://upload/"))
         .ok_or_else(|| ApplicationError::NotFound("This is not an uploaded source".into()))?
         .clone();
+    let instance = origin["instance_id"]
+        .as_str()
+        .ok_or_else(|| ApplicationError::Internal("Uploaded source owner missing".into()))?;
+    let origin_job_id = origin["job_id"].as_str().ok_or_else(|| {
+        ApplicationError::Internal("Uploaded source input history missing".into())
+    })?;
+    let origin_job = app
+        .repo
+        .get_remote_upload_job(instance, origin_job_id)
+        .await?
+        .ok_or_else(|| {
+            ApplicationError::NotFound(
+                "Uploaded source input history missing; inspect its job".into(),
+            )
+        })?;
+    if origin_job.source_uri != uri
+        || origin_job.input.document_key != origin["document_key"].as_str().unwrap_or_default()
+        || origin_job.source_id != source.id
+    {
+        return Err(ApplicationError::RevisionConflict(
+            "Uploaded source input history has a different owner".into(),
+        ));
+    }
+    // Normalized unchanged refreshes retain backing text for existing byte
+    // spans. The public source contract returns the exact latest supplied input.
+    let content = origin_job.input.markdown;
     let revision = format!(
         "{:x}",
         Sha256::digest(
@@ -230,6 +256,7 @@ pub(crate) async fn source(
                 id,
                 &source.title,
                 &source.content,
+                &content,
                 &source.content_hash,
                 source.generation,
                 source.successful_generation,
@@ -248,7 +275,7 @@ pub(crate) async fn source(
         ),
         uri,
         title: source.title.clone(),
-        content: source.content.clone().unwrap_or_default(),
+        content,
         content_hash: source.content_hash.clone(),
         generation: source.generation,
         successful_generation: source.successful_generation,
@@ -536,21 +563,7 @@ pub(crate) async fn recover(
     error_code: &str,
 ) -> ApplicationResult<()> {
     let lease = lease(&execution)?;
-    let Some(job) = app
-        .repo
-        .get_remote_upload_job(&lease.instance_id, &execution.job_id)
-        .await?
-    else {
-        return Ok(());
-    };
-    if job.job.status != "running"
-        || job.service_epoch.as_deref() != Some(&lease.service_epoch)
-        || job.worker_token.as_deref() != Some(&lease.worker_token)
-    {
-        return Ok(());
-    }
     let code = match error_code {
-        "cancelled" if !job.cancel_requested => "interrupted",
         "validation"
         | "not_found"
         | "conflict"
@@ -562,8 +575,6 @@ pub(crate) async fn recover(
         | "worker_interrupted" => error_code,
         _ => "internal",
     };
-    app.repo
-        .finish_remote_upload_job(&lease, ProcessingJobStatus::Failed, Some(code.into()), None)
-        .await?;
+    app.repo.recover_remote_upload_job(&lease, code).await?;
     Ok(())
 }

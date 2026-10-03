@@ -1,4 +1,4 @@
-use crate::{credentials::CredentialError, tools::ToolService, CredentialFile};
+use crate::{credentials::CredentialError, tools::ToolService, Capability, CredentialFile};
 use axum::{
     body::{to_bytes, Body},
     extract::{Request, State},
@@ -23,6 +23,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tower_http::limit::RequestBodyLimitLayer;
+
+pub(crate) const CANCELLATION_CAPACITY: usize = 2;
 
 #[derive(Debug, Clone)]
 pub struct ServiceOptions {
@@ -141,6 +143,8 @@ fn valid_host(host: &str) -> bool {
 struct AuthState {
     credentials_file: PathBuf,
     requests: Arc<Semaphore>,
+    cancellations: Arc<Semaphore>,
+    ingress: Arc<Semaphore>,
     body_limit: usize,
     shutdown: CancellationToken,
 }
@@ -176,7 +180,10 @@ async fn authenticate(
     let Some(token) = token else {
         return unauthorized();
     };
-    let Ok(_permit) = state.requests.clone().try_acquire_owned() else {
+    // Bound authentication and body classification independently of dispatched
+    // requests. Blocked providers retain ordinary slots, leaving this short
+    // ingress stage available to authenticated cancellation calls.
+    let Ok(ingress) = state.ingress.clone().try_acquire_owned() else {
         return http_failure(
             StatusCode::TOO_MANY_REQUESTS,
             "busy",
@@ -199,9 +206,8 @@ async fn authenticate(
             )
         }
     };
-    // Bound body ingress before dispatch without timing out accepted provider
-    // work. Spawned mutations retain their permits and shutdown drain guards.
-    if request.method() == Method::POST {
+    // Bound body ingress without timing out accepted provider work.
+    let cancellation = if request.method() == Method::POST {
         let (parts, body) = request.into_parts();
         let bytes = match tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -225,8 +231,34 @@ async fn authenticate(
                 )
             }
         };
+        let cancellation = principal.allows(Capability::Jobs)
+            && serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|rpc| {
+                // A reconnecting MCP client must complete its handshake and
+                // discovery before it can send the cancellation call.
+                match rpc["method"].as_str() {
+                    Some("initialize" | "notifications/initialized" | "tools/list") => true,
+                    Some("tools/call") => rpc["params"]["name"] == "cancel_job",
+                    _ => false,
+                }
+            });
         request = Request::from_parts(parts, Body::from(bytes));
-    }
+        cancellation
+    } else {
+        false
+    };
+    let capacity = if cancellation {
+        &state.cancellations
+    } else {
+        &state.requests
+    };
+    let Ok(_permit) = capacity.clone().try_acquire_owned() else {
+        return http_failure(
+            StatusCode::TOO_MANY_REQUESTS,
+            "busy",
+            "The service is busy; retry shortly.",
+        );
+    };
+    drop(ingress);
     request.extensions_mut().insert(principal);
     // Only this boundary needs the bearer. SDK request contexts and diagnostic
     // logging receive trusted identity without retaining the raw credential.
@@ -381,6 +413,10 @@ pub async fn serve(
     let auth = AuthState {
         credentials_file: options.credentials_file,
         requests: Arc::new(Semaphore::new(options.max_concurrent_requests)),
+        cancellations: Arc::new(Semaphore::new(CANCELLATION_CAPACITY)),
+        ingress: Arc::new(Semaphore::new(
+            options.max_concurrent_requests + CANCELLATION_CAPACITY,
+        )),
         body_limit: options.max_request_body_bytes,
         shutdown: shutdown.clone(),
     };
