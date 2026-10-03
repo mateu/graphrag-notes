@@ -5,6 +5,12 @@ the deployment acceptance gate for [#56](https://github.com/mateu/graphrag-notes
 Use a synthetic corpus throughout. Keep deployment evidence separate from
 configuration examples and same-host smoke results.
 
+The [recorded two-host conversational walkthrough](validation/mcp-two-host-walkthrough.md)
+and [sanitized JSON proof](validation/mcp-two-host-walkthrough.json) cover actual
+agent calls and separately attributed lifecycle orchestration. Their observed checkpoint preserves separate binary/source attribution and
+marks remaining coverage explicitly. Later source fixes need separate acceptance
+attribution.
+
 ## Reproduce the installed-runtime smoke
 
 The opt-in harness uses the actual installed OpenClaw runtime and Hermes MCP

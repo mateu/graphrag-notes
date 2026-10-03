@@ -1,0 +1,3357 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "Actual two-computer conversational clients plus separately attributed service orchestration",
+  "status": "Completed observed3a99 two-host and portable-maintenance checkpoint; later source fixes require separate acceptance attribution",
+  "observed_date": "2026-10-03",
+  "different_computers_tested": true,
+  "real_agent_llm_sessions_tested": true,
+  "synthetic_corpus": true,
+  "fresh_private_profiles": true,
+  "binary_attribution": {
+    "conversational_and_lifecycle_binary_sha256": "896e081973977236150240aa9de21ff8e4648ebd07647772a9ef8a974ee86d6d",
+    "rust_build_revision": "d146db2ba6b00f93cdd1196c790b4a8424263cbd",
+    "tested_candidate_checkpoint": "6217f07543cf7971bd87b66962786684afb42384",
+    "report_base_revision": "c8852410066c0988d3911a2b4fa106b1ad523df6",
+    "service_application_database_sources_unchanged_at_report_base": true,
+    "source_comparison_verified_by_git_diff": true,
+    "production_rust_difference_since_recorded_build": [
+      "crates/cli/src/commands/editor.rs"
+    ],
+    "latest_cli_editor_change_in_recorded_binary": false,
+    "new_binary_validation": "Three actual conversational agents and vector-inclusive maintenance observed under3a99/02a49; later source revisions are not covered",
+    "publication_rust_differences_since_original_run": [
+      "crates/cli/src/backup.rs",
+      "crates/cli/src/commands/editor.rs"
+    ],
+    "publication_service_application_database_core_sources_unchanged": true,
+    "source_equivalence_scope": "Comparison applies to the recorded d146db2 and02a49a2 revisions, not later endpoint-compatibility or public-job-status source fixes"
+  },
+  "machines": {
+    "shiva": {
+      "os": "macOS",
+      "roles": [
+        "authoritative GraphRAG service",
+        "OpenClaw A",
+        "Hermes",
+        "host inference"
+      ]
+    },
+    "clawd": {
+      "os": "Linux",
+      "roles": [
+        "OpenClaw B on a different computer"
+      ]
+    }
+  },
+  "route": {
+    "service_endpoint": "http://127.0.0.1:31056/mcp",
+    "clawd_endpoint": "http://127.0.0.1:33156/mcp",
+    "remote_leg_encryption": "SSH reverse port forwarding",
+    "service_loopback_only": true,
+    "credential_principals": [
+      "openclaw-shiva",
+      "openclaw-clawd",
+      "hermes-shiva",
+      "observer"
+    ]
+  },
+  "protocol": {
+    "negotiated_version": "2025-11-25",
+    "wire_schema_version": 1,
+    "local_orchestration_catalogs": {
+      "openclaw-clawd": [
+        "build_context",
+        "cancel_job",
+        "capture_note",
+        "get_job",
+        "get_note",
+        "get_proposal",
+        "get_record",
+        "get_source",
+        "list_jobs",
+        "list_proposals",
+        "resume_job",
+        "search_notes",
+        "upload_source"
+      ],
+      "openclaw-shiva": [
+        "build_context",
+        "capture_note",
+        "decide_proposal",
+        "delete_note",
+        "edit_note",
+        "get_note",
+        "get_proposal",
+        "get_record",
+        "get_source",
+        "list_proposals",
+        "search_notes"
+      ],
+      "hermes-shiva": [
+        "build_context",
+        "cancel_job",
+        "capture_note",
+        "get_job",
+        "get_note",
+        "get_proposal",
+        "get_record",
+        "get_source",
+        "list_jobs",
+        "list_proposals",
+        "resume_job",
+        "search_notes",
+        "upload_source"
+      ]
+    },
+    "catalog_counts": {
+      "openclaw-clawd": 13,
+      "openclaw-shiva": 11,
+      "hermes-shiva": 13
+    }
+  },
+  "canonical_record": {
+    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+    "conversations": [],
+    "hit_type": "note",
+    "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+    "messages": [],
+    "messages_truncated": false,
+    "provenance": {
+      "conversation_id": null,
+      "conversation_uuid": null,
+      "end_line": null,
+      "heading_path": [],
+      "instance_id": "openclaw-shiva",
+      "message_index": null,
+      "message_key": null,
+      "message_uuid": null,
+      "role": null,
+      "source": {
+        "label": "synthetic two-host walkthrough",
+        "metadata": {},
+        "uri": null
+      },
+      "source_generation": null,
+      "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+      "source_type": "manual",
+      "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+      "start_line": null
+    },
+    "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+    "title": "Atlas launch",
+    "warnings": []
+  },
+  "conversational_sessions": {
+    "openclaw_a": {
+      "machine": "shiva",
+      "instance_id": "openclaw-shiva",
+      "session_id": "1f471786-d215-4d4b-9a73-af17f4403d49",
+      "observed_models": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "api": "google-generative-ai"
+        }
+      ],
+      "installed_version_reported_at_setup": "2026.9.7",
+      "node_version_reported_at_setup": "26.7.0",
+      "agent_bridge_calls": 3,
+      "agent_bridge_results": 3,
+      "bridge_guest_failures_before_mcp_dispatch": 1,
+      "bridge_successes": 2,
+      "discovery": {
+        "kind": "mcp_api",
+        "server": "graphrag",
+        "mcp_tool": "capture_note",
+        "method": "captureNote"
+      },
+      "actual_mcp_calls": [
+        {
+          "bridge": "exec / MCP.graphrag.captureNote",
+          "tool": "capture_note",
+          "request_id": "two-host-final-001"
+        }
+      ],
+      "service_envelopes": [
+        {
+          "seq": 13,
+          "tool_call_id": "call_858487",
+          "envelope": {
+            "data": {
+              "record": {
+                "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                "created_at": "2026-10-03T17:39:52.533801+00:00",
+                "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "provenance": {
+                  "conversation_id": null,
+                  "conversation_uuid": null,
+                  "end_line": null,
+                  "heading_path": [],
+                  "instance_id": "openclaw-shiva",
+                  "message_index": null,
+                  "message_key": null,
+                  "message_uuid": null,
+                  "role": null,
+                  "source": {
+                    "label": "synthetic two-host walkthrough",
+                    "metadata": {},
+                    "uri": null
+                  },
+                  "source_generation": null,
+                  "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "source_type": "manual",
+                  "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "start_line": null
+                },
+                "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                "tags": [
+                  "walkthrough"
+                ],
+                "title": "Atlas launch",
+                "updated_at": "2026-10-03T17:39:52.533801+00:00"
+              },
+              "replayed": false,
+              "request_id": "two-host-final-001"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        }
+      ],
+      "canonical_record_match": true
+    },
+    "openclaw_b": {
+      "machine": "clawd",
+      "instance_id": "openclaw-clawd",
+      "session_id": "489ef4ff-7582-43b3-8a4e-f8056e996e70",
+      "observed_models": [
+        {
+          "provider": "anthropic",
+          "model": "claude-sonnet-5",
+          "api": "anthropic-messages"
+        }
+      ],
+      "installed_version_reported_at_setup": "2026.9.8",
+      "node_version_reported_at_setup": "24.21.0",
+      "agent_bridge_calls": 3,
+      "agent_bridge_results": 3,
+      "discovery_calls": 1,
+      "actual_mcp_calls": [
+        {
+          "bridge": "tool_call",
+          "call_id": "toolu_01URP18fGZpgbURGs4FSaw2a",
+          "tool": "mcp:graphrag:graphrag__search_notes",
+          "arguments": {
+            "query": "twohostatlasfinal",
+            "mode": "keyword",
+            "graph": "off"
+          }
+        },
+        {
+          "bridge": "tool_call",
+          "call_id": "toolu_014nCqYXtdJENNBTQcm7JZna",
+          "tool": "mcp:graphrag:graphrag__get_record",
+          "arguments": {
+            "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720"
+          }
+        }
+      ],
+      "service_envelope_representations": 3,
+      "representation_limit": "search_notes is represented in both content and details; three representations correspond to two MCP calls",
+      "service_envelopes": [
+        {
+          "seq": 10,
+          "tool_call_id": "toolu_01URP18fGZpgbURGs4FSaw2a",
+          "envelope": {
+            "data": {
+              "records": [
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": [],
+                    "instance_id": "openclaw-shiva",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": {
+                      "label": "synthetic two-host walkthrough",
+                      "metadata": {},
+                      "uri": null
+                    },
+                    "source_generation": null,
+                    "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "start_line": null
+                  },
+                  "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                  "score": 0,
+                  "title": "Atlas launch",
+                  "warnings": []
+                }
+              ]
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 10,
+          "tool_call_id": "toolu_01URP18fGZpgbURGs4FSaw2a",
+          "envelope": {
+            "data": {
+              "records": [
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                    "instance_id": "openclaw-shiva",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                    "source_generation": null,
+                    "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "start_line": null
+                  },
+                  "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                  "score": 0,
+                  "title": "Atlas launch",
+                  "warnings": []
+                }
+              ]
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 14,
+          "tool_call_id": "toolu_014nCqYXtdJENNBTQcm7JZna",
+          "envelope": {
+            "data": {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "conversations": [],
+              "hit_type": "note",
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "messages": [],
+              "messages_truncated": false,
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-shiva",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "start_line": null
+              },
+              "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+              "title": "Atlas launch",
+              "warnings": []
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        }
+      ],
+      "canonical_record_match": true
+    },
+    "hermes": {
+      "machine": "shiva",
+      "instance_id": "hermes-shiva",
+      "session_id": "20261003_114029_c8172a",
+      "observed_models": [
+        {
+          "model": "deepseek-v4.1-flash",
+          "billing_provider": "ollama-cloud"
+        }
+      ],
+      "installed_version_reported_at_setup": "0.21.2",
+      "python_version_reported_at_setup": "3.11.15",
+      "mcp_sdk_version_reported_at_setup": "2.0.0",
+      "agent_bridge_calls": 5,
+      "agent_bridge_results": 5,
+      "discovery_calls": 2,
+      "actual_mcp_calls": [
+        {
+          "bridge": "tool_call",
+          "call_id": "call_ebod3u1i",
+          "tool": "mcp__graphrag__search_notes",
+          "arguments": {
+            "graph": "off",
+            "mode": "keyword",
+            "query": "twohostatlasfinal"
+          }
+        },
+        {
+          "bridge": "tool_call",
+          "call_id": "call_mm39aqp5",
+          "tool": "mcp__graphrag__get_record",
+          "arguments": {
+            "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "neighbors": 2,
+            "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720"
+          }
+        },
+        {
+          "bridge": "tool_call",
+          "call_id": "call_tqu14jsm",
+          "tool": "mcp__graphrag__build_context",
+          "arguments": {
+            "graph": "off",
+            "max_chunk_tokens": 120,
+            "max_chunks": 3,
+            "max_total_tokens": 300,
+            "query": "twohostatlasfinal"
+          }
+        }
+      ],
+      "service_envelopes": [
+        {
+          "seq": 21,
+          "tool_call_id": "call_ebod3u1i",
+          "envelope": {
+            "data": {
+              "records": [
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": [],
+                    "instance_id": "openclaw-shiva",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": {
+                      "label": "synthetic two-host walkthrough",
+                      "metadata": {},
+                      "uri": null
+                    },
+                    "source_generation": null,
+                    "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "start_line": null
+                  },
+                  "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                  "score": 0,
+                  "title": "Atlas launch",
+                  "warnings": []
+                }
+              ]
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 23,
+          "tool_call_id": "call_mm39aqp5",
+          "envelope": {
+            "data": {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "conversations": [],
+              "hit_type": "note",
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "messages": [],
+              "messages_truncated": false,
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-shiva",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "start_line": null
+              },
+              "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+              "title": "Atlas launch",
+              "warnings": []
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 25,
+          "tool_call_id": "call_tqu14jsm",
+          "envelope": {
+            "data": {
+              "chunks": [
+                {
+                  "approx_tokens": 73,
+                  "citation": 1,
+                  "conversation_uuid": null,
+                  "created_at": "2026-10-03T17:39:52.533801+00:00",
+                  "graph": null,
+                  "hit_type": "note",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "message_index": null,
+                  "rendered_tokens": 120,
+                  "role": null,
+                  "score": 0.016393441706895828,
+                  "selected_span_end": 73,
+                  "selected_span_start": 0,
+                  "snippet": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "title": "Atlas launch",
+                  "truncated": false
+                }
+              ],
+              "diagnostics": {
+                "dropped_duplicates": 0,
+                "dropped_for_budget": 0,
+                "dropped_for_entity_filter": 0,
+                "dropped_for_relevance": 0,
+                "dropped_near_duplicates": 1,
+                "graph_candidates_considered": 0,
+                "graph_candidates_dropped": 0,
+                "graph_candidates_selected": 0,
+                "header_tokens": 47,
+                "token_count_mode": "estimated"
+              },
+              "query": "twohostatlasfinal",
+              "rendered_context": "<context>\n[C1] [note] Atlas launch\ntwohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.\n\n</context>",
+              "scope": "all",
+              "total_tokens": 120
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        }
+      ],
+      "canonical_record_match": true,
+      "context": {
+        "requested_max_total_tokens": 300,
+        "requested_max_chunk_tokens": 120,
+        "requested_max_chunks": 3,
+        "returned_chunks": 1,
+        "total_tokens": 120,
+        "token_count_mode": "estimated",
+        "citation": "C1",
+        "cited_record_id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+        "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84"
+      }
+    }
+  },
+  "conversational_counts": {
+    "agent_bridge_calls": 11,
+    "actual_mcp_calls": 6,
+    "service_envelope_representations": 7,
+    "successful_native_capture_calls": 1,
+    "keyword_search_calls": 2,
+    "revision_pinned_record_reads": 2,
+    "cited_context_calls": 1
+  },
+  "auth_and_retry_orchestration": {
+    "attribution": "local service-host MCP RPC orchestration using owning credentials; not additional conversational LLM calls",
+    "readonly_read_succeeded": true,
+    "readonly_catalog": [
+      "search_notes",
+      "get_record",
+      "build_context",
+      "get_note",
+      "list_proposals",
+      "get_proposal",
+      "get_source"
+    ],
+    "readonly_mutation_denial": {
+      "data": null,
+      "error": {
+        "code": "forbidden",
+        "message": "This instance token does not grant the required capability.",
+        "retryable": false
+      },
+      "schema_version": 1
+    },
+    "invalid_credential_http": 401,
+    "observer_revoked_http": 401,
+    "other_instances_continued_reading": true,
+    "same_instance_replay": {
+      "replayed": true,
+      "request_id": "two-host-final-001",
+      "record_id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84"
+    },
+    "changed_payload_conflict": {
+      "data": null,
+      "error": {
+        "code": "revision_conflict",
+        "message": "The record or request payload changed. Refresh the snapshot; retain the same request_id and payload for an uncertain outcome. A new intent requires a new request_id.",
+        "retryable": false
+      },
+      "schema_version": 1
+    },
+    "other_instance_same_request_id": {
+      "request_id": "two-host-final-001",
+      "record_id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+      "trusted_instance": "openclaw-clawd",
+      "replayed": false
+    },
+    "old_writer_token_http": 401,
+    "rotated_writer_replay": {
+      "replayed": true,
+      "record_id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+      "trusted_instance": "openclaw-shiva"
+    }
+  },
+  "ssh_native_outage_and_reconnect": {
+    "attribution": "operator controlled SSH route; installed remote native MCP runtime probes, not conversational LLM calls",
+    "outage": {
+      "connected": false,
+      "native_connection_denied": true
+    },
+    "reconnected_catalog": [
+      "search_notes",
+      "get_record",
+      "build_context",
+      "capture_note",
+      "get_note",
+      "list_proposals",
+      "get_proposal",
+      "upload_source",
+      "get_source",
+      "get_job",
+      "list_jobs",
+      "cancel_job",
+      "resume_job"
+    ],
+    "reconnected_running_job": {
+      "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+      "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+      "instance_id": "openclaw-clawd",
+      "generation": 1,
+      "status": "running",
+      "phase": "preparing",
+      "cancellation_requested": false,
+      "completed": 0,
+      "total": 0,
+      "failed": 0,
+      "error_code": null,
+      "checkpoint": null,
+      "result": null
+    }
+  },
+  "network_jobs_orchestration": {
+    "attribution": "local service-host RPC orchestration; no claim that an LLM submitted, cancelled, resumed, refreshed or replayed these jobs",
+    "phase_sequence": [
+      "disconnect-ready",
+      "reconnect",
+      "cancel-resume",
+      "restart-ready",
+      "restart-release",
+      "restart-verify",
+      "refresh-ready",
+      "refresh-verify"
+    ],
+    "phases_completed": 8,
+    "final_driver_stage": "complete",
+    "owner": "openclaw-clawd",
+    "shared_source_reader": "openclaw-shiva",
+    "foreign_jobs_principal": "hermes-shiva",
+    "initial_driver_attempt": {
+      "phase": "cancel-resume",
+      "error_kind": "AcceptanceFailure",
+      "check": "phase order mismatch; inspect private checkpoint"
+    },
+    "lost_ack": {
+      "attribution": "local controlled relay, not remote LLM or SSH outage",
+      "client_disconnected_without_response": true,
+      "original_admission": {
+        "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+        "replayed": false,
+        "request_id": "network-jobs-d8c23a3492a5-base",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+      },
+      "reconnect_replay": {
+        "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+        "replayed": true,
+        "request_id": "network-jobs-d8c23a3492a5-base",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+      }
+    },
+    "disconnect_did_not_request_cancellation": true,
+    "job_isolation_denials": [
+      {
+        "identity": "hermes-shiva",
+        "tool": "get_job",
+        "code": "not_found"
+      },
+      {
+        "identity": "hermes-shiva",
+        "tool": "cancel_job",
+        "code": "not_found"
+      },
+      {
+        "identity": "hermes-shiva",
+        "tool": "resume_job",
+        "code": "not_found"
+      },
+      {
+        "identity": "openclaw-shiva",
+        "tool": "get_job",
+        "code": "forbidden"
+      },
+      {
+        "identity": "openclaw-shiva",
+        "tool": "cancel_job",
+        "code": "forbidden"
+      },
+      {
+        "identity": "openclaw-shiva",
+        "tool": "resume_job",
+        "code": "forbidden"
+      },
+      {
+        "identity": "openclaw-shiva",
+        "tool": "list_jobs",
+        "code": "forbidden"
+      }
+    ],
+    "foreign_jobs_list_excluded_owner_job": "Verified by completed reconnect phase; list contents not retained in its JSON",
+    "cancel_resume": {
+      "cancel_requested": {
+        "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "instance_id": "openclaw-clawd",
+        "generation": 1,
+        "status": "running",
+        "phase": "preparing",
+        "cancellation_requested": true,
+        "completed": 0,
+        "total": 0,
+        "failed": 0,
+        "error_code": null,
+        "checkpoint": null,
+        "result": null
+      },
+      "cancelled": {
+        "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "instance_id": "openclaw-clawd",
+        "generation": 1,
+        "status": "cancelled",
+        "phase": "preparing",
+        "cancellation_requested": true,
+        "completed": 0,
+        "total": 0,
+        "failed": 0,
+        "error_code": "cancelled",
+        "checkpoint": null,
+        "result": null
+      },
+      "resumed": {
+        "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "instance_id": "openclaw-clawd",
+        "generation": 1,
+        "status": "queued",
+        "phase": "preparing",
+        "cancellation_requested": false,
+        "completed": 0,
+        "total": 0,
+        "failed": 0,
+        "error_code": null,
+        "checkpoint": null,
+        "result": null
+      },
+      "completed": {
+        "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "instance_id": "openclaw-clawd",
+        "generation": 1,
+        "status": "completed",
+        "phase": "completed",
+        "cancellation_requested": false,
+        "completed": 1,
+        "total": 1,
+        "failed": 0,
+        "error_code": null,
+        "checkpoint": null,
+        "result": {
+          "action": "created",
+          "extracted": false,
+          "generation": 1,
+          "note_ids": [
+            "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742"
+          ],
+          "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        }
+      }
+    },
+    "restart": {
+      "process_control": {
+        "old_pid": 88616,
+        "new_pid": 92687,
+        "old_exit_code": 0,
+        "observed_at": 1791049592.06436
+      },
+      "interrupted": {
+        "id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+        "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+        "instance_id": "openclaw-clawd",
+        "generation": 1,
+        "status": "failed",
+        "phase": "extracting",
+        "cancellation_requested": false,
+        "completed": 0,
+        "total": 1,
+        "failed": 0,
+        "error_code": "interrupted",
+        "checkpoint": null,
+        "result": null
+      },
+      "admission_replay": {
+        "job_id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+        "replayed": true,
+        "request_id": "network-jobs-d8c23a3492a5-restart",
+        "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+        "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+      },
+      "explicit_resume": {
+        "id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+        "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+        "instance_id": "openclaw-clawd",
+        "generation": 1,
+        "status": "queued",
+        "phase": "extracting",
+        "cancellation_requested": false,
+        "completed": 0,
+        "total": 1,
+        "failed": 0,
+        "error_code": null,
+        "checkpoint": null,
+        "result": null
+      },
+      "completed": {
+        "id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+        "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+        "instance_id": "openclaw-clawd",
+        "generation": 1,
+        "status": "completed",
+        "phase": "completed",
+        "cancellation_requested": false,
+        "completed": 1,
+        "total": 1,
+        "failed": 0,
+        "error_code": null,
+        "checkpoint": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+        "result": {
+          "action": "created",
+          "extracted": true,
+          "generation": 1,
+          "note_ids": [
+            "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724"
+          ],
+          "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+          "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+        }
+      }
+    },
+    "refresh": {
+      "held_source": {
+        "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "instance_id": "openclaw-clawd",
+        "generation": 2,
+        "successful_generation": 1,
+        "status": "pending",
+        "title": "/Projects/topic",
+        "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+        "revision": "dadef07f74fd53453dc252418fc4d2acb4c0236c9a031ba3822a871321424c9f",
+        "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+        "provenance": {
+          "label": "private two-host live acceptance",
+          "metadata": {
+            "walkthrough": "network-jobs-d8c23a3492a5"
+          },
+          "uri": "file:///clawd-client-only/never-read/topic.md"
+        },
+        "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+      },
+      "previous_records_still_visible": [
+        {
+          "id": "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742",
+          "revision": "b87475dd5399c9b5753c5e1741d94444fe4be9c636392437fd551d859212b214",
+          "content": "priorgenerationc243ed13d7 Mira Sol coordinates the Cedar Observatory. This supplied source survives transport interruption and explicit cancellation.",
+          "title": null,
+          "provenance": {
+            "conversation_id": null,
+            "conversation_uuid": null,
+            "end_line": 3,
+            "heading_path": [
+              "Durable source"
+            ],
+            "instance_id": "openclaw-clawd",
+            "message_index": null,
+            "message_key": null,
+            "message_uuid": null,
+            "role": null,
+            "source": {
+              "label": "private two-host live acceptance",
+              "metadata": {
+                "walkthrough": "network-jobs-d8c23a3492a5"
+              },
+              "uri": "file:///clawd-client-only/never-read/topic.md"
+            },
+            "source_generation": 1,
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "source_type": "markdown",
+            "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "start_line": 3
+          }
+        }
+      ],
+      "new_keyword_results_before_promotion": [],
+      "completed": {
+        "id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "instance_id": "openclaw-clawd",
+        "generation": 2,
+        "status": "completed",
+        "phase": "completed",
+        "cancellation_requested": false,
+        "completed": 1,
+        "total": 1,
+        "failed": 0,
+        "error_code": null,
+        "checkpoint": null,
+        "result": {
+          "action": "updated",
+          "extracted": false,
+          "generation": 2,
+          "note_ids": [
+            "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb"
+          ],
+          "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        }
+      },
+      "admission_replay": {
+        "job_id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+        "replayed": true,
+        "request_id": "network-jobs-d8c23a3492a5-refresh",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+      },
+      "retired_record_denials": [
+        {
+          "identity": "openclaw-shiva",
+          "tool": "get_record",
+          "code": "not_found"
+        }
+      ]
+    },
+    "completed_source_snapshots": [
+      {
+        "source": {
+          "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "instance_id": "openclaw-clawd",
+          "generation": 1,
+          "successful_generation": 1,
+          "status": "ready",
+          "title": "/Projects/topic",
+          "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+          "revision": "b3e76a11f6583b1bd7779d8a80d9717cb26ac046b9e766559c8c29ae6f10a552",
+          "content_hash": "sha256:1ec284a23b799c6dedd081360697f81a1752a8bb57287dc83b5e7f8f3361ed40",
+          "provenance": {
+            "label": "private two-host live acceptance",
+            "metadata": {
+              "walkthrough": "network-jobs-d8c23a3492a5"
+            },
+            "uri": "file:///clawd-client-only/never-read/topic.md"
+          },
+          "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        },
+        "records": [
+          {
+            "id": "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742",
+            "revision": "b87475dd5399c9b5753c5e1741d94444fe4be9c636392437fd551d859212b214",
+            "content": "priorgenerationc243ed13d7 Mira Sol coordinates the Cedar Observatory. This supplied source survives transport interruption and explicit cancellation.",
+            "title": null,
+            "provenance": {
+              "conversation_id": null,
+              "conversation_uuid": null,
+              "end_line": 3,
+              "heading_path": [
+                "Durable source"
+              ],
+              "instance_id": "openclaw-clawd",
+              "message_index": null,
+              "message_key": null,
+              "message_uuid": null,
+              "role": null,
+              "source": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "source_generation": 1,
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "source_type": "markdown",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "start_line": 3
+            }
+          }
+        ]
+      },
+      {
+        "source": {
+          "id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+          "instance_id": "openclaw-clawd",
+          "generation": 1,
+          "successful_generation": 1,
+          "status": "ready",
+          "title": "/Projects/topic",
+          "document_key": "network-jobs-d8c23a3492a5/restart-source",
+          "revision": "bdb3bcaf6cf602f9f2d6e9ca587482a4c96ed2248c1a559be6b66e76a41234e2",
+          "content_hash": "sha256:c4f44519ca56e34d4df9af4d457e76cd3e38ae053839a052785c961d6bd446c5",
+          "provenance": {
+            "label": "private two-host live acceptance",
+            "metadata": {
+              "walkthrough": "network-jobs-d8c23a3492a5"
+            },
+            "uri": "file:///clawd-client-only/never-read/topic.md"
+          },
+          "uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+        },
+        "records": [
+          {
+            "id": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+            "revision": "18ef9617e7bb4cb18ac941ba4ffdf02a5c7d9c2b1e4eed716ced50fdf94d637e",
+            "content": "Mira Sol leads the Cedar Observatory in Boulder, Colorado. Cedar Observatory uses GraphRAG to organize astronomy research. Mira Sol coordinates the research team and works with Leo Hart on telescope operations.",
+            "title": null,
+            "provenance": {
+              "conversation_id": null,
+              "conversation_uuid": null,
+              "end_line": 3,
+              "heading_path": [
+                "Observatory handoff"
+              ],
+              "instance_id": "openclaw-clawd",
+              "message_index": null,
+              "message_key": null,
+              "message_uuid": null,
+              "role": null,
+              "source": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "source_generation": 1,
+              "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "source_type": "markdown",
+              "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "start_line": 3
+            }
+          }
+        ]
+      },
+      {
+        "source": {
+          "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "instance_id": "openclaw-clawd",
+          "generation": 2,
+          "successful_generation": 2,
+          "status": "ready",
+          "title": "/Projects/topic",
+          "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+          "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+          "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+          "provenance": {
+            "label": "private two-host live acceptance",
+            "metadata": {
+              "walkthrough": "network-jobs-d8c23a3492a5"
+            },
+            "uri": "file:///clawd-client-only/never-read/topic.md"
+          },
+          "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        },
+        "records": [
+          {
+            "id": "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb",
+            "revision": "002c4f67f057bcb9aac063a956e86b895fb4c1a44f6234a62be178eafab796ef",
+            "content": "freshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.",
+            "title": null,
+            "provenance": {
+              "conversation_id": null,
+              "conversation_uuid": null,
+              "end_line": 3,
+              "heading_path": [
+                "Replacement source"
+              ],
+              "instance_id": "openclaw-clawd",
+              "message_index": null,
+              "message_key": null,
+              "message_uuid": null,
+              "role": null,
+              "source": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "source_generation": 2,
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "source_type": "markdown",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "start_line": 3
+            }
+          }
+        ]
+      }
+    ],
+    "counts": {
+      "jobs": 3,
+      "source_identities": 2,
+      "completed_chunks_per_job": [
+        1,
+        1,
+        1
+      ],
+      "failed_chunks_per_job": [
+        0,
+        0,
+        0
+      ],
+      "extracted_jobs": 1,
+      "refresh_successful_generation": 2
+    }
+  },
+  "host_inference": {
+    "attribution": "service-side proxy observation forwarded to real Ollama on shiva, separate from client agent providers",
+    "synthetic_inference": false,
+    "ledger_rows": 40,
+    "unique_forwarded_requests": 20,
+    "paired_ingress_and_forwarded": true,
+    "all_forwarded_http_statuses": [
+      200
+    ],
+    "requests": [
+      {
+        "endpoint": "/api/chat",
+        "model": "phi4-mini:latest",
+        "successful_requests": 3
+      },
+      {
+        "endpoint": "/api/embeddings",
+        "model": "bge-m3:latest",
+        "successful_requests": 6
+      },
+      {
+        "endpoint": "/api/tags",
+        "model": null,
+        "successful_requests": 11
+      }
+    ],
+    "ledger_snapshot": {
+      "source_filename": "real-host-inference.jsonl",
+      "append_only_prefix_lines": 40,
+      "snapshot_sha256": "4b3de96ac40d3ae5fd181a8a96c7af834f42aa70cde73fbe1efa42df713075c3",
+      "scope": "Original conversational and lifecycle window; later maintenance/agent requests are not counted here",
+      "first_observation_utc": "2026-10-03T17:39:49.372930+00:00",
+      "last_observation_utc": "2026-10-03T17:47:20.567112+00:00"
+    }
+  },
+  "host_backup_restore": {
+    "status": "Default-vectorless and vector-inclusive portable maintenance passed at their separately recorded binaries",
+    "tested": true,
+    "default_vectorless": {
+      "binary_sha256": "8d69d6307312328b20e3433834d8a90025b9205ca1ade904567458fbff275dcb",
+      "source_revision": "568481f04640c6051ffe797c027b1fb65c579d75",
+      "create": {
+        "schema_version": 18,
+        "records": 51,
+        "record_counts": {
+          "entity": 14,
+          "mentions": 21,
+          "note": 5,
+          "processing_job": 3,
+          "remote_capture_receipt": 3,
+          "source": 5
+        },
+        "includes_embeddings": false,
+        "dry_run": false
+      },
+      "verify": {
+        "schema_version": 18,
+        "records": 51,
+        "record_counts": {
+          "entity": 14,
+          "mentions": 21,
+          "note": 5,
+          "processing_job": 3,
+          "remote_capture_receipt": 3,
+          "source": 5
+        },
+        "includes_embeddings": false,
+        "dry_run": false
+      },
+      "restore": {
+        "schema_version": 18,
+        "records": 51,
+        "record_counts": {
+          "entity": 14,
+          "mentions": 21,
+          "note": 5,
+          "processing_job": 3,
+          "remote_capture_receipt": 3,
+          "source": 5
+        },
+        "includes_embeddings": false,
+        "dry_run": false
+      },
+      "replay": {
+        "capture_receipt_replay": {
+          "record": {
+            "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+            "created_at": "2026-10-03T17:39:52.533801+00:00",
+            "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "provenance": {
+              "conversation_id": null,
+              "conversation_uuid": null,
+              "end_line": null,
+              "heading_path": [],
+              "instance_id": "openclaw-shiva",
+              "message_index": null,
+              "message_key": null,
+              "message_uuid": null,
+              "role": null,
+              "source": {
+                "label": "synthetic two-host walkthrough",
+                "metadata": {},
+                "uri": null
+              },
+              "source_generation": null,
+              "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "source_type": "manual",
+              "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "start_line": null
+            },
+            "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+            "tags": [
+              "walkthrough"
+            ],
+            "title": "Atlas launch",
+            "updated_at": "2026-10-03T17:39:52.533801+00:00"
+          },
+          "replayed": true,
+          "request_id": "two-host-final-001"
+        },
+        "original_upload_replay": {
+          "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+          "replayed": true,
+          "request_id": "network-jobs-d8c23a3492a5-base",
+          "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        },
+        "refresh_upload_replay": {
+          "job_id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+          "replayed": true,
+          "request_id": "network-jobs-d8c23a3492a5-refresh",
+          "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        },
+        "restored_source": {
+          "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+          "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+          "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+          "generation": 2,
+          "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "instance_id": "openclaw-clawd",
+          "provenance": {
+            "label": "private two-host live acceptance",
+            "metadata": {
+              "walkthrough": "network-jobs-d8c23a3492a5"
+            },
+            "uri": "file:///clawd-client-only/never-read/topic.md"
+          },
+          "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+          "status": "ready",
+          "successful_generation": 2,
+          "title": "/Projects/topic",
+          "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        },
+        "completed_jobs": [
+          {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T17:47:20.344033+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 2,
+            "id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "updated",
+              "extracted": false,
+              "generation": 2,
+              "note_ids": [
+                "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb"
+              ],
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:47:20.652388+00:00"
+          },
+          {
+            "cancellation_requested": false,
+            "checkpoint": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+            "completed": 1,
+            "created_at": "2026-10-03T17:46:05.611764+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": true,
+              "generation": 1,
+              "note_ids": [
+                "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724"
+              ],
+              "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+            },
+            "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:46:35.473421+00:00"
+          },
+          {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T17:43:59.981923+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742"
+              ],
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:45:41.267757+00:00"
+          }
+        ],
+        "same_canonical_cross_client_records": {
+          "records": [
+            {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "hit_type": "note",
+              "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-clawd",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                "start_line": null
+              },
+              "revision": "4b122cca872c3533fc0d4e5d84ebcaf2e84f3f55029e2fb4c51d1c7b0d846d6a",
+              "score": 0.35583823919296265,
+              "title": "Atlas launch",
+              "warnings": []
+            },
+            {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "hit_type": "note",
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-shiva",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "start_line": null
+              },
+              "revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+              "score": 0.35583823919296265,
+              "title": "Atlas launch",
+              "warnings": []
+            }
+          ]
+        },
+        "binary_sha256": "8d69d6307312328b20e3433834d8a90025b9205ca1ade904567458fbff275dcb",
+        "restore_kind": "default-vectorless",
+        "provider_work_not_needed_for_receipt_replay": true
+      },
+      "canonical_comparison": {
+        "restored_capture_identities_content_titles_and_trusted_provenance_retained": true,
+        "current_restored_writer_record_revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+        "original_conversational_writer_record_revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+        "immutable_capture_receipt_revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+        "current_writer_record_revision_unchanged_from_original_conversation": false,
+        "comparison_limit": "Stored restored current revisions differ from original conversational revisions; no later pre-backup revision baseline is supplied"
+      }
+    },
+    "vector_inclusive": {
+      "status": "Create, verify, fresh restore and canonical replay passed",
+      "tested_successfully": true,
+      "binary_sha256": "3a99eb0eb6d324e3903e8f119f4f3656cad7544b1930f747df6742f6ebdb942b",
+      "source_revision": "02a49a2449153d9b1f3ec67bab2907ab4c610bd6",
+      "create": {
+        "schema_version": 18,
+        "records": 52,
+        "record_counts": {
+          "entity": 14,
+          "graphrag_metadata": 1,
+          "mentions": 21,
+          "note": 5,
+          "processing_job": 3,
+          "remote_capture_receipt": 3,
+          "source": 5
+        },
+        "includes_embeddings": true,
+        "dry_run": false
+      },
+      "verify": {
+        "schema_version": 18,
+        "records": 52,
+        "record_counts": {
+          "entity": 14,
+          "graphrag_metadata": 1,
+          "mentions": 21,
+          "note": 5,
+          "processing_job": 3,
+          "remote_capture_receipt": 3,
+          "source": 5
+        },
+        "includes_embeddings": true,
+        "dry_run": false
+      },
+      "restore": {
+        "schema_version": 18,
+        "records": 52,
+        "record_counts": {
+          "entity": 14,
+          "graphrag_metadata": 1,
+          "mentions": 21,
+          "note": 5,
+          "processing_job": 3,
+          "remote_capture_receipt": 3,
+          "source": 5
+        },
+        "includes_embeddings": true,
+        "dry_run": false
+      },
+      "replay": {
+        "capture_receipt_replay": {
+          "record": {
+            "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+            "created_at": "2026-10-03T17:39:52.533801+00:00",
+            "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "provenance": {
+              "conversation_id": null,
+              "conversation_uuid": null,
+              "end_line": null,
+              "heading_path": [],
+              "instance_id": "openclaw-shiva",
+              "message_index": null,
+              "message_key": null,
+              "message_uuid": null,
+              "role": null,
+              "source": {
+                "label": "synthetic two-host walkthrough",
+                "metadata": {},
+                "uri": null
+              },
+              "source_generation": null,
+              "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "source_type": "manual",
+              "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "start_line": null
+            },
+            "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+            "tags": [
+              "walkthrough"
+            ],
+            "title": "Atlas launch",
+            "updated_at": "2026-10-03T17:39:52.533801+00:00"
+          },
+          "replayed": true,
+          "request_id": "two-host-final-001"
+        },
+        "original_upload_replay": {
+          "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+          "replayed": true,
+          "request_id": "network-jobs-d8c23a3492a5-base",
+          "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        },
+        "refresh_upload_replay": {
+          "job_id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+          "replayed": true,
+          "request_id": "network-jobs-d8c23a3492a5-refresh",
+          "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        },
+        "restored_source": {
+          "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+          "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+          "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+          "generation": 2,
+          "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "instance_id": "openclaw-clawd",
+          "provenance": {
+            "label": "private two-host live acceptance",
+            "metadata": {
+              "walkthrough": "network-jobs-d8c23a3492a5"
+            },
+            "uri": "file:///clawd-client-only/never-read/topic.md"
+          },
+          "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+          "status": "ready",
+          "successful_generation": 2,
+          "title": "/Projects/topic",
+          "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+        },
+        "original_inspection_revision_preserved": {
+          "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+          "conversations": [],
+          "hit_type": "note",
+          "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+          "messages": [],
+          "messages_truncated": false,
+          "provenance": {
+            "conversation_id": null,
+            "conversation_uuid": null,
+            "end_line": null,
+            "heading_path": [],
+            "instance_id": "openclaw-shiva",
+            "message_index": null,
+            "message_key": null,
+            "message_uuid": null,
+            "role": null,
+            "source": {
+              "label": "synthetic two-host walkthrough",
+              "metadata": {},
+              "uri": null
+            },
+            "source_generation": null,
+            "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "source_type": "manual",
+            "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "start_line": null
+          },
+          "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+          "title": "Atlas launch",
+          "warnings": []
+        },
+        "context": {
+          "chunks": [
+            {
+              "approx_tokens": 73,
+              "citation": 1,
+              "conversation_uuid": null,
+              "created_at": "2026-10-03T17:43:21.595366+00:00",
+              "graph": null,
+              "hit_type": "note",
+              "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+              "message_index": null,
+              "rendered_tokens": 120,
+              "role": null,
+              "score": 0.016393441706895828,
+              "selected_span_end": 73,
+              "selected_span_start": 0,
+              "snippet": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+              "title": "Atlas launch",
+              "truncated": false
+            },
+            {
+              "approx_tokens": 70,
+              "citation": 2,
+              "conversation_uuid": null,
+              "created_at": "2026-10-03T17:47:20.571574+00:00",
+              "graph": null,
+              "hit_type": "note",
+              "id": "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb",
+              "message_index": null,
+              "rendered_tokens": 95,
+              "role": null,
+              "score": 0.010937499813735485,
+              "selected_span_end": 70,
+              "selected_span_start": 0,
+              "snippet": "freshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station.",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "title": null,
+              "truncated": true
+            },
+            {
+              "approx_tokens": 58,
+              "citation": 3,
+              "conversation_uuid": null,
+              "created_at": "2026-10-03T17:46:05.744587+00:00",
+              "graph": null,
+              "hit_type": "note",
+              "id": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+              "message_index": null,
+              "rendered_tokens": 83,
+              "role": null,
+              "score": 0.01076923031359911,
+              "selected_span_end": 58,
+              "selected_span_start": 0,
+              "snippet": "Mira Sol leads the Cedar Observatory in Boulder, Colorado.",
+              "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "title": null,
+              "truncated": true
+            }
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 1,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 97,
+            "token_count_mode": "estimated"
+          },
+          "query": "twohostatlasfinal",
+          "rendered_context": "<context>\n[C1] [note] Atlas launch\ntwohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.\n\n[C2] [note] (untitled)\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station.\n\n[C3] [note] (untitled)\nMira Sol leads the Cedar Observatory in Boulder, Colorado.\n\n</context>",
+          "scope": "all",
+          "total_tokens": 298
+        },
+        "completed_jobs": [
+          {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T17:47:20.344033+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 2,
+            "id": "processing_job:a2703dbb18fb6c28bbdd8ff65990af0f506ded47d9fd7368b11c71e1c8b2c6f2",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "updated",
+              "extracted": false,
+              "generation": 2,
+              "note_ids": [
+                "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb"
+              ],
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:47:20.652388+00:00"
+          },
+          {
+            "cancellation_requested": false,
+            "checkpoint": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+            "completed": 1,
+            "created_at": "2026-10-03T17:46:05.611764+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:e51134461cb27e75d1bc7b39bf898558e9649fa598082ec9ca07480b6289c270",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": true,
+              "generation": 1,
+              "note_ids": [
+                "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724"
+              ],
+              "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+              "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6"
+            },
+            "source_id": "source:50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:46:35.473421+00:00"
+          },
+          {
+            "cancellation_requested": false,
+            "checkpoint": null,
+            "completed": 1,
+            "created_at": "2026-10-03T17:43:59.981923+00:00",
+            "error_code": null,
+            "failed": 0,
+            "generation": 1,
+            "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+            "instance_id": "openclaw-clawd",
+            "job_type": "remote_upload",
+            "phase": "completed",
+            "result": {
+              "action": "created",
+              "extracted": false,
+              "generation": 1,
+              "note_ids": [
+                "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742"
+              ],
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "status": "completed",
+            "total": 1,
+            "updated_at": "2026-10-03T17:45:41.267757+00:00"
+          }
+        ],
+        "binary_sha256": "3a99eb0eb6d324e3903e8f119f4f3656cad7544b1930f747df6742f6ebdb942b",
+        "restore_kind": "vector-inclusive"
+      },
+      "original_canonical_record_all_fields_preserved": true,
+      "restored_context_budget": {
+        "total_tokens": 298,
+        "maximum_tokens": 300,
+        "chunks": 3,
+        "token_count_mode": "estimated"
+      }
+    },
+    "restored_real_agent_sessions": {
+      "status": "Three real conversational sessions passed against the fresh default-vectorless restore",
+      "binary_sha256": "8d69d6307312328b20e3433834d8a90025b9205ca1ade904567458fbff275dcb",
+      "server_uses_fresh_portable_restore": true,
+      "openclaw_a": {
+        "session_id": "f130a6bc-f012-467f-bb90-75591ecf3173",
+        "observed_models": [
+          {
+            "provider": "google",
+            "model": "gemini-3.8-flash",
+            "api": "google-generative-ai"
+          }
+        ],
+        "outer_bridge_calls": 3,
+        "outer_bridge_failures": 0,
+        "actual_successful_mcp_calls": [
+          "capture_note"
+        ],
+        "original_immutable_receipt_replayed": true,
+        "receipt_revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+        "service_envelopes": [
+          {
+            "seq": 13,
+            "tool_call_id": "call_634954",
+            "envelope": {
+              "data": {
+                "record": {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "created_at": "2026-10-03T17:39:52.533801+00:00",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": [],
+                    "instance_id": "openclaw-shiva",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": {
+                      "label": "synthetic two-host walkthrough",
+                      "metadata": {},
+                      "uri": null
+                    },
+                    "source_generation": null,
+                    "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "start_line": null
+                  },
+                  "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                  "tags": [
+                    "walkthrough"
+                  ],
+                  "title": "Atlas launch",
+                  "updated_at": "2026-10-03T17:39:52.533801+00:00"
+                },
+                "replayed": true,
+                "request_id": "two-host-final-001"
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          }
+        ]
+      },
+      "hermes": {
+        "session_id": "20261003_115221_f81d83",
+        "observed_models": [
+          {
+            "model": "deepseek-v4.1-flash",
+            "billing_provider": "ollama-cloud"
+          }
+        ],
+        "outer_bridge_calls": 5,
+        "rejected_batch_bridge_calls": [
+          {
+            "bridge_call_id": "call_lusyd49v",
+            "attempted_tools": [
+              "mcp__graphrag__search_notes",
+              "mcp__graphrag__build_context"
+            ]
+          }
+        ],
+        "actual_successful_mcp_calls": [
+          {
+            "bridge_call_id": "call_gwdppzpf",
+            "tool": "mcp__graphrag__search_notes",
+            "arguments": {
+              "graph": "off",
+              "mode": "keyword",
+              "query": "twohostatlasfinal"
+            }
+          },
+          {
+            "bridge_call_id": "call_nonwkgs8",
+            "tool": "mcp__graphrag__get_record",
+            "arguments": {
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c"
+            }
+          },
+          {
+            "bridge_call_id": "call_s22nl82e",
+            "tool": "mcp__graphrag__build_context",
+            "arguments": {
+              "graph": "off",
+              "max_chunk_tokens": 120,
+              "max_chunks": 3,
+              "max_total_tokens": 300,
+              "query": "twohostatlasfinal"
+            }
+          }
+        ],
+        "service_envelopes": [
+          {
+            "seq": 33,
+            "tool_call_id": "call_gwdppzpf",
+            "envelope": {
+              "data": {
+                "records": [
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": [],
+                      "instance_id": "openclaw-clawd",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": {
+                        "label": "synthetic two-host walkthrough",
+                        "metadata": {},
+                        "uri": null
+                      },
+                      "source_generation": null,
+                      "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "start_line": null
+                    },
+                    "revision": "4b122cca872c3533fc0d4e5d84ebcaf2e84f3f55029e2fb4c51d1c7b0d846d6a",
+                    "score": 0.35583823919296265,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  },
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": [],
+                      "instance_id": "openclaw-shiva",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": {
+                        "label": "synthetic two-host walkthrough",
+                        "metadata": {},
+                        "uri": null
+                      },
+                      "source_generation": null,
+                      "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "start_line": null
+                    },
+                    "revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+                    "score": 0.35583823919296265,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  }
+                ]
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 35,
+            "tool_call_id": "call_nonwkgs8",
+            "envelope": {
+              "data": {
+                "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                "conversations": [],
+                "hit_type": "note",
+                "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "messages": [],
+                "messages_truncated": false,
+                "provenance": {
+                  "conversation_id": null,
+                  "conversation_uuid": null,
+                  "end_line": null,
+                  "heading_path": [],
+                  "instance_id": "openclaw-shiva",
+                  "message_index": null,
+                  "message_key": null,
+                  "message_uuid": null,
+                  "role": null,
+                  "source": {
+                    "label": "synthetic two-host walkthrough",
+                    "metadata": {},
+                    "uri": null
+                  },
+                  "source_generation": null,
+                  "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "source_type": "manual",
+                  "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "start_line": null
+                },
+                "revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+                "title": "Atlas launch",
+                "warnings": []
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 37,
+            "tool_call_id": "call_s22nl82e",
+            "envelope": {
+              "data": {
+                "chunks": [
+                  {
+                    "approx_tokens": 73,
+                    "citation": 1,
+                    "conversation_uuid": null,
+                    "created_at": "2026-10-03T17:43:21.595366+00:00",
+                    "graph": null,
+                    "hit_type": "note",
+                    "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "message_index": null,
+                    "rendered_tokens": 120,
+                    "role": null,
+                    "score": 0.004918032791465521,
+                    "selected_span_end": 73,
+                    "selected_span_start": 0,
+                    "snippet": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "title": "Atlas launch",
+                    "truncated": false
+                  }
+                ],
+                "diagnostics": {
+                  "dropped_duplicates": 0,
+                  "dropped_for_budget": 0,
+                  "dropped_for_entity_filter": 0,
+                  "dropped_for_relevance": 0,
+                  "dropped_near_duplicates": 1,
+                  "graph_candidates_considered": 0,
+                  "graph_candidates_dropped": 0,
+                  "graph_candidates_selected": 0,
+                  "header_tokens": 47,
+                  "token_count_mode": "estimated"
+                },
+                "query": "twohostatlasfinal",
+                "rendered_context": "<context>\n[C1] [note] Atlas launch\ntwohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.\n\n</context>",
+                "scope": "all",
+                "total_tokens": 120
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          }
+        ],
+        "current_record_id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+        "current_record_revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+        "context_total_tokens": 120,
+        "cited_record_id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d"
+      },
+      "openclaw_b": {
+        "session_id": "4aba0b2f-d8d4-4182-a68b-47ae94fdca1b",
+        "observed_models": [
+          {
+            "provider": "anthropic",
+            "model": "claude-sonnet-5",
+            "api": "anthropic-messages"
+          }
+        ],
+        "outer_transcript_calls": 9,
+        "persisted_schema_error_results": 2,
+        "successful_mcp_calls": 4,
+        "mcp_call_attempts": [
+          {
+            "bridge_call_id": "toolu_01CsVsCTBcwmJNDNzYRwLJkn",
+            "tool": "mcp:graphrag:graphrag__search_notes",
+            "arguments": {
+              "query": "twohostatlasfinal",
+              "mode": "keyword",
+              "graph": "off"
+            },
+            "status": "completed"
+          },
+          {
+            "bridge_call_id": "toolu_0161jV2UKBVE26YY5vH44uk9",
+            "tool": "mcp:graphrag:graphrag__get_record",
+            "arguments": {
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c"
+            },
+            "status": "completed"
+          },
+          {
+            "bridge_call_id": "toolu_01PiQyLVL5dMvymccKkV3sDa",
+            "tool": "mcp:graphrag:graphrag__get_job",
+            "arguments": {
+              "job_id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b"
+            },
+            "status": "schema_error"
+          },
+          {
+            "bridge_call_id": "toolu_01Je74ePy8wW1L79Z4osCuoG",
+            "tool": "mcp:graphrag:graphrag__get_source",
+            "arguments": {
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "status": "schema_error"
+          },
+          {
+            "bridge_call_id": "toolu_01BMNBo7Vh3iyaTxjtpaDusP",
+            "tool": "mcp:graphrag:graphrag__get_job",
+            "arguments": {
+              "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b"
+            },
+            "status": "completed"
+          },
+          {
+            "bridge_call_id": "toolu_01AfGT9nJdAZ4qCkAVHfQ75C",
+            "tool": "mcp:graphrag:graphrag__get_source",
+            "arguments": {
+              "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "status": "completed"
+          }
+        ],
+        "service_envelopes": [
+          {
+            "seq": 10,
+            "tool_call_id": "toolu_01CsVsCTBcwmJNDNzYRwLJkn",
+            "envelope": {
+              "data": {
+                "records": [
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": [],
+                      "instance_id": "openclaw-clawd",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": {
+                        "label": "synthetic two-host walkthrough",
+                        "metadata": {},
+                        "uri": null
+                      },
+                      "source_generation": null,
+                      "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "start_line": null
+                    },
+                    "revision": "4b122cca872c3533fc0d4e5d84ebcaf2e84f3f55029e2fb4c51d1c7b0d846d6a",
+                    "score": 0.35583823919296265,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  },
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": [],
+                      "instance_id": "openclaw-shiva",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": {
+                        "label": "synthetic two-host walkthrough",
+                        "metadata": {},
+                        "uri": null
+                      },
+                      "source_generation": null,
+                      "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "start_line": null
+                    },
+                    "revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+                    "score": 0.35583823919296265,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  }
+                ]
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 10,
+            "tool_call_id": "toolu_01CsVsCTBcwmJNDNzYRwLJkn",
+            "envelope": {
+              "data": {
+                "records": [
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                      "instance_id": "openclaw-clawd",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                      "source_generation": null,
+                      "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                      "start_line": null
+                    },
+                    "revision": "4b122cca872c3533fc0d4e5d84ebcaf2e84f3f55029e2fb4c51d1c7b0d846d6a",
+                    "score": 0.35583823919296265,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  },
+                  {
+                    "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                    "hit_type": "note",
+                    "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "provenance": {
+                      "conversation_id": null,
+                      "conversation_uuid": null,
+                      "end_line": null,
+                      "heading_path": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                      "instance_id": "openclaw-shiva",
+                      "message_index": null,
+                      "message_key": null,
+                      "message_uuid": null,
+                      "role": null,
+                      "source": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                      "source_generation": null,
+                      "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "source_type": "manual",
+                      "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                      "start_line": null
+                    },
+                    "revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+                    "score": 0.35583823919296265,
+                    "title": "Atlas launch",
+                    "warnings": []
+                  }
+                ]
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 16,
+            "tool_call_id": "toolu_0161jV2UKBVE26YY5vH44uk9",
+            "envelope": {
+              "data": {
+                "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                "conversations": [],
+                "hit_type": "note",
+                "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "messages": [],
+                "messages_truncated": false,
+                "provenance": {
+                  "conversation_id": null,
+                  "conversation_uuid": null,
+                  "end_line": null,
+                  "heading_path": [],
+                  "instance_id": "openclaw-shiva",
+                  "message_index": null,
+                  "message_key": null,
+                  "message_uuid": null,
+                  "role": null,
+                  "source": {
+                    "label": "synthetic two-host walkthrough",
+                    "metadata": {},
+                    "uri": null
+                  },
+                  "source_generation": null,
+                  "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "source_type": "manual",
+                  "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "start_line": null
+                },
+                "revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+                "title": "Atlas launch",
+                "warnings": []
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 17,
+            "tool_call_id": "toolu_01PiQyLVL5dMvymccKkV3sDa",
+            "envelope": {
+              "data": null,
+              "error": {
+                "code": "invalid_input",
+                "message": "Tool arguments do not match the advertised schema; check required fields and types.",
+                "retryable": false
+              },
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 18,
+            "tool_call_id": "toolu_01Je74ePy8wW1L79Z4osCuoG",
+            "envelope": {
+              "data": null,
+              "error": {
+                "code": "invalid_input",
+                "message": "Tool arguments do not match the advertised schema; check required fields and types.",
+                "retryable": false
+              },
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 27,
+            "tool_call_id": "toolu_01BMNBo7Vh3iyaTxjtpaDusP",
+            "envelope": {
+              "data": {
+                "cancellation_requested": false,
+                "checkpoint": null,
+                "completed": 1,
+                "created_at": "2026-10-03T17:43:59.981923+00:00",
+                "error_code": null,
+                "failed": 0,
+                "generation": 1,
+                "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+                "instance_id": "openclaw-clawd",
+                "job_type": "remote_upload",
+                "phase": "completed",
+                "result": {
+                  "action": "created",
+                  "extracted": false,
+                  "generation": 1,
+                  "note_ids": [
+                    "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742"
+                  ],
+                  "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                  "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+                },
+                "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                "status": "completed",
+                "total": 1,
+                "updated_at": "2026-10-03T17:45:41.267757+00:00"
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 28,
+            "tool_call_id": "toolu_01AfGT9nJdAZ4qCkAVHfQ75C",
+            "envelope": {
+              "data": {
+                "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+                "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+                "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+                "generation": 2,
+                "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                "instance_id": "openclaw-clawd",
+                "provenance": {
+                  "label": "private two-host live acceptance",
+                  "metadata": {
+                    "walkthrough": "network-jobs-d8c23a3492a5"
+                  },
+                  "uri": "file:///clawd-client-only/never-read/topic.md"
+                },
+                "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+                "status": "ready",
+                "successful_generation": 2,
+                "title": "/Projects/topic",
+                "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          },
+          {
+            "seq": 28,
+            "tool_call_id": "toolu_01AfGT9nJdAZ4qCkAVHfQ75C",
+            "envelope": {
+              "data": {
+                "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+                "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+                "document_key": "***",
+                "generation": 2,
+                "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                "instance_id": "openclaw-clawd",
+                "provenance": {
+                  "label": "private two-host live acceptance",
+                  "metadata": {
+                    "walkthrough": "network-jobs-d8c23a3492a5"
+                  },
+                  "uri": "file:///clawd-client-only/never-read/topic.md"
+                },
+                "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+                "status": "ready",
+                "successful_generation": 2,
+                "title": "/Projects/topic",
+                "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+              },
+              "error": null,
+              "schema_version": 1
+            }
+          }
+        ],
+        "cli_reported_tool_summary": {
+          "calls": 15,
+          "tools": [
+            "tool_search",
+            "graphrag__search_notes",
+            "tool_call",
+            "graphrag__get_job",
+            "graphrag__get_source",
+            "graphrag__get_record",
+            "tool_describe"
+          ],
+          "failures": 4
+        },
+        "counting_limit": "CLI summary aggregates tool invocations differently from canonical outer transcript; neither is a count of distinct successful MCP requests",
+        "native_job_read": {
+          "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+          "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "status": "completed",
+          "generation": 1
+        },
+        "native_source_read": {
+          "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+          "title": "/Projects/topic",
+          "generation": 2,
+          "successful_generation": 2,
+          "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+          "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+          "trusted_instance": "openclaw-clawd"
+        }
+      },
+      "counts": {
+        "outer_transcript_calls": 17,
+        "successful_mcp_calls": 8,
+        "recorded_service_schema_errors": 2,
+        "rejected_hermes_batch_bridge_calls": 1
+      },
+      "canonical_comparison": {
+        "current_reader_snapshots_match_exactly": true,
+        "current_reader_revision": "d36797ae42aebec45fb73c40af673986e6097b713f02246cf675ecfdd44b5f8c",
+        "original_capture_receipt_revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+        "current_reader_revision_equals_original_receipt_revision": false
+      }
+    }
+  },
+  "coverage_limits": {
+    "proposal_decisions_exercised": false,
+    "superseded_generation_resume_exercised": false,
+    "provider_outage_categorized_failure_exercised": true,
+    "same_host_sdk_smoke_is_separate": true,
+    "github_review_approval_claimed": false,
+    "issue_closure_claimed": false,
+    "restoration_of_inflight_worker_job_exercised": false,
+    "job_lifecycle_mutations_called_by_real_llm": false,
+    "job_status_read_by_real_llm": true,
+    "uploaded_source_read_by_real_llm": true
+  },
+  "sanitization": {
+    "known_private_mcp_and_local_provider_credentials_checked": true,
+    "remote_provider_credential_scan_performed_by_private_extractor": true,
+    "private_profile_paths_excluded": true,
+    "raw_env_and_database_excluded": true,
+    "exec_input_code_and_reasoning_excluded": true
+  },
+  "source_evidence_sha256": {
+    "openclaw-shiva-1f471786-d215-4d4b-9a73-af17f4403d49.json": "dde3b69239c0f86f9fe95a0cfaa43453c0ea908c526dcc6366e988c47533a048",
+    "hermes-shiva-20261003_114029_c8172a.json": "95adaff520b551c6868dc3114e85d34b3a64dc4e5fa9ecf2d33b01d0a3476136",
+    "openclaw-clawd-final-tools.json": "bb1bdee51074e227e1a781142667314b8f2a59ad24f1f2ed787802817f90dfef",
+    "final-capture-oracle.json": "033a3f9eb256925a9a881ed8e5741c03b51c94f4e614fd18c112c7af8e9fafc0",
+    "candidate.json": "81ed1695529d393d7af25d2c8305912be09462dc02e0b870628a0a3ba03bb239",
+    "readonly-and-invalid-credential.json": "fdecef14d2f62c9d9a20383a2ee80029faee026a9623ecdc709a73bbb4002f5e",
+    "auth-retry-rotation.json": "fe62f797a91e181c4e09459a6c7eb100f125b04d4da032c87f9d2ecd563f9e8e",
+    "clawd-tunnel-outage.json": "5be4e985d353cba64dfd564027b875975dd75f7b7ba9367d4b4b7af7e6fe1d0e",
+    "clawd-tunnel-reconnected.json": "8212f24804281fad07716f2c34642cf3c1459b13af2bf04e9f8031b99f29cbcb",
+    "service-restart-processes.json": "1cf675a4d998a5f6294c64f4b663cceed14b73c003f4b1076624fbb1308c0621",
+    "network-jobs-catalogs.json": "8190e0196483484370a48597a0c6b17ec6d57615525988bb0afee9c5a136c8c7",
+    "network-jobs-lost-ack.json": "abe93215d25a6a68ccbca4a3e752fff4c5a6b7fb9a97c2c68f86a5d9948462ee",
+    "network-jobs-disconnect-ready.json": "2322c4edd176fe68575ed79f19a393a89ecb03b1fb3d99d31ea40edff2be2e79",
+    "network-jobs-reconnect.json": "4a3312a6297a9724222b1f884d26e6c529b21652f54532d0a6a9aaced58091da",
+    "network-jobs-cancel-resume.json": "0f4c954cae3eeb226fcc42a154bd658a8a6cd32714c87e6e9d98bcfdc3738fd7",
+    "network-jobs-restart-verified.json": "0d0da4bae300aabf7ec33797609d64a5f39eadeb4535db8f3a824dba27f14c23",
+    "network-jobs-refresh-held.json": "151bd338836979d4f81f510deaa07fd97427682426247e26bf7944540f4c3c69",
+    "network-jobs-refresh-promoted.json": "231d7b963352db19f36e3b188131d4d0c65f0700c942e52cc89d5647c80cfb5e",
+    "network-jobs-failure.json": "1b57ff0f6b0be85cf9f85a7639c058ac13629591ea871704b7dc624be54bc688",
+    "network-jobs-base-completed.json": "181123cfb4381692c1ff5be019f42963bbafd29291197c0862c32d9746f82154",
+    "network-jobs-restart-completed.json": "009e02735c15eceef24285e0392f9611dbd10442a716d37c49adc72f8010e19d",
+    "network-jobs-refresh-completed.json": "d620d6ad9a125291113e0937339e2eb70304aec90038e77fc9eaa974bd5bd82f",
+    "network-jobs-restart-ready.json": "b7c1ae1a0fe6e7b0ccff77530d67f0e6641edad7f5fe41629311f33d2b996e76",
+    "network-jobs-restart-release.json": "d3b1bed6cf2b86e8f14cab3c6b2777c28444c2856f7a7f893fc14b6bf4d475dc",
+    "network-jobs-network-jobs-d8c23a3492a5-base-transitions.json": "c9932dc7aa09f8315cc27d754bfefe1f692b2d94ace5c53a1580c2ce0f90055c",
+    "network-jobs-network-jobs-d8c23a3492a5-restart-transitions.json": "83fd99a78e7e511472370ee44f36bd769dace88e6625d373215b183f3cbaa2e3",
+    "network-jobs-network-jobs-d8c23a3492a5-refresh-transitions.json": "cdcb8bf03139932e20ab240928632b3dd09abd49112d6c00c47e201715f8f5dd",
+    "network-jobs-state.json": "3ab833e532ef4fb3105340ca76585c2061a7261bf45072c44ad0e0d3aaeada93",
+    "provider-outage.json": "b1a7ea583632242fe923694c3d1fd0566c00ffcb7ec7a86d75a5bb190b44415d",
+    "backup-default-create.json": "582bda18416b294e318e4c4e16c1c7f3bc44f1a0f3b52074db027a27dd07f6ab",
+    "backup-default-verify.json": "582bda18416b294e318e4c4e16c1c7f3bc44f1a0f3b52074db027a27dd07f6ab",
+    "backup-default-restore.json": "eef2c7674c83503a45cc0da6e7309506e52f9319eaaf96d6632741cb5b8ea4b1",
+    "backup-default-replay.json": "27408fd53a9c2f55c7523ee0fcd21f4b0354a92e574e044dff3091557edee1ed",
+    "openclaw-shiva-f130a6bc-f012-467f-bb90-75591ecf3173.json": "56a65594e6dba6ca28e6e5c07c9a7f86ee56d58ea41895fe3a1f767cf7c14123",
+    "hermes-shiva-20261003_115221_f81d83.json": "04605d002b07b875af41644cbd4d4c466425aba24faadafd20562f775a67543d",
+    "openclaw-clawd-post-restore-tools.json": "36bba9dbfed384f323f0144cf6a4073aa500337dafef94e0620559adfc9e101d",
+    "post-restore-sessions.json": "cc270c003426048571f96add6d7cd76fc1786f70ecfa2b80c016f144bc88d7a0",
+    "publication-candidate.json": "0d2c7177c2bbbacf1634741c946f4d66a4e3142a435590862878f7875c01d34a",
+    "backup-vectors-create.json": "9033d221be96724d5a82a0011f68eaa33ac4633e5b1f174d3338a5fee31cae33",
+    "backup-vectors-verify.json": "9033d221be96724d5a82a0011f68eaa33ac4633e5b1f174d3338a5fee31cae33",
+    "backup-vectors-restore.json": "722690fa3f276b44b667aeb33fe71f5b81f0fbbfcf063a9dd13b034fda87f1bb",
+    "backup-vectors-replay.json": "3c07487bc02308df5f04eaa3a0e01c35486f4fb15461ab9b391c30166e835369",
+    "openclaw-shiva-6b0dc20b-9e06-45fb-af5c-d047b030b686.json": "0cd6184825fe9a361ff2a16d086eea605e7181d8f261a163f5605182098af6cc",
+    "hermes-shiva-20261003_115926_bb061a.json": "28e5f90bc42e0ff5020c3b897e5dd30e2929861a6f638a3466113cc4340074a9",
+    "openclaw-clawd-post-vector-restore-tools.json": "f1fefb32e5159d069b1e2394d0b37ec0c00fce7dce029236441b3ebfdbafe0b6",
+    "post-vector-restore-sessions.json": "8db79a4aeaebc41d3be08f66ce3955c1c398c520c65518df4e51ba1cf26ce129"
+  },
+  "provider_outage_orchestration": {
+    "attribution": "local service-host RPC against an operator-interrupted private inference forwarder; no interruption of the personal Ollama service",
+    "keyword_read_succeeded": true,
+    "inspection_succeeded": true,
+    "inference_failure": {
+      "data": null,
+      "error": {
+        "code": "provider_unavailable",
+        "message": "A server provider is unavailable. For retrieval, retry search_notes with mode=keyword and graph=off; keep capture drafts and their request_id for retry.",
+        "retryable": true
+      },
+      "schema_version": 1
+    },
+    "personal_ollama_service_unchanged": true,
+    "interrupted_only_private_forwarder": true
+  },
+  "native_harness_reported_gates": {
+    "tested_harness_revision": "6217f07543cf7971bd87b66962786684afb42384",
+    "macos_checks": 44,
+    "macos_passed": 43,
+    "macos_linux_only_skipped": 1,
+    "linux_native_passed": 26
+  },
+  "publication_vector_restored_sessions": {
+    "status": "Three conversational agents passed under observed3a99 checkpoint; this does not attest later source fixes",
+    "binary_sha256": "3a99eb0eb6d324e3903e8f119f4f3656cad7544b1930f747df6742f6ebdb942b",
+    "source_revision": "02a49a2449153d9b1f3ec67bab2907ab4c610bd6",
+    "fresh_vector_restored_corpus": true,
+    "process_exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "openclaw_a": {
+      "session_id": "6b0dc20b-9e06-45fb-af5c-d047b030b686",
+      "observed_models": [
+        {
+          "provider": "google",
+          "model": "gemini-3.8-flash",
+          "api": "google-generative-ai"
+        }
+      ],
+      "outer_bridge_calls": 3,
+      "outer_errors": 0,
+      "actual_successful_mcp_calls": [
+        "capture_note"
+      ],
+      "original_immutable_receipt_replayed": true,
+      "service_envelopes": [
+        {
+          "seq": 13,
+          "tool_call_id": "call_1621687",
+          "envelope": {
+            "data": {
+              "record": {
+                "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                "created_at": "2026-10-03T17:39:52.533801+00:00",
+                "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "provenance": {
+                  "conversation_id": null,
+                  "conversation_uuid": null,
+                  "end_line": null,
+                  "heading_path": [],
+                  "instance_id": "openclaw-shiva",
+                  "message_index": null,
+                  "message_key": null,
+                  "message_uuid": null,
+                  "role": null,
+                  "source": {
+                    "label": "synthetic two-host walkthrough",
+                    "metadata": {},
+                    "uri": null
+                  },
+                  "source_generation": null,
+                  "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "source_type": "manual",
+                  "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "start_line": null
+                },
+                "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                "tags": [
+                  "walkthrough"
+                ],
+                "title": "Atlas launch",
+                "updated_at": "2026-10-03T17:39:52.533801+00:00"
+              },
+              "replayed": true,
+              "request_id": "two-host-final-001"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        }
+      ]
+    },
+    "hermes": {
+      "session_id": "20261003_115926_bb061a",
+      "observed_models": [
+        {
+          "model": "deepseek-v4.1-flash",
+          "billing_provider": "ollama-cloud"
+        }
+      ],
+      "outer_calls": 6,
+      "outer_bridge_errors": 1,
+      "rejected_batch_bridge_calls": [
+        {
+          "bridge_call_id": "call_68yhuxbv",
+          "attempted_tools": [
+            "mcp__graphrag__get_record",
+            "mcp__graphrag__get_record"
+          ],
+          "error": "Local tools require one entry per tool_call; mixed and multi-local batches are not supported."
+        }
+      ],
+      "actual_successful_mcp_calls": [
+        {
+          "bridge_call_id": "call_oovis365",
+          "tool": "mcp__graphrag__search_notes",
+          "arguments": {
+            "graph": "off",
+            "mode": "keyword",
+            "query": "twohostatlasfinal"
+          }
+        },
+        {
+          "bridge_call_id": "call_gm83ba63",
+          "tool": "mcp__graphrag__get_record",
+          "arguments": {
+            "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+            "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8"
+          }
+        },
+        {
+          "bridge_call_id": "call_gp6ycvjw",
+          "tool": "mcp__graphrag__get_record",
+          "arguments": {
+            "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720"
+          }
+        },
+        {
+          "bridge_call_id": "call_f3y8cj90",
+          "tool": "mcp__graphrag__build_context",
+          "arguments": {
+            "graph": "off",
+            "max_chunk_tokens": 120,
+            "max_chunks": 3,
+            "max_total_tokens": 300,
+            "query": "twohostatlasfinal"
+          }
+        }
+      ],
+      "service_errors": 0,
+      "service_envelopes": [
+        {
+          "seq": 43,
+          "tool_call_id": "call_oovis365",
+          "envelope": {
+            "data": {
+              "records": [
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": [],
+                    "instance_id": "openclaw-clawd",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": {
+                      "label": "synthetic two-host walkthrough",
+                      "metadata": {},
+                      "uri": null
+                    },
+                    "source_generation": null,
+                    "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "start_line": null
+                  },
+                  "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+                  "score": 0.35583823919296265,
+                  "title": "Atlas launch",
+                  "warnings": []
+                },
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": [],
+                    "instance_id": "openclaw-shiva",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": {
+                      "label": "synthetic two-host walkthrough",
+                      "metadata": {},
+                      "uri": null
+                    },
+                    "source_generation": null,
+                    "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "start_line": null
+                  },
+                  "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                  "score": 0.35583823919296265,
+                  "title": "Atlas launch",
+                  "warnings": []
+                }
+              ]
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 47,
+          "tool_call_id": "call_gm83ba63",
+          "envelope": {
+            "data": {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "conversations": [],
+              "hit_type": "note",
+              "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+              "messages": [],
+              "messages_truncated": false,
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-clawd",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                "start_line": null
+              },
+              "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+              "title": "Atlas launch",
+              "warnings": []
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 49,
+          "tool_call_id": "call_gp6ycvjw",
+          "envelope": {
+            "data": {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "conversations": [],
+              "hit_type": "note",
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "messages": [],
+              "messages_truncated": false,
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-shiva",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "start_line": null
+              },
+              "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+              "title": "Atlas launch",
+              "warnings": []
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 51,
+          "tool_call_id": "call_f3y8cj90",
+          "envelope": {
+            "data": {
+              "chunks": [
+                {
+                  "approx_tokens": 73,
+                  "citation": 1,
+                  "conversation_uuid": null,
+                  "created_at": "2026-10-03T17:43:21.595366+00:00",
+                  "graph": null,
+                  "hit_type": "note",
+                  "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                  "message_index": null,
+                  "rendered_tokens": 120,
+                  "role": null,
+                  "score": 0.016393441706895828,
+                  "selected_span_end": 73,
+                  "selected_span_start": 0,
+                  "snippet": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                  "title": "Atlas launch",
+                  "truncated": false
+                },
+                {
+                  "approx_tokens": 70,
+                  "citation": 2,
+                  "conversation_uuid": null,
+                  "created_at": "2026-10-03T17:47:20.571574+00:00",
+                  "graph": null,
+                  "hit_type": "note",
+                  "id": "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb",
+                  "message_index": null,
+                  "rendered_tokens": 95,
+                  "role": null,
+                  "score": 0.010937499813735485,
+                  "selected_span_end": 70,
+                  "selected_span_start": 0,
+                  "snippet": "freshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station.",
+                  "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                  "title": null,
+                  "truncated": true
+                },
+                {
+                  "approx_tokens": 58,
+                  "citation": 3,
+                  "conversation_uuid": null,
+                  "created_at": "2026-10-03T17:46:05.744587+00:00",
+                  "graph": null,
+                  "hit_type": "note",
+                  "id": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+                  "message_index": null,
+                  "rendered_tokens": 83,
+                  "role": null,
+                  "score": 0.01076923031359911,
+                  "selected_span_end": 58,
+                  "selected_span_start": 0,
+                  "snippet": "Mira Sol leads the Cedar Observatory in Boulder, Colorado.",
+                  "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+                  "title": null,
+                  "truncated": true
+                }
+              ],
+              "diagnostics": {
+                "dropped_duplicates": 0,
+                "dropped_for_budget": 0,
+                "dropped_for_entity_filter": 0,
+                "dropped_for_relevance": 0,
+                "dropped_near_duplicates": 1,
+                "graph_candidates_considered": 0,
+                "graph_candidates_dropped": 0,
+                "graph_candidates_selected": 0,
+                "header_tokens": 97,
+                "token_count_mode": "estimated"
+              },
+              "query": "twohostatlasfinal",
+              "rendered_context": "<context>\n[C1] [note] Atlas launch\ntwohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.\n\n[C2] [note] (untitled)\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station.\n\n[C3] [note] (untitled)\nMira Sol leads the Cedar Observatory in Boulder, Colorado.\n\n</context>",
+              "scope": "all",
+              "total_tokens": 298
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        }
+      ],
+      "current_writer_record_matches_original_all_fields": true,
+      "inspected_record_ids": [
+        "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+        "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84"
+      ],
+      "context": {
+        "total_tokens": 298,
+        "maximum_tokens": 300,
+        "token_count_mode": "estimated",
+        "citations": [
+          {
+            "citation": 1,
+            "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+            "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+            "rendered_tokens": 120,
+            "truncated": false
+          },
+          {
+            "citation": 2,
+            "id": "note:2ee593c8f125a7f735c85b4561bdc23dbcfe029b1b63364e5e5ba959b8d7dbcb",
+            "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+            "rendered_tokens": 95,
+            "truncated": true
+          },
+          {
+            "citation": 3,
+            "id": "note:3de5ed4c06a69e4973cdf7c3e04ee117a4eefc9c223998bdd6092b98ec659724",
+            "source_uri": "mcp://upload/50e6cb509385c70e96c0fbd220297911d92514517a53c4aa2d6745cb3d8003f6",
+            "rendered_tokens": 83,
+            "truncated": true
+          }
+        ]
+      }
+    },
+    "openclaw_b": {
+      "session_id": "9368b70c-40ee-45b5-b07a-e9fec19caab9",
+      "observed_models": [
+        {
+          "provider": "anthropic",
+          "model": "claude-sonnet-5",
+          "api": "anthropic-messages"
+        }
+      ],
+      "outer_calls": 9,
+      "outer_errors": 0,
+      "actual_successful_mcp_calls": [
+        {
+          "bridge_call_id": "toolu_01HeLQKzqYyQb77zdhh4mEeH",
+          "tool": "mcp:graphrag:graphrag__search_notes",
+          "arguments": {
+            "query": "twohostatlasfinal",
+            "mode": "keyword",
+            "graph": "off"
+          }
+        },
+        {
+          "bridge_call_id": "toolu_01LUU4c3q6ECbXChnmR5gg3N",
+          "tool": "mcp:graphrag:graphrag__get_job",
+          "arguments": {
+            "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b"
+          }
+        },
+        {
+          "bridge_call_id": "toolu_01A3DYP9xq4rNF1tCFih9Pbd",
+          "tool": "mcp:graphrag:graphrag__get_source",
+          "arguments": {
+            "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+          }
+        },
+        {
+          "bridge_call_id": "toolu_01RJSVhzFhF6MFqckxLpXmVX",
+          "tool": "mcp:graphrag:graphrag__get_record",
+          "arguments": {
+            "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+            "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720"
+          }
+        }
+      ],
+      "service_envelope_representations": 6,
+      "service_envelopes": [
+        {
+          "seq": 18,
+          "tool_call_id": "toolu_01HeLQKzqYyQb77zdhh4mEeH",
+          "envelope": {
+            "data": {
+              "records": [
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": [],
+                    "instance_id": "openclaw-clawd",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": {
+                      "label": "synthetic two-host walkthrough",
+                      "metadata": {},
+                      "uri": null
+                    },
+                    "source_generation": null,
+                    "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "start_line": null
+                  },
+                  "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+                  "score": 0.35583823919296265,
+                  "title": "Atlas launch",
+                  "warnings": []
+                },
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": [],
+                    "instance_id": "openclaw-shiva",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": {
+                      "label": "synthetic two-host walkthrough",
+                      "metadata": {},
+                      "uri": null
+                    },
+                    "source_generation": null,
+                    "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "start_line": null
+                  },
+                  "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                  "score": 0.35583823919296265,
+                  "title": "Atlas launch",
+                  "warnings": []
+                }
+              ]
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 18,
+          "tool_call_id": "toolu_01HeLQKzqYyQb77zdhh4mEeH",
+          "envelope": {
+            "data": {
+              "records": [
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                    "instance_id": "openclaw-clawd",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                    "source_generation": null,
+                    "source_id": "source:05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/05c0acb26e2379abc2b67834b6191b89c54946f1d895120b96fc5e7a7d3ae32d",
+                    "start_line": null
+                  },
+                  "revision": "dc240bd1cc92460393d3341f6abf6e31871812958ad33526b579ed21e8cb26a8",
+                  "score": 0.35583823919296265,
+                  "title": "Atlas launch",
+                  "warnings": []
+                },
+                {
+                  "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+                  "hit_type": "note",
+                  "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                  "provenance": {
+                    "conversation_id": null,
+                    "conversation_uuid": null,
+                    "end_line": null,
+                    "heading_path": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                    "instance_id": "openclaw-shiva",
+                    "message_index": null,
+                    "message_key": null,
+                    "message_uuid": null,
+                    "role": null,
+                    "source": "[OpenClaw persisted detail redacted: max depth exceeded]",
+                    "source_generation": null,
+                    "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "source_type": "manual",
+                    "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                    "start_line": null
+                  },
+                  "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+                  "score": 0.35583823919296265,
+                  "title": "Atlas launch",
+                  "warnings": []
+                }
+              ]
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 19,
+          "tool_call_id": "toolu_01LUU4c3q6ECbXChnmR5gg3N",
+          "envelope": {
+            "data": {
+              "cancellation_requested": false,
+              "checkpoint": null,
+              "completed": 1,
+              "created_at": "2026-10-03T17:43:59.981923+00:00",
+              "error_code": null,
+              "failed": 0,
+              "generation": 1,
+              "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+              "instance_id": "openclaw-clawd",
+              "job_type": "remote_upload",
+              "phase": "completed",
+              "result": {
+                "action": "created",
+                "extracted": false,
+                "generation": 1,
+                "note_ids": [
+                  "note:724da929a7d77acbcbaba6b017cb3d48eaa36bb50cdb91604c23d0253e5d5742"
+                ],
+                "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+                "source_uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+              },
+              "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "status": "completed",
+              "total": 1,
+              "updated_at": "2026-10-03T17:45:41.267757+00:00"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 20,
+          "tool_call_id": "toolu_01A3DYP9xq4rNF1tCFih9Pbd",
+          "envelope": {
+            "data": {
+              "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+              "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+              "document_key": "network-jobs-d8c23a3492a5/portable-topic",
+              "generation": 2,
+              "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+              "status": "ready",
+              "successful_generation": 2,
+              "title": "/Projects/topic",
+              "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 20,
+          "tool_call_id": "toolu_01A3DYP9xq4rNF1tCFih9Pbd",
+          "envelope": {
+            "data": {
+              "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+              "content_hash": "sha256:2c74f4744013d0a09ee218404927b974f82921f5ca510906045f422a0c17f179",
+              "document_key": "***",
+              "generation": 2,
+              "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+              "instance_id": "openclaw-clawd",
+              "provenance": {
+                "label": "private two-host live acceptance",
+                "metadata": {
+                  "walkthrough": "network-jobs-d8c23a3492a5"
+                },
+                "uri": "file:///clawd-client-only/never-read/topic.md"
+              },
+              "revision": "7d3210cc42b56bdd3b23506233976ea1023fb45af1c3d80d4e5a187b35167c3a",
+              "status": "ready",
+              "successful_generation": 2,
+              "title": "/Projects/topic",
+              "uri": "mcp://upload/02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d"
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        },
+        {
+          "seq": 24,
+          "tool_call_id": "toolu_01RJSVhzFhF6MFqckxLpXmVX",
+          "envelope": {
+            "data": {
+              "content": "twohostatlasfinal: The fictional Atlas launch meeting is Monday at 10:00.",
+              "conversations": [],
+              "hit_type": "note",
+              "id": "note:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+              "messages": [],
+              "messages_truncated": false,
+              "provenance": {
+                "conversation_id": null,
+                "conversation_uuid": null,
+                "end_line": null,
+                "heading_path": [],
+                "instance_id": "openclaw-shiva",
+                "message_index": null,
+                "message_key": null,
+                "message_uuid": null,
+                "role": null,
+                "source": {
+                  "label": "synthetic two-host walkthrough",
+                  "metadata": {},
+                  "uri": null
+                },
+                "source_generation": null,
+                "source_id": "source:aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "source_type": "manual",
+                "source_uri": "mcp://capture/aba607cd7a8ac6d14f48601c1142d186512b428df2c26f1e7c19370738684c84",
+                "start_line": null
+              },
+              "revision": "6a08ec335f19fbba21bd2ed55b32a9b6a70ad5193f3984bbb71e6ea67247c720",
+              "title": "Atlas launch",
+              "warnings": []
+            },
+            "error": null,
+            "schema_version": 1
+          }
+        }
+      ],
+      "current_writer_record_matches_original_all_fields": true,
+      "native_job_read": {
+        "id": "processing_job:bd44ae5fdc011f6f7b197bc6e632fbe59e40d57da7ef01f44b5502992b84806b",
+        "source_id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "status": "completed",
+        "generation": 1
+      },
+      "native_source_read": {
+        "id": "source:02f7071e6360f030d855834fef02ab05adfcc3b2c8c794cfc11639b59c73d79d",
+        "generation": 2,
+        "successful_generation": 2,
+        "title": "/Projects/topic",
+        "content": "# Replacement source\n\nfreshgeneratione3f67e92f4 Leo Hart manages the Aspen Research Station. This replacement removes every prior paragraph and becomes visible only after successful promotion.\n",
+        "trusted_instance": "openclaw-clawd"
+      }
+    },
+    "counts": {
+      "outer_transcript_calls": 18,
+      "outer_bridge_errors": 1,
+      "successful_mcp_calls": 9,
+      "service_errors": 0,
+      "service_envelope_representations": 11
+    },
+    "metadata_error_count_corrected": {
+      "client": "hermes-shiva",
+      "outer_tool_errors": 1,
+      "service_tool_errors": 0,
+      "basis": "Explicit JSON-content rejected-batch error; absence of an is_error flag is not success"
+    }
+  },
+  "historical_checkpoint": true,
+  "observed_publication_checkpoint": {
+    "rust_build_checkpoint": "02a49a2449153d9b1f3ec67bab2907ab4c610bd6",
+    "binary_sha256": "3a99eb0eb6d324e3903e8f119f4f3656cad7544b1930f747df6742f6ebdb942b",
+    "rust_tests_passed": 710,
+    "rust_tests_ignored": 5,
+    "test_targets": 33,
+    "workspace_clippy": "passed",
+    "format": "passed",
+    "build": "passed",
+    "archive_regressions_passed": 24
+  },
+  "all_recorded_conversational_counts": {
+    "sessions": 9,
+    "successful_mcp_calls": 23,
+    "outer_transcript_calls": 46,
+    "scope": "Original, default-restored and vector-restored session windows; not a rerun under later source fixes"
+  },
+  "native_walkthrough_acceptance": {
+    "status": "Demonstrated at observed3a99 checkpoint",
+    "two_computer_real_conversational_capture_read": true,
+    "authentication_reconnection_lifecycle_and_portable_maintenance": true,
+    "supplemental_unperformed_limits_do_not_mark_native_acceptance_pending": true,
+    "later_source_revision_attribution": "Separate follow-up"
+  }
+}
