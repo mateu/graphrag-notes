@@ -101,6 +101,30 @@ def binary_digest(path):
     return digest.hexdigest()
 
 
+def pin_binary(source, directory):
+    """Hash and execute one private snapshot even if the caller rebuilds."""
+    folder = directory / "binary"
+    folder.mkdir(mode=0o700)
+    snapshot = folder / "graphrag"
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        require(stat.S_ISREG(os.fstat(descriptor).st_mode), "Supplied executable is no longer a regular file")
+        with os.fdopen(descriptor, "rb") as origin:
+            descriptor = None
+            digest = hashlib.sha256()
+            with snapshot.open("xb") as destination:
+                for block in iter(lambda: origin.read(1024 * 1024), b""):
+                    destination.write(block)
+                    digest.update(block)
+                destination.flush()
+                os.fsync(destination.fileno())
+        snapshot.chmod(0o500)
+        return snapshot, digest.hexdigest()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def private_environment(directory, client, hermes_root=None):
     home = directory / "homes" / client
     home.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -305,7 +329,7 @@ def main(argv=None):
                 "different_computers_tested": False, "real_agent_llm_sessions_tested": False,
                 "synthetic_inference": True, "real_user_profiles_used": False,
                 "host_backup_restore_tested": False,
-                "binary_sha256": binary_digest(options.binary), "wire_schema_version": 1,
+                "binary_sha256": None, "binary_snapshot_used": False, "wire_schema_version": 1,
                 "writer_capabilities": ["read", "capture"], "mutation_capabilities_granted": options.extended,
                 "extended_scenarios_requested": options.extended,
                 "cleanup_errors": []}
@@ -323,6 +347,8 @@ def main(argv=None):
         require(remaining > 0, "Whole native scenario exceeded its bounded deadline")
         return min(options.command_timeout, remaining)
     try:
+        options.binary, evidence["binary_sha256"] = pin_binary(options.binary, directory)
+        evidence["binary_snapshot_used"] = True
         evidence["binary_version"] = run_child([str(options.binary), "--version"], None,
             directory, "binary-version", private_environment(directory, "server"), tokens.values(), timeout()).strip()
         spec = importlib.util.spec_from_file_location("native_daily_fixture", SCRIPTS / "validate-daily-workflow.py")

@@ -211,6 +211,18 @@ class NativeRuntimeHarness(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 1)
         self.assertFalse(fifo.exists())
 
+    def test_executable_snapshot_and_hash_survive_replacement_of_supplied_binary(self):
+        original = self.executable("supplied-binary", "print('original-version')\n")
+        snapshot, digest = HARNESS.pin_binary(original, self.directory)
+        replacement = self.executable("replacement-binary", "print('new-version')\n")
+        os.replace(replacement, original)
+        self.assertNotEqual(HARNESS.binary_digest(original), digest)
+        self.assertEqual(HARNESS.binary_digest(snapshot), digest)
+        self.assertEqual(stat.S_IMODE(snapshot.stat().st_mode), 0o500)
+        self.assertEqual(stat.S_IMODE(snapshot.parent.stat().st_mode), 0o700)
+        self.assertEqual(self.run_child(snapshot), "original-version\n")
+        self.assertEqual(self.run_child(snapshot, label="snapshot-restart"), "original-version\n")
+
 
 if __name__ == "__main__":
     unittest.main()

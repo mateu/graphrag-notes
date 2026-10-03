@@ -27,7 +27,10 @@ python3 scripts/validate-native-mcp.py \
 
 The binary must include MCP support. Published `v0.1.0-rc.2` predates that
 feature. Build or use the intended candidate before running this check; the
-harness records its SHA-256 without compiling anything.
+harness copies the supplied executable into its private runspace, hashes that
+snapshot and uses only that copy for version discovery, both service starts,
+export and backup. Rebuilding or replacing the supplied path cannot mix binary
+versions within one report. The harness compiles nothing.
 
 The default OpenClaw entry is
 `dist/agents/agent-bundle-mcp-runtime.js`; `--openclaw-runtime` overrides it if
