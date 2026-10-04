@@ -625,7 +625,7 @@ async fn graph_hydration_keeps_note_membership_and_provenance_order_without_dupl
         }
     }
     let provenance = repo
-        .graph_note_provenance_ids(&[current.clone()])
+        .graph_note_provenance_ids(std::slice::from_ref(&current))
         .await
         .unwrap();
     assert_eq!(
