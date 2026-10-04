@@ -7,6 +7,73 @@ use super::chats::{
     EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEdgeRow, ProposedEdgeRow,
 };
 use super::*;
+use surrealdb_types::ToSql;
+
+/// Fetch the stored endpoint before inspecting fields. Plain `endpoint.id`
+/// can read an object-key component, falsely admitting a dangling compound
+/// record ID. `endpoint.*` fetches the document, preserving the former visible
+/// note-table membership check without selecting the whole note corpus.
+pub(super) fn graph_endpoint_visible_sql(endpoint: &str) -> String {
+    format!(
+        "(record::tb({endpoint}) = 'note' AND type::is_range(record::id({endpoint})) = false AND {endpoint}.*.id IS NOT NONE AND ({endpoint}.*.source_id IS NONE OR {endpoint}.*.source_generation IS NONE OR {endpoint}.*.source_generation = {endpoint}.*.source_id.successful_generation))"
+    )
+}
+
+pub(super) fn graph_endpoint_eligible_sql(endpoint: &str) -> String {
+    format!(
+        "({} AND ($since = NONE OR {endpoint}.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR {endpoint}.*.source_id.uri = $source_uri))",
+        graph_endpoint_visible_sql(endpoint)
+    )
+}
+
+/// Every source/table retains its own ordered limit; only the database
+/// request is shared. Evaluate eligibility on referenced endpoint documents
+/// so even an empty edge table never scans the full note corpus.
+pub(super) fn graph_edge_batch_sql(
+    note_count: usize,
+    tables: &[&str],
+    allow_outbound: bool,
+    allow_inbound: bool,
+) -> String {
+    let mut sql = String::new();
+    let in_visible = graph_endpoint_visible_sql("in");
+    let out_visible = graph_endpoint_visible_sql("out");
+    let in_eligible = graph_endpoint_eligible_sql("in");
+    let out_eligible = graph_endpoint_eligible_sql("out");
+    for table in tables {
+        for index in 0..note_count {
+            let direction = match (allow_outbound, allow_inbound) {
+                (true, true) => format!(
+                    "((in = $note_{index} AND {in_visible} AND {out_eligible} AND out NOT IN $visited_{index}) OR (out = $note_{index} AND {out_visible} AND {in_eligible} AND in NOT IN $visited_{index}))"
+                ),
+                (true, false) => format!(
+                    "in = $note_{index} AND {in_visible} AND {out_eligible} AND out NOT IN $visited_{index}"
+                ),
+                (false, true) => format!(
+                    "out = $note_{index} AND {out_visible} AND {in_eligible} AND in NOT IN $visited_{index}"
+                ),
+                (false, false) => "false".into(),
+            };
+            sql.push_str(&format!(
+                "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence \
+                 FROM {table} WHERE {direction} AND (confidence = NONE OR confidence >= $min_confidence) \
+                 ORDER BY graph_confidence DESC, id ASC LIMIT $limit;"
+            ));
+        }
+    }
+    sql
+}
+
+pub(super) fn graph_mention_batch_sql(entity_count: usize) -> String {
+    let mut sql = String::new();
+    let eligible = graph_endpoint_eligible_sql("in");
+    for index in 0..entity_count {
+        sql.push_str(&format!(
+            "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_{index} AND {eligible} ORDER BY in ASC LIMIT $limit;"
+        ));
+    }
+    sql
+}
 
 impl Repository {
     #[instrument(skip(self))]
@@ -1416,19 +1483,19 @@ impl Repository {
             DbError::QueryFailed("graph note limit exceeds database integer range".into())
         })?;
         let since = since.map(|timestamp| timestamp.to_rfc3339());
+        let mut query = self
+            .db
+            .query(graph_mention_batch_sql(entity_ids.len()))
+            .bind(("limit", limit))
+            .bind(("since", since))
+            .bind(("source_uri", source_uri));
+        for (index, entity_id) in entity_ids.iter().enumerate() {
+            query = query.bind((format!("entity_{index}"), entity_id.clone()));
+        }
+        let mut response = query.await?.check()?;
         let mut seeds = Vec::new();
-        for entity_id in entity_ids {
-            let mut entity_seeds: Vec<GraphEntityNoteSeed> = self
-                .db
-                .query(format!(
-                    "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_id AND in IN (SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION}) ORDER BY in ASC LIMIT $limit"
-                ))
-                .bind(("entity_id", entity_id.clone()))
-                .bind(("limit", limit))
-                .bind(("since", since.clone()))
-                .bind(("source_uri", source_uri.clone()))
-                .await?
-                .take(0)?;
+        for index in 0..entity_ids.len() {
+            let mut entity_seeds: Vec<GraphEntityNoteSeed> = response.take(index)?;
             seeds.append(&mut entity_seeds);
         }
         Ok(seeds)
@@ -1490,67 +1557,43 @@ impl Repository {
         {
             return Ok(Vec::new());
         }
-        let since = since.map(|timestamp| timestamp.to_rfc3339());
+        let tables = ["supports", "contradicts", "related_to", "derived_from"]
+            .into_iter()
+            .filter(|table| edge_types.iter().any(|edge_type| edge_type == table))
+            .collect::<Vec<_>>();
+        if tables.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(per_table_limit).map_err(|_| {
+            DbError::QueryFailed("graph edge limit exceeds database integer range".into())
+        })?;
+        // Fetch only referenced endpoint documents across every table/source,
+        // while keeping each source/table's LIMIT independent. A global edge
+        // LIMIT would let high-degree early seeds starve later seeds.
+        let sql = graph_edge_batch_sql(note_ids.len(), &tables, allow_outbound, allow_inbound);
+        let mut query = self
+            .db
+            .query(sql)
+            .bind(("limit", limit))
+            .bind(("min_confidence", min_confidence))
+            .bind(("since", since.map(|timestamp| timestamp.to_rfc3339())))
+            .bind(("source_uri", source_uri));
+        for (index, note_id) in note_ids.iter().enumerate() {
+            query = query.bind((format!("note_{index}"), note_id.clone()));
+            query = query.bind((
+                format!("visited_{index}"),
+                visited_note_ids
+                    .get(&record_id_to_string(note_id))
+                    .cloned()
+                    .unwrap_or_default(),
+            ));
+        }
+        let mut response = query.await?.check()?;
         let mut rows = HashMap::<String, NoteEdgeRow>::new();
-        for table in ["supports", "contradicts", "related_to", "derived_from"] {
-            if !edge_types.iter().any(|edge_type| edge_type == table) {
-                continue;
-            }
-            let limit = i64::try_from(per_table_limit).map_err(|_| {
-                DbError::QueryFailed("graph edge limit exceeds database integer range".into())
-            })?;
-            // SurrealDB executes these per-source bounded statements in one
-            // request/response. A single global `LIMIT` is incorrect here:
-            // it can return only high-degree early sources. Keeping the
-            // statements batched avoids client round-trips while making the
-            // per-source budget exact and deterministic.
-            let eligible_notes = format!(
-                "(SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION})"
-            );
-            let query = (0..note_ids.len())
-                .map(|index| {
-                    let direction = match (allow_outbound, allow_inbound) {
-                        (true, true) => format!(
-                            "((in = $note_{index} AND out IN {eligible_notes} AND out NOT IN $visited_{index}) OR (out = $note_{index} AND in IN {eligible_notes} AND in NOT IN $visited_{index}))"
-                        ),
-                        (true, false) => {
-                            format!("in = $note_{index} AND out IN {eligible_notes} AND out NOT IN $visited_{index}")
-                        }
-                        (false, true) => {
-                            format!("out = $note_{index} AND in IN {eligible_notes} AND in NOT IN $visited_{index}")
-                        }
-                        (false, false) => "false".to_string(),
-                    };
-                    format!(
-                        "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence \
-                         FROM {table} WHERE {direction} AND (confidence = NONE OR confidence >= $min_confidence) AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} \
-                         ORDER BY graph_confidence DESC, id ASC LIMIT $limit;"
-                    )
-                })
-                .collect::<String>();
-            let mut query = self
-                .db
-                .query(query)
-                .bind(("limit", limit))
-                .bind(("min_confidence", min_confidence))
-                .bind(("since", since.clone()))
-                .bind(("source_uri", source_uri.clone()));
-            for (index, note_id) in note_ids.iter().enumerate() {
-                query = query.bind((format!("note_{index}"), note_id.clone()));
-                query = query.bind((
-                    format!("visited_{index}"),
-                    visited_note_ids
-                        .get(&record_id_to_string(note_id))
-                        .cloned()
-                        .unwrap_or_default(),
-                ));
-            }
-            let mut response = query.await?;
-            for index in 0..note_ids.len() {
-                let edges: Vec<NoteEdgeRow> = response.take(index)?;
-                for edge in edges {
-                    rows.entry(record_id_to_string(&edge.id)).or_insert(edge);
-                }
+        for index in 0..tables.len() * note_ids.len() {
+            let edges: Vec<NoteEdgeRow> = response.take(index)?;
+            for edge in edges {
+                rows.entry(record_id_to_string(&edge.id)).or_insert(edge);
             }
         }
         let mut rows = rows.into_values().collect::<Vec<_>>();
@@ -1574,15 +1617,29 @@ impl Repository {
         if note_ids.is_empty() {
             return Ok(Vec::new());
         }
+        // Selecting the bound records avoids scanning all notes to hydrate a
+        // small graph candidate set. Deduplicate IDs and exclude other tables
+        // and range selectors, preserving the former note-table membership
+        // query rather than widening a caller's selection.
+        let mut seen = HashSet::new();
+        let note_ids = note_ids
+            .iter()
+            .filter(|id| id.table.as_str() == "note" && !id.key.is_range())
+            .filter(|id| seen.insert(id.to_sql()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if note_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let since = since.map(|timestamp| timestamp.to_rfc3339());
         self.db
             .query(format!(
                 "SELECT id, title, content, note_type, tags, created_at, source_id.uri AS source_uri \
-                 FROM note WHERE id IN $note_ids AND ($since = NONE OR created_at >= <datetime>$since) \
+                 FROM $note_ids WHERE ($since = NONE OR created_at >= <datetime>$since) \
                  AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION} \
                  ORDER BY id ASC"
             ))
-            .bind(("note_ids", note_ids.to_vec()))
+            .bind(("note_ids", note_ids))
             .bind(("since", since))
             .bind(("source_uri", source_uri))
             .await?
@@ -1609,14 +1666,18 @@ impl Repository {
         if note_ids.is_empty() {
             return Ok(HashMap::new());
         }
+        let mut response = self
+            .db
+            .query(
+                "SELECT in, out FROM note_from_conversation WHERE in IN $note_ids; \
+                 SELECT in, out FROM note_from_message WHERE in IN $note_ids;",
+            )
+            .bind(("note_ids", note_ids.to_vec()))
+            .await?
+            .check()?;
         let mut provenance = HashMap::<String, Vec<String>>::new();
-        for table in ["note_from_conversation", "note_from_message"] {
-            let rows: Vec<ProvenanceRow> = self
-                .db
-                .query(format!("SELECT in, out FROM {table} WHERE in IN $note_ids"))
-                .bind(("note_ids", note_ids.to_vec()))
-                .await?
-                .take(0)?;
+        for index in 0..2 {
+            let rows: Vec<ProvenanceRow> = response.take(index)?;
             for row in rows {
                 provenance
                     .entry(record_id_to_string(&row.r#in))

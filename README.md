@@ -277,6 +277,9 @@ using a second scoring or packing system. `auto` leaves the hybrid result
 unchanged when it finds no useful graph candidates; `on` exposes the same safe
 bounds explicitly for inspection.
 
+See [graph performance](docs/graph-search-performance.md) for interactive latency
+targets, release-build guidance, phase profiling, and the fictional scaling fixture.
+
 Graph traversal defaults to one hop and is validation-capped at two. The
 `[search].graph_*` settings bound entity/note seeds, per-node fanout, edge
 types/directions, minimum confidence, per-hop decay, and the total candidate
