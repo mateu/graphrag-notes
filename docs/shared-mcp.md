@@ -125,11 +125,12 @@ remains available for review rather than being deleted.
 
 ## OpenClaw
 
-The configuration below targets the installed OpenClaw 2026.9.7. Its registry
-projects MCP tools into eligible agent runtimes; test the runtime actually used
-by each instance. The explicit transport is required because OpenClaw otherwise
-defaults to SSE. Use the instance's private config and load `GRAPHRAG_TOKEN` into
-the owning process's environment before starting it:
+The configuration below targets OpenClaw 2026.9.8, including its normal
+`claude-cli` runtime. Its registry projects MCP tools into eligible agent
+runtimes; test the runtime actually used by each instance. The explicit transport
+is required because OpenClaw otherwise defaults to SSE. Use the instance's private
+config and load `GRAPHRAG_TOKEN` into the owning process's environment before
+starting it. This example exposes exactly the three conversational tools:
 
 ```json
 {
@@ -140,20 +141,48 @@ the owning process's environment before starting it:
         "transport": "streamable-http",
         "headers": { "Authorization": "Bearer ${GRAPHRAG_TOKEN}" },
         "requestTimeoutMs": 300000,
-        "supportsParallelToolCalls": true
+        "supportsParallelToolCalls": true,
+        "toolFilter": {
+          "include": ["search_notes", "get_record", "capture_note"]
+        }
       }
     }
   }
 }
 ```
 
-Probe with `openclaw mcp doctor graphrag --probe` and inspect the eligible runtime's
-actual tool inventory. Refresh the owning process after configuration changes;
-running a reload in a different short-lived process is insufficient evidence.
-Follow the [official transport guide](https://docs.openclaw.ai/cli/mcp/transports)
-and [registry guide](https://docs.openclaw.ai/cli/mcp) for the installed version.
-OpenClaw reports a failed mutation after reconnect without automatically replaying
-it. Repeat `capture_note` with the same request ID and original payload.
+Add `graphrag__search_notes`, `graphrag__get_record`, and
+`graphrag__capture_note` to the existing global and main-agent tool allowlists.
+Keep existing core-tool allows and deny rules. Client selection does not grant
+server capabilities: the credential needs `read` for retrieval and `capture` for
+capture, and a read-only principal cannot capture.
+
+The service's modern `2026-07-28` `tools/list` response explicitly includes
+`ttlMs: 0` and `cacheScope: "private"`. These fields make the authenticated,
+principal-filtered catalog valid for modern clients without allowing shared or
+fresh cached authorization results. Issue [#83](https://github.com/mateu/graphrag-notes/issues/83)
+isolated their omission as the cause of a connected server with an empty Claude
+CLI tool catalog. The source fix uses the existing native MCP path; no additional
+plugin or OpenClaw vendor patch is required. The updated candidate passed
+synthetic normal-main-agent acceptance through the gateway's webchat route used
+by Control UI: keyword/hybrid search, guarded inspection, exact multiline capture,
+receipt replay, and recovery after a committed capture's response was lost and
+the gateway restarted. See the [recorded acceptance](validation/openclaw-conversational-83.md)
+and [sanitized proof](validation/openclaw-conversational-83.json). This verifies
+the candidate against an isolated synthetic corpus; track deployment status
+separately in the operator runbook.
+
+Probe with `openclaw mcp doctor graphrag --probe`, then inspect the intended
+session's actual callable inventory and calls. Refresh the owning process after
+configuration changes; a reload in a different short-lived CLI process does not
+refresh the running gateway. After restart, wait for gateway health to succeed
+before reconnecting and testing a fresh session. See [conversational setup,
+diagnostics and exact capture recovery](openclaw-conversational.md), plus the official
+[transport](https://docs.openclaw.ai/cli/mcp/transports) and
+[registry](https://docs.openclaw.ai/cli/mcp/registry) guides for the installed
+version. After reconnect, repeat an uncertain `capture_note` only with its
+original request ID and exact original payload. Preserve those yourself; an
+agent-generated ID is not automatically guaranteed to survive a session reset.
 
 ## Hermes
 

@@ -1,0 +1,1195 @@
+{
+  "schema_version": 1,
+  "issue": 83,
+  "result": "passed_for_isolated_synthetic_fixture",
+  "scope": "normal main-agent gateway webchat route with installed native Claude CLI; isolated service-host corpus",
+  "deployment_status": "outside_scope_of_synthetic_fixture_evidence",
+  "surface": {
+    "normal_gateway_profile_used": true,
+    "main_agent_used": true,
+    "gateway_webchat_route_used_by_Control_UI": true,
+    "browser_click_observed": false,
+    "delivery": false,
+    "originating_delivery_fields_sent": false,
+    "own_acceptance_history_only": true,
+    "standalone_agent_runner_used_for_conversational_acceptance": false
+  },
+  "versions": {
+    "openclaw": "2026.9.8",
+    "claude_code": "2.1.280",
+    "node": "24.21.0",
+    "mcp_rust_sdk": "3.5.0",
+    "service": "graphrag 0.1.0-rc.2",
+    "modern_mcp_protocol": "2026-07-28",
+    "independent_readback_legacy_mcp_protocol": "2025-11-25"
+  },
+  "model": {
+    "configured_provider": "anthropic",
+    "configured_model": "claude-sonnet-5",
+    "configured_runtime": "claude-cli",
+    "observed_tool_call_provider": "claude-cli",
+    "observed_tool_call_model": "claude-sonnet-5",
+    "observed_import_source": "claude-cli"
+  },
+  "source_attribution": {
+    "base_commit": "b4bb762f16ee605960415254f153f9f64a8e3834",
+    "service_binary_sha256": "f2c43195869b04161ac8a33c0b95837705384af79498c8f25269614914437e89",
+    "fixed_service_files": [
+      {
+        "path": "crates/service/src/tools.rs",
+        "sha256": "97ddde137c0d20fa3329ffad1434d7ca4e5de4c2bea0df597827479694cf2137"
+      },
+      {
+        "path": "crates/service/tests/http_service.rs",
+        "sha256": "482621ad9cd9a489988b5dc4928ccb4219c225fcad0e0801455c81376e5df39d"
+      }
+    ]
+  },
+  "protocol_fix": {
+    "boundary": "modern tools/list response rejected before native callable catalog exposure",
+    "missing_fields": [
+      "ttlMs",
+      "cacheScope"
+    ],
+    "emitted_fields": {
+      "resultType": "complete",
+      "ttlMs": 0,
+      "cacheScope": "private"
+    },
+    "client_vendor_patch": false,
+    "additional_conversational_bridge": false,
+    "permission_expansion_as_fix": false,
+    "legacy_handshake_and_calls_regression_passed": true
+  },
+  "no_model_controls": {
+    "model_calls": 0,
+    "user_messages_sent": 0,
+    "notes_read": 0,
+    "notes_written": 0,
+    "personal_CLI_config_or_history_read": false,
+    "provider_auth_prepared": false,
+    "authorization_values_emitted": false,
+    "identical_policy_response_fields_control": {
+      "passed": true,
+      "variants": [
+        {
+          "proxy_adds_only_cache_metadata": false,
+          "external_permissions_added": false,
+          "protocol": "2026-07-28",
+          "methods": [
+            "server/discover",
+            "tools/list"
+          ],
+          "upstream_tools_list_http_statuses": [
+            200,
+            200,
+            200,
+            200
+          ],
+          "upstream_tools_list_result_keys": [
+            "resultType",
+            "tools"
+          ],
+          "raw_service_tool_names": [
+            "build_context",
+            "capture_note",
+            "get_note",
+            "get_proposal",
+            "get_record",
+            "get_source",
+            "list_proposals",
+            "search_notes"
+          ],
+          "tools_list_requests": 4,
+          "catalog_tool_names_at_last_sample": [],
+          "catalog_size_at_last_sample": 0,
+          "last_sample_elapsed_ms": 17442,
+          "errors": [],
+          "scratch_removed": true
+        },
+        {
+          "proxy_adds_only_cache_metadata": true,
+          "external_permissions_added": false,
+          "protocol": "2026-07-28",
+          "methods": [
+            "server/discover",
+            "tools/list"
+          ],
+          "upstream_tools_list_http_statuses": [
+            200
+          ],
+          "upstream_tools_list_result_keys": [
+            "resultType",
+            "tools"
+          ],
+          "raw_service_tool_names": [
+            "build_context",
+            "capture_note",
+            "get_note",
+            "get_proposal",
+            "get_record",
+            "get_source",
+            "list_proposals",
+            "search_notes"
+          ],
+          "tools_list_requests": 1,
+          "catalog_tool_names_at_last_sample": [
+            "search_notes",
+            "get_record",
+            "build_context",
+            "capture_note",
+            "get_note",
+            "list_proposals",
+            "get_proposal",
+            "get_source"
+          ],
+          "catalog_size_at_last_sample": 8,
+          "last_sample_elapsed_ms": 17449,
+          "errors": [],
+          "scratch_removed": true
+        }
+      ],
+      "private_proof_sha256": "3ffc718aeceaa63a2c6ca32eaec5ce45d905fffa56c8db402a6a2c12fce176b4"
+    },
+    "fixed_service_without_proxy_mutation": {
+      "passed": true,
+      "variant": {
+        "proxy_adds_only_cache_metadata": false,
+        "external_permissions_added": false,
+        "protocol": "2026-07-28",
+        "methods": [
+          "server/discover",
+          "tools/list"
+        ],
+        "upstream_tools_list_http_statuses": [
+          200
+        ],
+        "upstream_tools_list_result_keys": [
+          "cacheScope",
+          "resultType",
+          "tools",
+          "ttlMs"
+        ],
+        "raw_service_tool_names": [
+          "build_context",
+          "capture_note",
+          "get_note",
+          "get_proposal",
+          "get_record",
+          "get_source",
+          "list_proposals",
+          "search_notes"
+        ],
+        "tools_list_requests": 1,
+        "catalog_tool_names_at_last_sample": [
+          "search_notes",
+          "get_record",
+          "build_context",
+          "capture_note",
+          "get_note",
+          "list_proposals",
+          "get_proposal",
+          "get_source"
+        ],
+        "catalog_size_at_last_sample": 8,
+        "last_sample_elapsed_ms": 5407,
+        "errors": [],
+        "scratch_removed": true
+      },
+      "private_proof_sha256": "8c38c1032e944c0eb61e860e308757bfe1f5138b8cf4183693b26ad0e35f6586"
+    }
+  },
+  "tool_policy": {
+    "principal_capabilities": [
+      "read",
+      "capture"
+    ],
+    "normal_client_filter": [
+      "search_notes",
+      "get_record",
+      "capture_note"
+    ],
+    "raw_authenticated_service_catalog_size": 8,
+    "raw_service_tool_names": [
+      "build_context",
+      "capture_note",
+      "get_note",
+      "get_proposal",
+      "get_record",
+      "get_source",
+      "list_proposals",
+      "search_notes"
+    ],
+    "observed_native_callable_names": [
+      "mcp__graphrag__capture_note",
+      "mcp__graphrag__get_record",
+      "mcp__graphrag__search_notes"
+    ],
+    "denied_native_names": [
+      "mcp__graphrag__build_context",
+      "mcp__graphrag__get_note",
+      "mcp__graphrag__get_proposal",
+      "mcp__graphrag__get_source",
+      "mcp__graphrag__list_proposals"
+    ],
+    "observed_native_three_tool_filter": true,
+    "denied_exact_name_ToolSearch_no_match": true,
+    "server_read_only_and_principal_isolation_regressions_passed": true,
+    "environment_credential_reference_and_existing_grants_preserved": true
+  },
+  "phases": [
+    {
+      "name": "baseline",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T02:59:28.947Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [],
+      "turns": [
+        {
+          "label": "baseline",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 38661.571,
+          "positive_model_usage": true,
+          "reply_sha256": "37a47a996ad0f35b9bdb99d533900484fa6f493764cf8ee37d3fe62473c883c5",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [],
+      "private_proof_sha256": "f90892ff5976f968593bc25940ec165d88913f43c27c6b91b980992f87c51817",
+      "baseline": {
+        "expected_failure_reproduced": true,
+        "actual_ToolSearch_call_result": true,
+        "no_matching_GraphRag_tools": true,
+        "GraphRag_tool_calls": 0,
+        "bounded_ms": 150000
+      },
+      "discovery": [
+        {
+          "call_id_sha256": "b74ad21590fb7028dea641d1a74902febf4a9feee00ad02dab1743167e689a09",
+          "query_sha256": "3dffc31cd8e52e5ed6dcd977f8c1efc9e1785e20ab0bf806c802ceb7b5922616",
+          "graph_search_requested": true,
+          "paired_result_count": 1,
+          "no_matches": false,
+          "graph_tool_names_returned": []
+        },
+        {
+          "call_id_sha256": "f4cae3b516b67a841c1b858bf77e0355802a4d3e255450a135a23a1a079c5ce7",
+          "query_sha256": "f0f8d2e716fe66cc7f0161f6e6d9f6829ad7a3a2d480192499fcf1e73c328b6c",
+          "graph_search_requested": true,
+          "paired_result_count": 1,
+          "no_matches": true,
+          "graph_tool_names_returned": []
+        },
+        {
+          "call_id_sha256": "480b3de6e1fd7b34021e531cc22c906c39d5e85aa854174b0ee9d199e2aa9c69",
+          "query_sha256": "c71b3dba715bc05726d4a48697908e223c951d54bd3a184f7aa1a3003d20e382",
+          "graph_search_requested": false,
+          "paired_result_count": 1,
+          "no_matches": false,
+          "graph_tool_names_returned": []
+        },
+        {
+          "call_id_sha256": "cff9bf2d318b3f86d668900083541aaa9a03453525b3dee7ab2b83ba8a210aba",
+          "query_sha256": "87393427f194bb9b20c83dcded0f630e6265442d69716376aed04e6bf06a0118",
+          "graph_search_requested": false,
+          "paired_result_count": 1,
+          "no_matches": false,
+          "graph_tool_names_returned": []
+        }
+      ]
+    },
+    {
+      "name": "keyword_inspection",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:01:01.684Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [
+        {
+          "tool": "search_notes",
+          "runtime_tool": "mcp__graphrag__search_notes",
+          "call_id_sha256": "54e711e77d79f67efdf8dc20b4d6177fc08abd258b0aa141cae7cdcd9bc6de40",
+          "argument_keys": [
+            "graph",
+            "limit",
+            "mode",
+            "query",
+            "scope"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "mode": "keyword",
+          "graph": "off",
+          "query_sha256": "d9ed56952fda7eed4a52bd96bea75d2d96e9c01735ff4eb621e21a6cf29f77f3",
+          "source_uri_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "tool": "get_record",
+          "runtime_tool": "mcp__graphrag__get_record",
+          "call_id_sha256": "6467794a79f05f8c146d20d2a2ba13084c0b5ed11de24590bdd4c7b808740e79",
+          "argument_keys": [
+            "id",
+            "neighbors",
+            "revision"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "id_sha256": "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306",
+          "revision_sha256": "49abe77530d02d742ebd49a6c035bf6d9388005132605570d52023bc2ef36a03"
+        }
+      ],
+      "turns": [
+        {
+          "label": "keyword",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 17504.486,
+          "positive_model_usage": true,
+          "reply_sha256": "895a6783f7e0c47c670be96ead276e823b67a1f84c3b56a031582a19bcc5c0c7",
+          "native_call_count": 1,
+          "exact_user_prompt_present_in_history": true
+        },
+        {
+          "label": "inspect",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 11271.382,
+          "positive_model_usage": true,
+          "reply_sha256": "a1ae682769ac88fbdbca8da3506916c2f7b225f4c1f1d2bc65bde24a2f99a736",
+          "native_call_count": 1,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [
+        {
+          "content_sha256": "f4765bd2d3c152efde157dbe5534609810c171b5cf4e728a25bef7ed37962556",
+          "content_bytes": 153,
+          "exact_content_and_title": true,
+          "actor_matches": true,
+          "source_uri_matches": true,
+          "separate_raw_mcp_client": true,
+          "id_sha256": "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306",
+          "revision_sha256": "49abe77530d02d742ebd49a6c035bf6d9388005132605570d52023bc2ef36a03"
+        }
+      ],
+      "private_proof_sha256": "69451ca28326e785d9e54afc2e9bb92c7c55e7c4b0c95261412908dcc0bd88ef",
+      "search": {
+        "mode": "keyword",
+        "graph": "off",
+        "known_fixture_records_matched": 2,
+        "query_sha256": "d9ed56952fda7eed4a52bd96bea75d2d96e9c01735ff4eb621e21a6cf29f77f3",
+        "server_source_uri_filter": false,
+        "expected_record_id_sha256": [
+          "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306",
+          "848e7f85c922ddfda62df0bad85e61fa2d89c8f4991e3b78a328d0586a2881c1"
+        ]
+      },
+      "inspection": {
+        "returned_search_pair_used": true,
+        "id_sha256": "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306",
+        "revision_sha256": "49abe77530d02d742ebd49a6c035bf6d9388005132605570d52023bc2ef36a03"
+      }
+    },
+    {
+      "name": "hybrid",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:01:23.070Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [
+        {
+          "tool": "search_notes",
+          "runtime_tool": "mcp__graphrag__search_notes",
+          "call_id_sha256": "eac1238f649606e14e98ef0cc7f84b1a01dffa68ae429f6edb9e39968a380a55",
+          "argument_keys": [
+            "graph",
+            "limit",
+            "mode",
+            "query",
+            "scope",
+            "source_uri"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "mode": "hybrid",
+          "graph": "off",
+          "query_sha256": "0ba0775422ee18ef74df30639115bdc11daddeabe27241190d5f32b1e3788076",
+          "source_uri_sha256": "a0cb7b42ac9b7f43fc9fc836fd39270d3151d3ee76b33bbe5d4b560183601cd1"
+        }
+      ],
+      "turns": [
+        {
+          "label": "hybrid",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 17753.4,
+          "positive_model_usage": true,
+          "reply_sha256": "604e0aca180120952d7f7cf96f99bdf7871fa8fb6c570df0f9e75e0c93e9f96b",
+          "native_call_count": 1,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [],
+      "private_proof_sha256": "d9be2ae2110179adb3a5cdaa6cbdce5098f82a9b4f0f1b978c63fb25861d8a75",
+      "search": {
+        "mode": "hybrid",
+        "graph": "off",
+        "known_fixture_records_matched": 1,
+        "query_sha256": "0ba0775422ee18ef74df30639115bdc11daddeabe27241190d5f32b1e3788076",
+        "server_source_uri_filter": true,
+        "expected_record_id_sha256": [
+          "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306"
+        ]
+      }
+    },
+    {
+      "name": "multiline_capture",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:02:29.481Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [
+        {
+          "tool": "capture_note",
+          "runtime_tool": "mcp__graphrag__capture_note",
+          "call_id_sha256": "d00dd0e1a66b860bfb81dd0e94d42a06500f33e8fee0f67408c7f5897c6bec7f",
+          "argument_keys": [
+            "content",
+            "provenance",
+            "request_id",
+            "tags",
+            "title"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "request_id_sha256": "5420da2c0b2db54813ec6b892534080f7852c411e451c9120c3d425e135c8368",
+          "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+          "content_bytes": 211
+        },
+        {
+          "tool": "get_record",
+          "runtime_tool": "mcp__graphrag__get_record",
+          "call_id_sha256": "fbbc16501f371c06b6170b77ae4684578b16e4856244f8fe42aef963a6911c7b",
+          "argument_keys": [
+            "id",
+            "neighbors",
+            "revision"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "id_sha256": "fbfb2188d54f554369bcd8a9a6afc6e8fd1d9fa60a552cf1ed7b7573e8c5e739",
+          "revision_sha256": "85615b74dbb87cd45dc5a976721b5efa34b075bddeb69d70dbdd20927e312bae"
+        }
+      ],
+      "turns": [
+        {
+          "label": "capture",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 18362.577,
+          "positive_model_usage": true,
+          "reply_sha256": "3bb090576467a2c3f53e8cf6a00d9e149d2eab599e9e9f42eae1a223ac1e580e",
+          "native_call_count": 2,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [
+        {
+          "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+          "content_bytes": 211,
+          "exact_content_and_title": true,
+          "actor_matches": true,
+          "source_uri_matches": true,
+          "separate_raw_mcp_client": true,
+          "id_sha256": "fbfb2188d54f554369bcd8a9a6afc6e8fd1d9fa60a552cf1ed7b7573e8c5e739",
+          "revision_sha256": "85615b74dbb87cd45dc5a976721b5efa34b075bddeb69d70dbdd20927e312bae"
+        }
+      ],
+      "private_proof_sha256": "dd7d8caa1875b6318ba55fbf2076ffcb030302cbf4381abcd283bcb9108a4daa",
+      "capture": {
+        "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+        "content_bytes": 211,
+        "actor_matches": true,
+        "request_id_sha256": "5420da2c0b2db54813ec6b892534080f7852c411e451c9120c3d425e135c8368",
+        "replayed": false,
+        "exact_payload": true,
+        "authoritative_receipt_linked_to_native_call": true,
+        "exact_draft_in_normal_history": true,
+        "native_revision_guarded_readback": true,
+        "independent_readback": true,
+        "id_sha256": "fbfb2188d54f554369bcd8a9a6afc6e8fd1d9fa60a552cf1ed7b7573e8c5e739",
+        "revision_sha256": "85615b74dbb87cd45dc5a976721b5efa34b075bddeb69d70dbdd20927e312bae"
+      }
+    },
+    {
+      "name": "exact_replay",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:03:39.091Z",
+      "fresh_session_empty": false,
+      "existing_acceptance_session_resumed": true,
+      "native_calls": [
+        {
+          "tool": "capture_note",
+          "runtime_tool": "mcp__graphrag__capture_note",
+          "call_id_sha256": "a3b927ca7132abc5e507fc66fd9dd584921b42936145065371eedb78c8739171",
+          "argument_keys": [
+            "content",
+            "provenance",
+            "request_id",
+            "tags",
+            "title"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "request_id_sha256": "5420da2c0b2db54813ec6b892534080f7852c411e451c9120c3d425e135c8368",
+          "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+          "content_bytes": 211
+        },
+        {
+          "tool": "get_record",
+          "runtime_tool": "mcp__graphrag__get_record",
+          "call_id_sha256": "b73a0910e04e4ca0733247c8a4722669e6e273a1ea875791b7427971014e62a2",
+          "argument_keys": [
+            "id",
+            "neighbors",
+            "revision"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "id_sha256": "fbfb2188d54f554369bcd8a9a6afc6e8fd1d9fa60a552cf1ed7b7573e8c5e739",
+          "revision_sha256": "85615b74dbb87cd45dc5a976721b5efa34b075bddeb69d70dbdd20927e312bae"
+        }
+      ],
+      "turns": [
+        {
+          "label": "replay",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 12906.018,
+          "positive_model_usage": true,
+          "reply_sha256": "72c86c15537db6d05b1b4bcbf911a5c79a751bb19e148aef3851650582c29e0a",
+          "native_call_count": 2,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [
+        {
+          "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+          "content_bytes": 211,
+          "exact_content_and_title": true,
+          "actor_matches": true,
+          "source_uri_matches": true,
+          "separate_raw_mcp_client": true,
+          "id_sha256": "fbfb2188d54f554369bcd8a9a6afc6e8fd1d9fa60a552cf1ed7b7573e8c5e739",
+          "revision_sha256": "85615b74dbb87cd45dc5a976721b5efa34b075bddeb69d70dbdd20927e312bae"
+        }
+      ],
+      "private_proof_sha256": "7a9656c14fb78330366dba4a4344e50092a5ef23db8f2da2d344322c7030dd15",
+      "exact_original_draft_in_resumed_history": true,
+      "capture": {
+        "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+        "content_bytes": 211,
+        "actor_matches": true,
+        "request_id_sha256": "5420da2c0b2db54813ec6b892534080f7852c411e451c9120c3d425e135c8368",
+        "replayed": true,
+        "exact_payload": true,
+        "authoritative_receipt_linked_to_native_call": true,
+        "exact_draft_in_normal_history": true,
+        "native_revision_guarded_readback": true,
+        "independent_readback": true,
+        "id_sha256": "fbfb2188d54f554369bcd8a9a6afc6e8fd1d9fa60a552cf1ed7b7573e8c5e739",
+        "revision_sha256": "85615b74dbb87cd45dc5a976721b5efa34b075bddeb69d70dbdd20927e312bae"
+      }
+    },
+    {
+      "name": "controlled_response_loss",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:07:00.889Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [
+        {
+          "tool": "capture_note",
+          "runtime_tool": "mcp__graphrag__capture_note",
+          "call_id_sha256": "03c9e5dd6b7bf0a9124ea115cf434dcea9487e8a3952964114af79e5d69aac7c",
+          "argument_keys": [
+            "content",
+            "provenance",
+            "request_id",
+            "tags",
+            "title"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "request_id_sha256": "0f4ced4ed616a8ab1a0b6ad3dfd6d2e5fa77858a69a18800d2fe19626a9924ee",
+          "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+          "content_bytes": 211
+        }
+      ],
+      "turns": [
+        {
+          "label": "capture_uncertain",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 21965.053,
+          "positive_model_usage": true,
+          "reply_sha256": "608c6768c8d5241ba3843b559b06025a9ff7aee9bc7f32e93bdd9467fb2e9a35",
+          "native_call_count": 1,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [],
+      "private_proof_sha256": "b28f1c84e69aee325abca0b7173f39d57322d2053a95f884c0a6cd43a722db37",
+      "capture": {
+        "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+        "content_bytes": 211,
+        "request_id_sha256": "0f4ced4ed616a8ab1a0b6ad3dfd6d2e5fa77858a69a18800d2fe19626a9924ee",
+        "exact_draft_in_normal_history": true,
+        "outcome": "uncertain",
+        "native_capture_call_verified": true,
+        "authoritative_receipt_observed": false,
+        "automatic_repeat_count": 0,
+        "original_request_id_preserved": true,
+        "final_reported_uncertainty": true,
+        "final_success_claim_not_observed": true
+      }
+    },
+    {
+      "name": "loss_replay_after_restart",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:09:00.318Z",
+      "fresh_session_empty": false,
+      "existing_acceptance_session_resumed": true,
+      "native_calls": [
+        {
+          "tool": "capture_note",
+          "runtime_tool": "mcp__graphrag__capture_note",
+          "call_id_sha256": "72e553d27c05cbd2fc9d8e91f58b899715b971d8904dee4e92029df5bc5c31fa",
+          "argument_keys": [
+            "content",
+            "provenance",
+            "request_id",
+            "tags",
+            "title"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "request_id_sha256": "0f4ced4ed616a8ab1a0b6ad3dfd6d2e5fa77858a69a18800d2fe19626a9924ee",
+          "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+          "content_bytes": 211
+        },
+        {
+          "tool": "get_record",
+          "runtime_tool": "mcp__graphrag__get_record",
+          "call_id_sha256": "75d833e6282d050e85953ab3c0e557a1255bd16a7994a7104ce4a61c348a61b7",
+          "argument_keys": [
+            "id",
+            "neighbors",
+            "revision"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "id_sha256": "20253fd47ca12a39869d1848e7c09660cb36e3c62232e298d88e5307632a139a",
+          "revision_sha256": "85875f192018befd880933bd4bc159c2f7d33652d2bcc99b7a8aa145da40aa6a"
+        }
+      ],
+      "turns": [
+        {
+          "label": "replay",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 13677.867,
+          "positive_model_usage": true,
+          "reply_sha256": "4489ea679e88a7b13f9b2e248cc0946b8bfa5cb5a72c745917e65b182d76a270",
+          "native_call_count": 2,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [
+        {
+          "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+          "content_bytes": 211,
+          "exact_content_and_title": true,
+          "actor_matches": true,
+          "source_uri_matches": true,
+          "separate_raw_mcp_client": true,
+          "id_sha256": "20253fd47ca12a39869d1848e7c09660cb36e3c62232e298d88e5307632a139a",
+          "revision_sha256": "85875f192018befd880933bd4bc159c2f7d33652d2bcc99b7a8aa145da40aa6a"
+        }
+      ],
+      "private_proof_sha256": "c7808dc1ee5ab41243c9be6cc21f47092127a44fe561f8def62943ec871c3480",
+      "exact_original_draft_in_resumed_history": true,
+      "capture": {
+        "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+        "content_bytes": 211,
+        "actor_matches": true,
+        "request_id_sha256": "0f4ced4ed616a8ab1a0b6ad3dfd6d2e5fa77858a69a18800d2fe19626a9924ee",
+        "replayed": true,
+        "exact_payload": true,
+        "authoritative_receipt_linked_to_native_call": true,
+        "exact_draft_in_normal_history": true,
+        "native_revision_guarded_readback": true,
+        "independent_readback": true,
+        "id_sha256": "20253fd47ca12a39869d1848e7c09660cb36e3c62232e298d88e5307632a139a",
+        "revision_sha256": "85875f192018befd880933bd4bc159c2f7d33652d2bcc99b7a8aa145da40aa6a"
+      }
+    },
+    {
+      "name": "fresh_after_restart",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:08:13.387Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [
+        {
+          "tool": "search_notes",
+          "runtime_tool": "mcp__graphrag__search_notes",
+          "call_id_sha256": "7e674315f7757822ba8b4a29c15effed5ebad66bf6d86538c84eb8513063429b",
+          "argument_keys": [
+            "graph",
+            "limit",
+            "mode",
+            "query",
+            "scope"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "mode": "keyword",
+          "graph": "off",
+          "query_sha256": "d9ed56952fda7eed4a52bd96bea75d2d96e9c01735ff4eb621e21a6cf29f77f3",
+          "source_uri_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "tool": "get_record",
+          "runtime_tool": "mcp__graphrag__get_record",
+          "call_id_sha256": "aa5957b4327b218829688271aa33f2bb1fc3d7c7cf92a65ce67edb0a1941e152",
+          "argument_keys": [
+            "id",
+            "neighbors",
+            "revision"
+          ],
+          "paired_results": 1,
+          "provider": "claude-cli",
+          "model": "claude-sonnet-5",
+          "imported_from": "claude-cli",
+          "id_sha256": "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306",
+          "revision_sha256": "49abe77530d02d742ebd49a6c035bf6d9388005132605570d52023bc2ef36a03"
+        }
+      ],
+      "turns": [
+        {
+          "label": "keyword",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 24925.175,
+          "positive_model_usage": true,
+          "reply_sha256": "e399135fa8f3de55a710fdd876aa529c2e88494051b649d1bb41ac5d167e0132",
+          "native_call_count": 1,
+          "exact_user_prompt_present_in_history": true
+        },
+        {
+          "label": "inspect",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 10649.064,
+          "positive_model_usage": true,
+          "reply_sha256": "755d5d23f7dee40aa209723e142b834e6b6501eaef3c36a795f2e0c613f28838",
+          "native_call_count": 1,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [
+        {
+          "content_sha256": "f4765bd2d3c152efde157dbe5534609810c171b5cf4e728a25bef7ed37962556",
+          "content_bytes": 153,
+          "exact_content_and_title": true,
+          "actor_matches": true,
+          "source_uri_matches": true,
+          "separate_raw_mcp_client": true,
+          "id_sha256": "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306",
+          "revision_sha256": "49abe77530d02d742ebd49a6c035bf6d9388005132605570d52023bc2ef36a03"
+        }
+      ],
+      "private_proof_sha256": "4a4187250002255d5f6c746dce3c46778bee561feddc321a06a32975be260cf8",
+      "search": {
+        "mode": "keyword",
+        "graph": "off",
+        "known_fixture_records_matched": 2,
+        "query_sha256": "d9ed56952fda7eed4a52bd96bea75d2d96e9c01735ff4eb621e21a6cf29f77f3",
+        "server_source_uri_filter": false,
+        "expected_record_id_sha256": [
+          "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306",
+          "848e7f85c922ddfda62df0bad85e61fa2d89c8f4991e3b78a328d0586a2881c1"
+        ]
+      },
+      "inspection": {
+        "returned_search_pair_used": true,
+        "id_sha256": "512ec85518a8a35d1e3d6494afa8961d4175ed56762be1e27057ac203bf90306",
+        "revision_sha256": "49abe77530d02d742ebd49a6c035bf6d9388005132605570d52023bc2ef36a03"
+      }
+    },
+    {
+      "name": "native_filtered_catalog",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:09:19.717Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [],
+      "turns": [
+        {
+          "label": "catalog",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 14411.897,
+          "positive_model_usage": true,
+          "reply_sha256": "3fffbae06ded0214b181976dc35afce1614854a063dc696b93b96676aaeeb1c8",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [],
+      "private_proof_sha256": "976c1fe8307962b734deac7342423898927d7c717826ff645536f23a9dd09809",
+      "catalog": {
+        "exact_three_native_tools": true,
+        "observed_tool_definitions": [
+          "mcp__graphrag__capture_note",
+          "mcp__graphrag__get_record",
+          "mcp__graphrag__search_notes"
+        ],
+        "denied_five_definitions_absent": true,
+        "evidence": "paired actual ToolSearch structured references/definitions",
+        "GraphRag_dispatches": 0
+      },
+      "catalog_discovery": [
+        {
+          "call_id_sha256": "8015aca9e64e03c7016018457f9b132130999b966c66186b4b6a5f6986f30c2c",
+          "max_results": 20,
+          "paired_result_count": 1,
+          "result_failed": false,
+          "no_matches": false,
+          "graph_tool_definitions": [
+            "mcp__graphrag__capture_note",
+            "mcp__graphrag__get_record",
+            "mcp__graphrag__search_notes"
+          ],
+          "provider": "claude-cli",
+          "imported_from": "claude-cli",
+          "query_sha256": "f0f8d2e716fe66cc7f0161f6e6d9f6829ad7a3a2d480192499fcf1e73c328b6c"
+        }
+      ]
+    },
+    {
+      "name": "denied_tool_discovery",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:09:20.912Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [],
+      "turns": [
+        {
+          "label": "denial",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 13660.17,
+          "positive_model_usage": true,
+          "reply_sha256": "d6572bd2e77380cece5ea9e23f3dcb01e208b8e872f46b4bb0a9f06e38b7a148",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [],
+      "private_proof_sha256": "b23977d5860d37349bc9dd99d615abf05e28c61da96f7325b924015de032a527",
+      "catalog_discovery": [
+        {
+          "call_id_sha256": "7ebb21e974648b138659def309fe44cdf7473559280ae440f92b8b3a6da63253",
+          "max_results": 20,
+          "paired_result_count": 1,
+          "result_failed": false,
+          "no_matches": true,
+          "graph_tool_definitions": [],
+          "provider": "claude-cli",
+          "imported_from": "claude-cli",
+          "query_sha256": "4e12b5328242a3ff3eb8d8f5c4a62254ff1c1d4fd77d821efb375a3e863d078e"
+        }
+      ],
+      "denial": {
+        "exact_denied_names_requested": [
+          "mcp__graphrag__build_context",
+          "mcp__graphrag__get_note",
+          "mcp__graphrag__get_proposal",
+          "mcp__graphrag__get_source",
+          "mcp__graphrag__list_proposals"
+        ],
+        "no_matching_tool_definitions": true,
+        "evidence": "paired actual ToolSearch result",
+        "GraphRag_dispatches": 0
+      }
+    },
+    {
+      "name": "direct_fallback",
+      "passed": true,
+      "observed_at_utc": "2026-10-04T03:09:35.048Z",
+      "fresh_session_empty": true,
+      "existing_acceptance_session_resumed": false,
+      "native_calls": [],
+      "turns": [
+        {
+          "label": "direct_keyword",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 3116.795,
+          "positive_model_usage": false,
+          "reply_sha256": "986a4622b9daa3b241b5c41a199ef6cd1be4f202992738ecb997b77bd8d2c9de",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        },
+        {
+          "label": "direct_hybrid",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 1523.207,
+          "positive_model_usage": false,
+          "reply_sha256": "41adba832982af8e5d25c7878004c70feb832e68e53c2876ab8394982e9e40d7",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        },
+        {
+          "label": "direct_graph",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 1527.472,
+          "positive_model_usage": false,
+          "reply_sha256": "363b64ed6052528d4a6db635ea50738808ba890ed776386ff07f76d249467709",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        },
+        {
+          "label": "direct_multiline_refusal",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 1523.708,
+          "positive_model_usage": false,
+          "reply_sha256": "9419206a39cd3aed07a51b899b252c3d510529c5f8e87b4e7fc6b84eebda1cc6",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        },
+        {
+          "label": "direct_save",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 2277.124,
+          "positive_model_usage": false,
+          "reply_sha256": "f03057db0def50a8f1a992360db4565e22453bf337a67abe694ecfdeb66119e2",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        },
+        {
+          "label": "direct_save_replay",
+          "gateway_ack_status": "started",
+          "terminal_state": "final",
+          "elapsed_ms": 1520.433,
+          "positive_model_usage": false,
+          "reply_sha256": "425aad4523964939708fe8f42de070bcbe69cb50fca726e84aeb2fc74af7c626",
+          "native_call_count": 0,
+          "exact_user_prompt_present_in_history": true
+        }
+      ],
+      "independent_readbacks": [
+        {
+          "content_sha256": "a4103ad28fa4a8a72278fb12003e9bfd51450208ccc37b32b3b8d9df7a758d4a",
+          "content_bytes": 82,
+          "exact_content_and_title": true,
+          "actor_matches": true,
+          "source_uri_matches": true,
+          "separate_raw_mcp_client": true,
+          "id_sha256": "f704e1e4497de7feae95f32af5724f0be673af04825d5f3757d51fc55b7d8089",
+          "revision_sha256": "d3709a3015268d95436076cef4ada70ba77d302ac50bed9d397148b409fa8e51"
+        },
+        {
+          "content_sha256": "a4103ad28fa4a8a72278fb12003e9bfd51450208ccc37b32b3b8d9df7a758d4a",
+          "content_bytes": 82,
+          "exact_content_and_title": true,
+          "actor_matches": true,
+          "source_uri_matches": true,
+          "separate_raw_mcp_client": true,
+          "id_sha256": "f704e1e4497de7feae95f32af5724f0be673af04825d5f3757d51fc55b7d8089",
+          "revision_sha256": "d3709a3015268d95436076cef4ada70ba77d302ac50bed9d397148b409fa8e51"
+        }
+      ],
+      "private_proof_sha256": "c8246409e83095e957fdbed73740c5bbf57ff7c373494c68ecb5600421161c3a",
+      "direct_capture": {
+        "exact_single_line_readback": true,
+        "original_receipt_replayed": true,
+        "id_sha256": "f704e1e4497de7feae95f32af5724f0be673af04825d5f3757d51fc55b7d8089",
+        "revision_sha256": "d3709a3015268d95436076cef4ada70ba77d302ac50bed9d397148b409fa8e51"
+      },
+      "direct_fallback_passed": true
+    }
+  ],
+  "exact_multiline_and_retry": {
+    "content_bytes": 211,
+    "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+    "original_request_id_sha256": "5420da2c0b2db54813ec6b892534080f7852c411e451c9120c3d425e135c8368",
+    "original_id_sha256": "fbfb2188d54f554369bcd8a9a6afc6e8fd1d9fa60a552cf1ed7b7573e8c5e739",
+    "original_revision_sha256": "85615b74dbb87cd45dc5a976721b5efa34b075bddeb69d70dbdd20927e312bae",
+    "capture_receipt_payload_matches": true,
+    "independent_content_title_and_actor_match": true,
+    "ordinary_replay_returns_original_id_revision_request": true,
+    "ordinary_replay_exact_draft_in_resumed_history": true
+  },
+  "controlled_unknown_outcome": {
+    "content_bytes": 211,
+    "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+    "request_id_sha256": "0f4ced4ed616a8ab1a0b6ad3dfd6d2e5fa77858a69a18800d2fe19626a9924ee",
+    "exact_native_capture_call_count": 1,
+    "automatic_repeat_count": 0,
+    "original_draft_in_normal_user_history": true,
+    "authoritative_receipt_observed_by_agent_before_retry": false,
+    "final_reported_uncertainty": true,
+    "final_success_claim_not_observed": true,
+    "proxy_observation_before_explicit_retry": {
+      "forwarded_captures": 1,
+      "blocked_retry_attempts": 0,
+      "response_withheld_after_authoritative_success": true,
+      "original_receipt_replayed": false,
+      "id_sha256": "20253fd47ca12a39869d1848e7c09660cb36e3c62232e298d88e5307632a139a",
+      "revision_sha256": "85875f192018befd880933bd4bc159c2f7d33652d2bcc99b7a8aa145da40aa6a",
+      "private_proof_sha256": "cdfaa33b54305bac2a5529bd9fbbf9da5586893bd81c51e67d166a9e535ef2f5"
+    },
+    "independent_readback_before_retry": {
+      "committed_before_retry": true,
+      "exact_content": true,
+      "id_sha256": "20253fd47ca12a39869d1848e7c09660cb36e3c62232e298d88e5307632a139a",
+      "revision_sha256": "85875f192018befd880933bd4bc159c2f7d33652d2bcc99b7a8aa145da40aa6a",
+      "content_sha256": "9030f4ed9d0393db9155b170bd23108749b439af3928722ee506981def62a1f9",
+      "private_proof_sha256": "1971ed6beb28fda768ac6b37583270b7df034b4ac275dbdc1baeaa7b2c9c1bac"
+    },
+    "explicit_retry_after_gateway_restart": {
+      "same_existing_acceptance_history_resumed": true,
+      "exact_original_draft_in_resumed_history": true,
+      "replayed": true,
+      "same_original_id_revision": true,
+      "native_and_independent_guarded_readback": true,
+      "id_sha256": "20253fd47ca12a39869d1848e7c09660cb36e3c62232e298d88e5307632a139a",
+      "revision_sha256": "85875f192018befd880933bd4bc159c2f7d33652d2bcc99b7a8aa145da40aa6a"
+    }
+  },
+  "lifecycle": {
+    "fresh_sessions_observed": 9,
+    "gateway_restart_and_native_reconnection_completed": true,
+    "fresh_postrestart_search_and_revision_guarded_inspection": true,
+    "restart_resumed_unknown_outcome_exact_history_retry": true,
+    "standalone_MCP_only_disconnect_case_claimed": false
+  },
+  "corpus_audit": {
+    "independent_portable_backup_verified": true,
+    "database_schema_version": 18,
+    "includes_embeddings": true,
+    "notes": 6,
+    "sources": 6,
+    "capture_receipts": 6,
+    "distinct_receipt_note_ids": 6,
+    "ordinary_request_receipts": 1,
+    "controlled_loss_request_receipts": 1,
+    "no_duplicate_request_or_note_id": true,
+    "composition": {
+      "seed_notes": 2,
+      "ordinary_conversational_capture": 1,
+      "acknowledged_setup_trial": 1,
+      "controlled_response_loss_capture": 1,
+      "direct_command_capture": 1
+    },
+    "private_proof_sha256": "09e220ad911f64cb1c7eae31d1394101eb881af436bfbed8fb056268f0b80d7c"
+  },
+  "direct_fallback": {
+    "passed": true,
+    "commands_observed": 6,
+    "routes": [
+      "keyword",
+      "hybrid",
+      "graph_opt_in",
+      "multiline_refusal",
+      "single_line_save",
+      "exact_save_replay"
+    ],
+    "positive_new_turn_model_usage_observed": false,
+    "native_GraphRag_call_observed": false,
+    "single_line_exact_independent_readback": true,
+    "same_canonical_save_receipt_replayed": true,
+    "daily_production_direct_commands_covered_by_this_fixture": false
+  },
+  "verification": {
+    "rust_workspace_tests": {
+      "passed": 744,
+      "failed": 0,
+      "ignored": 5
+    },
+    "workspace_clippy": "passed",
+    "python_script_tests": {
+      "run": 44,
+      "passed": 43,
+      "failed": 0,
+      "skipped": 1
+    },
+    "release_tests": {
+      "run": 16,
+      "passed": 16,
+      "failed": 0
+    },
+    "install_smoke": "passed"
+  },
+  "isolation_and_cleanup": {
+    "synthetic_service_host_corpus": true,
+    "test_notes_written_to_production": false,
+    "normal_configuration_restored_exactly": true,
+    "environment_credential_reference_unchanged": true,
+    "three_tool_filter_unchanged": true,
+    "synthetic_service_proxy_and_tunnel_stopped": true,
+    "database_and_inference_owner_on_service_host": true
+  },
+  "limits": [
+    "Gateway RPCs exercise the normal webchat route used by Control UI; no browser click was observed.",
+    "Capture recovery uses an explicit stable request ID and exact draft in durable normal user history, not a private client capture journal.",
+    "The protocol fix does not guarantee recovery of a model-generated draft/request ID after compaction, session reset or history loss.",
+    "A response-loss proxy withheld one synthetic capture response after authoritative commit; independent readback established commit before explicit retry.",
+    "A fresh-session and gateway-restart/native-reconnection sequence was observed; no separate MCP-only route-disconnect case is claimed.",
+    "The isolated corpus contains an extra acknowledged setup-trial note as well as the formal fixtures; all six notes and receipts are accounted for.",
+    "Daily production rollout and direct-command verification are outside this synthetic evidence.",
+    "No automatic memory replacement, transcript ingestion or synchronization was enabled.",
+    "Only passed scenario proofs are retained here; the baseline phase passed by reproducing its expected discovery failure."
+  ],
+  "sanitization": {
+    "raw_queries_and_note_bodies_included": false,
+    "session_or_device_identifiers_included": false,
+    "machine_paths_or_hostnames_included": false,
+    "credential_values_or_raw_configuration_included": false,
+    "canonical_record_identifiers_hashed": true,
+    "principal_identifier_omitted": true,
+    "call_and_content_SHA256_only": true
+  }
+}
