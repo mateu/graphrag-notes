@@ -165,13 +165,13 @@ fn note_vector(index: usize, count: usize) -> Vec<f32> {
 }
 
 fn foreign(index: usize) -> bool {
-    index % 4 == 0
+    index.is_multiple_of(4)
 }
 fn stale(index: usize) -> bool {
-    index % 17 == 0
+    index.is_multiple_of(17)
 }
 fn hidden(index: usize) -> bool {
-    index % 23 == 0
+    index.is_multiple_of(23)
 }
 
 async fn execute(db: &DbConnection, sql: &str) {
