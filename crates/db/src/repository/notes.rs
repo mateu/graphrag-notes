@@ -836,6 +836,7 @@ impl Repository {
     ) -> Result<Vec<SearchResult>> {
         let candidate_limit = fusion.candidate_limit(limit);
 
+        let started = std::time::Instant::now();
         let vec_results = self
             .vector_search_notes(
                 embedding.clone(),
@@ -844,10 +845,23 @@ impl Repository {
                 source_uri.clone(),
             )
             .await?;
+        tracing::debug!(
+            phase = "note_vector",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            count = vec_results.len(),
+            "Retrieval phase completed"
+        );
 
+        let started = std::time::Instant::now();
         let fts_results = self
             .fulltext_search_notes(query_text, candidate_limit, since, source_uri)
             .await?;
+        tracing::debug!(
+            phase = "note_fulltext",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            count = fts_results.len(),
+            "Retrieval phase completed"
+        );
 
         let mut results = fusion::fuse(vec_results, fts_results, fusion, |existing, incoming| {
             if existing.title.is_none() {

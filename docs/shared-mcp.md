@@ -6,17 +6,20 @@ HTTP. Each instance has its own bearer credential and server-enforced capabiliti
 The service is optional; embedded commands still work when the service is stopped.
 
 The service foundation is tracked in [#75](https://github.com/mateu/graphrag-notes/issues/75).
-This source tree also implements revision-checked editing/review for #76 in
-[PR #80](https://github.com/mateu/graphrag-notes/pull/80) and uploaded sources/durable
-jobs for #77 in [PR #81](https://github.com/mateu/graphrag-notes/pull/81).
-[#56](https://github.com/mateu/graphrag-notes/issues/56) remains open while
-[#78](https://github.com/mateu/graphrag-notes/issues/78) completes the actual
-two-computer deployment and conversational agent-session acceptance.
-Build source including these stacked changes for the commands below;
+This source tree includes revision-checked editing/review, uploaded sources and
+durable jobs, and the shared-service/client acceptance from
+[#56](https://github.com/mateu/graphrag-notes/issues/56) and
+[#78](https://github.com/mateu/graphrag-notes/issues/78).
+Build current source for the commands below;
 published `v0.1.0-rc.2` predates MCP.
 macOS and Linux are the targets.
 See [foundation validation](shared-mcp-validation.md) for automated and installed
 native-runtime evidence, including the remaining deployment acceptance gates.
+
+Use an optimized release binary for a long-running service. For source builds,
+run `cargo build --release --locked -p graphrag-cli` and use
+`target/release/graphrag`. See [graph performance](graph-search-performance.md)
+for build-profile effects, interactive latency targets, and repeatable probes.
 
 ## Host setup
 

@@ -46,6 +46,8 @@ The default graph strength is now `1.0`. Existing configurations explicitly
 setting the previous `0.03` retain that value and produce more conservative
 graph contributions; set it to `1.0` to use the new default policy.
 
-Graph ranking and graph latency are separate concerns. Graph search still
-performs the existing bounded entity and edge lookups. Keyword search requires
-no inference providers; hybrid search still requires query embedding.
+Graph retrieval fetches referenced endpoint documents and hydrates bounded
+candidate IDs directly; its ranking and traversal bounds remain unchanged.
+See [graph performance](graph-search-performance.md) for query plans, phase
+timing, reproducible fixtures, and service build guidance. Keyword search
+requires no inference providers; hybrid search still requires query embedding.
