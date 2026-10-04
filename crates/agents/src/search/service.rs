@@ -15,6 +15,7 @@ use graphrag_db::{
 
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Instant;
 use surrealdb::types::RecordId;
 use tracing::{debug, info, instrument};
 
@@ -334,7 +335,13 @@ impl SearchAgent {
     }
 
     async fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
+        let started = Instant::now();
         let embedding = self.embedder.embed(query, true).await?;
+        debug!(
+            phase = "query_embedding",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Retrieval phase completed"
+        );
         validate_embedding_dim(embedding.len())?;
         let capability = self.embedder.capabilities();
         self.repo
@@ -829,10 +836,17 @@ impl SearchAgent {
         require_entity_seed: bool,
     ) -> Result<GraphSearchResults> {
         let normalized_query = Entity::canonicalize(query);
+        let started = Instant::now();
         let entities = self
             .repo
             .find_graph_entities(&normalized_query, self.graph.max_seed_entities)
             .await?;
+        debug!(
+            phase = "graph_entity_matching",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            count = entities.len(),
+            "Retrieval phase completed"
+        );
         let entity_ids = entities
             .iter()
             .map(|entity| entity.id.clone())
@@ -846,6 +860,7 @@ impl SearchAgent {
             .enumerate()
             .map(|(rank, entity_id)| (record_id_to_string(entity_id), rank))
             .collect::<HashMap<_, _>>();
+        let started = Instant::now();
         let entity_seed_ids = self
             .repo
             .graph_notes_for_entities(
@@ -855,6 +870,12 @@ impl SearchAgent {
                 source_uri.clone(),
             )
             .await?;
+        debug!(
+            phase = "graph_mentions",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            count = entity_seed_ids.len(),
+            "Retrieval phase completed"
+        );
 
         // `auto` is deliberately conservative: it activates only when a
         // local entity match provides useful graph evidence. Explicit `on`
@@ -939,6 +960,7 @@ impl SearchAgent {
                     )
                 })
                 .collect::<HashMap<_, _>>();
+            let started = Instant::now();
             let edges = self
                 .repo
                 .graph_note_edges_excluding_visited(
@@ -953,6 +975,14 @@ impl SearchAgent {
                     &visited_note_ids,
                 )
                 .await?;
+            debug!(
+                phase = "graph_edge_expansion",
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                hop,
+                frontier = ids.len(),
+                count = edges.len(),
+                "Retrieval phase completed"
+            );
             let mut eligible = HashMap::<String, Vec<GraphFrontier>>::new();
             for edge in edges {
                 for (from, neighbor, direction) in
@@ -1017,10 +1047,18 @@ impl SearchAgent {
             .keys()
             .map(|id| RecordId::new("note", id.strip_prefix("note:").unwrap_or(id)))
             .collect::<Vec<_>>();
+        let started = Instant::now();
         let records = self
             .repo
             .graph_notes_by_ids(&ids, since, source_uri)
             .await?;
+        debug!(
+            phase = "graph_note_hydration",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            count = records.len(),
+            "Retrieval phase completed"
+        );
+        let started = Instant::now();
         let provenance = self
             .repo
             .graph_note_provenance_ids(
@@ -1030,6 +1068,12 @@ impl SearchAgent {
                     .collect::<Vec<_>>(),
             )
             .await?;
+        debug!(
+            phase = "graph_provenance",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            count = provenance.len(),
+            "Retrieval phase completed"
+        );
         let mut hits = records
             .into_iter()
             .filter_map(|record| {

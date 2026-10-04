@@ -6,6 +6,8 @@
 mod chats;
 mod folder_sync;
 mod graph;
+#[cfg(test)]
+mod graph_retrieval_batch_tests;
 mod ids;
 mod inspection;
 mod jobs;
