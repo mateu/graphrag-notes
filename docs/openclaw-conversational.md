@@ -1,21 +1,23 @@
 # Conversational GraphRAG notes in OpenClaw
 
-The native MCP integration lets a normal OpenClaw conversation search saved
-notes, inspect a selected record, and explicitly capture a new note using
+The native MCP integration lets the tested OpenClaw conversation runtimes search
+saved notes, inspect a selected record, and explicitly capture a new note using
 `search_notes`, `get_record`, and `capture_note`. The service owns the database
-and inference providers. This setup applies to macOS/Linux clients and keeps
-native agent memory and transcript ingestion unchanged.
+and inference providers. macOS and Linux are the service/client targets; the
+recorded conversational runs used a Linux gateway and macOS service host. Native
+agent memory and transcript ingestion remain unchanged.
 
 Issue [#83](https://github.com/mateu/graphrag-notes/issues/83) isolated a service
 wire-format defect affecting OpenClaw 2026.9.8 with Claude Code 2.1.280 and Node
 24.21.0 in the `claude-cli` runtime. The corrected candidate passed synthetic
 normal-main-agent acceptance through the gateway's webchat route used by Control
-UI. Actual calls verified keyword/hybrid search, guarded inspection, exact
-211-byte multiline capture, original-receipt replay, fresh sessions, and recovery
+UI with Claude CLI. Actual calls verified keyword/hybrid search, guarded
+inspection, exact 211-byte multiline capture, original-receipt replay, fresh
+sessions, and recovery
 after a committed capture's response was lost and the gateway restarted.
 
 The [recorded acceptance](validation/openclaw-conversational-83.md) and
-[sanitized JSON proof](validation/openclaw-conversational-83.json) distinguish
+[Claude CLI JSON proof](validation/openclaw-conversational-83.json) distinguish
 native tool discovery, model selection and service dispatch. ToolSearch found
 the three permitted tools and found no matches for five tools excluded by the
 client filter. Direct keyword, hybrid, graph and single-line capture commands
@@ -23,6 +25,28 @@ also passed their checks. The evidence records the gateway route and actual
 agent calls; browser clicks were not observed. This validates the candidate
 against an isolated synthetic corpus. Track deployment status separately in the
 operator runbook.
+
+Separate [OpenAI OAuth evidence](validation/openclaw-openai-oauth-83.json)
+records `openai/gpt-6.1-sol` through the existing Codex/ChatGPT OAuth profile,
+OpenClaw's embedded `openclaw` agent runtime, and the
+`openai-chatgpt-responses` API. Actual nested tool calls verified keyword/hybrid
+search, guarded inspection, exact multiline capture, ordinary replay, and replay
+after a lost response and gateway restart. OAuth selects model authentication;
+it does not select the native Codex app-server runtime.
+
+| Model authentication | Agent runtime | Conversational validation |
+| --- | --- | --- |
+| Anthropic | `claude-cli` | Recorded search, inspection, capture and recovery |
+| Codex/ChatGPT OAuth (`openai/gpt-6.1-sol`) | Embedded `openclaw` | Recorded search, inspection, capture and recovery |
+| Codex/ChatGPT OAuth | Native Codex app-server | Unverified; not offered by the tested model catalog |
+
+The OpenAI live runs used a `read,capture` principal. Read-only operations in
+those runs do not establish a separate read-only principal's runtime projection.
+The HTTP regression verifies the service's read-only versus read/capture catalogs;
+live OpenAI read-only-principal projection and native Codex app-server projection
+remain unverified. Claude ToolSearch and excluded-tool observations above apply
+to Claude CLI only. Verify the actual runtime and principal inventory for each
+instance before extending these compatibility claims.
 
 ## Configure the existing native integration
 
@@ -88,6 +112,12 @@ The recorded native Claude CLI ToolSearch references were:
 | `search_notes` | `graphrag__search_notes` | `mcp__graphrag__search_notes` |
 | `get_record` | `graphrag__get_record` | `mcp__graphrag__get_record` |
 | `capture_note` | `graphrag__capture_note` | `mcp__graphrag__capture_note` |
+
+Embedded OpenClaw's OpenAI calls use the policy aliases, with actual code-mode
+calls recorded as `openclaw.nested-tool.v1` events beneath the OpenAI assistant
+call. Validate the paired child call/result, parent call and run identity. These
+events are separate evidence from Claude CLI's `mcp__...` references and do not
+establish native Codex app-server permission projection.
 
 For a configuration that already uses `alsoAllow`, add entries to that existing
 surface instead of combining `allow` and `alsoAllow` in one scope. Follow the

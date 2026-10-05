@@ -125,10 +125,13 @@ remains available for review rather than being deleted.
 
 ## OpenClaw
 
-The configuration below targets OpenClaw 2026.9.8, including its normal
-`claude-cli` runtime. Its registry projects MCP tools into eligible agent
-runtimes; test the runtime actually used by each instance. The explicit transport
-is required because OpenClaw otherwise defaults to SSE. Use the instance's private
+The configuration below targets the tested OpenClaw 2026.9.8 `claude-cli` runtime
+and embedded `openclaw` runtime with `openai/gpt-6.1-sol` authenticated through
+Codex/ChatGPT OAuth. Authentication and agent runtime are separate choices;
+native Codex app-server projection remains unverified. Its registry projects MCP
+tools into eligible agent runtimes; test the runtime actually used by each
+instance. The explicit transport is required because OpenClaw otherwise defaults
+to SSE. Use the instance's private
 config and load `GRAPHRAG_TOKEN` into the owning process's environment before
 starting it. This example exposes exactly the three conversational tools:
 
@@ -163,14 +166,20 @@ principal-filtered catalog valid for modern clients without allowing shared or
 fresh cached authorization results. Issue [#83](https://github.com/mateu/graphrag-notes/issues/83)
 isolated their omission as the cause of a connected server with an empty Claude
 CLI tool catalog. The source fix uses the existing native MCP path; no additional
-plugin or OpenClaw vendor patch is required. The updated candidate passed
-synthetic normal-main-agent acceptance through the gateway's webchat route used
-by Control UI: keyword/hybrid search, guarded inspection, exact multiline capture,
-receipt replay, and recovery after a committed capture's response was lost and
-the gateway restarted. See the [recorded acceptance](validation/openclaw-conversational-83.md)
-and [sanitized proof](validation/openclaw-conversational-83.json). This verifies
-the candidate against an isolated synthetic corpus; track deployment status
-separately in the operator runbook.
+plugin or OpenClaw vendor patch is required for the tested runtimes. Claude CLI
+passed synthetic normal-main-agent acceptance through the gateway's webchat route
+used by Control UI: keyword/hybrid search, guarded inspection, exact multiline
+capture, receipt replay, and recovery after a committed capture's response was
+lost and the gateway restarted. Embedded OpenClaw with OpenAI OAuth separately
+passed read-only search/inspection against an existing daily note and synthetic
+capture/replay/restart recovery. See the
+[recorded acceptance](validation/openclaw-conversational-83.md)
+and separate [Claude CLI proof](validation/openclaw-conversational-83.json) and
+[embedded OpenAI OAuth proof](validation/openclaw-openai-oauth-83.json). Live
+OpenAI runs used a read/capture principal; the service's read-only versus
+read/capture catalog boundary is covered by HTTP regression, not a live OpenAI
+read-only-principal run. These capture checks used isolated synthetic corpora;
+track deployment status separately in the operator runbook.
 
 Probe with `openclaw mcp doctor graphrag --probe`, then inspect the intended
 session's actual callable inventory and calls. Refresh the owning process after

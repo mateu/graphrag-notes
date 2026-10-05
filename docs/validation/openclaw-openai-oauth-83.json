@@ -1,0 +1,417 @@
+{
+  "schema_version": 1,
+  "issue": 83,
+  "result": "passed",
+  "verified_at_utc": "2026-10-04T10:56:32.338495+00:00",
+  "scope": "OpenAI OAuth authentication with embedded OpenClaw runtime; native Codex app-server unverified",
+  "surface": {
+    "agent": "main",
+    "route": "normal gateway webchat used by Control UI",
+    "browser_interaction_observed": false,
+    "client_gateway_os": "Linux",
+    "service_host_os": "macOS"
+  },
+  "versions": {
+    "openclaw": "2026.9.8",
+    "node": "24.21.0",
+    "rmcp": "3.5.0"
+  },
+  "model": {
+    "provider": "openai",
+    "id": "gpt-6.1-sol",
+    "agent_runtime": "openclaw",
+    "api": "openai-chatgpt-responses",
+    "authentication": "existing Codex/ChatGPT OAuth profile"
+  },
+  "source_attribution": {
+    "tested_commit": "31b56957fc23a51fbf9489ff8d9e5eb487f55734",
+    "binary_sha256": "f2c43195869b04161ac8a33c0b95837705384af79498c8f25269614914437e89"
+  },
+  "tool_policy": {
+    "client_include": [
+      "search_notes",
+      "get_record",
+      "capture_note"
+    ],
+    "live_service_principal_capabilities": [
+      "read",
+      "capture"
+    ],
+    "live_read_only_principal_projection_validated": false,
+    "native_codex_app_server_projection_validated": false,
+    "read_only_vs_read_capture_server_catalog_coverage": "modern_catalog_cache_metadata_is_private_and_preserves_principal_filtering HTTP regression"
+  },
+  "read_acceptance": {
+    "passed": true,
+    "operations": [
+      "keyword search",
+      "hybrid search",
+      "revision-guarded get_record"
+    ],
+    "independent_mcp_readback": true,
+    "production_writes": 0,
+    "evidence": "openclaw.nested-tool.v1 paired with OpenAI assistant parent and run identity",
+    "proofs": [
+      {
+        "private_proof_sha256": "385cd476adf9c6f06d1d2fafad8866e809e2df0e5259d5999e2f1274da5e9ca3",
+        "calls": [
+          {
+            "tool": "search_notes",
+            "mode": "keyword",
+            "api": "openai-chatgpt-responses",
+            "evidence": "openclaw.nested-tool.v1"
+          },
+          {
+            "tool": "get_record",
+            "mode": null,
+            "api": "openai-chatgpt-responses",
+            "evidence": "openclaw.nested-tool.v1"
+          }
+        ]
+      },
+      {
+        "private_proof_sha256": "dc9e965bce171426ffbbf69b6004957cd2a82ebfa8e86342b229a7e0fcffa15c",
+        "calls": [
+          {
+            "tool": "search_notes",
+            "mode": "hybrid",
+            "api": "openai-chatgpt-responses",
+            "evidence": "openclaw.nested-tool.v1"
+          }
+        ]
+      },
+      {
+        "private_proof_sha256": "66fa5bc17a466b74aa34164ee1e6725fca6ede8aa118e13c2150619c585ee5b0",
+        "calls": [
+          {
+            "tool": "search_notes",
+            "mode": "keyword",
+            "api": "openai-chatgpt-responses",
+            "evidence": "openclaw.nested-tool.v1"
+          },
+          {
+            "tool": "get_record",
+            "mode": null,
+            "api": "openai-chatgpt-responses",
+            "evidence": "openclaw.nested-tool.v1"
+          }
+        ]
+      },
+      {
+        "private_proof_sha256": "feee44d00141aa2669517a67f55fb7023d1bf4095db6bb713060667afaecd1a2",
+        "calls": [
+          {
+            "tool": "search_notes",
+            "mode": "hybrid",
+            "api": "openai-chatgpt-responses",
+            "evidence": "openclaw.nested-tool.v1"
+          }
+        ]
+      }
+    ]
+  },
+  "capture": {
+    "exact_utf8_bytes": 211,
+    "exact_tags_title_and_provenance": true,
+    "native_and_independent_guarded_readback": true
+  },
+  "ordinary_retry": {
+    "same_canonical_record_and_revision": true,
+    "replayed": true
+  },
+  "lost_response_recovery": {
+    "authoritative_commit_before_response_loss": true,
+    "reported_uncertain_without_success_claim": true,
+    "automatic_model_retries_before_explicit_retry": 0,
+    "automatic_transport_retries_before_explicit_retry": 0,
+    "gateway_restarted": true,
+    "retained_draft_request_and_oauth_settings_verified_before_retry_without_reapplying_them": true,
+    "same_canonical_record_and_revision": true,
+    "replayed": true
+  },
+  "phases": {
+    "capture": {
+      "passed": true,
+      "private_proof_sha256": "36c44a3d92da9f87a61844e46399061e5cabb3aaee20db277c7725ff4aa6f762",
+      "calls": [
+        {
+          "tool": "capture_note",
+          "runtime_tool": "graphrag_openai_test__capture_note",
+          "call_id_sha256": "802df93c25970aa64f8b80cc675688f8ed2e3595c52e9c89d4508d95f135ed1e",
+          "argument_keys": [
+            "content",
+            "provenance",
+            "request_id",
+            "tags",
+            "title"
+          ],
+          "paired_results": 1,
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "api": "openai-chatgpt-responses",
+          "evidence": "openclaw.nested-tool.v1",
+          "parent_call_id_sha256": "30cf6197adfa094c46c9e43d644742dc04a691caf3dcc0b61b3d8f0ef99ea91e",
+          "run_id_sha256": "136c339adcdb4958a641238672f5344989335bb0df53dd08a69e001d68e1a2c2",
+          "request_id_sha256": "90888f8baecc091543310f1d5aa55434fc8084c4502e817efbe815e693d4aa7f",
+          "content_sha256": "dab1e88de843706460ef78f9745f1c0e7d4e1dc51c7d228d85a528e99c7f4ba5",
+          "content_bytes": 211
+        },
+        {
+          "tool": "get_record",
+          "runtime_tool": "graphrag_openai_test__get_record",
+          "call_id_sha256": "e8bc884881e7f661969df375eed5468a51db63ded5badbb0d80176867aef2fea",
+          "argument_keys": [
+            "id",
+            "neighbors",
+            "revision"
+          ],
+          "paired_results": 1,
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "api": "openai-chatgpt-responses",
+          "evidence": "openclaw.nested-tool.v1",
+          "parent_call_id_sha256": "458affb3d0d8aa41eb5e53a1d74cbc616c7b2c3335a5d925f4bf3e5d8902c0a0",
+          "run_id_sha256": "136c339adcdb4958a641238672f5344989335bb0df53dd08a69e001d68e1a2c2",
+          "id_sha256": "699bf670a3ee948869316af3d2b102383fca41b630e615ee96773d8b8b8eadef",
+          "revision_sha256": "13fb35248ccb06c93d95ea088dd0b2c7c654d97f0bc41cbcc1bb6fce15792554"
+        }
+      ],
+      "capture": {
+        "request_id_sha256": "90888f8baecc091543310f1d5aa55434fc8084c4502e817efbe815e693d4aa7f",
+        "replayed": false,
+        "exact_payload": true,
+        "content_sha256": "dab1e88de843706460ef78f9745f1c0e7d4e1dc51c7d228d85a528e99c7f4ba5",
+        "content_bytes": 211,
+        "authoritative_receipt_linked_to_native_call": true,
+        "exact_draft_in_normal_history": true,
+        "native_revision_guarded_readback": true,
+        "independent_readback": true,
+        "actor_matches": true,
+        "id_sha256": "699bf670a3ee948869316af3d2b102383fca41b630e615ee96773d8b8b8eadef",
+        "revision_sha256": "13fb35248ccb06c93d95ea088dd0b2c7c654d97f0bc41cbcc1bb6fce15792554"
+      }
+    },
+    "ordinary_replay": {
+      "passed": true,
+      "private_proof_sha256": "270d56cc38be9100b7ceee697c514b49eb290194171366dc34594d2024ab6e59",
+      "calls": [
+        {
+          "tool": "capture_note",
+          "runtime_tool": "graphrag_openai_test__capture_note",
+          "call_id_sha256": "cf52dfe76d3a611274b7ddff4b1f13ff04fa56358fe55ce947668e64f987d010",
+          "argument_keys": [
+            "content",
+            "provenance",
+            "request_id",
+            "tags",
+            "title"
+          ],
+          "paired_results": 1,
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "api": "openai-chatgpt-responses",
+          "evidence": "openclaw.nested-tool.v1",
+          "parent_call_id_sha256": "4731331700becbb0c2a7a4fb2cdd8546325ed724c2af5642e957d281702de97c",
+          "run_id_sha256": "b50661836fb875266a5428703b3b1330f8aae339099a50b1ab70355f51149d35",
+          "request_id_sha256": "90888f8baecc091543310f1d5aa55434fc8084c4502e817efbe815e693d4aa7f",
+          "content_sha256": "dab1e88de843706460ef78f9745f1c0e7d4e1dc51c7d228d85a528e99c7f4ba5",
+          "content_bytes": 211
+        },
+        {
+          "tool": "get_record",
+          "runtime_tool": "graphrag_openai_test__get_record",
+          "call_id_sha256": "9a2b3f6ad588ead753d325c7d3bc98925e619a0b075127078dfda4b53a2708f7",
+          "argument_keys": [
+            "id",
+            "neighbors",
+            "revision"
+          ],
+          "paired_results": 1,
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "api": "openai-chatgpt-responses",
+          "evidence": "openclaw.nested-tool.v1",
+          "parent_call_id_sha256": "815f6d3e7d21f747027979d0f40a11d9e07a60bd5701198696501009860f4c5f",
+          "run_id_sha256": "b50661836fb875266a5428703b3b1330f8aae339099a50b1ab70355f51149d35"
+        }
+      ],
+      "capture": {
+        "request_id_sha256": "90888f8baecc091543310f1d5aa55434fc8084c4502e817efbe815e693d4aa7f",
+        "replayed": true,
+        "exact_payload": true,
+        "content_sha256": "dab1e88de843706460ef78f9745f1c0e7d4e1dc51c7d228d85a528e99c7f4ba5",
+        "content_bytes": 211,
+        "authoritative_receipt_linked_to_native_call": true,
+        "exact_draft_in_normal_history": true,
+        "native_revision_guarded_readback": true,
+        "independent_readback": true,
+        "actor_matches": true,
+        "id_sha256": "699bf670a3ee948869316af3d2b102383fca41b630e615ee96773d8b8b8eadef",
+        "revision_sha256": "13fb35248ccb06c93d95ea088dd0b2c7c654d97f0bc41cbcc1bb6fce15792554"
+      }
+    },
+    "uncertain_capture": {
+      "passed": true,
+      "private_proof_sha256": "9e9d66b611aa02d3037346883838cb190f878e57cfb14a758a901db4728d1625",
+      "calls": [
+        {
+          "tool": "capture_note",
+          "runtime_tool": "graphrag_openai_test__capture_note",
+          "call_id_sha256": "e8bbc9650f433f96405bc1aa95014b28b9ce37649eae919504cf03029f771515",
+          "argument_keys": [
+            "content",
+            "provenance",
+            "request_id",
+            "tags",
+            "title"
+          ],
+          "paired_results": 1,
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "api": "openai-chatgpt-responses",
+          "evidence": "openclaw.nested-tool.v1",
+          "parent_call_id_sha256": "5684c95949c841ebdf3ce1dfc111adb07d1e90e86ae15aacca45be3f64f198a8",
+          "run_id_sha256": "eb493e4f7d06181ad736d1ec908cd342b1b08bd6f25be0abef100a7bbae4191b",
+          "request_id_sha256": "24ccf1ca8a484f3e16e902c2a9f23c1dcb899822b7d055359b7038e9fcd3a55f",
+          "content_sha256": "dab1e88de843706460ef78f9745f1c0e7d4e1dc51c7d228d85a528e99c7f4ba5",
+          "content_bytes": 211
+        }
+      ],
+      "capture": {
+        "request_id_sha256": "24ccf1ca8a484f3e16e902c2a9f23c1dcb899822b7d055359b7038e9fcd3a55f",
+        "content_sha256": "dab1e88de843706460ef78f9745f1c0e7d4e1dc51c7d228d85a528e99c7f4ba5",
+        "content_bytes": 211,
+        "exact_draft_in_normal_history": true
+      }
+    },
+    "restart_replay": {
+      "passed": true,
+      "private_proof_sha256": "7388986864f9616a7052a26ebbf4faf15ee18ebdde84e01acafaced1bbf471e9",
+      "calls": [
+        {
+          "tool": "capture_note",
+          "runtime_tool": "graphrag_openai_test__capture_note",
+          "call_id_sha256": "3d20563fc224c2e786b835f8ef23dc02b1f06677d43328cd10ad417904009959",
+          "argument_keys": [
+            "content",
+            "provenance",
+            "request_id",
+            "tags",
+            "title"
+          ],
+          "paired_results": 1,
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "api": "openai-chatgpt-responses",
+          "evidence": "openclaw.nested-tool.v1",
+          "parent_call_id_sha256": "bd1b600329e4e65e2e6d19daf2ab3856aef67cc70feff2a45b5245d13179a5b9",
+          "run_id_sha256": "bdb95f447434abfbf69e52ef3ba3ec8273d958c46fbe20c5b41645c61e06fed0",
+          "request_id_sha256": "24ccf1ca8a484f3e16e902c2a9f23c1dcb899822b7d055359b7038e9fcd3a55f",
+          "content_sha256": "dab1e88de843706460ef78f9745f1c0e7d4e1dc51c7d228d85a528e99c7f4ba5",
+          "content_bytes": 211
+        },
+        {
+          "tool": "get_record",
+          "runtime_tool": "graphrag_openai_test__get_record",
+          "call_id_sha256": "194ea284e29a16a1ebf66bfb16e8080a1a093f3feb2ad5f3d292966c296ea5cc",
+          "argument_keys": [
+            "id",
+            "neighbors",
+            "revision"
+          ],
+          "paired_results": 1,
+          "provider": "openai",
+          "model": "gpt-6.1-sol",
+          "api": "openai-chatgpt-responses",
+          "evidence": "openclaw.nested-tool.v1",
+          "parent_call_id_sha256": "90748dd4b448d907a3aebd2917e91402a15b6b3d79667bebd5ffe20b1c385929",
+          "run_id_sha256": "bdb95f447434abfbf69e52ef3ba3ec8273d958c46fbe20c5b41645c61e06fed0"
+        }
+      ],
+      "capture": {
+        "request_id_sha256": "24ccf1ca8a484f3e16e902c2a9f23c1dcb899822b7d055359b7038e9fcd3a55f",
+        "replayed": true,
+        "exact_payload": true,
+        "content_sha256": "dab1e88de843706460ef78f9745f1c0e7d4e1dc51c7d228d85a528e99c7f4ba5",
+        "content_bytes": 211,
+        "authoritative_receipt_linked_to_native_call": true,
+        "exact_draft_in_normal_history": true,
+        "native_revision_guarded_readback": true,
+        "independent_readback": true,
+        "actor_matches": true,
+        "id_sha256": "31d1aa98d08ce5fbac7bc2bd8af5443732a4e8860d57217a6bb0938428b610ce",
+        "revision_sha256": "a7c33288d74a92a70b2cb35f5b9ad00a1704911e44714f5ede9fe1d32567f206"
+      }
+    }
+  },
+  "corpus_audit": {
+    "passed": true,
+    "owner_stopped_before_backup": true,
+    "backup_independently_verified": true,
+    "includes_embeddings": true,
+    "records": 13,
+    "record_counts": {
+      "source": 4,
+      "note": 4,
+      "remote_capture_receipt": 4,
+      "graphrag_metadata": 1
+    },
+    "distinct_request_receipts": 4,
+    "distinct_note_ids": 4,
+    "seed_notes": 2,
+    "test_captures": 2,
+    "no_duplicate_notes_or_receipts": true,
+    "exact_saved_capture_content": true
+  },
+  "isolation_and_cleanup": {
+    "disabled_test_alias_enabled_only_for_own_sessions": true,
+    "daily_endpoint_unchanged": true,
+    "global_config_restored_byte_for_byte": true,
+    "test_sessions_archived_and_overlays_removed": true,
+    "synthetic_owner_proxy_tunnel_stopped": true,
+    "daily_service_and_existing_note_unchanged": true
+  },
+  "offline_cases": {
+    "native_parser": 31,
+    "capture_parser": 24,
+    "loss_proxy": 8
+  },
+  "independent_review": {
+    "result": "passed",
+    "actionable_findings": 0,
+    "scope": "Live capture and recovery proofs, verified synthetic backup, session/config/process cleanup, and daily-service verification"
+  },
+  "private_proof_sha256": {
+    "capture": "36c44a3d92da9f87a61844e46399061e5cabb3aaee20db277c7725ff4aa6f762",
+    "ordinary_replay": "270d56cc38be9100b7ceee697c514b49eb290194171366dc34594d2024ab6e59",
+    "uncertain_capture": "9e9d66b611aa02d3037346883838cb190f878e57cfb14a758a901db4728d1625",
+    "restart_replay": "7388986864f9616a7052a26ebbf4faf15ee18ebdde84e01acafaced1bbf471e9",
+    "corpus_audit": "ab1b3ca69e4d9912dbcaed53b00f3de73c8f7a1e18d96f58f4c5928aa92baa13",
+    "session_cleanup": "a2c2511653a8f8a79a4ad077072b7dad277225ec2a7225c6c46a78db9ee19333",
+    "config_restore": "299c67ce82e3dddedab576d16f827d5c7ca0da327d04297edef46ef66767f53e",
+    "process_cleanup": "c8b8b3e1dc04ee9703e796fa5991d4740ec422a0f00c12fcb4c51cbbe9914b98",
+    "daily_service_verification": "387718df0265cda80381d349d1d7203efad83e260465d34ebd9ee6cdf10f277e",
+    "recovery_identity": "8b60eda39a0d6b971cd83b6fa9ade0199181320d280254ceed6702e0673158a3"
+  },
+  "limits": [
+    "Native Codex CLI/app-server runtime was not offered by the tested catalog and is unverified.",
+    "Live OpenAI runs used a read/capture principal; read-only actions do not validate a read-only credential runtime projection.",
+    "Claude ToolSearch inventory/excluded-tool observations are not OpenAI runtime observations.",
+    "The OpenAI client gateway ran on Linux; a macOS OpenAI gateway run is unverified.",
+    "Gateway webchat route was exercised without observed browser clicks.",
+    "Recovery depends on an explicit stable request ID and exact retained draft/history; no session-reset, compaction, or lost-history guarantee.",
+    "The saved proxy counter records forwarding before explicit retry, not a final total-call count."
+  ],
+  "sanitization": {
+    "omitted": [
+      "credentials",
+      "OAuth account/profile identifiers",
+      "private paths and hostnames",
+      "raw note/query/title/source text",
+      "canonical record IDs and revisions",
+      "raw session/run/tool-call identifiers"
+    ],
+    "identifier_representation": "SHA-256 hashes",
+    "private_evidence_retained": true
+  }
+}

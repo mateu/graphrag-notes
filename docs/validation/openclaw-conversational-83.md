@@ -1,16 +1,22 @@
-# Normal native OpenClaw conversational validation — issue 83
+# OpenClaw conversational validation — issue 83
 
-The corrected service passed normal main-agent native search, guarded inspection,
-exact multiline capture and retry against an isolated synthetic corpus. Requests
-used the installed gateway webchat route used by Control UI; no browser click was
-observed. Daily production rollout is outside this fixture evidence.
+The corrected service passed Claude CLI normal main-agent native search, guarded
+inspection, exact multiline capture and retry against an isolated synthetic
+corpus. Requests used the installed gateway webchat route used by Control UI; no
+browser click was observed. Daily production rollout is outside this fixture
+evidence.
 
-The [sanitized JSON proof](openclaw-conversational-83.json) records actual paired
+The [Claude CLI JSON proof](openclaw-conversational-83.json) records actual paired
 native tool calls and result checks. It omits private machine paths, hostnames,
 configuration, credentials, session identifiers, query/body text and principal
 identity. Canonical record IDs and revisions are represented by SHA-256 hashes.
 The [supported setup](../openclaw-conversational.md) describes normal configuration,
 reconnect behavior, exact retry and direct-command fallback.
+
+The later [embedded OpenClaw OpenAI OAuth proof](openclaw-openai-oauth-83.json)
+records a separate tested runtime and corpus; its results are detailed below.
+Neither report validates the native Codex app-server runtime. Model OAuth
+authentication alone does not establish that runtime's MCP permission projection.
 
 ## Client, source and discovery boundary
 
@@ -74,7 +80,58 @@ capture, zero blocked retry attempts, an authoritative successful upstream
 receipt, and a withheld downstream response. Independent service readback also
 predated retry. The subsequent replay's ID/revision hashes equal both records.
 
-## Corpus audit, checks and limits
+## Embedded OpenClaw with OpenAI OAuth
+
+On 2026-10-04, OpenClaw 2026.9.8 with Node 24.21.0 used
+`openai/gpt-6.1-sol`, the existing Codex/ChatGPT OAuth profile, the embedded
+`openclaw` agent runtime and `openai-chatgpt-responses` API. The gateway ran on
+Linux and the service on macOS. These were actual normal main-agent gateway
+webchat calls, with no browser interaction claimed. The native Codex runtime was
+not offered by the tested model catalog and remains unverified.
+
+Keyword/hybrid search and revision-guarded inspection used read-only operations
+against an existing source-scoped daily note, with independent MCP readback and
+zero production writes. They used a read/capture principal, not a separate
+read-only credential. Both service catalog capability sets are covered by the
+HTTP regression; live read-only-principal OpenAI projection is unverified.
+
+Capture checks used a separate synthetic service corpus and the same existing
+read/capture credential policy. A globally disabled MCP alias was enabled only
+for two dedicated test sessions, with the daily endpoint unchanged. Actual
+`openclaw.nested-tool.v1` child calls/results were paired with their OpenAI
+assistant parent calls and run identities. Claude ToolSearch observations were
+not used to establish OpenAI discovery or dispatch.
+
+The exact 211-byte multiline draft, including whitespace, Unicode and final
+newline, matched capture arguments, the authoritative receipt, native guarded
+inspection and independent raw MCP readback. Ordinary retry returned the original
+canonical record/revision with `replayed: true`.
+
+The loss proxy withheld one selected response after authoritative commit. The
+model reported uncertainty without claiming a saved receipt or automatically
+repeating capture. Independent readback proved commitment before retry. After
+gateway restart and a successful health check, read-only checks confirmed the
+persisted OAuth/model/runtime/routing selection and retained exact draft before
+any reselection. Explicit retry returned the original receipt and record, with
+guarded native and independent readback.
+
+An owner-stopped backup including embeddings was independently verified: exactly
+13 records, comprising four notes, four sources, four capture receipts and one
+metadata record. The notes were two seeds and two test captures; neither retry
+created a duplicate. All 63 offline parser/capture/proxy cases passed, and
+independent Codex review found no actionable evidence findings. Sessions were
+archived, temporary overlays/alias/processes removed, and original configuration
+restored byte-for-byte. The daily service and existing note were unchanged.
+
+The separate JSON records the tested source commit `31b5695`, the same executable
+SHA-256 as the Claude run, exact body and identity hashes, actual paired tool-call
+metadata, and private-proof digests. It omits raw bodies, canonical IDs, OAuth
+profile/account identifiers, credentials, hostnames and private paths. These
+OpenAI results support the embedded OpenClaw path only; native Codex app-server,
+live read-only-principal projection, and a macOS OpenAI gateway run remain open
+validation limits.
+
+## Claude CLI corpus audit, checks and limits
 
 An independently verified portable backup, including embeddings, recorded schema
 18, six notes, six sources and six capture receipts with six distinct receipt
