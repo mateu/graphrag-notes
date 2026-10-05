@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 const TOKEN_A: &str = "a-fixed-test-token-with-32-or-more-bytes";
 const TOKEN_B: &str = "b-fixed-test-token-with-32-or-more-bytes";
 const TOKEN_READ: &str = "read-fixed-test-token-with-32-or-more-bytes";
+const TOKEN_CAPTURE: &str = "capture-fixed-test-token-with-32-or-more-bytes";
 
 #[derive(Default)]
 struct TestApplication {
@@ -257,6 +258,11 @@ impl Fixture {
                     vec![Capability::Read, Capability::Capture, Capability::Upload],
                 ),
                 ("reader", TOKEN_READ, vec![Capability::Read]),
+                (
+                    "capture-client",
+                    TOKEN_CAPTURE,
+                    vec![Capability::Read, Capability::Capture],
+                ),
             ],
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -298,6 +304,37 @@ impl Fixture {
         assert_eq!(response.status(), StatusCode::OK);
         response.json().await.unwrap()
     }
+    async fn modern_catalog_rpc(&self, token: &str, method: &str) -> Value {
+        let response = self
+            .client
+            .post(&self.url)
+            .bearer_auth(token)
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-protocol-version", "2026-07-28")
+            .header("mcp-method", method)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": {
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientInfo": {
+                            "name": "modern-catalog-test", "version": "1"
+                        },
+                        "io.modelcontextprotocol/clientCapabilities": {}
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        assert!(response.headers().get("mcp-session-id").is_none());
+        let body = response.json().await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{method} response: {body}");
+        body
+    }
     async fn tool(&self, token: &str, name: &str, arguments: Value) -> Value {
         self.rpc(token, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}})).await
     }
@@ -322,6 +359,65 @@ fn data(result: &Value) -> &Value {
 }
 fn error(result: &Value) -> &Value {
     &result["result"]["structuredContent"]["error"]
+}
+
+#[tokio::test]
+async fn modern_catalog_cache_metadata_is_private_and_preserves_principal_filtering() {
+    let fixture = Fixture::new(TestApplication::default()).await;
+    for (token, can_capture) in [(TOKEN_CAPTURE, true), (TOKEN_READ, false)] {
+        let discovered = fixture.modern_catalog_rpc(token, "server/discover").await;
+        let discovery = &discovered["result"];
+        assert_eq!(discovery["resultType"], "complete");
+        assert_eq!(discovery["ttlMs"], 0);
+        assert_eq!(discovery["cacheScope"], "private");
+        assert!(discovery["supportedVersions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|version| version == "2026-07-28"));
+        assert!(discovery["capabilities"].get("tools").is_some());
+
+        let listed = fixture.modern_catalog_rpc(token, "tools/list").await;
+        let catalog = &listed["result"];
+        assert_eq!(catalog["resultType"], "complete");
+        assert_eq!(catalog["ttlMs"], 0);
+        assert_eq!(catalog["cacheScope"], "private");
+        let tools = catalog["tools"].as_array().unwrap();
+        let mut names: Vec<_> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        let mut expected = vec![
+            "build_context",
+            "get_note",
+            "get_proposal",
+            "get_record",
+            "get_source",
+            "list_proposals",
+            "search_notes",
+        ];
+        if can_capture {
+            expected.push("capture_note");
+            expected.sort_unstable();
+        }
+        assert_eq!(names, expected);
+        assert!(tools.iter().all(|tool| {
+            tool["annotations"]["readOnlyHint"] == (tool["name"] != "capture_note")
+        }));
+
+        let legacy = fixture
+            .rpc(token, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))
+            .await;
+        assert_eq!(legacy["result"]["tools"], catalog["tools"]);
+        // rmcp strips the modern discriminator, retaining additive cache hints.
+        assert!(legacy["result"].get("resultType").is_none());
+        assert_eq!(legacy["result"]["ttlMs"], 0);
+        assert_eq!(legacy["result"]["cacheScope"], "private");
+    }
+    assert_eq!(fixture.application.captures.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.application.searches.load(Ordering::SeqCst), 0);
+    fixture.stop().await;
 }
 
 #[tokio::test]

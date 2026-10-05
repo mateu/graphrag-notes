@@ -6,9 +6,9 @@ use graphrag_application::{
 };
 use rmcp::{
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, Implementation,
-        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
-        ToolAnnotations,
+        CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData,
+        Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
+        Tool, ToolAnnotations,
     },
     service::RequestContext,
     RoleServer, ServerHandler,
@@ -424,7 +424,11 @@ impl ServerHandler for ToolService {
                 .map(|(_, tool)| tool)
                 .collect(),
             ..Default::default()
-        })
+        }
+        // Required by modern MCP discovery. The catalog depends on the bearer
+        // principal, so it must never be cached across authorization contexts.
+        .with_ttl_ms(0)
+        .with_cache_scope(CacheScope::Private))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
