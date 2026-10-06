@@ -187,7 +187,7 @@ async fn independent_capabilities_confirmations_trusted_actor_and_durable_replay
                 .tool("deleter", "delete_uploaded_source", source_delete)
                 .await
         ),
-        "validation"
+        "invalid_input"
     );
     let before = fixture.tool("reader", "get_note", json!({"id":id})).await;
     let revision = data(&before)["revision"].as_str().unwrap();
