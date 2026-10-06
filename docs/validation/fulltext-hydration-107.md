@@ -40,7 +40,18 @@ Keyword traces emit `application_search` only. Full-text phase attribution comes
 
 ## Mixed selective tails and remaining limits
 
-Ordinary one-lane keyword selective p95 remains 1.57–2.75 ms after the change. Four-lane entity/title tails rose from 2.84/4.82 to 8.83/10.70 ms, while the matched traced counterparts changed from 3.46/5.11 to 3.43/4.51 ms. These small absolute but mixed tails are retained; a separate balanced confirmation must precede a selective non-regression claim.
+Ordinary one-lane keyword selective p95 remains 1.57–2.75 ms after the change. Four-lane entity/title tails rose from 2.84/4.82 to 8.83/10.70 ms, while the matched traced counterparts changed from 3.46/5.11 to 3.43/4.51 ms. These small absolute but mixed tails are retained.
+
+A separate keyword-only confirmation restored the same snapshot/configuration for four release roles in before/after/after/before order. It preserved all four original cases, their order, query meaning and judgments, with the same one/four-lane schedule and 20 warm repetitions plus first observations per category/load/role. All 672 searches succeeded and exactly matched the original cohorts' full ranked records, pinned readbacks and metrics; all 336 balanced before/after pairs also matched. Every first, minimum, median, p95 and maximum remains in the supplemental JSON section. Direct `schema-version` checks verified the actual migration ledger before each sole service owner; no doctor, embedding/extraction calls or provider processes ran. All owned processes stopped. Unused narrower preparation plans produced no actual samples and remain private.
+
+| Four-lane keyword category | First pair p95 before → after | Reversed pair p95 before → after |
+| --- | ---: | ---: |
+| Broad/direct | 326.60 → 115.13 ms | 324.33 → 115.91 ms |
+| Entity | 3.65 → 3.00 ms | 3.91 → 3.25 ms |
+| Source/time filters | 3.28 → 2.69 ms | 3.51 → 2.71 ms |
+| Exact title | 5.29 → 4.78 ms | 5.08 → 4.64 ms |
+
+The confirmation did not reproduce the original larger four-lane selective rises. Not every selective percentile improves: one-lane filter p95 in its first pair increases from 1.66 to 1.79 ms, and maxima near 11 ms for filters and 109 ms for a candidate broad query remain visible. This evidence supports broad-query gains with selective queries still taking a few milliseconds; it does not establish statistical significance or erase the adverse original observations. Keyword-only traffic omits the other policies' first-observation work from the main cohort, and neither run establishes cold-cache latency or continuous four-client saturation.
 
 Paired graph overhead uses the same query/round across sequential policy batches, with 80 successful pairs per group and 60 known-positive RR comparisons without regressions. Ordinary after-run p95 is 176.20/180.96 ms at one lane and 244.76/248.20 ms at four lanes for auto/on. Traced four-lane auto is 221.00 ms; traced four-lane on is 251.99 ms and misses the unchanged 250 ms overhead target. Separate cohorts are not a causal measurement of tracing overhead.
 

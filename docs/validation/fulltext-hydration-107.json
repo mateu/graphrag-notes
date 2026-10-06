@@ -10014,7 +10014,671 @@
     "Migration backfill collects the linear primary ID list before materialization; it is not a bounded-memory migration.",
     "The manual pre-service doctor compatibility check performs one embedding-dimension probe per role; it is not provider-free or a cold-start observation.",
     "Keyword RPCs emit application_search timing only; note_fulltext is observed inside hybrid RPCs. Per-category phase distributions retain that distinction.",
-    "Ordinary four-lane selective keyword tails are mixed: entity/title p95 rose while traced counterparts did not. A separate balanced confirmation is required before asserting selective non-regression.",
+    "Ordinary four-lane selective keyword tails are mixed: entity/title p95 rose while traced counterparts did not. The subsequent balanced keyword-only four-case confirmation did not reproduce the large four-lane selective rises; original observations remain retained and not every selective percentile improved.",
     "The traced four-lane graph-on paired overhead p95 is 251.99 ms and misses the unchanged 250 ms target; the ordinary counterpart is 248.20 ms."
-  ]
+  ],
+  "supplemental_balanced_keyword_confirmation": {
+    "schema_version": 1,
+    "issue": 107,
+    "purpose": "Balanced supplemental keyword comparison with the four unchanged original cases",
+    "role_order": [
+      "before_1",
+      "after_1",
+      "after_2",
+      "before_2"
+    ],
+    "policy": "keyword-off",
+    "case_order": [
+      "title",
+      "entity",
+      "filters",
+      "direct"
+    ],
+    "concurrency": [
+      1,
+      4
+    ],
+    "warm_per_category_load_role": 20,
+    "first_per_category_load_role": 1,
+    "requested": 672,
+    "successful": 672,
+    "failed": 0,
+    "omitted_observations": 0,
+    "first_observed": 32,
+    "warm": 640,
+    "exact_original_cohort_comparisons": 672,
+    "exact_balanced_before_after_pairs": 336,
+    "complete_ordered_records_pinned_readbacks_and_metrics_identical": true,
+    "all_owned_service_groups_stopped": true,
+    "all_owned_service_pids_absent": true,
+    "provider_calls": 0,
+    "provider_processes_started": 0,
+    "local_doctor_calls": 0,
+    "debug_tracing": false,
+    "p50_definition": "median of the 20 warm observations",
+    "p95_definition": "nearest rank over all 20 successful warm observations",
+    "roles": [
+      {
+        "order": 1,
+        "role": "before_1",
+        "binary_compiled_inputs_revision": "2a1627a06675f310ef80ca2b4e3b27f56b5b34d0",
+        "binary_sha256": "a9784daccf04b4d8b5f8207887afe00cb7eb0e0ffffc32b1af31392f247636e0",
+        "actual_schema_version": 19,
+        "requested": 168,
+        "successful": 168,
+        "failed": 0,
+        "first_observed": 8,
+        "warm": 160,
+        "provider_calls": 0,
+        "local_doctor_calls": 0,
+        "owner_state": "stopped",
+        "groups": [
+          {
+            "category": "title",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 9.027542022522539,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.7613749844022095,
+              "p50_ms": 3.197791491402313,
+              "p95_ms": 3.502667008433491,
+              "max_ms": 3.613874956499785
+            },
+            "all_observations_min_ms": 2.7613749844022095,
+            "all_observations_max_ms": 9.027542022522539
+          },
+          {
+            "category": "entity",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.249000001233071,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.7147919861599803,
+              "p50_ms": 1.8781459948513657,
+              "p95_ms": 2.1530829835683107,
+              "max_ms": 2.72583297919482
+            },
+            "all_observations_min_ms": 1.7147919861599803,
+            "all_observations_max_ms": 3.249000001233071
+          },
+          {
+            "category": "filters",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 1.8904170137830079,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.4022079994902015,
+              "p50_ms": 1.5413750079460442,
+              "p95_ms": 1.6585830016992986,
+              "max_ms": 11.895874980837107
+            },
+            "all_observations_min_ms": 1.4022079994902015,
+            "all_observations_max_ms": 11.895874980837107
+          },
+          {
+            "category": "direct",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 323.86037497781217,
+            "warm": {
+              "count": 20,
+              "min_ms": 207.98829197883606,
+              "p50_ms": 224.70552049344406,
+              "p95_ms": 257.1279580006376,
+              "max_ms": 285.9063750365749
+            },
+            "all_observations_min_ms": 207.98829197883606,
+            "all_observations_max_ms": 323.86037497781217
+          },
+          {
+            "category": "title",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 4.526583012193441,
+            "warm": {
+              "count": 20,
+              "min_ms": 3.2714169938117266,
+              "p50_ms": 4.176729009486735,
+              "p95_ms": 5.294292001053691,
+              "max_ms": 5.74683299055323
+            },
+            "all_observations_min_ms": 3.2714169938117266,
+            "all_observations_max_ms": 5.74683299055323
+          },
+          {
+            "category": "entity",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.6768330028280616,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.162333985324949,
+              "p50_ms": 2.705999999307096,
+              "p95_ms": 3.646208962891251,
+              "max_ms": 3.8410419947467744
+            },
+            "all_observations_min_ms": 2.162333985324949,
+            "all_observations_max_ms": 3.8410419947467744
+          },
+          {
+            "category": "filters",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.0620829784311354,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.6051669954322278,
+              "p50_ms": 2.2265829902607948,
+              "p95_ms": 3.284792008344084,
+              "max_ms": 8.664666034746915
+            },
+            "all_observations_min_ms": 1.6051669954322278,
+            "all_observations_max_ms": 8.664666034746915
+          },
+          {
+            "category": "direct",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 222.44183300063014,
+            "warm": {
+              "count": 20,
+              "min_ms": 250.6224579992704,
+              "p50_ms": 282.0743749907706,
+              "p95_ms": 326.6004589968361,
+              "max_ms": 326.8907500314526
+            },
+            "all_observations_min_ms": 222.44183300063014,
+            "all_observations_max_ms": 326.8907500314526
+          }
+        ]
+      },
+      {
+        "order": 2,
+        "role": "after_1",
+        "binary_compiled_inputs_revision": "5b7999e6fe80c01a846b029a5be4925d6d3eb7b3",
+        "binary_sha256": "af95cb003b8e7a16d1981433397b244265e811f89d2fe3669d74bcf10b97f3a8",
+        "actual_schema_version": 21,
+        "requested": 168,
+        "successful": 168,
+        "failed": 0,
+        "first_observed": 8,
+        "warm": 160,
+        "provider_calls": 0,
+        "local_doctor_calls": 0,
+        "owner_state": "stopped",
+        "groups": [
+          {
+            "category": "title",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 8.570083999074996,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.51258397474885,
+              "p50_ms": 2.6732500118669122,
+              "p95_ms": 2.7830410399474204,
+              "max_ms": 2.811125013977289
+            },
+            "all_observations_min_ms": 2.51258397474885,
+            "all_observations_max_ms": 8.570083999074996
+          },
+          {
+            "category": "entity",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.2327919616363943,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.8287079874426126,
+              "p50_ms": 1.931750011863187,
+              "p95_ms": 2.0537920063361526,
+              "max_ms": 2.1196669549681246
+            },
+            "all_observations_min_ms": 1.8287079874426126,
+            "all_observations_max_ms": 3.2327919616363943
+          },
+          {
+            "category": "filters",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 1.6670420300215483,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.4498339733108878,
+              "p50_ms": 1.522437494713813,
+              "p95_ms": 1.7892500036396086,
+              "max_ms": 11.441083974204957
+            },
+            "all_observations_min_ms": 1.4498339733108878,
+            "all_observations_max_ms": 11.441083974204957
+          },
+          {
+            "category": "direct",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 108.32841601222754,
+            "warm": {
+              "count": 20,
+              "min_ms": 56.22333398787305,
+              "p50_ms": 59.071979514556006,
+              "p95_ms": 61.32579199038446,
+              "max_ms": 63.118375022895634
+            },
+            "all_observations_min_ms": 56.22333398787305,
+            "all_observations_max_ms": 108.32841601222754
+          },
+          {
+            "category": "title",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 4.372916999273002,
+            "warm": {
+              "count": 20,
+              "min_ms": 3.073083993513137,
+              "p50_ms": 3.7870420201215893,
+              "p95_ms": 4.780000017490238,
+              "max_ms": 5.2690409938804805
+            },
+            "all_observations_min_ms": 3.073083993513137,
+            "all_observations_max_ms": 5.2690409938804805
+          },
+          {
+            "category": "entity",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.6503750015981495,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.4211250129155815,
+              "p50_ms": 2.704354003071785,
+              "p95_ms": 3.0011250055395067,
+              "max_ms": 3.17929097218439
+            },
+            "all_observations_min_ms": 2.4211250129155815,
+            "all_observations_max_ms": 3.6503750015981495
+          },
+          {
+            "category": "filters",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 2.757541020400822,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.9820829620584846,
+              "p50_ms": 2.2067295212764293,
+              "p95_ms": 2.6922079850919545,
+              "max_ms": 10.058000043500215
+            },
+            "all_observations_min_ms": 1.9820829620584846,
+            "all_observations_max_ms": 10.058000043500215
+          },
+          {
+            "category": "direct",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 59.5097080222331,
+            "warm": {
+              "count": 20,
+              "min_ms": 100.81462498055771,
+              "p50_ms": 105.02072898088954,
+              "p95_ms": 115.12770899571478,
+              "max_ms": 116.00787495262921
+            },
+            "all_observations_min_ms": 59.5097080222331,
+            "all_observations_max_ms": 116.00787495262921
+          }
+        ]
+      },
+      {
+        "order": 3,
+        "role": "after_2",
+        "binary_compiled_inputs_revision": "5b7999e6fe80c01a846b029a5be4925d6d3eb7b3",
+        "binary_sha256": "af95cb003b8e7a16d1981433397b244265e811f89d2fe3669d74bcf10b97f3a8",
+        "actual_schema_version": 21,
+        "requested": 168,
+        "successful": 168,
+        "failed": 0,
+        "first_observed": 8,
+        "warm": 160,
+        "provider_calls": 0,
+        "local_doctor_calls": 0,
+        "owner_state": "stopped",
+        "groups": [
+          {
+            "category": "title",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 7.696165994275361,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.4805000284686685,
+              "p50_ms": 2.6285829953849316,
+              "p95_ms": 2.7292079757899046,
+              "max_ms": 3.111166995950043
+            },
+            "all_observations_min_ms": 2.4805000284686685,
+            "all_observations_max_ms": 7.696165994275361
+          },
+          {
+            "category": "entity",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.158708044793457,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.7805419629439712,
+              "p50_ms": 1.9011874974239618,
+              "p95_ms": 1.996957988012582,
+              "max_ms": 3.449707990512252
+            },
+            "all_observations_min_ms": 1.7805419629439712,
+            "all_observations_max_ms": 3.449707990512252
+          },
+          {
+            "category": "filters",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 1.5292089665308595,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.3825419591739774,
+              "p50_ms": 1.4916874933987856,
+              "p95_ms": 1.5880829887464643,
+              "max_ms": 1.675959036219865
+            },
+            "all_observations_min_ms": 1.3825419591739774,
+            "all_observations_max_ms": 1.675959036219865
+          },
+          {
+            "category": "direct",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 110.59112497605383,
+            "warm": {
+              "count": 20,
+              "min_ms": 55.64016697462648,
+              "p50_ms": 56.6300000064075,
+              "p95_ms": 59.48637501569465,
+              "max_ms": 109.45062502287328
+            },
+            "all_observations_min_ms": 55.64016697462648,
+            "all_observations_max_ms": 110.59112497605383
+          },
+          {
+            "category": "title",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 4.656124976463616,
+            "warm": {
+              "count": 20,
+              "min_ms": 3.2040419755503535,
+              "p50_ms": 4.138853983022273,
+              "p95_ms": 4.643874999601394,
+              "max_ms": 4.810124984942377
+            },
+            "all_observations_min_ms": 3.2040419755503535,
+            "all_observations_max_ms": 4.810124984942377
+          },
+          {
+            "category": "entity",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.6535830004140735,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.43462499929592,
+              "p50_ms": 2.7612294943537563,
+              "p95_ms": 3.254000039305538,
+              "max_ms": 3.333500004373491
+            },
+            "all_observations_min_ms": 2.43462499929592,
+            "all_observations_max_ms": 3.6535830004140735
+          },
+          {
+            "category": "filters",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 2.901832980569452,
+            "warm": {
+              "count": 20,
+              "min_ms": 1.5360419638454914,
+              "p50_ms": 2.231416496215388,
+              "p95_ms": 2.7114999829791486,
+              "max_ms": 2.7654169825837016
+            },
+            "all_observations_min_ms": 1.5360419638454914,
+            "all_observations_max_ms": 2.901832980569452
+          },
+          {
+            "category": "direct",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 59.1751669999212,
+            "warm": {
+              "count": 20,
+              "min_ms": 103.56058401521295,
+              "p50_ms": 113.36204150575213,
+              "p95_ms": 115.91249995399266,
+              "max_ms": 116.19512498145923
+            },
+            "all_observations_min_ms": 59.1751669999212,
+            "all_observations_max_ms": 116.19512498145923
+          }
+        ]
+      },
+      {
+        "order": 4,
+        "role": "before_2",
+        "binary_compiled_inputs_revision": "2a1627a06675f310ef80ca2b4e3b27f56b5b34d0",
+        "binary_sha256": "a9784daccf04b4d8b5f8207887afe00cb7eb0e0ffffc32b1af31392f247636e0",
+        "actual_schema_version": 19,
+        "requested": 168,
+        "successful": 168,
+        "failed": 0,
+        "first_observed": 8,
+        "warm": 160,
+        "provider_calls": 0,
+        "local_doctor_calls": 0,
+        "owner_state": "stopped",
+        "groups": [
+          {
+            "category": "title",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 8.952333009801805,
+            "warm": {
+              "count": 20,
+              "min_ms": 3.0369169544428587,
+              "p50_ms": 3.5967710136901587,
+              "p95_ms": 4.372624971438199,
+              "max_ms": 5.634417000692338
+            },
+            "all_observations_min_ms": 3.0369169544428587,
+            "all_observations_max_ms": 8.952333009801805
+          },
+          {
+            "category": "entity",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 4.593082994688302,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.7941250009462237,
+              "p50_ms": 3.1316459935624152,
+              "p95_ms": 3.3771669841371477,
+              "max_ms": 4.8902080161497
+            },
+            "all_observations_min_ms": 2.7941250009462237,
+            "all_observations_max_ms": 4.8902080161497
+          },
+          {
+            "category": "filters",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.3594589913263917,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.291457960382104,
+              "p50_ms": 2.822624985128641,
+              "p95_ms": 3.055207955185324,
+              "max_ms": 3.4912499831989408
+            },
+            "all_observations_min_ms": 2.291457960382104,
+            "all_observations_max_ms": 3.4912499831989408
+          },
+          {
+            "category": "direct",
+            "concurrency": 1,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 308.5877920384519,
+            "warm": {
+              "count": 20,
+              "min_ms": 209.73208302166313,
+              "p50_ms": 233.12441649613902,
+              "p95_ms": 262.63074995949864,
+              "max_ms": 266.574541979935
+            },
+            "all_observations_min_ms": 209.73208302166313,
+            "all_observations_max_ms": 308.5877920384519
+          },
+          {
+            "category": "title",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 4.983874969184399,
+            "warm": {
+              "count": 20,
+              "min_ms": 3.889709012582898,
+              "p50_ms": 4.58850001450628,
+              "p95_ms": 5.081708019133657,
+              "max_ms": 5.37541601806879
+            },
+            "all_observations_min_ms": 3.889709012582898,
+            "all_observations_max_ms": 5.37541601806879
+          },
+          {
+            "category": "entity",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 4.055916971992701,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.942875027656555,
+              "p50_ms": 3.4906454966403544,
+              "p95_ms": 3.908499958924949,
+              "max_ms": 3.9959580171853304
+            },
+            "all_observations_min_ms": 2.942875027656555,
+            "all_observations_max_ms": 4.055916971992701
+          },
+          {
+            "category": "filters",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 3.4007499925792217,
+            "warm": {
+              "count": 20,
+              "min_ms": 2.5848340010270476,
+              "p50_ms": 3.163604502333328,
+              "p95_ms": 3.512999974191189,
+              "max_ms": 3.5683339810930192
+            },
+            "all_observations_min_ms": 2.5848340010270476,
+            "all_observations_max_ms": 3.5683339810930192
+          },
+          {
+            "category": "direct",
+            "concurrency": 4,
+            "requested": 21,
+            "successful": 21,
+            "failed": 0,
+            "first_observed_ms": 243.09770803665742,
+            "warm": {
+              "count": 20,
+              "min_ms": 288.6835419922136,
+              "p50_ms": 299.42062502959743,
+              "p95_ms": 324.3330830009654,
+              "max_ms": 330.9519159956835
+            },
+            "all_observations_min_ms": 243.09770803665742,
+            "all_observations_max_ms": 330.9519159956835
+          }
+        ]
+      }
+    ],
+    "limitations": [
+      "Distinct supplemental cohort; the original ordinary/traced workloads and all their first/warm observations are retained.",
+      "All four original cases, their order, queries and relevance judgments are unchanged; only keyword/off is requested in these four roles.",
+      "Fresh restored database per role; first observations do not establish cold OS caches.",
+      "All four persistent warm lanes include guarded revision-pinned readbacks; this is a homogeneous policy-batch workload, not continuous concurrent saturation.",
+      "No local doctor or embedding/extraction call; direct schema-version reads the actual migration ledger before the sole service owner starts.",
+      "RPC totals have no same-request internal phase instrumentation; no causal phase inference or observation-based filtering.",
+      "Role order reduces simple before/after order bias; it does not establish statistical significance or negate adverse original observations."
+    ]
+  }
 }
