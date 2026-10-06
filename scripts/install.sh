@@ -4,13 +4,14 @@ set -euo pipefail
 
 usage() {
     cat <<'USAGE'
-Usage: bash scripts/install.sh [--version VERSION] [--bin-dir DIR] [--data-dir DIR] [--force]
+Usage: bash scripts/install.sh [--version VERSION] [--bin-dir DIR] [--data-dir DIR] [--force] [--clients-only]
 
 Download the matching macOS/Linux release and verify its SHA-256 checksum.
 VERSION accepts 0.1.0 or v0.1.0; omitted means the latest published release.
 Defaults: $HOME/.local/bin/graphrag and $HOME/.local/share/graphrag-notes/samples/first-notes.md
 --force replaces an existing binary. Existing sample notes are always preserved.
 Current releases also install matching clients/docs under DATA_DIR/releases/vVERSION.
+--clients-only downloads the platform-neutral client/docs asset without a native binary.
 Client commands require Python 3.11+ to run. Installation uses curl, tar and SHA tools.
 USAGE
 }
@@ -21,6 +22,7 @@ version=''
 bin_dir="${HOME:?HOME must be set}/.local/bin"
 data_dir="${HOME}/.local/share/graphrag-notes"
 force=0
+clients_only=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --version|--bin-dir|--data-dir)
@@ -32,6 +34,7 @@ while [ "$#" -gt 0 ]; do
             esac
             shift 2 ;;
         --force) force=1; shift ;;
+        --clients-only) clients_only=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown option $1 (use --help)" ;;
     esac
@@ -47,12 +50,18 @@ else
     fail 'sha256sum or shasum is required to verify downloads'
 fi
 
+if [ "$clients_only" -eq 1 ]; then
+    case "$(uname -s)" in Darwin|Linux) ;; *) fail 'client scripts support macOS and Linux' ;; esac
+    target='clients'
+else
 case "$(uname -s)/$(uname -m)" in
     Darwin/arm64|Darwin/aarch64) target='aarch64-apple-darwin' ;;
     Darwin/x86_64) target='x86_64-apple-darwin' ;;
     Linux/x86_64) target='x86_64-unknown-linux-gnu' ;;
     *) fail 'no binary release for this platform; follow the source-build instructions in README.md' ;;
 esac
+
+fi
 
 releases='https://github.com/mateu/graphrag-notes/releases'
 if [ -z "$version" ]; then
@@ -70,11 +79,14 @@ version="${version#v}"
 tag="v$version"
 asset="graphrag-notes-$tag-$target.tar.gz"
 
+if [ "$clients_only" -ne 1 ]; then
 [ ! -L "$bin_dir/graphrag" ] || fail "$bin_dir/graphrag is a symlink; choose another --bin-dir"
 if [ -e "$bin_dir/graphrag" ] && [ "$force" -ne 1 ]; then
     fail "$bin_dir/graphrag already exists; use --force to replace it"
 fi
 [ ! -d "$bin_dir/graphrag" ] || fail "$bin_dir/graphrag is a directory"
+
+fi
 
 temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/graphrag-install.XXXXXX")"
 binary_temp=''
@@ -116,17 +128,24 @@ if awk '$0 == "release/PAYLOADS.sha256" {found=1} END {exit !found}' "$temp_dir/
     has_bundle=1
     # BUILDINFO and the archive are both pinned by the release checksum manifest.
     # Semantic metadata/source checks also run during native release preparation.
+    if [ "$clients_only" -eq 1 ]; then
+        metadata_label='CLIENTINFO'
+        metadata_file='CLIENTINFO.json'
+        metadata_checksum="$(awk '$2=="CLIENTINFO.json" || $2=="*CLIENTINFO.json" {print $1}' "$temp_dir/SHA256SUMS")"
+    else
+    metadata_label='BUILDINFO'
     metadata_file="BUILDINFO-$target.json"
     metadata_checksum="$(awk -v name="$metadata_file" '$2 == name || $2 == "*" name {print $1}' "$temp_dir/SHA256SUMS")"
     if [ -z "$metadata_checksum" ]; then
         metadata_file='BUILDINFO.json'
         metadata_checksum="$(awk '$2 == "BUILDINFO.json" || $2 == "*BUILDINFO.json" {print $1}' "$temp_dir/SHA256SUMS")"
     fi
-    [[ "$metadata_checksum" =~ ^[0-9a-fA-F]{64}$ ]] || fail 'release manifest must identify exactly one matching BUILDINFO checksum'
+    fi
+    [[ "$metadata_checksum" =~ ^[0-9a-fA-F]{64}$ ]] || fail "release manifest must identify exactly one matching $metadata_label checksum"
     curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
-        "$releases/download/$tag/$metadata_file" -o "$temp_dir/BUILDINFO.json" || fail 'cannot download matching BUILDINFO'
+        "$releases/download/$tag/$metadata_file" -o "$temp_dir/BUILDINFO.json" || fail "cannot download matching $metadata_label"
     [ "$(checksum "$temp_dir/BUILDINFO.json" | tr '[:upper:]' '[:lower:]')" = \
-        "$(printf '%s' "$metadata_checksum" | tr '[:upper:]' '[:lower:]')" ] || fail 'BUILDINFO checksum does not match; nothing was installed'
+        "$(printf '%s' "$metadata_checksum" | tr '[:upper:]' '[:lower:]')" ] || fail "$metadata_label checksum does not match; nothing was installed"
     tar -tvzf "$temp_dir/$asset" | awk 'substr($1,1,1)!="-" {exit 1}' || fail 'release bundle contains a link or unsupported file type'
     tar -xOf "$temp_dir/$asset" release/PAYLOADS.sha256 > "$temp_dir/payloads"
     awk '
@@ -136,18 +155,22 @@ if awk '$0 == "release/PAYLOADS.sha256" {found=1} END {exit !found}' "$temp_dir/
     for identity in release/VERSION release/SOURCE-COMMIT release/PAYLOADS.json; do
         awk -v name="$identity" '$0==name {found=1} END {exit !found}' "$temp_dir/payload-paths" || fail 'release bundle is missing its identity'
     done
-    { printf '%s\n' graphrag samples/first-notes.md release/PAYLOADS.sha256; cat "$temp_dir/payload-paths"; } | LC_ALL=C sort > "$temp_dir/expected-contents"
+    { if [ "$clients_only" -ne 1 ]; then printf '%s\n' graphrag samples/first-notes.md; fi
+      printf '%s\n' release/PAYLOADS.sha256; cat "$temp_dir/payload-paths"; } | LC_ALL=C sort > "$temp_dir/expected-contents"
     LC_ALL=C sort "$temp_dir/contents" > "$temp_dir/sorted-contents"
     cmp -s "$temp_dir/expected-contents" "$temp_dir/sorted-contents" || fail 'archive differs from the release payload manifest'
 else
+    [ "$clients_only" -ne 1 ] || fail 'client-only archive is missing its bundle manifest'
     awk '$0 != "graphrag" && $0 != "samples/" && $0 != "samples/first-notes.md" {exit 1}' \
         "$temp_dir/contents" || fail 'archive contains an unexpected path'
     tar -tvzf "$temp_dir/$asset" | awk 'substr($1,1,1)!="-" && substr($1,1,1)!="d" {exit 1}' || fail 'archive contains a link or unsupported file type'
 fi
 mkdir "$temp_dir/unpacked"
 tar -xzf "$temp_dir/$asset" -C "$temp_dir/unpacked"
-[ -f "$temp_dir/unpacked/graphrag" ] && [ -f "$temp_dir/unpacked/samples/first-notes.md" ] || \
-    fail 'archive is missing the binary or starter sample'
+if [ "$clients_only" -ne 1 ]; then
+    [ -f "$temp_dir/unpacked/graphrag" ] && [ -f "$temp_dir/unpacked/samples/first-notes.md" ] || \
+        fail 'archive is missing the binary or starter sample'
+fi
 
 if [ "$has_bundle" -eq 1 ]; then
     while IFS= read -r entry; do
@@ -160,7 +183,8 @@ if [ "$has_bundle" -eq 1 ]; then
     [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || fail 'release bundle source identity is invalid'
 fi
 
-mkdir -p "$bin_dir" "$data_dir/samples"
+mkdir -p "$data_dir"
+if [ "$clients_only" -ne 1 ]; then mkdir -p "$bin_dir" "$data_dir/samples"; fi
 if [ "$has_bundle" -eq 1 ]; then
     [ ! -L "$data_dir/releases" ] || fail 'release directory is a symlink; choose another --data-dir'
     mkdir -p "$data_dir/releases"
@@ -185,6 +209,11 @@ if [ "$has_bundle" -eq 1 ]; then
     release_lock=''
     rm -rf "$release_temp"
     release_temp=''
+fi
+if [ "$clients_only" -eq 1 ]; then
+    printf 'Installed matching clients/docs: %s/releases/%s\n' "$data_dir" "$tag"
+    printf 'Python clients require Python 3.11+. Read %s/releases/%s/docs before use.\n' "$data_dir" "$tag"
+    exit 0
 fi
 # Stage on the same filesystem so a failed download or copy cannot truncate the old binary.
 binary_temp="$(mktemp "$bin_dir/.graphrag.XXXXXX")"
