@@ -307,6 +307,10 @@ pub(crate) async fn source(
         content_hash: source.content_hash.clone(),
         generation: source.generation,
         successful_generation: source.successful_generation,
+        retired: source.metadata["remote_upload_retired"] == true
+            && source.successful_generation == 0
+            && source.content_hash.is_none()
+            && source.status == graphrag_core::SourceIngestionStatus::Ready,
         status: serde_json::to_value(source.status)
             .map_err(|e| ApplicationError::Internal(e.to_string()))?
             .as_str()

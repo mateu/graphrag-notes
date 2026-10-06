@@ -234,7 +234,7 @@ pub fn uploaded_source_revision(source: &Source, original_markdown: &str) -> Res
         .get("remote_upload_pending")
         .or_else(|| source.metadata.get("remote_upload"))
         .ok_or_else(|| DbError::InvalidRemoteRequest("uploaded source origin missing".into()))?;
-    let snapshot = serde_json::to_vec(&(
+    let mut snapshot = serde_json::to_vec(&(
         record_id_to_string(id),
         &source.title,
         &source.content,
@@ -246,6 +246,11 @@ pub fn uploaded_source_revision(source: &Source, original_markdown: &str) -> Res
         origin,
     ))
     .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?;
+    // Preserve historical unretired revision bytes; bind the new explicit
+    // tombstone when present so old inspected drafts cannot bypass retirement.
+    if source.metadata["remote_upload_retired"] == true {
+        snapshot.extend_from_slice(b"\0retired");
+    }
     Ok(format!("{:x}", Sha256::digest(snapshot)))
 }
 
@@ -873,6 +878,9 @@ impl Repository {
             )));
         }
         let unchanged = prior_completed
+            && prior
+                .as_ref()
+                .is_some_and(|source| source.metadata["remote_upload_retired"] != true)
             && prior.as_ref().is_some_and(|source| {
                 source.status == SourceIngestionStatus::Ready
                     && source.content_hash.as_deref() == Some(hash.as_str())
@@ -918,6 +926,9 @@ impl Repository {
         let mut metadata = prior
             .as_ref()
             .map_or_else(|| serde_json::json!({}), |source| source.metadata.clone());
+        if let Some(metadata) = metadata.as_object_mut() {
+            metadata.remove("remote_upload_retired");
+        }
         let origin = serde_json::json!({"instance_id":job.instance_id,"document_key":input.document_key,"request_id":job.request_id,"source":input.source_provenance,"job_id":record_id_to_string(&lease.job_id),"processing_options":input.processing_options,"extract_entities":input.extract_entities});
         if unchanged {
             metadata["remote_upload"] = origin;

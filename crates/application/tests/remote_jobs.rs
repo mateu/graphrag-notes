@@ -1377,7 +1377,7 @@ async fn uploaded_source_retirement_is_scoped_revision_guarded_and_replayable() 
         .metadata
         .insert("collection_id".into(), "fixture-memory".into());
     let first = application
-        .upload_source(caller("openclaw"), upload)
+        .upload_source(caller("openclaw"), upload.clone())
         .await
         .unwrap();
     execute(&application, "epoch").await;
@@ -1471,6 +1471,64 @@ async fn uploaded_source_retirement_is_scoped_revision_guarded_and_replayable() 
             .await,
         Err(ApplicationError::RevisionConflict(_))
     ));
+    let retired_view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    assert!(retired_view.retired);
+    assert_ne!(retired_view.revision, view.revision);
+    let mut stale_draft = upload.clone();
+    stale_draft.request_id = "retired-old-draft".into();
+    stale_draft.expected_source_revision = Some(view.revision.clone());
+    application
+        .upload_source(caller("openclaw"), stale_draft)
+        .await
+        .unwrap();
+    let stale = application
+        .claim_remote_job("epoch", "stale-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(application
+        .execute_remote_job(stale, ActionCancellation::new())
+        .await
+        .is_err());
+    assert_eq!(
+        application
+            .get_uploaded_source(&first.source_id)
+            .await
+            .unwrap(),
+        retired_view
+    );
+    let mut recreate = upload;
+    recreate.request_id = "deliberate-recreation".into();
+    recreate.expected_source_revision = Some(retired_view.revision);
+    let recreated = application
+        .upload_source(caller("openclaw"), recreate)
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let current = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    assert!(!current.retired);
+    assert!(current.generation > view.generation);
+    assert_eq!(current.generation, current.successful_generation);
+    assert!(repo
+        .get_note(&graphrag_core::record_id_to_string(
+            detached.id.as_ref().unwrap()
+        ))
+        .await
+        .unwrap()
+        .is_some());
+    assert!(!repo
+        .get_source_chunks(
+            &graphrag_db::parse_record_id(&recreated.source_id, Some("source")).unwrap()
+        )
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

@@ -511,9 +511,16 @@ def _review_existing_policies(client, state, save, args):
                 raise ImportFailure('source_policy_service_required') from None
             raise
         payload = task['payload']
+        retired = source.get('retired') is True
+        retired_registration = state.get('retired_sources', {}).get(key)
+        if retired and (not retired_registration or retired_registration['id'] != source.get('id')):
+            raise ImportFailure('retired_source_requires_registered_cleanup')
         if (not valid_id(source.get('id'), 'source') or source.get('instance_id') != principal
                 or source.get('document_key') != key or source.get('uri') != 'mcp://upload/' + source['id'][7:]
-                or source.get('status') != 'ready' or source.get('generation') != source.get('successful_generation')):
+                or source.get('status') != 'ready'
+                or (not retired and source.get('generation') != source.get('successful_generation'))
+                or (retired and (source.get('successful_generation') != 0 or source.get('content_hash') is not None
+                                  or not isinstance(source.get('generation'), int) or source['generation'] < 1))):
             raise ImportFailure('existing_source_scope_mismatch')
         if not isinstance(source.get('revision'), str) or not re.fullmatch(r'[0-9a-f]{64}', source['revision']):
             raise ImportFailure('existing_source_revision_invalid')
@@ -529,12 +536,12 @@ def _review_existing_policies(client, state, save, args):
         # extraction policy. Compare edited registered parts with their last
         # verified provenance, not their newly indexed original hash.
         existing_provenance = json.loads(json.dumps(source.get('provenance')))
-        expected_provenance = json.loads(json.dumps(state['documents'].get(key, {}).get('provenance', payload['provenance'])))
+        expected_provenance = json.loads(json.dumps(state['documents'].get(key, retired_registration or {}).get('provenance', payload['provenance'])))
         if not isinstance(existing_provenance, dict) or not isinstance(existing_provenance.get('metadata'), dict):
             raise ImportFailure('existing_source_provenance_mismatch')
         existing_provenance['metadata'].pop('collection_id', None)
         expected_provenance['metadata'].pop('collection_id', None)
-        if (key not in state['documents'] and source.get('content') != payload['content']
+        if (key not in state['documents'] and not retired and source.get('content') != payload['content']
                 and source['extract_entities'] == payload['extract_entities']):
             # An indexed original may have changed since a legacy import.
             # Its content hash/split count are version facts; host, agent,
@@ -553,7 +560,7 @@ def _review_existing_policies(client, state, save, args):
         policies[key] = {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash}
         # The guard belongs to this initial admission only; semantic content
         # identities exclude it so a later unchanged run requires no upload.
-        if key not in state['documents'] and source.get('content') == payload['content'] and source.get('title') == payload['title']:
+        if key not in state['documents'] and not retired and source.get('content') == payload['content'] and source.get('title') == payload['title']:
             payload['preserve_unchanged'] = True
         semantic = {k: v for k, v in payload.items() if k not in ('request_id', 'preserve_unchanged', 'create_only', 'expected_source_revision')}
         task['payload_hash'] = sha(canonical(semantic))
@@ -606,6 +613,7 @@ def run_refresh(client, state, save, args):
                                                 for name in ('created', 'updated', 'unchanged')}
                     state['documents'][key] = {'payload_hash': task['payload_hash'], 'entry': json.loads(json.dumps(entry)),
                                                'document_key': key, 'provenance': task['payload']['provenance']}
+                    state.get('retired_sources', {}).pop(key, None)
                     checked.add(key)
                     task['verified_this_attempt'] = True
                     entry.pop('error_code', None)
@@ -701,7 +709,10 @@ def reconcile(client, state, plan_hash, save):
                 or outcome.get('actor') != 'mcp:' + state['config']['instance_id']):
             raise ImportFailure('invalid_deletion_receipt')
         target['deleted'] = True
-        state['documents'].pop(target['document_key'], None)
+        registered = state['documents'].pop(target['document_key'], None)
+        if registered:
+            state.setdefault('retired_sources', {})[target['document_key']] = {
+                'id': target['id'], 'provenance': registered['provenance']}
         state['missing_keys'].remove(target['document_key'])
         save()
     state['counts']['missing'] = len(state['missing_keys'])

@@ -557,6 +557,7 @@ fn source_retirement_sql() -> &'static str {
         DELETE $target;
     } ELSE {
         UPDATE $target SET successful_generation=0,content_hash=NONE,status='ready',
+            metadata.remote_upload_retired=true,
             last_error=NONE,updated_at=time::now();
     };
     "#

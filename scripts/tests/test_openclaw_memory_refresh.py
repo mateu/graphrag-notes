@@ -24,7 +24,7 @@ class FakeService:
         self.lost_ack = self.lost_delete_ack = False
         self.fail_key = None
         self.fail_code = 'provider_unavailable'
-        self.wrong_owner = self.bad_source = False
+        self.wrong_owner = self.bad_source = self.retain_retired_source = False
         self.authenticated_instance = 'fixture-importer'
         self.manual_notes = ['synthetic unrelated manual note']
 
@@ -104,7 +104,11 @@ class FakeService:
             source = self.sources[value['id']]
             if source['revision'] != value['revision'] or source['provenance']['metadata']['collection_id'] != value['collection_id']:
                 raise m.ImportFailure('revision_conflict')
-            del self.sources[value['id']]
+            if self.retain_retired_source:
+                source.update(retired=True, successful_generation=0, content_hash=None,
+                              revision=m.sha(m.canonical([source['revision'], 'retired'])))
+            else:
+                del self.sources[value['id']]
             result = {'request_id': value['request_id'], 'replayed': False, 'outcome': {
                 'id': value['id'], 'operation': 'delete_source', 'previous_revision': value['revision'],
                 'status': 'deleted', 'actor': 'mcp:fixture-importer'}}
@@ -245,6 +249,41 @@ class RefreshTests(unittest.TestCase):
             m.run_refresh(self.client, self.state, self.save, self.args)
         self.assertEqual(self.client.sources[admission['source_id']], foreign)
         self.assertEqual(self.state['counts']['failed'], 1)
+
+    def test_reviewed_retained_retired_source_can_reappear_with_new_content(self):
+        self.client.retain_retired_source = True
+        self.prepare(); self.run_refresh()
+        original = json.loads(json.dumps(next(iter(self.client.sources.values()))))
+        (self.workspace / 'memory/atlas.md').unlink()
+        with sqlite3.connect(self.database) as connection:
+            connection.execute('DELETE FROM memory_index_sources')
+        self.prepare(); self.run_refresh()
+        plan = m.reconciliation_preview(self.client, self.state)
+        m.reconcile(self.client, self.state, plan['plan_sha256'], self.save)
+        retired = self.client.sources[original['id']]
+        self.assertTrue(retired['retired'])
+        self.assertNotEqual(retired['revision'], original['revision'])
+        self.assertEqual(self.state['documents'], {})
+        self.write('memory/atlas.md', b'# Atlas\n\nNew indexed body after reviewed cleanup.')
+        self.prepare(); self.run_refresh()
+        latest = list(self.client.jobs.values())[-1]['payload']
+        self.assertNotIn('preserve_unchanged', latest)
+        self.assertNotIn('create_only', latest)
+        self.assertIn('expected_source_revision', latest)
+        self.assertEqual(self.state['status'], 'complete')
+        self.assertEqual(self.state['retired_sources'], {})
+        self.assertGreater(self.client.sources[original['id']]['generation'], original['generation'])
+        self.assertEqual(self.client.manual_notes, ['synthetic unrelated manual note'])
+
+    def test_retired_residual_requires_this_collections_verified_cleanup(self):
+        self.prepare(); self.run_refresh()
+        source = next(iter(self.client.sources.values()))
+        source.update(retired=True, successful_generation=0, content_hash=None)
+        self.state = m.new_state(self.config)
+        self.prepare(); before = len(self.client.receipts)
+        with self.assertRaisesRegex(m.ImportFailure, 'retired_source_requires_registered_cleanup'):
+            self.run_refresh()
+        self.assertEqual(len(self.client.receipts), before)
 
     def test_operator_counts_distinguish_collection_registration_and_service_actions(self):
         self.prepare(); self.run_refresh()

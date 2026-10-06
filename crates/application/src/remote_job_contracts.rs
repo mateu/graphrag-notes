@@ -96,6 +96,8 @@ pub struct UploadedSource {
     pub content_hash: Option<String>,
     pub generation: u64,
     pub successful_generation: u64,
+    /// Explicit retained source stub after reviewed retirement.
+    pub retired: bool,
     pub status: String,
     pub instance_id: String,
     pub document_key: String,

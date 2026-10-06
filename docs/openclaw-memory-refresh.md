@@ -221,3 +221,11 @@ checks this provider-free source snapshot under its generation lock, including
 original content, provenance and processing policy. A queued source update that
 wins after client preflight causes a conflict before mutation or inference.
 The adapter never silently replaces that newly published original or its graph.
+
+Reviewed cleanup records retired part identities in private collection state.
+A retained source stub with detached/manual notes is explicitly marked retired
+by the service. If the same indexed path reappears, the adapter requires that
+collection's verified cleanup evidence and the exact retired source revision,
+then creates a new generation using its retained per-source policy. Detached
+notes remain intact. A different collection cannot silently claim an unknown
+retired stub, and an old inspected draft cannot bypass the retirement fence.
