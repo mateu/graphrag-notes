@@ -96,6 +96,19 @@ pub(super) fn graph_alias_eligible_sql(eligible: &str, alias_matches: &str) -> S
     )
 }
 
+pub(super) fn graph_entity_mentions_local_sql(query: &str) -> String {
+    // The scalar subquery binds $parent only after its plan was built. The
+    // pinned engine deliberately excludes that row-scoped parameter from
+    // index analysis. A block evaluates LET against the current entity row
+    // and plans RETURN afterward, exposing the same native ID as a literal
+    // for the existing (out, in) association index. Keep the SELECT itself,
+    // including its residual filters, order and limit, unchanged.
+    format!(
+        "{{ LET $graph_entity_id = id; RETURN ({}); }}",
+        query.replace("out = $parent.id", "out = $graph_entity_id")
+    )
+}
+
 struct GraphEntityQueryScope {
     ranked_note_ids: Vec<RecordId>,
     since: Option<String>,
@@ -1505,6 +1518,7 @@ impl Repository {
             limit,
             scope,
             graph_alias_eligible_sql,
+            graph_entity_mentions_local_sql,
         )
         .await
     }
@@ -1517,6 +1531,52 @@ impl Repository {
         ranked_note_ids: Option<&[RecordId]>,
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        self.find_graph_entities_with_reference_sql(
+            query,
+            limit,
+            ranked_note_ids,
+            since,
+            source_uri,
+            |eligible, alias_matches| {
+                format!(
+                    "{eligible} AND array::any(metadata.aliases ?? [], |$alias| {alias_matches})"
+                )
+            },
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn find_graph_entities_parent_alias_order(
+        &self,
+        query: &str,
+        limit: usize,
+        ranked_note_ids: Option<&[RecordId]>,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        self.find_graph_entities_with_reference_sql(
+            query,
+            limit,
+            ranked_note_ids,
+            since,
+            source_uri,
+            graph_alias_eligible_sql,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    async fn find_graph_entities_with_reference_sql(
+        &self,
+        query: &str,
+        limit: usize,
+        ranked_note_ids: Option<&[RecordId]>,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        alias_predicate: fn(&str, &str) -> String,
     ) -> Result<Vec<GraphEntityMatch>> {
         let query = graph_query_normalize(query);
         if query.is_empty() || limit == 0 {
@@ -1546,9 +1606,8 @@ impl Repository {
                     &prefixes,
                     limit,
                     scope.as_ref(),
-                    |eligible, alias_matches| {
-                        format!("{eligible} AND array::any(metadata.aliases ?? [], |$alias| {alias_matches})")
-                    },
+                    alias_predicate,
+                    str::to_string,
                 )
                 .await?;
             if !rows.is_empty() {
@@ -1558,6 +1617,7 @@ impl Repository {
         Ok(Vec::new())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn query_graph_entities_with_alias_predicate(
         &self,
         normalized_query: &str,
@@ -1566,6 +1626,7 @@ impl Repository {
         limit: i64,
         scope: Option<&GraphEntityQueryScope>,
         alias_predicate: fn(&str, &str) -> String,
+        mentions_subquery: fn(&str) -> String,
     ) -> Result<Vec<GraphEntityMatch>> {
         // Keep stored names and aliases on the exact same lexical boundary
         // contract as `graph_query_normalize`: punctuation becomes a space,
@@ -1586,12 +1647,13 @@ impl Repository {
         // entity display payload. Filtering before the bounded page retains a
         // matching alias on a high-degree source entity without preserving an
         // edited, deleted, hidden-generation or out-of-scope chunk's evidence.
+        let matching_aliases = mentions_subquery(&format!(
+            "SELECT VALUE array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) \
+             FROM mentions WHERE out = $parent.id AND {alias_eligible} ORDER BY in ASC LIMIT 200"
+        ));
         let aliases = format!(
             "IF string::starts_with(identity_key ?? '', 'extracted-v1:') THEN \
-             array::slice(array::sort(array::distinct(array::flatten((SELECT VALUE \
-                array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) \
-                FROM mentions WHERE out = $parent.id AND {alias_eligible} \
-                ORDER BY in ASC LIMIT 200)))), 0, 8) \
+             array::slice(array::sort(array::distinct(array::flatten(({matching_aliases})))), 0, 8) \
              ELSE metadata.aliases ?? [] END"
         );
         let match_condition = match tier {
@@ -1656,13 +1718,17 @@ impl Repository {
             .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
             .unwrap_or_default();
         let (select_direct, mention_condition, direct_order) = if scope.is_some() {
+            let eligible_mentions = mentions_subquery(&format!(
+                "SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1"
+            ));
+            // The direct-rank page is unordered and mentions are non-unique.
+            // Keep its original scan: an association index could change the
+            // capped subset when duplicate mentions outnumber ranked notes.
             (
                 format!(
                     ", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"
                 ),
-                format!(
-                    "AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"
-                ),
+                format!("AND array::len(({eligible_mentions})) > 0"),
                 "graph_direct_rank ASC, ",
             )
         } else {

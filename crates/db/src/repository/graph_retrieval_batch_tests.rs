@@ -771,9 +771,9 @@ async fn alias_mention(
         .unwrap();
 }
 
-// The reference entrypoint retains the pre-optimization predicate, tiers,
-// scopes, ordering and caps. Compare complete alias evidence, then the full
-// ordered graph seed and hydrated-note payloads built from those entities.
+// The references retain both the pre-optimization predicate and the alias-
+// first variant with its original $parent correlation. Compare all three
+// complete ordered graph payloads, including hydrated notes and provenance.
 async fn assert_alias_query_matches_original(
     repo: &Repository,
     query: &str,
@@ -784,6 +784,10 @@ async fn assert_alias_query_matches_original(
 ) -> Vec<GraphEntityMatch> {
     let original = repo
         .find_graph_entities_original_alias_order(query, limit, ranked, since, uri.clone())
+        .await
+        .unwrap();
+    let parent = repo
+        .find_graph_entities_parent_alias_order(query, limit, ranked, since, uri.clone())
         .await
         .unwrap();
     let candidate = match ranked {
@@ -799,8 +803,13 @@ async fn assert_alias_query_matches_original(
         serde_json::to_value(&original).unwrap(),
         "entity payload query={query:?}, limit={limit}, since={since:?}, uri={uri:?}"
     );
+    assert_eq!(
+        serde_json::to_value(&candidate).unwrap(),
+        serde_json::to_value(&parent).unwrap(),
+        "local binding must preserve the alias-first parent query {query:?}"
+    );
     let mut payloads = Vec::new();
-    for entities in [&original, &candidate] {
+    for entities in [&original, &parent, &candidate] {
         let ids = entities
             .iter()
             .map(|entity| entity.id.clone())
@@ -830,6 +839,7 @@ async fn assert_alias_query_matches_original(
         }));
     }
     assert_eq!(payloads[0], payloads[1], "complete graph payload {query:?}");
+    assert_eq!(payloads[0], payloads[2], "local graph payload {query:?}");
     candidate
 }
 
@@ -1252,24 +1262,298 @@ async fn graph_alias_fast_path_keeps_malformed_and_oversized_error_order() {
                     .bind(("since", Option::<String>::None)).bind(("source_uri", Option::<String>::None))
                     .await.unwrap().check().is_err());
             }
+            let parent = repo
+                .find_graph_entities_parent_alias_order(
+                    "Needle Token",
+                    10,
+                    Some(&[]),
+                    since,
+                    uri.clone(),
+                )
+                .await;
             let candidate = repo
                 .find_graph_entities_for_search("Needle Token", 10, &[], since, uri.clone())
                 .await;
-            match (original, candidate) {
-                (Ok(original), Ok(candidate)) => assert_eq!(
-                    serde_json::to_value(candidate).unwrap(),
-                    serde_json::to_value(original).unwrap()
-                ),
-                (Err(original), Err(candidate)) => assert_eq!(
-                    original.to_string(),
-                    candidate.to_string(),
-                    "metadata={metadata}, endpoint={endpoint:?}"
-                ),
-                (original, candidate) => panic!(
-                    "changed error behavior metadata={metadata}, endpoint={endpoint:?}: original={original:?}, candidate={candidate:?}"
-                ),
+            for result in [parent, candidate] {
+                match (&original, result) {
+                    (Ok(original), Ok(candidate)) => assert_eq!(
+                        serde_json::to_value(candidate).unwrap(),
+                        serde_json::to_value(original).unwrap()
+                    ),
+                    (Err(original), Err(candidate)) => assert_eq!(
+                        original.to_string(),
+                        candidate.to_string(),
+                        "metadata={metadata}, endpoint={endpoint:?}"
+                    ),
+                    (original, candidate) => panic!(
+                        "changed error behavior metadata={metadata}, endpoint={endpoint:?}: original={original:?}, candidate={candidate:?}"
+                    ),
+                }
             }
         }
+    }
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
+struct CapturedGraphEntityId {
+    id: RecordId,
+    captured_id: RecordId,
+}
+
+#[derive(Debug, serde::Serialize, Deserialize, SurrealValue)]
+struct NestedGraphEntityPlan {
+    id: RecordId,
+    plan: Vec<serde_json::Value>,
+}
+
+#[tokio::test]
+async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_rank_cap() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "local-duplicates", "fixture://local-duplicates").await;
+    let first = alias_entity(&repo, "local-duplicates-a", "A Compiler", true).await;
+    let second = alias_entity(&repo, "local-duplicates-b", "B Compiler", true).await;
+    let lower_rank = note(
+        &repo,
+        RecordId::new("note", "local-duplicates-a"),
+        Some(owner.clone()),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    let best_rank = note(
+        &repo,
+        RecordId::new("note", "local-duplicates-z"),
+        Some(owner),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    // Relation-ID order encounters the best direct hit before two duplicate
+    // lower hits. Association-index order visits both lower IDs first. The
+    // non-unique association index must not alter the existing direct-rank
+    // query's limited subset and let the second homonym displace the first.
+    for (key, endpoint, entity) in [
+        ("local-duplicates-00", &best_rank, &first),
+        ("local-duplicates-10", &lower_rank, &first),
+        ("local-duplicates-20", &lower_rank, &first),
+        ("local-duplicates-30", &best_rank, &second),
+    ] {
+        repo.db
+            .query("CREATE $id SET in = $note, out = $entity, metadata = $metadata")
+            .bind(("id", RecordId::new("mentions", key)))
+            .bind(("note", endpoint.clone()))
+            .bind(("entity", entity.clone()))
+            .bind(("metadata", serde_json::json!({"aliases": ["Needle Token"]})))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    let ranked = [best_rank, lower_rank];
+    for limit in [1, 2] {
+        let rows = assert_alias_query_matches_original(
+            &repo,
+            "Needle Token",
+            limit,
+            Some(&ranked),
+            None,
+            Some("fixture://local-duplicates".into()),
+        )
+        .await;
+        assert_eq!(rows[0].id, first);
+    }
+    // Alias paging is explicitly ordered, but many relation rows can share
+    // the same endpoint. Place different matching spellings across its 200-
+    // mention boundary and retain exact union/cap behavior under those ties.
+    let dense = alias_entity(&repo, "local-duplicates-dense", "Dense Compiler", true).await;
+    for index in 0..220 {
+        repo.db
+            .query("CREATE $id SET in = $note, out = $entity, metadata = $metadata")
+            .bind((
+                "id",
+                RecordId::new("mentions", format!("local-dense-{index:03}")),
+            ))
+            .bind(("note", ranked[0].clone()))
+            .bind(("entity", dense.clone()))
+            .bind((
+                "metadata",
+                serde_json::json!({"aliases": if index < 199 {
+                    vec!["Needle Token".to_string()]
+                } else {
+                    vec!["Needle Token".to_string(), format!("Boundary {index}")]
+                }}),
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    let query = format!(
+        "Needle Token {}",
+        (199..220)
+            .map(|index| format!("Boundary {index}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    for scope in [None, Some(ranked.as_slice())] {
+        assert_alias_query_matches_original(&repo, &query, 10, scope, None, None).await;
+    }
+}
+
+#[tokio::test]
+async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_native_ids() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "local-plan", "fixture://local-plan").await;
+    let mut object_key = Object::new();
+    object_key.insert("kind", "fictional");
+    object_key.insert("ordinal", 7i64);
+    let entity_ids = [
+        RecordId::new("entity", 42i64),
+        RecordId::new("entity", "42"),
+        RecordId::new(
+            "entity",
+            surrealdb_types::Uuid::from(uuid::Uuid::from_u128(126)),
+        ),
+        RecordId::new("entity", RecordIdKey::Object(object_key)),
+        RecordId::new(
+            "entity",
+            RecordIdKey::Array(
+                vec![
+                    surrealdb::types::Value::from("fictional"),
+                    surrealdb::types::Value::from(7i64),
+                ]
+                .into(),
+            ),
+        ),
+    ];
+    let mut note_ids = Vec::new();
+    for (index, entity_id) in entity_ids.iter().enumerate() {
+        // upsert_entity intentionally generates its own ID; direct fictional
+        // creation is required to exercise the native entity-key variants.
+        repo.db
+            .query("CREATE $id SET name = 'Compiler', canonical_name = 'compiler', entity_type = 'technology', identity_key = $identity, metadata = {}")
+            .bind(("id", entity_id.clone()))
+            .bind(("identity", format!("extracted-v1:local-plan-{index}")))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let id = note(
+            &repo,
+            RecordId::new("note", format!("local-plan-{index}")),
+            Some(owner.clone()),
+            Some(1),
+            timestamp(),
+        )
+        .await;
+        alias_mention(
+            &repo,
+            &id,
+            entity_id,
+            serde_json::json!({"aliases": ["Needle Token"]}),
+        )
+        .await;
+        note_ids.push(id);
+    }
+    // These blocks execute inside the entity SELECT itself. A direct client
+    // $entity binding or top-level EXPLAIN cannot prove correlated planning.
+    // Bind an intentionally wrong outer $parent and local parameter as well:
+    // only the current row's native ID may reach the inner association query.
+    let wrong_entity = RecordId::new("entity", "fictional-not-the-current-entity");
+    let captured: Vec<CapturedGraphEntityId> = repo
+        .db
+        .query("SELECT id, ({ LET $graph_entity_id = id; RETURN $graph_entity_id; }) AS captured_id FROM entity ORDER BY id ASC")
+        .bind(("parent", serde_json::json!({"id": wrong_entity.clone()})))
+        .bind(("graph_entity_id", wrong_entity.clone()))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(captured.len(), entity_ids.len());
+    for row in &captured {
+        assert_eq!(row.id, row.captured_id);
+        assert!(entity_ids.contains(&row.id));
+    }
+    let eligible = graph_endpoint_eligible_sql("in");
+    let alias_matches = "$alias = $query";
+    let alias_eligible = graph::graph_alias_eligible_sql(&eligible, alias_matches);
+    let queries = [
+        format!(
+            "SELECT VALUE array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) FROM mentions WHERE out = $parent.id AND {alias_eligible} ORDER BY in ASC LIMIT 200"
+        ),
+        format!("SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1"),
+    ];
+    let mut reported = Vec::new();
+    for select in queries {
+        let mut outputs = Vec::new();
+        let mut plans = Vec::new();
+        for local in [false, true] {
+            let nested = if local {
+                graph::graph_entity_mentions_local_sql(&select)
+            } else {
+                select.clone()
+            };
+            let explained = format!("{select} EXPLAIN FULL");
+            let explained = if local {
+                graph::graph_entity_mentions_local_sql(&explained)
+            } else {
+                explained
+            };
+            let sql = format!(
+                "SELECT id, ({nested}) AS result FROM entity ORDER BY id ASC; \
+                 SELECT id, ({explained}) AS plan FROM entity ORDER BY id ASC;"
+            );
+            let mut response = repo
+                .db
+                .query(sql)
+                .bind(("parent", serde_json::json!({"id": wrong_entity.clone()})))
+                .bind(("graph_entity_id", wrong_entity.clone()))
+                .bind(("query", "Needle Token"))
+                .bind(("ranked_notes", note_ids.clone()))
+                .bind(("ranked_limit", note_ids.len() as i64))
+                .bind(("since", Option::<String>::None))
+                .bind(("source_uri", Option::<String>::None))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let rows: Vec<serde_json::Value> = response.take(0).unwrap();
+            let nested_plans: Vec<NestedGraphEntityPlan> = response.take(1).unwrap();
+            assert_eq!(rows.len(), entity_ids.len());
+            assert_eq!(nested_plans.len(), entity_ids.len());
+            for row in &nested_plans {
+                assert!(entity_ids.contains(&row.id));
+                let plan = serde_json::to_string(&row.plan).unwrap();
+                assert_eq!(
+                    plan.contains("\"index\":\"idx_mentions_entity_note\""),
+                    local,
+                    "only the actual local-ID nested query exposes the out-prefix: {plan}"
+                );
+            }
+            outputs.push(rows);
+            plans.push(serde_json::to_value(&nested_plans).unwrap());
+        }
+        assert_eq!(outputs[0], outputs[1], "nested SELECT changed: {select}");
+        reported.push(serde_json::json!({
+            "select": select, "parent": plans[0], "local": plans[1],
+        }));
+    }
+    if std::env::var_os("GRAPHRAG_GRAPH_ALIAS_PLAN_REPORT").is_some() {
+        println!("graph-local-alias-plan={}", serde_json::json!(reported));
+    }
+    // A reversed direct-hit order must retain its per-entity rank before the
+    // cap, independently of native entity-ID ordering or block-local state.
+    note_ids.reverse();
+    for query in ["Needle Token", "Which Needle Token?", "Compiler", "Comp"] {
+        assert_alias_query_matches_original(
+            &repo,
+            query,
+            3,
+            Some(&note_ids),
+            None,
+            Some("fixture://local-plan".into()),
+        )
+        .await;
     }
 }
 
