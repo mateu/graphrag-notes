@@ -252,7 +252,15 @@ impl Repository {
             .iter()
             .map(Entity::effective_identity_key)
             .collect();
-        let note_id = RecordId::new("note", Uuid::new_v4().to_string());
+        let note_id = note
+            .id
+            .clone()
+            .unwrap_or_else(|| RecordId::new("note", Uuid::new_v4().to_string()));
+        if note_id.table.as_str() != "note" || note_id.key.is_range() {
+            return Err(DbError::QueryFailed(
+                "atomic note creation requires one note ID".into(),
+            ));
+        }
         let mut response = self
             .db
             .query(format!(

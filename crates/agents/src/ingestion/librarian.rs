@@ -685,34 +685,24 @@ impl LibrarianAgent {
         title: Option<String>,
         tags: Vec<String>,
     ) -> Result<(Note, Vec<Entity>)> {
-        if content.trim().is_empty() {
-            return Err(crate::AgentError::Processing(
-                "note content cannot be empty".into(),
-            ));
-        }
-        if self.cancellation_requested.load(Ordering::Acquire) {
-            return Err(crate::AgentError::Cancelled);
-        }
-        let embedding = self.embed_text(&content).await?;
-        if self.cancellation_requested.load(Ordering::Acquire) {
-            return Err(crate::AgentError::Cancelled);
-        }
-        let entities = if self.runtime.skip_entity_extraction {
-            Vec::new()
-        } else {
-            let extraction = self
-                .extractor
-                .extract(&truncate_for_extraction(
-                    &content,
-                    self.runtime.extract_max_chars,
-                ))
-                .await?;
-            extracted_entities_to_domain(
-                extraction.entities,
-                &format!("capture:{}", uuid::Uuid::new_v4()),
-                None,
-            )
-        };
+        self.prepare_manual_capture_with_id(
+            content,
+            title,
+            tags,
+            RecordId::new("note", uuid::Uuid::new_v4().to_string()),
+        )
+        .await
+    }
+
+    /// Authenticated captures assign their deterministic final ID before
+    /// provider work, so retries and later explicit extraction share identity.
+    pub async fn prepare_manual_capture_with_id(
+        &self,
+        content: String,
+        title: Option<String>,
+        tags: Vec<String>,
+        note_id: RecordId,
+    ) -> Result<(Note, Vec<Entity>)> {
         let title = title.or_else(|| {
             content
                 .lines()
@@ -727,13 +717,40 @@ impl LibrarianAgent {
                         .collect()
                 })
         });
-        let mut note = Note::new(content)
-            .with_type(NoteType::Raw)
-            .with_embedding(embedding)
-            .with_tags(tags);
-        if let Some(title) = title {
-            note = note.with_title(title);
+        let mut note = Note::new(content).with_type(NoteType::Raw).with_tags(tags);
+        note.id = Some(note_id);
+        note.title = title;
+        self.prepare_note_content(note).await
+    }
+
+    /// Prepare replacement content against its actual note/source context.
+    /// This performs no persistence and preserves ownership/provenance fields.
+    pub async fn prepare_note_content(&self, mut note: Note) -> Result<(Note, Vec<Entity>)> {
+        if note.content.trim().is_empty() {
+            return Err(crate::AgentError::Processing(
+                "note content cannot be empty".into(),
+            ));
         }
+        let note_id = note
+            .id
+            .get_or_insert_with(|| RecordId::new("note", uuid::Uuid::new_v4().to_string()));
+        if note_id.table.as_str() != "note" || note_id.key.is_range() {
+            return Err(crate::AgentError::Processing(
+                "prepared content requires one note ID".into(),
+            ));
+        }
+        if self.cancellation_requested.load(Ordering::Acquire) {
+            return Err(crate::AgentError::Cancelled);
+        }
+        note.embedding = self.embed_text(&note.content).await?;
+        if self.cancellation_requested.load(Ordering::Acquire) {
+            return Err(crate::AgentError::Cancelled);
+        }
+        let entities = if self.runtime.skip_entity_extraction {
+            Vec::new()
+        } else {
+            self.prepare_note_entities(&note).await?
+        };
         if self.cancellation_requested.load(Ordering::Acquire) {
             return Err(crate::AgentError::Cancelled);
         }
@@ -885,34 +902,13 @@ impl LibrarianAgent {
         tags: Option<Vec<String>>,
         guard_snapshot: bool,
     ) -> Result<Note> {
-        let embedding = self.embed_text(&content).await?;
-        let entities = if self.runtime.skip_entity_extraction {
-            Vec::new()
-        } else {
-            let extraction = self
-                .extractor
-                .extract(&truncate_for_extraction(
-                    &content,
-                    self.runtime.extract_max_chars,
-                ))
-                .await?;
-            extracted_entities_to_domain(
-                extraction.entities,
-                &format!("detach:{}", uuid::Uuid::new_v4()),
-                None,
-            )
-        };
-
         let mut detached = Note::new(content)
             .with_type(NoteType::Raw)
-            .with_embedding(embedding)
             .with_tags(tags.unwrap_or_else(|| existing.tags.clone()));
-        if let Some(title) = title.or_else(|| existing.title.clone()) {
-            detached = detached.with_title(title);
-        }
-        if let Some(source_id) = existing.source_id.clone() {
-            detached = detached.with_source(source_id);
-        }
+        detached.id = Some(RecordId::new("note", uuid::Uuid::new_v4().to_string()));
+        detached.title = title.or_else(|| existing.title.clone());
+        detached.source_id = existing.source_id.clone();
+        let (detached, entities) = self.prepare_note_content(detached).await?;
         if guard_snapshot {
             Ok(self
                 .repo
@@ -3170,7 +3166,10 @@ fn extracted_entities_for_note(
     entities: Vec<crate::inference::ExtractedEntity>,
     note: &Note,
 ) -> Vec<Entity> {
-    let source_scope = note.source_id.as_ref().map(record_id_to_string);
+    // A detached/manual note retains source_id only as provenance.
+    let source_scope = note
+        .source_generation
+        .and_then(|_| note.source_id.as_ref().map(record_id_to_string));
     let note_scope = match (source_scope.as_deref(), note.chunk_location_key.as_deref()) {
         (Some(source), Some(location)) => format!("{source}:chunk:{location}"),
         _ => note

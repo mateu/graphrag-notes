@@ -319,13 +319,7 @@ impl EmbeddedApplication {
             )
             .with_runtime_config(self.runtime.clone())
             .with_cancellation_flag(cancellation.flag());
-            let (prepared, entities) = librarian
-                .prepare_manual_capture(
-                    replacement.content.clone(),
-                    replacement.title.clone(),
-                    replacement.tags.clone(),
-                )
-                .await?;
+            let (prepared, entities) = librarian.prepare_note_content(replacement.clone()).await?;
             replacement.embedding = prepared.embedding;
             Some(entities)
         } else {

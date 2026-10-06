@@ -25,7 +25,10 @@ scope; matching still uses the readable canonical label and aliases.
 
 People and projects use note-local evidence scopes, or stable source chunk
 locations when available. Other types can share a canonical label only within
-the same source; manual notes use a local scope. Same spelling across sources,
+the same generated source; manual/detached notes use their final note ID even
+when retaining a source link as provenance. Capture and edit preparation uses
+the final note ID, including authenticated capture request IDs, so later forced
+extraction reuses these identities. Same spelling across sources,
 different types, and aliases do not merge rows. Two same-named people/projects
 in different notes remain ambiguous independent entities. Within one note the
 provider must distinguish them with different labels; extraction has no
@@ -81,3 +84,6 @@ Document improvements and regressions before approving a wider pilot. This
 change does not schedule broad corpus extraction or guarantee that adding
 entities improves every query; extracted relationships remain provider hints,
 and accepted note edges require their existing governed review workflow.
+
+See the [fictional validation observations](validation/graph-relevance-93.md)
+for paired scaling results and regression coverage.
