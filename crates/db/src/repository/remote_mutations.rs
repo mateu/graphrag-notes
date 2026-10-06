@@ -291,7 +291,8 @@ impl Repository {
                 if let Some(new_entities) = replacement_entities {
                     entities = new_entities;
                     sql.push_str(super::notes::replacement_entities_transaction());
-                    sql.push_str("DELETE mentions WHERE in=$target; FOR $entity_id IN $entity_ids { CREATE mentions SET in=$target,out=$entity_id; }; ");
+                    sql.push_str("DELETE mentions WHERE in=$target; ");
+                    sql.push_str(&super::notes::replacement_mentions_transaction("$target"));
                 }
                 sql.push_str("UPDATE $target SET content=$replacement.content,title=$replacement.title,tags=$replacement.tags,embedding=$replacement_embedding,search_content=$replacement.search_content,updated_at=$replacement.updated_at; ");
                 expected_note = Some(*expected);
@@ -352,7 +353,7 @@ impl Repository {
         let query=format!("BEGIN TRANSACTION; {effects} CREATE $receipt SET instance_id=$instance,request_id=$request,operation=$operation,target=$target,payload_fingerprint=$fingerprint,payload=$payload,result=$result,created_at=time::now(),updated_at=time::now(); COMMIT TRANSACTION;");
         let entity_names = entities
             .iter()
-            .map(|e| e.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
         let expected_status = expected_proposal.as_ref().map(|p| p.status.to_string());
         let expected_edge_type = expected_proposal.as_ref().map(|p| p.edge_type.to_string());

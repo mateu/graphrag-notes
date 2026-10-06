@@ -68,6 +68,17 @@ fn conflict(instance: &str, request: &str) -> DbError {
 }
 
 impl Repository {
+    /// Stable authenticated request identity, shared with preparation before
+    /// inference. Opaque caller provenance never participates in this key.
+    pub fn remote_capture_note_id(instance: &str, request: &str) -> Result<RecordId> {
+        let bytes = serde_json::to_vec(&(instance, request))
+            .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?;
+        Ok(RecordId::new(
+            "note",
+            format!("{:x}", Sha256::digest(bytes)),
+        ))
+    }
+
     async fn remote_capture_row(
         &self,
         instance: &str,
@@ -153,7 +164,8 @@ impl Repository {
         let key_bytes = serde_json::to_vec(&(&input.authenticated_instance_id, &input.request_id))
             .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?;
         let key = format!("{:x}", Sha256::digest(key_bytes));
-        let note_id = RecordId::new("note", key.clone());
+        let note_id =
+            Self::remote_capture_note_id(&input.authenticated_instance_id, &input.request_id)?;
         let source_id = RecordId::new("source", key.clone());
         let receipt_id = RecordId::new("remote_capture_receipt", key.clone());
         let uri = format!("mcp://capture/{key}");
@@ -189,9 +201,10 @@ impl Repository {
         });
         let entity_names = entities
             .iter()
-            .map(|entity| entity.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
         let entities_sql = super::notes::replacement_entities_transaction();
+        let mentions_sql = super::notes::replacement_mentions_transaction("$note");
         // Validate the full stored note before recording its response. A schema
         // normalization or default which changes that snapshot aborts all writes
         // rather than committing a response with an incorrect revision.
@@ -205,7 +218,7 @@ impl Repository {
              CREATE $note SET note_type = 'raw', title = $title, content = $content, embedding = $embedding, \
                 source_id = $source, tags = $tags, search_content = $content, \
                 created_at = <datetime>$created, updated_at = <datetime>$updated; \
-             FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $note, out = $entity_id; }}; \
+             {mentions_sql}\
              {snapshot_guard}\
              IF array::len((SELECT VALUE id FROM source WHERE id = $source AND source_type = 'manual' \
                 AND uri = $uri AND normalized_uri = $uri AND metadata = $metadata)) != 1 \

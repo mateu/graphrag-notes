@@ -234,6 +234,7 @@ async fn test_librarian_and_search_agents_with_offline_inference() {
             entities: vec![ExtractedEntity {
                 name: "Rust".to_string(),
                 entity_type: Some("concept".to_string()),
+                aliases: Vec::new(),
             }],
             relationships: Vec::new(),
         },

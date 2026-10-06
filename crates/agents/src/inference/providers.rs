@@ -460,7 +460,7 @@ impl TgiClient {
         let entity_cap = self.max_entities;
         let relationship_cap = self.max_relationships;
         let prompt = format!(
-            "Return ONLY valid JSON. No markdown, no extra keys.\n\nSchema:\n{{\"entities\":[{{\"name\":string,\"type\":string}}],\"relationships\":[{{\"source\":string,\"target\":string,\"relationship_type\":string}}]}}\n\nRules:\n- Strings only, double-quoted\n- Keep strings short (1-6 words)\n- If unsure, return empty arrays\n- Max {entity_cap} entities, max {relationship_cap} relationships\n\nText:\n{}",
+            "Return ONLY valid JSON. No markdown, no extra keys.\n\nSchema:\n{{\"entities\":[{{\"name\":string,\"type\":string,\"aliases\":[string]}}],\"relationships\":[{{\"source\":string,\"target\":string,\"relationship_type\":string}}]}}\n\nRules:\n- Strings only, double-quoted\n- Keep strings short (1-6 words)\n- Types: Person, Organization, Concept, Project, Technology, Location, Date, Other\n- Aliases: at most 8 explicit names used for that same entity in this text; omit uncertain aliases\n- If unsure, return empty arrays\n- Max {entity_cap} entities, max {relationship_cap} relationships\n\nText:\n{}",
             text,
             entity_cap = entity_cap,
             relationship_cap = relationship_cap
@@ -520,7 +520,7 @@ impl TgiClient {
 
                 debug!("Ollama extraction failed, retrying with entities-only schema");
                 let retry_prompt = format!(
-                    "Return ONLY valid JSON with the schema {{\"entities\":[{{\"name\":string,\"type\":string}}...],\"relationships\":[]}}.\nAll fields must be strings and double-quoted. Do not include any other keys.\nLimits: up to {entity_cap} entities.\nText:\n{}",
+                    "Return ONLY valid JSON with the schema {{\"entities\":[{{\"name\":string,\"type\":string,\"aliases\":[string]}}...],\"relationships\":[]}}.\nAll fields must be strings and double-quoted. Do not include any other keys.\nLimits: up to {entity_cap} entities.\nText:\n{}",
                     text,
                     entity_cap = entity_cap
                 );
@@ -990,6 +990,9 @@ pub struct ExtractedEntity {
     pub name: String,
     #[serde(alias = "type", alias = "entity_type")]
     pub entity_type: Option<String>,
+    /// Optional provider hints, never identity or relationship assertions.
+    #[serde(default)]
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1229,11 +1232,35 @@ fn ollama_predict_budgets(options: &Option<Value>) -> Vec<u32> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_and_malformed_alias_payloads_remain_compatible() {
+        let parsed = parse_entity_extraction(r#"{"entities":["Old entity",{"name":"Rust","type":"Technology","aliases":["Rust language",4,null,{"name":"invalid"}]},{"name":"Atlas","type":"Project","aliases":"invalid"}],"relationships":[]}"#,true).unwrap();
+        assert_eq!(parsed.entities.len(), 3);
+        assert!(parsed.entities[0].aliases.is_empty());
+        assert_eq!(parsed.entities[1].aliases, vec!["Rust language"]);
+        assert!(parsed.entities[2].aliases.is_empty());
+        let cached: ExtractedEntity =
+            serde_json::from_str(r#"{"name":"Legacy","entity_type":null}"#).unwrap();
+        assert!(cached.aliases.is_empty());
+        let tolerant = parse_entity_extraction(
+            "entities: [{\"name\":\"Atlas\",\"type\":\"Project\",\"aliases\":[\"Launch\",null]},]",
+            false,
+        )
+        .unwrap();
+        assert_eq!(tolerant.entities[0].aliases, vec!["Launch"]);
+        let schema = entity_extraction_schema(4, 8);
+        assert_eq!(
+            schema["properties"]["entities"]["items"]["properties"]["aliases"]["maxItems"],
+            8
+        );
+    }
+
     fn extraction() -> EntityExtraction {
         EntityExtraction {
             entities: vec![ExtractedEntity {
                 name: "Rust".to_string(),
                 entity_type: Some("concept".to_string()),
+                aliases: Vec::new(),
             }],
             relationships: Vec::new(),
         }
@@ -1396,7 +1423,8 @@ fn entity_extraction_schema(entity_cap: usize, relationship_cap: usize) -> Value
                     "required": ["name"],
                     "properties": {
                         "name": { "type": "string", "maxLength": max_name_len },
-                        "type": { "type": "string", "maxLength": max_type_len }
+                        "type": { "type": "string", "maxLength": max_type_len },
+                        "aliases": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": max_name_len } }
                     }
                 }
             },
@@ -1600,6 +1628,7 @@ fn parse_entities_value(value: &Value) -> Vec<ExtractedEntity> {
             Value::String(name) => Some(ExtractedEntity {
                 name: name.to_string(),
                 entity_type: None,
+                aliases: Vec::new(),
             }),
             Value::Object(obj) => {
                 let name = obj
@@ -1613,7 +1642,24 @@ fn parse_entities_value(value: &Value) -> Vec<ExtractedEntity> {
                     .or_else(|| obj.get("label"))
                     .or_else(|| obj.get("category"))
                     .and_then(value_to_string);
-                Some(ExtractedEntity { name, entity_type })
+                // Older payloads omit aliases. Malformed/scalar aliases are
+                // ignored without coercing numbers, objects or nested arrays.
+                let aliases = obj
+                    .get("aliases")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Some(ExtractedEntity {
+                    name,
+                    entity_type,
+                    aliases,
+                })
             }
             _ => None,
         })

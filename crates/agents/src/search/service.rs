@@ -835,11 +835,84 @@ impl SearchAgent {
         source_uri: Option<String>,
         require_entity_seed: bool,
     ) -> Result<GraphSearchResults> {
+        let candidate_started = Instant::now();
+        let direct_ranks = baseline
+            .iter()
+            .enumerate()
+            .map(|(rank, hit)| (hit.id.as_str(), rank))
+            .collect::<HashMap<_, _>>();
+        let mut direct_candidates = baseline
+            .iter()
+            .filter(|hit| hit.hit_type == SearchHitType::Note)
+            .take(200)
+            .map(|hit| (hit.id.clone(), hit.clone()))
+            .collect::<HashMap<_, _>>();
+        // A seed can be useful even when it fell just below the requested
+        // hybrid result count. Use the existing indexed lexical channel to
+        // supplement a bounded candidate list, without another embedding call
+        // or changing graph-off retrieval.
+        let lexical_limit = self
+            .graph
+            .max_seed_notes
+            .saturating_mul(self.graph.max_seed_entities)
+            .clamp(1, 200);
+        for result in self
+            .repo
+            .fulltext_search_notes(query, lexical_limit, since, source_uri.clone())
+            .await?
+        {
+            let exact_title_match = result.exact_title_match;
+            let mut hit = self.from_note_result(result);
+            hit.fusion.exact_title_match = exact_title_match;
+            direct_candidates.entry(hit.id.clone()).or_insert(hit);
+        }
+        let direct_strengths = direct_candidates
+            .values()
+            .map(|hit| {
+                (
+                    hit.id.as_str(),
+                    graph_seed_query_strength(query, hit.title.as_deref(), &hit.content, &[]),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut ranked_candidates = direct_candidates.values().collect::<Vec<_>>();
+        ranked_candidates.sort_by(|a, b| {
+            b.fusion
+                .exact_title_match
+                .cmp(&a.fusion.exact_title_match)
+                .then_with(|| {
+                    direct_strengths[b.id.as_str()].total_cmp(&direct_strengths[a.id.as_str()])
+                })
+                .then_with(|| {
+                    direct_ranks
+                        .get(a.id.as_str())
+                        .unwrap_or(&usize::MAX)
+                        .cmp(direct_ranks.get(b.id.as_str()).unwrap_or(&usize::MAX))
+                })
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let ranked_note_ids = ranked_candidates
+            .into_iter()
+            .take(200)
+            .map(|hit| RecordId::new("note", hit.id.strip_prefix("note:").unwrap_or(&hit.id)))
+            .collect::<Vec<_>>();
+        debug!(
+            phase = "graph_query_candidates",
+            elapsed_ms = candidate_started.elapsed().as_secs_f64() * 1000.0,
+            count = ranked_note_ids.len(),
+            "Retrieval phase completed"
+        );
         let normalized_query = Entity::canonicalize(query);
         let started = Instant::now();
         let entities = self
             .repo
-            .find_graph_entities(&normalized_query, self.graph.max_seed_entities)
+            .find_graph_entities_for_search(
+                &normalized_query,
+                self.graph.max_seed_entities,
+                &ranked_note_ids,
+                since,
+                source_uri.clone(),
+            )
             .await?;
         debug!(
             phase = "graph_entity_matching",
@@ -861,13 +934,15 @@ impl SearchAgent {
             .map(|(rank, entity_id)| (record_id_to_string(entity_id), rank))
             .collect::<HashMap<_, _>>();
         let started = Instant::now();
-        let entity_seed_ids = self
+        let mut entity_seed_ids = self
             .repo
-            .graph_notes_for_entities(
+            .graph_notes_for_entities_ranked_for_query(
                 &entity_ids,
+                &ranked_note_ids,
                 self.graph.max_seed_notes,
                 since,
                 source_uri.clone(),
+                query,
             )
             .await?;
         debug!(
@@ -876,6 +951,86 @@ impl SearchAgent {
             count = entity_seed_ids.len(),
             "Retrieval phase completed"
         );
+
+        // Inspect only the bounded mention candidates. Query words in the
+        // actual note/title and matched entity labels/aliases determine
+        // strength; a generic mention no longer receives a full-strength seed.
+        let candidate_ids = entity_seed_ids
+            .iter()
+            .map(|seed| seed.note_id.clone())
+            .collect::<Vec<_>>();
+        let seed_evidence_started = Instant::now();
+        let fallback_ids = candidate_ids
+            .iter()
+            .filter(|id| !direct_candidates.contains_key(&record_id_to_string(id)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut records = self
+            .repo
+            .graph_notes_by_ids(&fallback_ids, since, source_uri.clone())
+            .await?
+            .into_iter()
+            .map(|record| self.from_note_result(record))
+            .collect::<Vec<_>>();
+        let candidate_keys = candidate_ids
+            .iter()
+            .map(record_id_to_string)
+            .collect::<HashSet<_>>();
+        records.extend(
+            direct_candidates
+                .values()
+                .filter(|hit| candidate_keys.contains(&hit.id))
+                .cloned(),
+        );
+        let mut seed_strengths = HashMap::<String, f32>::new();
+        for record in records {
+            let id = record.id.clone();
+            let matching_labels = entity_seed_ids
+                .iter()
+                .filter(|seed| record_id_to_string(&seed.note_id) == id)
+                .filter_map(|seed| {
+                    entities
+                        .iter()
+                        .find(|entity| entity.id == seed.entity_id)
+                        .map(|entity| (entity, seed))
+                })
+                .flat_map(|(entity, seed)| {
+                    std::iter::once(entity.name.as_str())
+                        .chain(seed.aliases.iter().map(String::as_str))
+                })
+                .collect::<Vec<_>>();
+            seed_strengths.insert(
+                id,
+                graph_seed_query_strength(
+                    query,
+                    record.title.as_deref(),
+                    &record.content,
+                    &matching_labels,
+                ),
+            );
+        }
+        debug!(
+            phase = "graph_seed_evidence",
+            elapsed_ms = seed_evidence_started.elapsed().as_secs_f64() * 1000.0,
+            count = seed_strengths.len(),
+            "Retrieval phase completed"
+        );
+        entity_seed_ids.sort_by(|a, b| {
+            let a_id = record_id_to_string(&a.note_id);
+            let b_id = record_id_to_string(&b.note_id);
+            seed_strengths
+                .get(&b_id)
+                .copied()
+                .unwrap_or_default()
+                .total_cmp(&seed_strengths.get(&a_id).copied().unwrap_or_default())
+                .then_with(|| {
+                    direct_ranks
+                        .get(a_id.as_str())
+                        .unwrap_or(&usize::MAX)
+                        .cmp(direct_ranks.get(b_id.as_str()).unwrap_or(&usize::MAX))
+                })
+                .then_with(|| a_id.cmp(&b_id))
+        });
 
         // `auto` is deliberately conservative: it activates only when a
         // local entity match provides useful graph evidence. Explicit `on`
@@ -904,8 +1059,14 @@ impl SearchAgent {
             } else {
                 frontier.insert(
                     id.clone(),
-                    GraphFrontier::seed(seed.note_id, id, entity_name, self.graph.seed_score)
-                        .with_initial_entity_rank(entity_rank),
+                    GraphFrontier::seed(
+                        seed.note_id,
+                        id.clone(),
+                        entity_name,
+                        self.graph.seed_score
+                            * seed_strengths.get(&id).copied().unwrap_or_default(),
+                    )
+                    .with_initial_entity_rank(entity_rank),
                 );
             }
         }
@@ -920,7 +1081,18 @@ impl SearchAgent {
                 let raw = hit.id.strip_prefix("note:").unwrap_or(&hit.id);
                 let note_id = RecordId::new("note", raw);
                 frontier.entry(hit.id.clone()).or_insert_with(|| {
-                    GraphFrontier::seed(note_id, hit.id.clone(), Vec::new(), self.graph.seed_score)
+                    GraphFrontier::seed(
+                        note_id,
+                        hit.id.clone(),
+                        Vec::new(),
+                        self.graph.seed_score
+                            * graph_seed_query_strength(
+                                query,
+                                hit.title.as_deref(),
+                                &hit.content,
+                                &[],
+                            ),
+                    )
                 });
             }
         }
@@ -1361,6 +1533,84 @@ fn admit_initial_graph_frontier(
 /// The first pass reserves one distinct note per ranked entity when capacity
 /// permits; the second pass fills remaining slots in the same rank order.
 /// Callers then merge every retained note's entity associations into evidence.
+fn graph_seed_query_strength(
+    query: &str,
+    title: Option<&str>,
+    content: &str,
+    matched_labels: &[&str],
+) -> f32 {
+    fn terms(value: &str) -> HashSet<String> {
+        value
+            .split(|ch: char| !ch.is_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(str::to_lowercase)
+            .filter(|part| {
+                !matches!(
+                    part.as_str(),
+                    "a" | "an"
+                        | "and"
+                        | "are"
+                        | "as"
+                        | "at"
+                        | "be"
+                        | "by"
+                        | "do"
+                        | "does"
+                        | "for"
+                        | "from"
+                        | "how"
+                        | "i"
+                        | "in"
+                        | "is"
+                        | "it"
+                        | "of"
+                        | "on"
+                        | "or"
+                        | "the"
+                        | "to"
+                        | "was"
+                        | "what"
+                        | "when"
+                        | "where"
+                        | "which"
+                        | "with"
+                )
+            })
+            .collect()
+    }
+    let query_terms = terms(query);
+    if query_terms.is_empty() {
+        return if matched_labels.is_empty() { 0.0 } else { 0.15 };
+    }
+    let mut evidence = terms(content);
+    evidence.extend(terms(title.unwrap_or_default()));
+    let lexical = |value: &str| {
+        value
+            .split(|ch: char| !ch.is_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let query_phrase = format!(" {} ", lexical(query));
+    for label in matched_labels {
+        // Count only labels/aliases that actually match this query phrase;
+        // other aliases cannot supply unrelated query details.
+        let phrase = lexical(label);
+        if !phrase.is_empty() && query_phrase.contains(&format!(" {phrase} ")) {
+            evidence.extend(terms(label));
+        }
+    }
+    let coverage = query_terms.intersection(&evidence).count() as f32 / query_terms.len() as f32;
+    // A verified mention is useful evidence, but cannot claim unsupported
+    // query details. The small floor also keeps partial-name recovery usable.
+    if matched_labels.is_empty() {
+        coverage
+    } else {
+        coverage.max(0.15)
+    }
+}
+
 fn select_graph_seed_note_ids(
     entity_ids: &[RecordId],
     seeds: &[GraphEntityNoteSeed],
@@ -2334,14 +2584,17 @@ mod tests {
             GraphEntityNoteSeed {
                 note_id: RecordId::new("note", "atlas-a"),
                 entity_id: atlas.clone(),
+                aliases: Vec::new(),
             },
             GraphEntityNoteSeed {
                 note_id: RecordId::new("note", "atlas-b"),
                 entity_id: atlas.clone(),
+                aliases: Vec::new(),
             },
             GraphEntityNoteSeed {
                 note_id: RecordId::new("note", "beacon-a"),
                 entity_id: beacon.clone(),
+                aliases: Vec::new(),
             },
         ];
 
@@ -2882,6 +3135,434 @@ mod tests {
         );
         assert_eq!(target_evidence.path[1].to_id, target_id);
         assert!(target_evidence.score > weak_direct_score);
+    }
+
+    #[tokio::test]
+    async fn high_degree_entity_uses_query_ranked_mentions_before_id_page_and_retains_paths() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let mut entity = Entity::new("Atlas", EntityType::Project);
+        entity.metadata = serde_json::json!({"aliases":["Launch Atlas"]});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        for index in 0..64 {
+            let id = RecordId::new("note", format!("noise_{index:03}"));
+            db.query("CREATE $id CONTENT {content:'Atlas general overview'}")
+                .bind(("id", id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            repo.link_note_to_entity(&id, entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        let seed_id = RecordId::new("note", "zz_relevant");
+        db.query("CREATE $id CONTENT {title:'Atlas retries',content:'Atlas retries use a staged retry strategy'}").bind(("id",seed_id.clone())).await.unwrap().check().unwrap();
+        repo.link_note_to_entity(&seed_id, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let answer = repo
+            .create_note(Note::new("The fictional policy permits three attempts"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            &seed_id,
+            answer.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        let old_page = repo
+            .graph_notes_for_entities(&[entity.id.clone().unwrap()], 2, None, None)
+            .await
+            .unwrap();
+        assert!(old_page.iter().all(|seed| seed.note_id != seed_id));
+        let config = GraphRetrievalConfig {
+            max_seed_notes: 2,
+            candidate_cap: 4,
+            max_hops: 1,
+            per_node_fanout: 1,
+            ..Default::default()
+        };
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(config);
+        let off = search
+            .search_with_scope_graph(
+                "Atlas retries",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::Off,
+            )
+            .await
+            .unwrap();
+        let answer_id = record_id_to_string(answer.id.as_ref().unwrap());
+        assert!(off.hits.iter().all(|hit| hit.id != answer_id));
+        let on = search
+            .search_with_scope_graph(
+                "Atlas retries",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert_eq!(on.hits[0].id, record_id_to_string(&seed_id));
+        assert!(on.hits[0].fusion.exact_title_match);
+        let evidence = on
+            .hits
+            .iter()
+            .find(|hit| hit.id == answer_id)
+            .unwrap()
+            .graph
+            .as_ref()
+            .unwrap();
+        assert_eq!(evidence.query_entities, vec!["Atlas"]);
+        assert_eq!(evidence.seed_note_id, record_id_to_string(&seed_id));
+        assert_eq!(evidence.path.len(), 1);
+        assert_eq!(evidence.path[0].from_id, record_id_to_string(&seed_id));
+        assert_eq!(evidence.path[0].to_id, answer_id);
+        assert!(
+            on.hits
+                .iter()
+                .filter_map(|hit| hit.graph.as_ref())
+                .filter(|graph| graph.hops == 0)
+                .count()
+                <= 2
+        );
+        let replay = search
+            .search_with_scope_graph(
+                "Atlas retries",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            on.hits
+                .iter()
+                .map(|hit| (&hit.id, &hit.graph))
+                .collect::<Vec<_>>(),
+            replay
+                .hits
+                .iter()
+                .map(|hit| (&hit.id, &hit.graph))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn lexical_supplement_recovers_a_seed_outside_the_requested_hybrid_candidates() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let mut entity = Entity::new("Atlas", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        let mut baseline = Vec::new();
+        for index in 0..20 {
+            let id = RecordId::new("note", format!("noise_{index:03}"));
+            db.query("CREATE $id CONTENT {content:'General background status'}")
+                .bind(("id", id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            repo.link_note_to_entity(&id, entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+            if index < 2 {
+                baseline.push(make_hit(
+                    &record_id_to_string(&id),
+                    0.01,
+                    "General background status",
+                ));
+            }
+        }
+        let useful = RecordId::new("note", "zz_useful");
+        db.query("CREATE $id CONTENT {content:'Atlas retry policy permits three attempts'}")
+            .bind(("id", useful.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        repo.link_note_to_entity(&useful, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(GraphRetrievalConfig {
+                max_seed_entities: 1,
+                max_seed_notes: 1,
+                max_hops: 0,
+                ..Default::default()
+            });
+        assert!(baseline
+            .iter()
+            .all(|hit| hit.id != record_id_to_string(&useful)));
+        let graph = search
+            .graph_candidates("Atlas retry policy", &baseline, None, None, true)
+            .await
+            .unwrap();
+        assert_eq!(graph.hits.len(), 1);
+        assert_eq!(graph.hits[0].id, record_id_to_string(&useful));
+        assert_eq!(
+            graph.hits[0].graph.as_ref().unwrap().query_entities,
+            vec!["Atlas"]
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_homonyms_prefer_direct_evidence_and_ignore_orphaned_legacy_entities() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        db.query("CREATE entity:aaaa_orphan CONTENT {name:'Atlas',canonical_name:'atlas',entity_type:'concept',metadata:{}};").await.unwrap().check().unwrap();
+        let generic = repo
+            .create_note(Note::new("Atlas generic background"))
+            .await
+            .unwrap();
+        let relevant = repo
+            .create_note(Note::new("Atlas deterministic retry configuration"))
+            .await
+            .unwrap();
+        for (scope, note) in [("source:noise", &generic), ("source:relevant", &relevant)] {
+            let mut entity = Entity::new("Atlas", EntityType::Project);
+            entity.identity_key = Some(scope.into());
+            entity.metadata = serde_json::json!({"aliases":["Launch Atlas"]});
+            let entity = repo.upsert_entity(entity).await.unwrap();
+            repo.link_note_to_entity(note.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        let entities = repo
+            .find_graph_entities_for_search(
+                "Atlas",
+                1,
+                &[relevant.id.clone().unwrap(), generic.id.clone().unwrap()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 1);
+        let seeds = repo
+            .graph_notes_for_entities_ranked(
+                &[entities[0].id.clone()],
+                &[relevant.id.clone().unwrap()],
+                1,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeds[0].note_id, relevant.id.clone().unwrap());
+        let entities = repo
+            .find_graph_entities_for_search(
+                "Launch Atlas",
+                4,
+                &[relevant.id.clone().unwrap()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 2); // Alias matches retain distinct identities.
+        assert_ne!(entities[0].id, entities[1].id);
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(GraphRetrievalConfig {
+                max_seed_entities: 1,
+                max_seed_notes: 1,
+                ..Default::default()
+            })
+            .search_with_scope_graph(
+                "Atlas deterministic retry configuration",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.summary.entities_matched, 1);
+        let evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == record_id_to_string(relevant.id.as_ref().unwrap()))
+            .unwrap()
+            .graph
+            .as_ref()
+            .unwrap();
+        assert_eq!(evidence.query_entities, vec!["Atlas"]);
+        assert_eq!(evidence.hops, 0);
+    }
+
+    #[tokio::test]
+    async fn shared_entity_alias_seeds_only_its_owning_chunk_before_the_note_cap() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let mut source = repo
+            .begin_file_import(
+                graphrag_core::SourceType::Markdown,
+                "Fictional shared compiler".into(),
+                "fixture://compiler-alias.md".into(),
+                "Two fictional tool references".into(),
+                "fixture-alias".into(),
+                false,
+            )
+            .await
+            .unwrap()
+            .source;
+        let wrong = RecordId::new("note", "aaaa_wrong_chunk");
+        let owner = RecordId::new("note", "zzzz_alias_owner");
+        for id in [&wrong, &owner] {
+            db.query("CREATE $id SET content='A fictional tool reference', source_id=$source, source_generation=$generation")
+                .bind(("id", id.clone())).bind(("source", source.id.clone()))
+                .bind(("generation", source.generation)).await.unwrap().check().unwrap();
+        }
+        repo.complete_file_import(&mut source).await.unwrap();
+        for (id, aliases) in [
+            (&wrong, vec!["unrelated label"]),
+            (&owner, vec!["silver prism"]),
+        ] {
+            let mut entity = Entity::new("Compiler", EntityType::Technology);
+            entity.identity_key = Some("extracted-v1:fictional-shared-compiler".into());
+            entity.metadata = serde_json::json!({"aliases": aliases});
+            repo.upsert_entities_and_link_note(id, vec![entity])
+                .await
+                .unwrap();
+        }
+        let entities = repo
+            .find_graph_entities_for_search("silver prism", 1, &[], None, None)
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 1);
+        let entity_ids = [entities[0].id.clone()];
+        assert_eq!(
+            repo.graph_notes_for_entities_ranked(&entity_ids, &[], 1, None, None)
+                .await
+                .unwrap()[0]
+                .note_id,
+            wrong
+        );
+        let seeds = repo
+            .graph_notes_for_entities_ranked_for_query(
+                &entity_ids,
+                &[],
+                2,
+                None,
+                None,
+                "silver prism",
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeds[0].note_id, owner);
+        assert_eq!(seeds[0].aliases, vec!["silver prism"]);
+        assert_eq!(seeds[1].aliases, vec!["unrelated label"]);
+        let correct_answer = repo
+            .create_note(Note::new("The fictional tool is ready for launch"))
+            .await
+            .unwrap();
+        let wrong_answer = repo
+            .create_note(Note::new("Unrelated historical tool path"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            &owner,
+            correct_answer.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            &wrong,
+            wrong_answer.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        let result = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(GraphRetrievalConfig {
+                max_seed_entities: 1,
+                max_seed_notes: 1,
+                max_hops: 1,
+                per_node_fanout: 1,
+                candidate_cap: 2,
+                ..Default::default()
+            })
+            .search_with_scope_graph(
+                "silver prism",
+                5,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::Auto,
+            )
+            .await
+            .unwrap();
+        let correct = result
+            .hits
+            .iter()
+            .find(|hit| hit.id == record_id_to_string(correct_answer.id.as_ref().unwrap()))
+            .unwrap();
+        assert_eq!(
+            correct.graph.as_ref().unwrap().seed_note_id,
+            record_id_to_string(&owner)
+        );
+        assert!(result
+            .hits
+            .iter()
+            .all(|hit| hit.id != record_id_to_string(wrong_answer.id.as_ref().unwrap())));
+    }
+
+    #[test]
+    fn seed_strength_requires_query_details_and_respects_alias_evidence() {
+        assert_eq!(
+            graph_seed_query_strength(
+                "How do Atlas retries work?",
+                None,
+                "General overview",
+                &["Atlas"]
+            ),
+            1.0 / 3.0
+        );
+        assert_eq!(
+            graph_seed_query_strength(
+                "How do Atlas retries work?",
+                None,
+                "Retries work",
+                &["Atlas"]
+            ),
+            1.0
+        );
+        assert_eq!(
+            graph_seed_query_strength("Launch Atlas", None, "A launch overview", &["Launch Atlas"]),
+            1.0
+        );
+        assert_eq!(
+            graph_seed_query_strength("zeta", None, "Unrelated", &["Zeta Gateway"]),
+            0.15
+        );
+        assert!(
+            graph_seed_query_strength(
+                "Atlas retry policy",
+                None,
+                "Atlas general overview",
+                &["Atlas"]
+            ) < graph_seed_query_strength(
+                "Atlas retry policy",
+                None,
+                "Atlas retry policy",
+                &["Atlas"]
+            )
+        );
     }
 
     #[tokio::test]

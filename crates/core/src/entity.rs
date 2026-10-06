@@ -44,9 +44,15 @@ pub struct Entity {
     #[serde(default)]
     pub name: String,
 
-    /// Canonical/normalized name for deduplication
+    /// Canonical/normalized label for matching; scoped identities may share it.
     #[serde(default)]
     pub canonical_name: String,
+
+    /// Explicit deduplication identity. Older/manual entities retain the legacy
+    /// canonical-name identity; extracted entities use a type and evidence scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[surreal(default)]
+    pub identity_key: Option<String>,
 
     /// Vector embedding of the entity
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -72,6 +78,7 @@ impl Entity {
             entity_type,
             name,
             canonical_name: canonical,
+            identity_key: None,
             embedding: Vec::new(),
             metadata: serde_json::Value::Null,
             created_at: Utc::now(),
@@ -84,6 +91,14 @@ impl Entity {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    /// The legacy key keeps existing manual upserts and old portable backups
+    /// compatible without treating aliases as identity claims.
+    pub fn effective_identity_key(&self) -> String {
+        self.identity_key
+            .clone()
+            .unwrap_or_else(|| format!("legacy:{}", self.canonical_name))
     }
 
     /// Builder: set embedding
