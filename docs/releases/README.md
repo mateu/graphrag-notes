@@ -1,6 +1,6 @@
 # Release preparation and provenance
 
-Workspace package, local lockfile package, binary and tag versions must agree exactly. The allocator qualification candidate uses `0.1.0-rc.5` / `v0.1.0-rc.5`. Published rc.3 and rc.4 assets remain immutable; this candidate does not rename the old roadmap's v0.2 target. Publish the candidate only after review and merge, as a prerelease with `latest=false`. Never move an existing tag, overwrite an output directory, replace an existing release or upload with a clobber flag.
+Workspace package, local lockfile package, binary and tag versions must agree exactly. Release preparation uses `0.1.0-rc.5` / `v0.1.0-rc.5`. Published rc.3 and rc.4 assets remain immutable; this candidate does not rename the old roadmap's v0.2 target. Publish the candidate only after review and merge, as a prerelease with `latest=false`. Never move an existing tag, overwrite an output directory, replace an existing release or upload with a clobber flag.
 
 Python 3.11+ provides the packaging and offline checks without additional Python packages. Native inspection also uses Git, Rust, `file`, and `otool`/`sw_vers` on macOS or `ldd`/`readelf` on Linux. Packaging runs only version/help commands, with a temporary HOME and unavailable inference endpoints. It does not open the user's database, start providers, install models, run Cargo or publish anything.
 
@@ -15,7 +15,7 @@ export OPENSSL_STATIC=1 OPENSSL_DIR=/opt/homebrew/opt/openssl@3
 export LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib
 export MACOSX_DEPLOYMENT_TARGET=15.0
 set -o pipefail
-cargo build --locked --release -p graphrag-cli --bin graphrag --features allocator \
+cargo build --locked --release -p graphrag-cli --bin graphrag \
   --message-format=json-render-diagnostics | tee /absolute/private/cargo-build.jsonl
 python3 scripts/package-release.py record-build \
   --tag v0.1.0-rc.5 --expected-commit BUILD_COMMIT_SHA \
@@ -25,11 +25,11 @@ python3 scripts/package-release.py record-build \
   --output /absolute/private/native-build.json
 ```
 
-For rc.5, only `aarch64-apple-darwin` release builds explicitly enable `allocator`. Intel macOS and Linux omit that flag and retain the system allocator. Library and CLI defaults do not enable it. The upstream ARM allocator replaces Rust global allocations; it does not interpose C/C++ RocksDB allocation. Intel/Linux performance acceptance cannot be inferred from the ARM experiment.
+For rc.5, all official targets retain the system allocator. The optional ARM allocator experiment was rejected by its controlled full-corpus gate and is preserved in [the outcome report](../validation/allocator-115-rejected.json). Experimental allocator features/dependencies are absent from the release source; old measured commits and seals remain historical evidence. Native Intel/Linux walkthroughs remain separate gates.
 
 Use a complete commit SHA and a fresh build-record filename. `record-build` rejects dirty or untracked compiled inputs, a mismatched version/toolchain/architecture, missing features, a wrong deployment target, or non-system runtime libraries. Docs and validation scripts can still be prepared while building. Seal only the binary produced by the recorded locked build, after that build exits successfully.
 
-Since rc.5, sealing requires the retained successful Cargo JSON log. It checks the actual CLI, DB, pinned SurrealDB and allocator compiler artifacts, release profile, exact feature sets, and the compiler executable hash against the selected binary (including an immutable copy). `BUILDINFO.cargo_features` records normalized versions/features, target, log hash and sealed binary hash; private package IDs and build paths are omitted. Packaging reparses the identical retained log and compares that proof with the seal. It does not require a mutable Cargo cache artifact to remain present. Assembly checks the target policy again. These checks establish build identity; they do not establish latency acceptance.
+Since rc.5, sealing requires the retained successful Cargo JSON log. It checks the actual CLI, DB and pinned SurrealDB compiler artifacts, release profile, exact feature sets, and the compiler executable hash against the selected binary (including an immutable copy). `BUILDINFO.cargo_features` records normalized versions/features, target, log hash and sealed binary hash; private package IDs and build paths are omitted. Packaging reparses the identical retained log and compares that proof with the seal. It does not require a mutable Cargo cache artifact to remain present. Assembly checks the system-allocator policy again for every target and rejects unexpected allocator features or packages. These checks establish build identity; they do not establish latency acceptance.
 
 The compiled-input identity includes workspace manifests/lock/toolchain, `.cargo` configuration and workspace crate sources/manifests/build scripts. Final documentation or integration-test commits may advance the release commit without rebuilding only when this identity remains identical. Binary bytes must still match the sealed build hash. Packaging rechecks the recorded build commit/tree/timestamp, package versions and toolchain against Git and the validated compiled inputs. It rereads architecture, runtime libraries and deployment requirements from the binary, compares those facts and the current version/help results with the sealed record, and rejects inconsistent records. Git provenance documents this relationship; it does not promise bit-identical compiler outputs across different machines or SDKs.
 

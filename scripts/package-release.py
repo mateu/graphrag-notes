@@ -89,6 +89,7 @@ RELEASE_PAYLOADS = (
     "docs/releases/0.1.0-rc.3.md",
     "docs/releases/0.1.0-rc.4.md",
     "docs/releases/0.1.0-rc.5.md",
+    "docs/validation/allocator-115-rejected.json",
     "docs/releases/README.md",
     "docs/remote-diagnostics.md",
     "docs/remote-upload-jobs.md",
@@ -346,18 +347,15 @@ def validate_feature_proof(proof: dict, target: str, version: str, binary_hash: 
             and isinstance(proof["cargo_messages_sha256"], str)
             and re.fullmatch(r"[0-9a-f]{64}", proof["cargo_messages_sha256"]),
             "compiler feature proof identity differs from the native build")
-    opted_in = target == "aarch64-apple-darwin"
-    require(proof["allocator"] == ("rust-mimalloc" if opted_in else "system"),
+    require(proof["allocator"] == "system",
             "compiler allocator differs from the supported target policy")
     expected = {
-        "graphrag-cli": (version, ["allocator"] if opted_in else []),
-        "graphrag-db": (version, (["allocator"] if opted_in else []) + ["default", "rocksdb"]),
-        "surrealdb": ("3.2.4", (["allocator"] if opted_in else []) + ["kv-mem", "kv-rocksdb"]),
-        "surrealdb-core": ("3.2.4", (["allocator"] if opted_in else []) + ["kv-mem", "kv-rocksdb"]),
+        "graphrag-cli": (version, []),
+        "graphrag-db": (version, ["default", "rocksdb"]),
+        "surrealdb": ("3.2.4", ["kv-mem", "kv-rocksdb"]),
+        "surrealdb-core": ("3.2.4", ["kv-mem", "kv-rocksdb"]),
         "surrealdb-types": ("3.2.4", None),
     }
-    if opted_in:
-        expected.update({"mimalloc": ("0.1.52", ["default"]), "libmimalloc-sys": ("0.1.49", [])})
     packages = proof["packages"]
     require(isinstance(packages, dict) and set(packages) == set(expected),
             "compiler feature proof has missing or unexpected packages")
@@ -423,7 +421,7 @@ def cargo_feature_proof(path: Path, binary: Path, target: str, version: str,
                         "Cargo CLI executable differs from the sealed binary")
     proof = {"schema_version": 1, "target": target, "binary_sha256": sha256(binary),
              "cargo_messages_sha256": hashlib.sha256(raw).hexdigest(),
-             "allocator": "rust-mimalloc" if target == "aarch64-apple-darwin" else "system",
+             "allocator": "system",
              "packages": selected}
     validate_feature_proof(proof, target, version, proof["binary_sha256"])
     return proof

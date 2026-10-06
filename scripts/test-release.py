@@ -113,16 +113,13 @@ class ReleaseTests(unittest.TestCase):
                                   validation_file=None, require_gates=False, **kwargs)
 
     def cargo_rows(self, target):
-        opted_in = target == "aarch64-apple-darwin"
         versions_features = {
-            "graphrag-cli": (self.version, ["allocator"] if opted_in else []),
-            "graphrag-db": (self.version, (["allocator"] if opted_in else []) + ["default", "rocksdb"]),
-            "surrealdb": ("3.2.4", (["allocator"] if opted_in else []) + ["kv-mem", "kv-rocksdb"]),
-            "surrealdb-core": ("3.2.4", (["allocator"] if opted_in else []) + ["kv-mem", "kv-rocksdb"]),
+            "graphrag-cli": (self.version, []),
+            "graphrag-db": (self.version, ["default", "rocksdb"]),
+            "surrealdb": ("3.2.4", ["kv-mem", "kv-rocksdb"]),
+            "surrealdb-core": ("3.2.4", ["kv-mem", "kv-rocksdb"]),
             "surrealdb-types": ("3.2.4", ["default"]),
         }
-        if opted_in:
-            versions_features.update({"mimalloc": ("0.1.52", ["default"]), "libmimalloc-sys": ("0.1.49", [])})
         rows = []
         for name, (version, features) in versions_features.items():
             rows.append({"reason": "compiler-artifact", "package_id": f"registry+https://fixture.invalid#index#{name}@{version}",
@@ -158,7 +155,7 @@ class ReleaseTests(unittest.TestCase):
             proof = release.cargo_feature_proof(messages, self.binary, target, self.version)
             self.assertEqual(proof["binary_sha256"], release.sha256(self.binary))
             self.assertEqual(proof["cargo_messages_sha256"], release.sha256(messages))
-            self.assertEqual(proof["allocator"], "rust-mimalloc" if target.startswith("aarch64") else "system")
+            self.assertEqual(proof["allocator"], "system")
             self.assertNotIn(str(self.root), json.dumps(proof))
             self.assertNotIn("fixture.invalid", json.dumps(proof))
 
@@ -183,21 +180,28 @@ class ReleaseTests(unittest.TestCase):
             rows = deepcopy(original); rows[0]["profile"][field] = value; mutations.append(rows)
         for index in range(len(original) - 1):
             rows = deepcopy(original); rows.pop(index); mutations.append(rows)
-        for index, features in ((0, []), (1, ["default", "rocksdb"]), (2, ["kv-mem", "kv-rocksdb"]),
-                                (3, ["kv-mem", "kv-rocksdb"]), (5, ["default", "secure"]), (6, ["override"])):
+        for index, features in ((0, ["allocator"]), (1, ["allocator", "default", "rocksdb"]),
+                                (2, ["allocator", "kv-mem", "kv-rocksdb"]),
+                                (3, ["allocator", "kv-mem", "kv-rocksdb"])):
             rows = deepcopy(original); rows[index]["features"] = features; mutations.append(rows)
         rows = deepcopy(original); rows[2]["package_id"] = rows[2]["package_id"].replace("3.2.4", "3.3.0"); mutations.append(rows)
         rows = deepcopy(original); rows.append({"reason": "compiler-message", "message": {"level": "error"}}); mutations.append(rows)
         for index, rows in enumerate(mutations):
             with self.subTest(index=index), self.assertRaises(release.ReleaseError):
                 release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
-        for target in ("x86_64-apple-darwin", "x86_64-unknown-linux-gnu"):
+        for target in release.TARGETS:
             rows = self.cargo_rows(target); rows[0]["features"] = ["allocator"]
             with self.assertRaises(release.ReleaseError):
                 release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
-            rows = self.cargo_rows(target); rows.insert(-1, deepcopy(original[5]))
-            with self.assertRaises(release.ReleaseError):
-                release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
+            for name, version in (("mimalloc", "0.1.52"), ("libmimalloc-sys", "0.1.49"),
+                                  ("tikv-jemallocator", "0.6.1"), ("tikv-jemalloc-sys", "0.6.1")):
+                rows = self.cargo_rows(target)
+                unwanted = deepcopy(rows[1])
+                unwanted.update(package_id=f"registry+https://fixture.invalid#index#{name}@{version}",
+                                target={"kind": ["lib"], "name": name.replace("-", "_")}, features=[])
+                rows.insert(-1, unwanted)
+                with self.assertRaises(release.ReleaseError):
+                    release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
 
     def test_rc5_rechecks_sealed_compiler_log_without_depending_on_mutable_cache(self):
         messages = self.rc5_build()
@@ -282,15 +286,18 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(replaced)
         self.assertFalse(args.output.exists())
 
-    def test_allocator_feature_does_not_enable_library_or_cli_defaults(self):
+    def test_release_sources_keep_system_allocator_and_original_defaults(self):
         import tomllib
         source = SCRIPT.parents[1]
         db = tomllib.loads((source / "crates/db/Cargo.toml").read_text())["features"]
         cli = tomllib.loads((source / "crates/cli/Cargo.toml").read_text()).get("features", {})
         self.assertEqual(db["default"], ["rocksdb"])
-        self.assertEqual(db["allocator"], ["surrealdb/allocator"])
+        self.assertNotIn("allocator", db)
         self.assertEqual(cli.get("default", []), [])
-        self.assertEqual(cli["allocator"], ["graphrag-db/allocator"])
+        self.assertNotIn("allocator", cli)
+        lock = tomllib.loads((source / "Cargo.lock").read_text())
+        names = {row["name"] for row in lock["package"]}
+        self.assertFalse(names & {"mimalloc", "libmimalloc-sys", "tikv-jemallocator", "tikv-jemalloc-sys"})
 
     def test_version_lock_tag_commit_and_clean_source_checks(self):
         source = release.validate_source(self.repo, self.tag, self.commit_id)
@@ -931,14 +938,11 @@ class WorkflowInvocationTests(unittest.TestCase):
 kind = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 modern = os.environ["EXPECTED_MODERN"] == "true"
-arm = os.environ["BUILD_TARGET"] == "aarch64-apple-darwin"
 with pathlib.Path(os.environ["CALL_LOG"]).open("a") as stream:
     stream.write(json.dumps({"command": kind, "args": args}) + "\n")
 assert all(args), "empty argument"
 if kind == "cargo":
-    assert ("--features" in args) == (modern and arm), "allocator unavailable or missing"
-    if "--features" in args:
-        assert args[args.index("--features") + 1] == "allocator"
+    assert "--features" not in args, "experimental allocator is forbidden"
     print(json.dumps({"reason": "build-finished", "success": True}))
 else:
     assert args[:2] in (["scripts/package-release.py", "record-build"], ["scripts/package-release.py", "package"])
@@ -953,7 +957,7 @@ else:
             script.write_text(f"#!{sys.executable}\n" + probe)
             script.chmod(0o755)
         return {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
-                "BUILD_TARGET": target, "BUILD_FEATURES": "allocator" if target == "aarch64-apple-darwin" else "",
+                "BUILD_TARGET": target, "BUILD_FEATURES": "allocator",
                 "COMPILER_FEATURE_PROOF": policy, "EXPECTED_MODERN": "true" if version != "0.1.0-rc.4" else "false",
                 "CALL_LOG": str(log), "RUNNER_TEMP": str(runner), "RELEASE_TAG": "v" + version,
                 "RELEASE_COMMIT": "a" * 40}, log
@@ -992,11 +996,12 @@ else:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             env, _ = self.invocation_fixture(root, "0.1.0-rc.4", "aarch64-apple-darwin")
-            env["COMPILER_FEATURE_PROOF"] = "true"
-            result = subprocess.run(["bash", "-e", "-c", self.workflow_run("Build locked CLI")], cwd=root,
+            former = self.workflow_run("Build locked CLI").replace(
+                "cargo build --locked", "cargo build --features allocator --locked", 1)
+            result = subprocess.run(["bash", "-e", "-c", former], cwd=root,
                                     env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("allocator unavailable or missing", result.stderr)
+            self.assertIn("experimental allocator is forbidden", result.stderr)
 
     def test_historical_packaging_ungated_messages_are_rejected(self):
         for name in ("Seal exact native binary and check version, help, and runtime dependencies",

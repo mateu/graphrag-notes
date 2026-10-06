@@ -99,11 +99,11 @@ clients for explicit retained extraction-policy migration and the measured
 note-search and OpenClaw connection improvements. Its guide records the
 separate validation and publication gates; rc.3 assets remain immutable.
 
-The [rc.5 allocator candidate](docs/releases/0.1.0-rc.5.md) prepares an explicit
-Apple Silicon allocator build with compiler feature provenance. Real-corpus
-qualification, review, publication and rollout remain separate pending gates;
-#106 and #115 stay open. Intel/Linux release allocation and library defaults
-remain unchanged.
+The [rc.5 preparation](docs/releases/0.1.0-rc.5.md) retains the system allocator
+on every official target and records actual compiler feature provenance. The
+ARM allocator experiment failed its full-corpus gate and was rejected. Integrated
+graph qualification, review, publication and rollout remain pending; #106 and
+#115 stay open. Library and CLI defaults remain unchanged.
 
 
 ## Architecture
