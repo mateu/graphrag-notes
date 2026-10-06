@@ -1,0 +1,111 @@
+{
+  "id": "graphrag-fast-notes",
+  "name": "GraphRAG Fast Notes",
+  "version": "0.5.0",
+  "description": "Authorized direct /notes search with graph-enabled hybrid retrieval by default and /notesave explicit capture through the configured MCP server",
+  "activation": {
+    "onStartup": true,
+    "onCommands": [
+      "notes",
+      "notesave"
+    ]
+  },
+  "commandAliases": [
+    {
+      "name": "notes"
+    },
+    {
+      "name": "notesave"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "serverName": {
+        "type": "string",
+        "minLength": 1,
+        "default": "graphrag"
+      },
+      "endpoint": {
+        "type": "string",
+        "format": "uri",
+        "description": "Defaults to the selected configured MCP server URL, then clawd SSH loopback URL"
+      },
+      "tokenEnv": {
+        "type": "string",
+        "pattern": "^[A-Z_][A-Z0-9_]*$",
+        "default": "GRAPHRAG_NOTES_TOKEN"
+      },
+      "sdkAnchor": {
+        "type": "string",
+        "description": "Absolute installed OpenClaw package.json path used to resolve public MCP SDK dependencies"
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 250,
+        "maximum": 30000,
+        "default": 5000
+      },
+      "captureTimeoutMs": {
+        "type": "integer",
+        "minimum": 15000,
+        "maximum": 30000,
+        "default": 30000
+      },
+      "captureActor": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "default": "openclaw-clawd-daily",
+        "description": "Expected trusted capture actor supplied by the MCP credential, verified against the receipt"
+      },
+      "graphTimeoutMs": {
+        "type": "integer",
+        "minimum": 250,
+        "maximum": 120000,
+        "default": 60000,
+        "description": "Separate total request deadline for graph-enabled searches; cleanup adds at most one second"
+      },
+      "defaultGraph": {
+        "type": "string",
+        "enum": [
+          "off",
+          "auto",
+          "on"
+        ],
+        "default": "on",
+        "description": "Default graph setting for /notes. on uses graph-enabled hybrid search; --keyword and --no-graph opt out."
+      },
+      "reuseConnections": {
+        "type": "boolean",
+        "default": true,
+        "description": "Reuse bounded read-only MCP sessions. Capture always uses a separate client."
+      },
+      "poolIdleMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000,
+        "default": 30000
+      },
+      "poolLifetimeMs": {
+        "type": "integer",
+        "minimum": 5000,
+        "maximum": 900000,
+        "default": 300000
+      },
+      "poolMaxEntries": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4,
+        "default": 4
+      },
+      "poolMaxInFlight": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 4,
+        "default": 4
+      }
+    }
+  }
+}

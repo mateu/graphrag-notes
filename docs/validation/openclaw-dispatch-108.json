@@ -1,0 +1,733 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-06",
+  "client_payload_source_commit": "dbd320bd2e264d833cc2e125e9e33d0551ffa4a6",
+  "backend": "unchanged published v0.1.0-rc.3",
+  "context": {
+    "transport": "normal OpenClaw webchat WebSocket API through existing MCP SSH route",
+    "workload": "two private known-note queries; four fixed read routes",
+    "sampling": "one first and 20 warm per route, alternating routes; sequential fresh then reuse roles",
+    "software": {
+      "openclaw_version": "2026.9.8",
+      "mcp_sdk_version": "1.30.0",
+      "node_version": "24.21.0"
+    },
+    "heavy_builds_and_provider_experiments_held": true,
+    "model_requested": false,
+    "browser_render_verified": false
+  },
+  "fresh": {
+    "requested": 86,
+    "failed": 0,
+    "contract_requested": 2,
+    "contract_failed": 0,
+    "diagnostic_joined": 84,
+    "owned_session_archived": true,
+    "routes": {
+      "keyword": {
+        "mode": "keyword",
+        "graph": "off",
+        "requested": 21,
+        "failed": 0,
+        "warm_requested": 20,
+        "warm_successes": 20,
+        "warm_reused": 0,
+        "first": {
+          "gateway_reply_ms": 646.246337890625,
+          "connect_ms": 565.2664490000025,
+          "search_ms": 20.482082999995328,
+          "handler_ms": 586.624272999994,
+          "dispatch_before_ms": 43.479248046875,
+          "dispatch_after_ms": 16.125732421875,
+          "reused": false
+        },
+        "warm": {
+          "gateway_reply_ms": {
+            "observations": 20,
+            "median_ms": 74.1700439453125,
+            "p95_ms": 131.20947265625,
+            "min_ms": 64.09326171875,
+            "max_ms": 284.559326171875
+          },
+          "connect_ms": {
+            "observations": 20,
+            "median_ms": 11.851363000001584,
+            "p95_ms": 18.193830999996862,
+            "min_ms": 9.55202200000349,
+            "max_ms": 27.46007100000861
+          },
+          "search_ms": {
+            "observations": 20,
+            "median_ms": 9.110978499993507,
+            "p95_ms": 10.826285000017378,
+            "min_ms": 7.533181000006152,
+            "max_ms": 16.31457699999737
+          },
+          "handler_ms": {
+            "observations": 20,
+            "median_ms": 21.10306949999358,
+            "p95_ms": 34.800273999993806,
+            "min_ms": 18.908437000005506,
+            "max_ms": 37.83315800000855
+          },
+          "dispatch_before_ms": {
+            "observations": 20,
+            "median_ms": 39.557373046875,
+            "p95_ms": 61.049560546875,
+            "min_ms": 30.494873046875,
+            "max_ms": 236.509765625
+          },
+          "dispatch_after_ms": {
+            "observations": 20,
+            "median_ms": 12.149658203125,
+            "p95_ms": 61.751708984375,
+            "min_ms": 11.22607421875,
+            "max_ms": 68.79541015625
+          }
+        }
+      },
+      "hybrid": {
+        "mode": "hybrid",
+        "graph": "off",
+        "requested": 21,
+        "failed": 0,
+        "warm_requested": 20,
+        "warm_successes": 20,
+        "warm_reused": 0,
+        "first": {
+          "gateway_reply_ms": 530.208984375,
+          "connect_ms": 25.77635700000974,
+          "search_ms": 424.5501799999911,
+          "handler_ms": 451.06005300000834,
+          "dispatch_before_ms": 60.232421875,
+          "dispatch_after_ms": 18.913330078125,
+          "reused": false
+        },
+        "warm": {
+          "gateway_reply_ms": {
+            "observations": 20,
+            "median_ms": 482.1270751953125,
+            "p95_ms": 548.048095703125,
+            "min_ms": 461.56005859375,
+            "max_ms": 587.801025390625
+          },
+          "connect_ms": {
+            "observations": 20,
+            "median_ms": 11.551033499992627,
+            "p95_ms": 14.812733999991906,
+            "min_ms": 9.29952799998864,
+            "max_ms": 16.029120999999577
+          },
+          "search_ms": {
+            "observations": 20,
+            "median_ms": 413.97405250000156,
+            "p95_ms": 439.10131399999955,
+            "min_ms": 394.9473960000032,
+            "max_ms": 443.704590999987
+          },
+          "handler_ms": {
+            "observations": 20,
+            "median_ms": 425.20472499999596,
+            "p95_ms": 452.1278820000007,
+            "min_ms": 406.5063579999987,
+            "max_ms": 458.6515159999981
+          },
+          "dispatch_before_ms": {
+            "observations": 20,
+            "median_ms": 38.455078125,
+            "p95_ms": 55.40966796875,
+            "min_ms": 32.199462890625,
+            "max_ms": 62.289794921875
+          },
+          "dispatch_after_ms": {
+            "observations": 20,
+            "median_ms": 13.68603515625,
+            "p95_ms": 77.573486328125,
+            "min_ms": 11.512939453125,
+            "max_ms": 137.824462890625
+          }
+        }
+      },
+      "graph_title": {
+        "mode": "hybrid",
+        "graph": "on",
+        "requested": 21,
+        "failed": 0,
+        "warm_requested": 20,
+        "warm_successes": 20,
+        "warm_reused": 0,
+        "first": {
+          "gateway_reply_ms": 492.19775390625,
+          "connect_ms": 12.84676300000865,
+          "search_ms": 426.39674399999785,
+          "handler_ms": 439.94149900000775,
+          "dispatch_before_ms": 38.240234375,
+          "dispatch_after_ms": 14.01318359375,
+          "reused": false
+        },
+        "warm": {
+          "gateway_reply_ms": {
+            "observations": 20,
+            "median_ms": 484.3526611328125,
+            "p95_ms": 534.281494140625,
+            "min_ms": 455.173583984375,
+            "max_ms": 545.02685546875
+          },
+          "connect_ms": {
+            "observations": 20,
+            "median_ms": 13.041472000004433,
+            "p95_ms": 14.917986000000383,
+            "min_ms": 10.730137000005925,
+            "max_ms": 19.232548999993014
+          },
+          "search_ms": {
+            "observations": 20,
+            "median_ms": 410.7136784999966,
+            "p95_ms": 450.886559999999,
+            "min_ms": 398.5209279999981,
+            "max_ms": 452.8000769999926
+          },
+          "handler_ms": {
+            "observations": 20,
+            "median_ms": 424.30281850000756,
+            "p95_ms": 466.18346099999326,
+            "min_ms": 411.0622030000086,
+            "max_ms": 466.23603
+          },
+          "dispatch_before_ms": {
+            "observations": 20,
+            "median_ms": 42.8424072265625,
+            "p95_ms": 54.99072265625,
+            "min_ms": 30.935791015625,
+            "max_ms": 109.014892578125
+          },
+          "dispatch_after_ms": {
+            "observations": 20,
+            "median_ms": 12.41162109375,
+            "p95_ms": 60.497802734375,
+            "min_ms": 11.25048828125,
+            "max_ms": 72.75341796875
+          }
+        }
+      },
+      "graph_body": {
+        "mode": "hybrid",
+        "graph": "on",
+        "requested": 21,
+        "failed": 0,
+        "warm_requested": 20,
+        "warm_successes": 20,
+        "warm_reused": 0,
+        "first": {
+          "gateway_reply_ms": 491.781005859375,
+          "connect_ms": 17.262985000008484,
+          "search_ms": 421.0755269999936,
+          "handler_ms": 438.83932600000117,
+          "dispatch_before_ms": 39.015869140625,
+          "dispatch_after_ms": 13.922607421875,
+          "reused": false
+        },
+        "warm": {
+          "gateway_reply_ms": {
+            "observations": 20,
+            "median_ms": 477.8751220703125,
+            "p95_ms": 561.276123046875,
+            "min_ms": 457.052978515625,
+            "max_ms": 623.17626953125
+          },
+          "connect_ms": {
+            "observations": 20,
+            "median_ms": 13.586211499998171,
+            "p95_ms": 24.435618999996223,
+            "min_ms": 10.250997000010102,
+            "max_ms": 119.62018199999875
+          },
+          "search_ms": {
+            "observations": 20,
+            "median_ms": 407.89187649999803,
+            "p95_ms": 443.91367600001104,
+            "min_ms": 394.9343590000062,
+            "max_ms": 451.118260999996
+          },
+          "handler_ms": {
+            "observations": 20,
+            "median_ms": 424.555417500007,
+            "p95_ms": 465.4058629999927,
+            "min_ms": 406.5107879999996,
+            "max_ms": 564.1212959999975
+          },
+          "dispatch_before_ms": {
+            "observations": 20,
+            "median_ms": 39.0142822265625,
+            "p95_ms": 60.669677734375,
+            "min_ms": 31.31884765625,
+            "max_ms": 92.439453125
+          },
+          "dispatch_after_ms": {
+            "observations": 20,
+            "median_ms": 12.6829833984375,
+            "p95_ms": 64.025390625,
+            "min_ms": 11.50146484375,
+            "max_ms": 82.597412109375
+          }
+        }
+      }
+    },
+    "hardware_load": {
+      "client": {
+        "before": {
+          "platform": "linux",
+          "architecture": "x64",
+          "logical_cpus": 8,
+          "memory_bytes": 33554432000,
+          "load_average": [
+            3.28,
+            2.89,
+            2.37
+          ]
+        },
+        "after": {
+          "platform": "linux",
+          "architecture": "x64",
+          "logical_cpus": 8,
+          "memory_bytes": 33554432000,
+          "load_average": [
+            3.18,
+            2.92,
+            2.4
+          ]
+        }
+      },
+      "backend": {
+        "before": {
+          "logical_cpus": 18,
+          "architecture": "arm64",
+          "platform": "darwin",
+          "load_average": [
+            2.32275390625,
+            2.40869140625,
+            2.4716796875
+          ]
+        },
+        "after": {
+          "logical_cpus": 18,
+          "architecture": "arm64",
+          "platform": "darwin",
+          "load_average": [
+            2.6318359375,
+            2.48583984375,
+            2.4970703125
+          ]
+        }
+      }
+    }
+  },
+  "reuse": {
+    "requested": 86,
+    "failed": 0,
+    "contract_requested": 2,
+    "contract_failed": 0,
+    "diagnostic_joined": 84,
+    "owned_session_archived": true,
+    "routes": {
+      "keyword": {
+        "mode": "keyword",
+        "graph": "off",
+        "requested": 21,
+        "failed": 0,
+        "warm_requested": 20,
+        "warm_successes": 20,
+        "warm_reused": 20,
+        "first": {
+          "gateway_reply_ms": 623.814453125,
+          "connect_ms": 542.414122999995,
+          "search_ms": 24.46291700000438,
+          "handler_ms": 567.1918129999976,
+          "dispatch_before_ms": 39.579833984375,
+          "dispatch_after_ms": 17.031494140625,
+          "reused": false
+        },
+        "warm": {
+          "gateway_reply_ms": {
+            "observations": 20,
+            "median_ms": 72.182861328125,
+            "p95_ms": 135.158935546875,
+            "min_ms": 55.34716796875,
+            "max_ms": 1936.31787109375
+          },
+          "connect_ms": {
+            "observations": 20,
+            "median_ms": 0.05163349999929778,
+            "p95_ms": 0.09770299999945564,
+            "min_ms": 0.04267999999865424,
+            "max_ms": 0.10065300000132993
+          },
+          "search_ms": {
+            "observations": 20,
+            "median_ms": 13.537549500004388,
+            "p95_ms": 21.845783000004303,
+            "min_ms": 9.826528000005055,
+            "max_ms": 24.607428000002983
+          },
+          "handler_ms": {
+            "observations": 20,
+            "median_ms": 13.802966000002925,
+            "p95_ms": 21.98174100000324,
+            "min_ms": 10.0710240000044,
+            "max_ms": 24.746838999999454
+          },
+          "dispatch_before_ms": {
+            "observations": 20,
+            "median_ms": 39.9176025390625,
+            "p95_ms": 60.811767578125,
+            "min_ms": 33.024169921875,
+            "max_ms": 1902.17529296875
+          },
+          "dispatch_after_ms": {
+            "observations": 20,
+            "median_ms": 13.8958740234375,
+            "p95_ms": 76.47119140625,
+            "min_ms": 10.992431640625,
+            "max_ms": 80.975830078125
+          }
+        }
+      },
+      "hybrid": {
+        "mode": "hybrid",
+        "graph": "off",
+        "requested": 21,
+        "failed": 0,
+        "warm_requested": 20,
+        "warm_successes": 20,
+        "warm_reused": 20,
+        "first": {
+          "gateway_reply_ms": 989.969970703125,
+          "connect_ms": 0.11019600000145147,
+          "search_ms": 921.3972459999932,
+          "handler_ms": 921.6334349999961,
+          "dispatch_before_ms": 54.75927734375,
+          "dispatch_after_ms": 13.57275390625,
+          "reused": true
+        },
+        "warm": {
+          "gateway_reply_ms": {
+            "observations": 20,
+            "median_ms": 485.490234375,
+            "p95_ms": 525.328369140625,
+            "min_ms": 438.024658203125,
+            "max_ms": 536.224609375
+          },
+          "connect_ms": {
+            "observations": 20,
+            "median_ms": 0.07063349999953061,
+            "p95_ms": 0.10998899999685818,
+            "min_ms": 0.04408499999408377,
+            "max_ms": 0.14130900000600377
+          },
+          "search_ms": {
+            "observations": 20,
+            "median_ms": 413.18075149999277,
+            "p95_ms": 439.15410500000144,
+            "min_ms": 384.0137379999942,
+            "max_ms": 466.21260600000096
+          },
+          "handler_ms": {
+            "observations": 20,
+            "median_ms": 413.42158650000783,
+            "p95_ms": 439.3473800000065,
+            "min_ms": 384.1751409999997,
+            "max_ms": 466.3991429999951
+          },
+          "dispatch_before_ms": {
+            "observations": 20,
+            "median_ms": 45.7889404296875,
+            "p95_ms": 71.069091796875,
+            "min_ms": 30.7373046875,
+            "max_ms": 99.832275390625
+          },
+          "dispatch_after_ms": {
+            "observations": 20,
+            "median_ms": 13.3795166015625,
+            "p95_ms": 68.119384765625,
+            "min_ms": 11.227294921875,
+            "max_ms": 79.871337890625
+          }
+        }
+      },
+      "graph_title": {
+        "mode": "hybrid",
+        "graph": "on",
+        "requested": 21,
+        "failed": 0,
+        "warm_requested": 20,
+        "warm_successes": 20,
+        "warm_reused": 20,
+        "first": {
+          "gateway_reply_ms": 711.4248046875,
+          "connect_ms": 0.0985080000027665,
+          "search_ms": 441.8575770000025,
+          "handler_ms": 442.0886460000038,
+          "dispatch_before_ms": 100.807373046875,
+          "dispatch_after_ms": 168.524658203125,
+          "reused": true
+        },
+        "warm": {
+          "gateway_reply_ms": {
+            "observations": 20,
+            "median_ms": 467.733154296875,
+            "p95_ms": 507.10791015625,
+            "min_ms": 444.908935546875,
+            "max_ms": 509.621337890625
+          },
+          "connect_ms": {
+            "observations": 20,
+            "median_ms": 0.05110449999483535,
+            "p95_ms": 0.09245400000509107,
+            "min_ms": 0.042598999993060715,
+            "max_ms": 0.10181399999419227
+          },
+          "search_ms": {
+            "observations": 20,
+            "median_ms": 411.8297629999979,
+            "p95_ms": 434.5301679999975,
+            "min_ms": 392.13292699999874,
+            "max_ms": 439.79446299999836
+          },
+          "handler_ms": {
+            "observations": 20,
+            "median_ms": 411.9785579999989,
+            "p95_ms": 434.7335480000038,
+            "min_ms": 392.35133399999904,
+            "max_ms": 440.00098499999876
+          },
+          "dispatch_before_ms": {
+            "observations": 20,
+            "median_ms": 39.7601318359375,
+            "p95_ms": 64.84228515625,
+            "min_ms": 31.4814453125,
+            "max_ms": 69.067138671875
+          },
+          "dispatch_after_ms": {
+            "observations": 20,
+            "median_ms": 12.1043701171875,
+            "p95_ms": 19.6181640625,
+            "min_ms": 10.99560546875,
+            "max_ms": 61.11865234375
+          }
+        }
+      },
+      "graph_body": {
+        "mode": "hybrid",
+        "graph": "on",
+        "requested": 21,
+        "failed": 0,
+        "warm_requested": 20,
+        "warm_successes": 20,
+        "warm_reused": 20,
+        "first": {
+          "gateway_reply_ms": 571.520751953125,
+          "connect_ms": 0.08238700000219978,
+          "search_ms": 496.3066719999988,
+          "handler_ms": 496.5066250000018,
+          "dispatch_before_ms": 59.913818359375,
+          "dispatch_after_ms": 15.09765625,
+          "reused": true
+        },
+        "warm": {
+          "gateway_reply_ms": {
+            "observations": 20,
+            "median_ms": 470.02294921875,
+            "p95_ms": 527.36328125,
+            "min_ms": 433.819091796875,
+            "max_ms": 609.923828125
+          },
+          "connect_ms": {
+            "observations": 20,
+            "median_ms": 0.05711499999961234,
+            "p95_ms": 0.08940499999152962,
+            "min_ms": 0.04390099999727681,
+            "max_ms": 0.09238399999594549
+          },
+          "search_ms": {
+            "observations": 20,
+            "median_ms": 413.60964700000113,
+            "p95_ms": 444.41277799999807,
+            "min_ms": 387.30966900000203,
+            "max_ms": 456.95332799999596
+          },
+          "handler_ms": {
+            "observations": 20,
+            "median_ms": 413.8348834999997,
+            "p95_ms": 444.58587699999043,
+            "min_ms": 387.52461400000175,
+            "max_ms": 457.10582299999805
+          },
+          "dispatch_before_ms": {
+            "observations": 20,
+            "median_ms": 40.1134033203125,
+            "p95_ms": 58.621337890625,
+            "min_ms": 31.23583984375,
+            "max_ms": 79.36962890625
+          },
+          "dispatch_after_ms": {
+            "observations": 20,
+            "median_ms": 14.8431396484375,
+            "p95_ms": 96.03662109375,
+            "min_ms": 11.53125,
+            "max_ms": 115.833740234375
+          }
+        }
+      }
+    },
+    "hardware_load": {
+      "client": {
+        "before": {
+          "platform": "linux",
+          "architecture": "x64",
+          "logical_cpus": 8,
+          "memory_bytes": 33554432000,
+          "load_average": [
+            4.05,
+            3.15,
+            2.5
+          ]
+        },
+        "after": {
+          "platform": "linux",
+          "architecture": "x64",
+          "logical_cpus": 8,
+          "memory_bytes": 33554432000,
+          "load_average": [
+            3.12,
+            3.06,
+            2.5
+          ]
+        }
+      },
+      "backend": {
+        "before": {
+          "logical_cpus": 18,
+          "architecture": "arm64",
+          "platform": "darwin",
+          "load_average": [
+            2.7998046875,
+            2.53564453125,
+            2.51318359375
+          ]
+        },
+        "after": {
+          "logical_cpus": 18,
+          "architecture": "arm64",
+          "platform": "darwin",
+          "load_average": [
+            2.47021484375,
+            2.48779296875,
+            2.494140625
+          ]
+        }
+      }
+    }
+  },
+  "correctness": {
+    "full_revision_pins_unchanged": true,
+    "all_ranked_record_ids_and_actors_identical_across_roles": true,
+    "saved_configuration_default_model_permissions_preserved": true,
+    "all_owned_sessions_archived": true,
+    "no_corpus_writes": true
+  },
+  "concurrent": {
+    "passed": true,
+    "requested": 4,
+    "event_verified": 4,
+    "joined": 4,
+    "max_gateway_overlap": 4,
+    "max_handler_overlap": 1,
+    "owned_sessions_archived": true,
+    "model_requested": false,
+    "browser_render_verified": false,
+    "caveat": "Four concurrent read observations only; no percentile or latency-budget claim.",
+    "observations": [
+      {
+        "gateway_reply_ms": 293.905029296875,
+        "connect_ms": 21.86104799999157,
+        "search_ms": 23.801787999997032,
+        "handler_ms": 45.83803599998646,
+        "dispatch_before_ms": 220.051513671875,
+        "dispatch_after_ms": 28.013427734375,
+        "route": "keyword",
+        "reused": false
+      },
+      {
+        "gateway_reply_ms": 1273.90478515625,
+        "connect_ms": 0.10433900001225993,
+        "search_ms": 443.68477699998766,
+        "handler_ms": 443.8936870000034,
+        "dispatch_before_ms": 811.0556640625,
+        "dispatch_after_ms": 18.9541015625,
+        "route": "hybrid",
+        "reused": true
+      },
+      {
+        "gateway_reply_ms": 2067.538818359375,
+        "connect_ms": 0.06145799999649171,
+        "search_ms": 421.0213969999895,
+        "handler_ms": 421.2475959999865,
+        "dispatch_before_ms": 1621.685546875,
+        "dispatch_after_ms": 24.603759765625,
+        "route": "graph_title",
+        "reused": true
+      },
+      {
+        "gateway_reply_ms": 3618.554931640625,
+        "connect_ms": 0.10673199998564087,
+        "search_ms": 458.58194300001196,
+        "handler_ms": 458.7812999999878,
+        "dispatch_before_ms": 3139.94775390625,
+        "dispatch_after_ms": 19.82470703125,
+        "route": "graph_body",
+        "reused": true
+      }
+    ]
+  },
+  "installed_normal": {
+    "passed": true,
+    "gateway_commands": 10,
+    "event_verified_commands": 10,
+    "plugin_version": "0.5.0",
+    "full_revision_pins_unchanged": true,
+    "saved_configuration_and_default_model_unchanged": true,
+    "owned_session_archived": true,
+    "profiling_flags_absent": true,
+    "browser_render_verified": false,
+    "model_requested": false,
+    "caveat": "two observations per route, individual acceptance only; no percentile or budget verdict"
+  },
+  "accepted_workflow": {
+    "requested_gateway_commands": 186,
+    "failed_gateway_commands": 0,
+    "read_search_commands": 180,
+    "contract_commands": 6
+  },
+  "earlier_attempts": {
+    "failed_adapter_preflights": 3,
+    "failed_owner_transitions": 1,
+    "measured_commands_in_failed_preflights": 0,
+    "other_successful_fresh_commands_retained_separately": 172,
+    "owned_code_rollbacks_verified": true,
+    "startup_observation": {
+      "listener_after_systemd_active_min_ms": 26557.494873046875,
+      "listener_after_systemd_active_max_ms": 29628.721923828125,
+      "authenticated_hello_wait_ms": 60000,
+      "rpc_wait_ms": 12000,
+      "separate_from_search_timings": true
+    }
+  },
+  "limitations": [
+    "Gateway final-event receipt is separate from visible browser rendering; that issue108 criterion remains pending.",
+    "First observations are not guaranteed cold. No model orchestration or SSH handshake latency is measured.",
+    "Phase distributions come from matched per-command nested intervals; unrelated percentiles are never subtracted.",
+    "Two known-note queries and 20 warm samples per route are a narrow operational check, not a broad relevance or tail guarantee.",
+    "Four gateway requests overlapped; measured handler overlap was one, so this proves no concurrent handler throughput gain.",
+    "Fresh and reuse roles run sequentially; setup failures and extra successful fresh roles are retained separately and excluded from the accepted pair."
+  ]
+}

@@ -1,0 +1,32 @@
+name: OpenClaw direct client
+
+on:
+  pull_request:
+    paths:
+      - 'clients/openclaw-fast-notes/**'
+      - '.github/workflows/openclaw-client.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'clients/openclaw-fast-notes/**'
+      - '.github/workflows/openclaw-client.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol:
+    name: OpenClaw protocol and bounded lifecycle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: clients/openclaw-fast-notes/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: clients/openclaw-fast-notes
+      - run: npm test
+        working-directory: clients/openclaw-fast-notes
