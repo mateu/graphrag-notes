@@ -290,6 +290,11 @@ later fresh-session and resumed-session checks passed. This recovery evidence
 depends on the retained explicit draft/ID. It does not establish persistence for
 an agent-generated ID, a lost history, or a new/reset session.
 
+For new captures that need to survive a reset, use the supported
+[durable capture journal proxy](capture-journal.md). It saves the exact native
+MCP payload before transmission and offers explicit recovery independent of chat
+history, while retaining this connection's tool filters and permissions.
+
 A focused HTTP regression covers modern discovery/catalog cache metadata,
 read-only versus read/capture schemas, and legacy projection:
 
