@@ -419,6 +419,23 @@ def publish_directory(output: Path, staged: Path) -> None:
         os.link(path, output / path.name)  # No-clobber publication on the same filesystem.
 
 
+
+def release_identity(record: dict, metadata_sha256: str, clients: bool = False) -> bytes:
+    """Flat, bounded provenance contract for the Python-free installer.
+
+    The JSON bytes are bound by digest; packager/assembler derive and validate
+    these authoritative installer fields from the same semantic JSON record.
+    """
+    fields = {"schema_version": "1", "version": record["version"], "tag": record["tag"],
+              "source_commit": record["source_commit"], "target": "clients" if clients else record["target"],
+              "archive": record["archive"], "archive_sha256": record["archive_sha256"],
+              "metadata_sha256": metadata_sha256, "python_minimum": "3.11"}
+    if not clients:
+        fields.update(binary_sha256=record["binary_sha256"], sample_sha256=record["sample_sha256"])
+    require(all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._-]+", value)
+                for value in fields.values()), "unsafe release identity scalar")
+    return "".join(f"{key}={value}\n" for key, value in sorted(fields.items())).encode("ascii")
+
 def package(args) -> dict:
     repo, output = args.repo.resolve(), args.output.absolute()
     require(output.parent.is_dir(), "output parent must already exist")
@@ -492,6 +509,7 @@ def package(args) -> dict:
                        "source_commit": source["commit"], "archive": client_asset,
                        "archive_sha256": client_hash, "payload_sha256": payload_hashes, "python_minimum": "3.11"}
         (staged / "CLIENTINFO.json").write_text(json.dumps(client_info, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (staged / "CLIENTINFO.identity").write_bytes(release_identity(client_info, sha256(staged / "CLIENTINFO.json"), True))
         checks = validation_checks(args.validation_file, args.require_gates, {
             "source_commit": source["commit"], "build_source_commit": built["commit"],
             "version": source["version"], "binary_sha256": binary_hash, "archive_sha256": archive_hash,
@@ -507,8 +525,9 @@ def package(args) -> dict:
                 "archive": asset, "archive_sha256": archive_hash,
                 "validation": {**checks, "binary_version_and_help": smoke, "archive_integrity": {"status": "passed"}}}
         write_json(staged / "BUILDINFO.json", info)
+        (staged / "BUILDINFO.identity").write_bytes(release_identity(info, sha256(staged / "BUILDINFO.json")))
         (staged / "SHA256SUMS").write_text(
-            "".join(f"{sha256(staged / name)}  {name}\n" for name in sorted([asset, "BUILDINFO.json", client_asset, "CLIENTINFO.json"])), encoding="utf-8")
+            "".join(f"{sha256(staged / name)}  {name}\n" for name in sorted([asset, "BUILDINFO.json", "BUILDINFO.identity", client_asset, "CLIENTINFO.json", "CLIENTINFO.identity"])), encoding="utf-8")
         publish_directory(output, staged)
     return info
 
@@ -538,7 +557,7 @@ def assemble(args) -> dict:
                 require(match is not None and match[2] not in entries, "invalid or duplicate per-target checksum entry")
                 entries[match[2]] = match[1]
             client_asset = record.get("client_archive")
-            expected_entries = {"BUILDINFO.json", asset} | ({client_asset, "CLIENTINFO.json"} if client_asset else set())
+            expected_entries = {"BUILDINFO.json", asset} | ({client_asset, "CLIENTINFO.json", "CLIENTINFO.identity", "BUILDINFO.identity"} if client_asset else set())
             require(set(entries) == expected_entries, "per-target checksum manifest must identify archive and metadata")
             require(entries["BUILDINFO.json"] == sha256(path), "assembly metadata checksum differs from manifest")
             require(entries[asset] == record["archive_sha256"], "assembly manifest and metadata disagree on archive hash")
@@ -546,6 +565,13 @@ def assemble(args) -> dict:
             inspect_archive(archive, record["binary_sha256"], record["sample_sha256"], record.get("payload_sha256"),
                             {"version": record["version"], "source_commit": record["source_commit"]})
             if client_asset:
+                native_identity = regular_file(path.parent / "BUILDINFO.identity", "native identity")
+                require(entries["BUILDINFO.identity"] == sha256(native_identity)
+                        and native_identity.read_bytes() == release_identity(record, sha256(path)),
+                        "native identity differs from semantic metadata")
+                shutil.copyfile(native_identity, staged / f"BUILDINFO-{record['target']}.identity")
+                require(sha256(staged / f"BUILDINFO-{record['target']}.identity") == entries["BUILDINFO.identity"],
+                        "native identity changed during assembly copy")
                 require(client_asset == f"graphrag-notes-{args.tag}-clients.tar.gz", "unsafe client archive filename")
                 clients = regular_file(path.parent / client_asset, "client archive")
                 client_metadata = regular_file(path.parent / "CLIENTINFO.json", "client metadata")
@@ -556,9 +582,13 @@ def assemble(args) -> dict:
                     "source_commit": record["source_commit"], "archive": client_asset,
                     "archive_sha256": record["client_archive_sha256"], "payload_sha256": record["payload_sha256"],
                     "python_minimum": "3.11"}, "client metadata differs from native bundle")
+                client_identity = regular_file(path.parent / "CLIENTINFO.identity", "client identity")
+                require(entries["CLIENTINFO.identity"] == sha256(client_identity)
+                        and client_identity.read_bytes() == release_identity(json_file(client_metadata), sha256(client_metadata), True),
+                        "client identity differs from semantic metadata")
                 inspect_archive(clients, None, None, record["payload_sha256"],
                                 {"version": record["version"], "source_commit": record["source_commit"]})
-                for source_file, name in [(clients, client_asset), (client_metadata, "CLIENTINFO.json")]:
+                for source_file, name in [(clients, client_asset), (client_metadata, "CLIENTINFO.json"), (client_identity, "CLIENTINFO.identity")]:
                     if (staged / name).exists():
                         require(sha256(staged / name) == entries[name], "matrix client bundles are inconsistent")
                     else:

@@ -451,13 +451,55 @@ esac
         manifest.write_text(original_manifest.replace(info['archive_sha256'], release.sha256(archive)))
         refused = self.install_fixture(dist)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("release payload checksum does not match", refused.stderr)
+        self.assertIn("release identity archive checksum differs", refused.stderr)
         self.assertFalse((self.root / "installed-bin/graphrag").exists())
         # Metadata is independently pinned by SHA256SUMS as well.
         (dist / "BUILDINFO.json").write_text((dist / "BUILDINFO.json").read_text() + "\n")
         refused = self.install_fixture(dist)
         self.assertIn("BUILDINFO checksum does not match", refused.stderr)
         self.assertFalse((self.root / "installed-bin/graphrag").exists())
+
+    def rewrite_checksum(self, dist, name):
+        manifest = dist / "SHA256SUMS"
+        lines = manifest.read_text().splitlines()
+        manifest.write_text("".join((release.sha256(dist / name) + "  " + name if line.split()[1] == name else line) + "\n" for line in lines))
+
+    def test_installer_cross_binds_native_and_client_metadata_bytes(self):
+        release.package(self.package_args())
+        dist = self.root / "dist"
+        for name, clients in [("BUILDINFO.json", False), ("CLIENTINFO.json", True)]:
+            metadata = dist / name
+            original = metadata.read_bytes()
+            value = json.loads(original)
+            value.update(version="9.9.9", source_commit="0" * 40)
+            metadata.write_text(json.dumps(value))
+            self.rewrite_checksum(dist, name)
+            refused = self.install_fixture(dist, clients_only=clients)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn(name[:-5] + " bytes differ from release identity", refused.stderr)
+            self.assertFalse((self.root / "installed-bin/graphrag").exists())
+            self.assertFalse((self.root / "installed-data/releases" / self.tag).exists())
+            metadata.write_bytes(original)
+            self.rewrite_checksum(dist, name)
+
+    def test_installer_refuses_mixed_flat_source_target_and_archive_identity(self):
+        release.package(self.package_args())
+        dist = self.root / "dist"
+        for name, clients in [("BUILDINFO.identity", False), ("CLIENTINFO.identity", True)]:
+            identity = dist / name
+            original = identity.read_text()
+            for key, replacement in [("source_commit", "0" * 40), ("target", "unexpected"),
+                                     ("version", "9.9.9"), ("archive_sha256", "0" * 64)]:
+                identity.write_text("".join((key + "=" + replacement if line.startswith(key + "=") else line) + "\n" for line in original.splitlines()))
+                self.rewrite_checksum(dist, name)
+                refused = self.install_fixture(dist, clients_only=clients)
+                self.assertNotEqual(refused.returncode, 0, key)
+                self.assertFalse((self.root / "installed-data/releases" / self.tag).exists())
+            identity.write_text(original + "source_commit=" + "0" * 40 + "\n")
+            self.rewrite_checksum(dist, name)
+            self.assertIn("release identity fields are invalid", self.install_fixture(dist, clients_only=clients).stderr)
+            identity.write_text(original)
+            self.rewrite_checksum(dist, name)
 
     def test_real_packaged_archive_works_with_existing_installer_local_transport(self):
         # Only native-inspection output is doubled; the archive, checksum,
