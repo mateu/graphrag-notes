@@ -496,7 +496,6 @@ def _review_existing_policies(client, state, save, args):
                 if key in state['documents']:
                     raise ImportFailure('committed_source_mismatch') from None
                 task['policy_reviewed'] = True
-                save()
                 continue
             if error.code in ('invalid_input', 'validation'):
                 raise ImportFailure('source_policy_service_required') from None
@@ -535,7 +534,6 @@ def _review_existing_policies(client, state, save, args):
         task['payload_hash'] = sha(canonical(semantic))
         payload['request_id'] = 'ocmem-' + sha(canonical([pending['attempt'], task['payload_hash'], bool(payload.get('preserve_unchanged'))]))
         task['policy_reviewed'] = True
-        save()
     pending['policy_review_complete'] = True
     pending.pop('reviewing_key', None)
     save()
@@ -559,7 +557,9 @@ def run_refresh(client, state, save, args):
                     task['verified_this_attempt'] = True
                     entry.pop('error_code', None)
                     checked.add(key)
-                    save()
+                    # Repeating a read after interruption is safe. Save this
+                    # evidence once at completion (or with a later failure),
+                    # avoiding rewriting all pinned Markdown per unchanged part.
                     continue
                 if not entry.get('admission'):
                     if active >= args.max_inflight:
