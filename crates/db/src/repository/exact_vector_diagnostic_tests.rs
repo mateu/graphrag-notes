@@ -1056,6 +1056,7 @@ async fn install_single_sql_cbor_probe(db: &DbConnection) {
 #[ignore = "opt-in exact skinny storage experiment; no state duplication adopted"]
 async fn exact_vector_skinny_storage_diagnostic() {
     use chrono::TimeZone;
+    use sha2::{Digest, Sha256};
     let count = std::env::var("GRAPHRAG_VECTOR_PROBE_RECORDS")
         .ok()
         .map(|v| v.parse::<usize>().unwrap())
@@ -1071,6 +1072,9 @@ async fn exact_vector_skinny_storage_diagnostic() {
         vec![0, 1024, 4096]
     };
     let mut runs = Vec::new();
+    let engine_export = std::env::var_os("GRAPHRAG_VECTOR_PROBE_ENGINE_EXPORT").is_some();
+    let mut fixture_inputs = Vec::new();
+    let mut cross_engine_references = Vec::new();
     for repeats in bodies.iter().copied() {
         let (db, backend) = diagnostic_database(&format!("fictional-{count}-{repeats}")).await;
         db.query("DEFINE TABLE exact_vector_probe SCHEMALESS; DEFINE TABLE exact_vector_cbor_probe SCHEMALESS")
@@ -1085,6 +1089,10 @@ async fn exact_vector_skinny_storage_diagnostic() {
             "diagnostic modes are mutually exclusive"
         );
         let native_sql_stats_requested = single_sql || page_matrix;
+        assert!(
+            !engine_export || (page_matrix && dense),
+            "cross-engine export requires native keys, dense ties and page-matrix mode"
+        );
         let mut sources = Vec::new();
         for index in 0..4 {
             let mut source =
@@ -1170,6 +1178,43 @@ async fn exact_vector_skinny_storage_diagnostic() {
             };
             let saved: Option<Note> = db.create(id).content(note).await.unwrap();
             let note = saved.unwrap();
+            if engine_export {
+                let saved_embedding = &note.embedding;
+                assert_eq!(
+                    saved_embedding
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>(),
+                    embedding.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    "fixture round-trip changes native float32 vector bits"
+                );
+                let vector_bits: Vec<u8> = saved_embedding
+                    .iter()
+                    .flat_map(|value| value.to_bits().to_le_bytes())
+                    .collect();
+                fixture_inputs.push(serde_json::json!({
+                    "population_body_repeats": repeats,
+                    "ordinal": n,
+                    "id": note.id.as_ref().unwrap(),
+                    "native_key": &note.id.as_ref().unwrap().key,
+                    "native_key_kind": match n % 4 {
+                        0 => "integer", 1 => "string", 2 => "uuid", _ => "object"
+                    },
+                    "title": note.title,
+                    "content_sha256": format!("{:x}", Sha256::digest(note.content.as_bytes())),
+                    "content_bytes": note.content.len(),
+                    "note_type": note.note_type,
+                    "tags": note.tags,
+                    "created_at": note.created_at,
+                    "source_id": note.source_id,
+                    "source_generation": note.source_generation,
+                    "source_successful_generation": 2,
+                    "source_latest_generation": 3,
+                    "embedding_dimension": embedding.len(),
+                    "embedding_f32_bits_sha256": format!("{:x}", Sha256::digest(vector_bits)),
+                    "dense_equal_query_vector": n < 72
+                }));
+            }
             let materialize = if page_matrix {
                 "CREATE $cbor_id SET note_id=$note, embedding_cbor=encoding::cbor::encode($embedding), created_at=$created, source_id=$source, source_generation=$generation"
             } else {
@@ -1219,6 +1264,18 @@ async fn exact_vector_skinny_storage_diagnostic() {
                     source_uri.clone(),
                 )
                 .await;
+                if engine_export {
+                    cross_engine_references.push(serde_json::json!({
+                        "population_body_repeats": repeats,
+                        "filter": filter,
+                        "limit": limit,
+                        "ordered_full_rows": serde_json::to_value(&baseline).unwrap(),
+                        "ordered_native_distance_f32_bits": baseline
+                            .iter()
+                            .map(|row| row.vec_distance.map(f32::to_bits))
+                            .collect::<Vec<_>>()
+                    }));
+                }
                 let mut variants = if page_matrix {
                     vec![
                         ("baseline", old_query(limit)),
@@ -1372,6 +1429,9 @@ async fn exact_vector_skinny_storage_diagnostic() {
         "dense_tie_rows":if std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some() {count.min(72)} else {0},
         "projected_embedding_payload_cap_bytes_per_row":if std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some() {Some(8192)} else {None},
         "projected_embedding_payload_cap_qualification":"Fictional finite float32-origin 1024-d vectors; excludes metadata and SDK/engine allocations",
+        "engine_comparison_export_version": if engine_export {Some(1)} else {None},
+        "fixture_inputs": fixture_inputs,
+        "cross_engine_references": cross_engine_references,
         "runs":runs})
     );
 }
