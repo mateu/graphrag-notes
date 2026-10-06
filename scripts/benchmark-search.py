@@ -115,7 +115,7 @@ class McpClient:
         except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException):
             raise BenchmarkError("transport_or_timeout", key) from None
         if len(raw) > 2 * 1024 * 1024:
-            raise BenchmarkError("response_too_large")
+            raise BenchmarkError("response_too_large", key)
         if notification:
             if status != 202 or raw:
                 raise BenchmarkError("protocol", key)
@@ -123,33 +123,33 @@ class McpClient:
         try:
             value = strict_json(raw)
             if not isinstance(value, dict) or value.get("jsonrpc") != "2.0" or value.get("id") != identifier or "error" in value or "result" not in value:
-                raise BenchmarkError("protocol")
+                raise BenchmarkError("protocol", key)
         except (ValueError, UnicodeError):
-            raise BenchmarkError("protocol") from None
+            raise BenchmarkError("protocol", key) from None
         return value["result"], elapsed, key
 
     def initialize(self):
-        result, elapsed, _ = self.request("initialize", {
+        result, elapsed, key = self.request("initialize", {
             "protocolVersion": "2025-11-25", "capabilities": {},
             "clientInfo": {"name": "private-search-benchmark", "version": "1"}})
         if not isinstance(result, dict) or result.get("protocolVersion") != "2025-11-25":
-            raise BenchmarkError("protocol")
+            raise BenchmarkError("protocol", key)
         _, notification_ms, _ = self.request("notifications/initialized", {}, notification=True)
         return elapsed + notification_ms
 
     def call(self, name, arguments):
         result, elapsed, key = self.request("tools/call", {"name": name, "arguments": arguments})
         if not isinstance(result, dict):
-            raise BenchmarkError("protocol")
+            raise BenchmarkError("protocol", key)
         envelope = result.get("structuredContent")
         if not isinstance(envelope, dict) or type(envelope.get("schema_version")) is not int or envelope["schema_version"] != 1 or "error" not in envelope or "data" not in envelope:
-            raise BenchmarkError("protocol")
+            raise BenchmarkError("protocol", key)
         if envelope["error"] is not None:
             error = envelope["error"]
             code = error.get("code") if isinstance(error, dict) else None
-            raise BenchmarkError(code if code in SAFE_ERRORS else "remote_error")
+            raise BenchmarkError(code if code in SAFE_ERRORS else "remote_error", key)
         if result.get("isError") or not isinstance(envelope["data"], dict):
-            raise BenchmarkError("protocol")
+            raise BenchmarkError("protocol", key)
         return envelope["data"], elapsed, key
 
 
@@ -163,9 +163,10 @@ def sample(client, item, policy, phase, round_number, concurrency, connect_ms):
         args = {"query": case["query"], "mode": mode, "graph": graph, "scope": evaluation.optional_default(case, "scope", "notes"),
                 "limit": evaluation.optional_default(case, "limit", 5), "since_days": case.get("since_days"), "source_uri": case.get("source_uri")}
         data, elapsed, key = client.call("search_notes", args)
+        row.update(search_rpc_ms=elapsed, rpc_id_sha256=key)
         records = data.get("records")
         evaluation.validate_records(records, args["limit"])
-        row.update(search_rpc_ms=elapsed, rpc_id_sha256=key, records=records)
+        row["records"] = records
         readbacks = []
         for record in records:
             inspected, _, _ = client.call("get_record", {"id": record["id"], "revision": record["revision"], "neighbors": 0})

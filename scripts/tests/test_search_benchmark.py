@@ -225,10 +225,26 @@ class SearchBenchmarkTests(unittest.TestCase):
                 with self.subTest(variant=variant), self.assertRaises(benchmark.BenchmarkError) as error:
                     client.call("search_notes", {})
                 self.assertEqual(error.exception.code, "protocol")
+                self.assertEqual(len(error.exception.key), 64)
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_failed_tool_and_invalid_record_samples_retain_exact_rpc_hash(self):
+        key = benchmark.rpc_hash('fictional-failed-request')
+        client = benchmark.McpClient('http://127.0.0.1:1/mcp', 'fictional', 2)
+        result = {'structuredContent': {'schema_version': 1, 'error': {'code': 'provider_unavailable'}, 'data': None}}
+        with mock.patch.object(client, 'request', return_value=(result, 4, key)):
+            row = benchmark.sample(client, case(), 'hybrid-off', 'warmed', 0, 1, 2)
+        self.assertEqual(row['status'], 'failed')
+        self.assertEqual(row['error'], 'provider_unavailable')
+        self.assertEqual(row['rpc_id_sha256'], key)
+        for envelope in ({'structuredContent': {}}, {'structuredContent': {'schema_version': 1, 'error': None, 'data': {'records': 'invalid'}}}):
+            with self.subTest(envelope=envelope), mock.patch.object(client, 'request', return_value=(envelope, 4, key)):
+                row = benchmark.sample(client, case(), 'hybrid-off', 'warmed', 0, 1, 2)
+                self.assertEqual(row['status'], 'failed')
+                self.assertEqual(row['rpc_id_sha256'], key)
 
     def test_report_uses_suite_and_runner_loaded_before_requests(self):
         with tempfile.TemporaryDirectory() as name:
