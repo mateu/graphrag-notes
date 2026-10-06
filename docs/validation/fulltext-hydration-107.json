@@ -10011,7 +10011,7 @@
     "Known-positive recall and reciprocal rank are lower bounds; unjudged hits and no-answer denominators remain visible.",
     "The sparse graph has no accepted real inter-note edges; fictional dense fixtures do not establish dense-corpus speed.",
     "Message and conversation full-text paths are unchanged; the optimization covers note lexical retrieval.",
-    "Migration backfill collects the linear primary ID list before materialization; it is not a bounded-memory migration.",
+    "The original measured source collects a linear primary ID list. Final review changes backfill to exclusive native-key pages of at most 128 IDs; this bounds ID batches, not individual note bytes or all engine/index memory. Measured source identities and observations remain unchanged.",
     "The manual pre-service doctor compatibility check performs one embedding-dimension probe per role; it is not provider-free or a cold-start observation.",
     "Keyword RPCs emit application_search timing only; note_fulltext is observed inside hybrid RPCs. Per-category phase distributions retain that distinction.",
     "Ordinary four-lane selective keyword tails are mixed: entity/title p95 rose while traced counterparts did not. The subsequent balanced keyword-only four-case confirmation did not reproduce the large four-lane selective rises; original observations remain retained and not every selective percentile improved.",
@@ -10680,5 +10680,18 @@
       "RPC totals have no same-request internal phase instrumentation; no causal phase inference or observation-based filtering.",
       "Role order reduces simple before/after order bias; it does not establish statistical significance or negate adverse original observations."
     ]
+  },
+  "final_review_changes": {
+    "measured_source_revision": "5b7999e6fe80c01a846b029a5be4925d6d3eb7b3",
+    "unchanged": "Production retrieval SQL, native score/tie semantics and policy-migration implementation. Original measured binaries, identities and all observations remain intact.",
+    "migration_backfill": "Exclusive native-key ranges, at most 128 IDs per page, each materialization page committed before the completion ledger. No fixed bound claimed on note bytes or all engine/index memory.",
+    "lexical_events": "Create or change to content/search_content/title/created_at/source_id/source_generation; embedding, tags and bookkeeping alone skip derived writes.",
+    "validation": "Final integrated source requires its own correctness, native build and installation gates; historical timings are not relabeled as a new binary measurement.",
+    "database_tests": {
+      "passed": 193,
+      "failed": 0,
+      "ignored_opt_in_diagnostics": 8
+    },
+    "all_target_db_clippy": "passed with warnings denied"
   }
 }

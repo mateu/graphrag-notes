@@ -418,7 +418,7 @@ async fn lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exac
     // installing a manufactured copy of its schema over an empty database.
     db.query("REMOVE EVENT materialize_note_search ON note; REMOVE EVENT delete_note_search ON note; REMOVE FUNCTION fn::materialize_note_search; REMOVE TABLE note_search; DELETE schema_migration WHERE version = 21;")
         .await.unwrap().check().unwrap();
-    populate_lexical_fixture(&db, 48).await;
+    populate_lexical_fixture(&db, 260).await;
     populate_native_lexical_ties(&db).await;
     crate::schema::initialize_schema(&db).await.unwrap();
     assert_runtime_lexical_exact(&db).await;
@@ -427,18 +427,31 @@ async fn lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exac
     let restored = Repository::new(init_memory().await.unwrap());
     assert!(!PORTABLE_TABLES.contains(&"note_search"));
     for table in ["source", "note"] {
-        let rows = original.portable_records_page(table, 0, 200).await.unwrap();
-        for row in &rows {
-            let roundtrip = serde_json::from_slice(&serde_json::to_vec(row).unwrap()).unwrap();
-            restored
-                .restore_portable_record(table, roundtrip)
+        let mut offset = 0;
+        loop {
+            let rows = original
+                .portable_records_page(table, offset, 128)
                 .await
                 .unwrap();
+            if rows.is_empty() {
+                break;
+            }
+            for row in &rows {
+                let roundtrip = serde_json::from_slice(&serde_json::to_vec(row).unwrap()).unwrap();
+                restored
+                    .restore_portable_record(table, roundtrip)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                rows,
+                restored
+                    .portable_records_page(table, offset, 128)
+                    .await
+                    .unwrap()
+            );
+            offset += rows.len();
         }
-        assert_eq!(
-            rows,
-            restored.portable_records_page(table, 0, 200).await.unwrap()
-        );
     }
     assert_runtime_lexical_exact(&restored.db).await;
     for text in ["quasar", "unique23", "absent fictional constellation"] {
@@ -447,6 +460,71 @@ async fn lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exac
             &original.fulltext_search(text, 50).await.unwrap(),
         );
     }
+}
+
+#[tokio::test]
+async fn lexical_events_skip_vector_and_bookkeeping_updates_but_track_each_mirrored_field() {
+    let db = init_memory().await.unwrap();
+    db.query("DEFINE EVENT count_lexical_writes ON note_search WHEN $event != 'DELETE' THEN (UPSERT lexical_audit:counter SET writes = (writes ?? 0) + 1);")
+        .await.unwrap().check().unwrap();
+    db.query("CREATE note:fictional SET content = 'quasar', title = 'quasar', created_at = d'2026-01-01T00:00:00Z';")
+        .await.unwrap().check().unwrap();
+    let writes = || async {
+        db.query("RETURN lexical_audit:counter.writes;")
+            .await
+            .unwrap()
+            .take::<Option<i64>>(0)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(writes().await, 1, "create materializes once");
+    Repository::new(db.clone())
+        .update_note_embedding(&RecordId::new("note", "fictional"), vec![0.0; 1024])
+        .await
+        .unwrap();
+    assert_eq!(
+        writes().await,
+        1,
+        "embedding update does not rewrite indexes"
+    );
+    db.query("UPDATE note:fictional SET reindex_embedding = array::repeat(0.0, 1024), reindex_source_text = 'fictional staging text', reindex_staging_owner = 'fictional', tags = ['new'], updated_at = time::now();")
+        .await.unwrap().check().unwrap();
+    assert_eq!(
+        writes().await,
+        1,
+        "unmirrored fields do not rewrite indexes"
+    );
+    for (index, mutation) in [
+        "content = 'quasar altered'",
+        "search_content = 'quasar alias'",
+        "title = NONE",
+        "created_at = d'2026-01-02T00:00:00Z'",
+        "source_id = source:fictional",
+        "source_generation = 2",
+        "source_generation = NONE",
+    ]
+    .iter()
+    .enumerate()
+    {
+        db.query(format!("UPDATE note:fictional SET {mutation};"))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert_eq!(writes().await, index as i64 + 2, "{mutation}");
+    }
+    db.query("DELETE note:fictional;")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let rows: Vec<serde_json::Value> = db
+        .query("SELECT * FROM note_search;")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(rows.is_empty());
 }
 
 #[tokio::test]
