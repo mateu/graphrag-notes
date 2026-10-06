@@ -9,7 +9,11 @@ search with graph on; `--keyword` and `--no-graph` are explicit opt-outs.
 `/notesave Title | body` keeps its separate fresh MCP client, exact request and
 payload, durable receipt, and independently pinned `get_record` verification.
 A missing acknowledgement remains unconfirmed; repeating the exact command is
-an explicit operator action. The read pool cannot dispatch a write.
+an explicit operator action. The read pool cannot dispatch a write. Capture
+resolves the current plugin configuration on every invocation, rechecks its
+endpoint/credential/actor after preparation, and permits one capture POST plus
+one exact revision-pinned readback POST. SDK retries cannot silently repeat a
+capture; an expired session remains unconfirmed until an explicit retry.
 
 ## Ownership and dependencies
 

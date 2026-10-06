@@ -84,3 +84,51 @@ test('a lost capture acknowledgement is unconfirmed with one dispatch, exact rep
   replay = true; assert.match((await command.handler(ctx)).text, /replayed and independently verified/);
   assert.equal(requests.length, 2); assert.deepEqual(requests[0], requests[1]);
 });
+
+test('capture resolves hot-reloaded actor, endpoint, SDK and timeout config on each invocation', async () => {
+  const loaded = [], transports = [], requests = [];
+  const data = value => ({ structuredContent: { schema_version: 1, error: null, data: value } });
+  class Client {
+    async connect() {} async close() {}
+    async callTool(request) {
+      requests.push(request);
+      if (request.name === 'capture_note') {
+        const p = request.arguments;
+        this.record = { id: 'note:' + 'a'.repeat(64), revision: 'b'.repeat(64), title: p.title, content: p.content,
+          tags: p.tags, provenance: { instance_id: loaded.at(-1).captureActor, source: p.provenance } };
+        return data({ request_id: p.request_id, replayed: false, record: this.record });
+      }
+      return data({ hit_type: 'note', ...this.record });
+    }
+  }
+  class Transport { constructor(url, options) { transports.push([url.href, options.requestInit.headers.Authorization]); } }
+  const command = createNotesSaveCommand({ endpoint: 'http://127.0.0.1:9901/mcp', tokenEnv: 'OLD', captureActor: 'old' }, {
+    env: { OLD: 'old-token', CURRENT: 'current-token', NEW: 'new-token' }, loadSdk: async config => { loaded.push(config); return { Client, StreamableHTTPClientTransport: Transport }; },
+  });
+  const ctx = { isAuthorizedSender: true, sessionKey: 'fictional-session', args: 'Title | body', commandBody: '/notesave Title | body',
+    config: { plugins: { entries: { 'graphrag-fast-notes': { config: { endpoint: 'http://127.0.0.1:9902/mcp', tokenEnv: 'CURRENT', captureActor: 'current', sdkAnchor: '/fixture/current/package.json', captureTimeoutMs: 15000 } } } } } };
+  assert.match((await command.handler(ctx)).text, /Actor: current/);
+  ctx.config.plugins.entries['graphrag-fast-notes'].config = { endpoint: 'http://127.0.0.1:9903/mcp', tokenEnv: 'NEW', captureActor: 'new', sdkAnchor: '/fixture/new/package.json', captureTimeoutMs: 30000 };
+  assert.match((await command.handler(ctx)).text, /Actor: new/);
+  assert.deepEqual(transports, [['http://127.0.0.1:9902/mcp', 'Bearer current-token'], ['http://127.0.0.1:9903/mcp', 'Bearer new-token']]);
+  assert.deepEqual(loaded.map(c => [c.captureActor, c.captureTimeoutMs, c.sdkAnchor]), [['current', 15000, '/fixture/current/package.json'], ['new', 30000, '/fixture/new/package.json']]);
+  assert.notEqual(requests[0].arguments.request_id, requests[2].arguments.request_id);
+});
+
+test('capture preparation rechecks changed target/credential/actor and revoked owner before dispatch', async () => {
+  for (const mutation of ['target', 'credential', 'actor', 'owner']) {
+    let release; const waiting = new Promise(resolve => { release = resolve; }), calls = [];
+    class Client { async connect() { await waiting; } async close() {} async callTool(request) { calls.push(request); } }
+    class Transport {}
+    const env = { TOKEN: 'original' }, cfg = { endpoint: 'http://127.0.0.1:9902/mcp', tokenEnv: 'TOKEN', captureActor: 'current' };
+    const ctx = { isAuthorizedSender: true, sessionKey: 'fixture', args: 'Title | body', commandBody: '/notesave Title | body',
+      config: { plugins: { entries: { 'graphrag-fast-notes': { config: cfg } } } } };
+    const command = createNotesSaveCommand({}, { env, loadSdk: async () => ({ Client, StreamableHTTPClientTransport: Transport }) });
+    const pending = command.handler(ctx); await new Promise(resolve => setImmediate(resolve));
+    if (mutation === 'target') cfg.endpoint = 'http://127.0.0.1:9903/mcp';
+    if (mutation === 'credential') env.TOKEN = 'changed';
+    if (mutation === 'actor') cfg.captureActor = 'changed';
+    if (mutation === 'owner') ctx.assertOwnerCurrent = async () => { throw new Error('private owner revoked'); };
+    release(); assert.match((await pending).text, /Capture was not submitted/); assert.equal(calls.length, 0);
+  }
+});

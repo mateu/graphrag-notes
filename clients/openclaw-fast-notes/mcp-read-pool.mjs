@@ -8,7 +8,7 @@ export class PoolError extends Error {
 const hash = value => createHash('sha256').update(value).digest('hex');
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-async function boundedResponse(response, signal) {
+export async function boundedResponse(response, signal) {
   const length = response.headers.get('content-length');
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_RESPONSE_BYTES)) {
     await response.body?.cancel(); throw new PoolError('response');

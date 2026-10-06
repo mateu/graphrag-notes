@@ -3,7 +3,7 @@ import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { createHash, randomUUID } from 'node:crypto';
-import { ReadConnectionPool, PoolError } from './mcp-read-pool.mjs';
+import { ReadConnectionPool, PoolError, boundedResponse } from './mcp-read-pool.mjs';
 import { isDeepStrictEqual } from 'node:util';
 
 const HELP = 'Use /notes QUERY for hybrid search with graph on. --hybrid and --graph also use hybrid search with graph on. --keyword uses keyword search with graph off; --no-graph uses hybrid search with graph off. --graph and --no-graph conflict; --keyword conflicts with --hybrid or --graph. Use -- before a literal query starting with --. Returns up to five notes with record IDs. Keyword search uses no model. Graph-enabled search has a separate longer deadline and never falls back automatically. Save an explicit note with /notesave Title | body.';
@@ -347,33 +347,66 @@ export function createNotesSaveCommand(config = {}, overrides = {}) {
     acceptsArgs: true, requireAuth: true, requiredScopes: ['operator.write'],
     handler: async ctx => {
       if (ctx.isAuthorizedSender !== true) return { text: 'This command requires authorization.', continueAgent: false };
+      const current = { ...(ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config) };
       let payload;
-      const actor = config.captureActor ?? 'openclaw-clawd-daily';
+      const actor = current.captureActor ?? 'openclaw-clawd-daily';
       try { payload = capturePayload(captureArguments(ctx), ctx, actor); }
       catch (error) { return { text: error?.code === 'multiline' ? 'No capture submitted: /notesave accepts a single-line body. OpenClaw normalizes multiline commands before plugins receive them. Use a deliberate single-line note or upload longer Markdown separately.' : error?.code === 'command_changed' ? 'No capture submitted: OpenClaw shortened or altered the command arguments. Use a shorter note (at most 4096 UTF-16 code units, emoji count as two) without control characters.' : error?.code === 'identity' ? 'No capture submitted: a stable sender and conversation identity is unavailable. Retry from an authenticated Control UI conversation.' : SAVE_HELP, continueAgent: false }; }
       if (!payload) return { text: SAVE_HELP, continueAgent: false };
       const started = clock();
-      const timeoutMs = config.captureTimeoutMs ?? 30000;
+      const timeoutMs = current.captureTimeoutMs ?? 30000;
       if (!Number.isInteger(timeoutMs) || timeoutMs < 15000 || timeoutMs > 30000) {
         return { text: 'Notes capture configuration is invalid.', continueAgent: false };
       }
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(new NotesError('timeout')), timeoutMs);
       let client, submitted = false, receiptRecord;
+      const toolPosts = new Set();
       try {
-        if (!config.endpoint && !ctx.config?.mcp?.servers?.[config.serverName ?? 'graphrag']?.url) throw new NotesError('configuration');
-        const { endpoint, token } = connection(config, ctx, env);
+        if (!current.endpoint && !ctx.config?.mcp?.servers?.[current.serverName ?? 'graphrag']?.url) throw new NotesError('configuration');
+        const { endpoint, token } = connection(current, ctx, env);
+        const revalidate = () => {
+          const latest = ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config;
+          const selected = connection(latest, ctx, env);
+          if (selected.endpoint.href !== endpoint.href || selected.token !== token ||
+              (latest.captureActor ?? 'openclaw-clawd-daily') !== actor || latest.sdkAnchor !== current.sdkAnchor) throw new NotesError('reconfigured');
+          if (ctx.isAuthorizedSender !== true) throw new NotesError('forbidden');
+        };
         const deadline = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(new NotesError('timeout')), { once: true }));
         const work = async () => {
-          const { Client, StreamableHTTPClientTransport } = await sdkLoader(config);
+          const { Client, StreamableHTTPClientTransport } = await sdkLoader(current);
           abort.signal.throwIfAborted();
           client = new Client({ name: 'graphrag-fast-notes', version: '0.5.0' }, { capabilities: {} });
           client.onerror = () => {};
           const transport = new StreamableHTTPClientTransport(endpoint, {
             requestInit: { headers: { Authorization: `Bearer ${token}` } }, reconnectionOptions: { maxRetries: 0 },
-            fetch: (input, init = {}) => fetchImpl(input, { ...init, redirect: 'error', signal: init.signal ? AbortSignal.any([init.signal, abort.signal]) : abort.signal }),
+            fetch: async (input, init = {}) => {
+              revalidate();
+              const target = new URL(input instanceof Request ? input.url : input);
+              if (target.href !== endpoint.href) throw new NotesError('response');
+              if (init.method === 'POST') {
+                let message; try { message = JSON.parse(init.body); } catch { throw new NotesError('response'); }
+                if (message.method === 'tools/call') {
+                  const name = message.params?.name;
+                  const expected = name === 'capture_note' ? payload : name === 'get_record' && receiptRecord
+                    ? { id: receiptRecord.id, revision: receiptRecord.revision, neighbors: 0 } : null;
+                  if (!expected || toolPosts.has(name) || !isDeepStrictEqual(message.params.arguments, expected)) throw new NotesError('response');
+                  // Stream retry options do not fence expired-session SDK replay.
+                  // Consume the permission before fetch; never submit it again.
+                  toolPosts.add(name);
+                }
+              }
+              const headers = new Headers(init.headers); headers.set('Authorization', `Bearer ${token}`);
+              const signal = init.signal ? AbortSignal.any([init.signal, abort.signal]) : abort.signal;
+              signal.throwIfAborted();
+              const response = await fetchImpl(input, { ...init, headers, redirect: 'error', signal });
+              return await boundedResponse(response, signal);
+            },
           });
           await client.connect(transport, { signal: abort.signal, timeout: timeoutMs });
+          abort.signal.throwIfAborted();
+          await ctx.assertOwnerCurrent?.();
+          revalidate();
           abort.signal.throwIfAborted();
           submitted = true;
           const receipt = captureData(await client.callTool({ name: 'capture_note', arguments: payload }, undefined, { signal: abort.signal, timeout: timeoutMs }));
