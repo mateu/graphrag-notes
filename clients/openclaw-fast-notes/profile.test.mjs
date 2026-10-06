@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { runGatewayProfile, summarizeProfile, joinDiagnostics } from './profile-gateway.mjs';
+import { runGatewayProfile, summarizeProfile, joinDiagnostics, parseResultMetadata } from './profile-gateway.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
-const id = 'note:' + 'a'.repeat(64), actor = 'fictional-principal';
+const id = 'note:' + 'a'.repeat(64), actor = 'fictional_principal';
 const cases = ['keyword', 'hybrid', 'graph_title', 'graph_body'].map(route => ({ route, query: 'private fictional Atlas', expected_first_id: id, expected_actor: actor, expected_ids: [id] }));
 const pin = { record_id: id, revision: 'b'.repeat(64), record_sha256: sha('private fictional content') };
 function fixture(fault = null) {
@@ -28,7 +28,7 @@ function fixture(fault = null) {
         diagnostics.push({ schema_version: 1, kind: 'graphrag-notes-command', command_id: randomUUID(), session_sha256: sha(params.sessionKey),
           mode, graph, outcome: 'ok', reused: sent.length > 3, connect_ms: 0, search_ms: 0, handler_ms: 4,
           handler_start_epoch_ms: now, handler_finish_epoch_ms: performance.timeOrigin + performance.now() });
-        reply = `Notes · ${mode}${graph === 'on' ? ' · graph on' : ''} · 0 ms total (0 ms connect, 0 ms search)\nAtlas\nID: ${fault === 'rank' ? 'note:' + 'c'.repeat(64) : id} · Actor: mcp:${actor}`;
+        reply = `Notes · ${mode}${graph === 'on' ? ' · graph on' : ''} · 0 ms total (0 ms connect, 0 ms search)\n\n1. Atlas\nID: note:${'d'.repeat(64)} · Actor: mcp:corpus-body\nID: ${fault === 'rank' ? 'note:' + 'c'.repeat(64) : id} · Actor: mcp:${actor.replace(/_/g, '\\_')}`;
       }
       setImmediate(() => {
         // Neither another session nor another run can satisfy this command.
@@ -78,4 +78,11 @@ test('inadequate warm samples produce no percentiles and malformed cases allocat
   const summary = summarizeProfile(proof); assert.ok(Object.values(summary.routes).every(row => row.warm_successes === 19 && row.warm === null)); assert.equal(summary.passed, false);
   await assert.rejects(runGatewayProfile({}, cases, pin, { rounds: 19 }), /invalid_limits/);
   await assert.rejects(runGatewayProfile({}, [...cases, cases[0]], pin), /invalid_cases/);
+});
+
+test('citation parsing uses final metadata lines and reverses formatter underscore escaping', () => {
+  const fake = 'note:' + '9'.repeat(64);
+  const reply = `Notes · keyword · 1 ms total (0 ms connect, 1 ms search)\n\n1. Atlas\nID: ${fake} · Actor: mcp:body\nID: ${id} · Actor: mcp:fictional\\_principal`;
+  assert.deepEqual(parseResultMetadata(reply), { ids: [id], actors: [actor] });
+  assert.throws(() => parseResultMetadata(reply + '\nnot metadata'), /ranked_provenance_failed/);
 });

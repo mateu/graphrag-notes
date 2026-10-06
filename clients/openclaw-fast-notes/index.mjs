@@ -141,9 +141,19 @@ export function createFreshNotesCommand(config = {}, overrides = {}) {
   const env = overrides.env ?? process.env;
   const fetchImpl = overrides.fetch ?? globalThis.fetch;
   const clock = overrides.now ?? (() => performance.now());
+  const active = new Set(); let closed = false;
   return {
     name: 'notes', description: 'Search shared notes directly without an agent model',
     acceptsArgs: true, requireAuth: true,
+    pendingCount: () => active.size,
+    start: () => { closed = false; },
+    close: async () => {
+      closed = true;
+      for (const entry of active) entry.abort.abort(new NotesError('unavailable'));
+      let timer;
+      try { await Promise.race([Promise.all([...active].map(entry => entry.done)), new Promise(resolve => { timer = setTimeout(resolve, 1000); })]); }
+      finally { clearTimeout(timer); }
+    },
     handler: async (ctx) => {
       if (ctx.isAuthorizedSender !== true) return { text: 'This command requires authorization.', continueAgent: false };
       const current = { ...(ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config) };
@@ -154,9 +164,16 @@ export function createFreshNotesCommand(config = {}, overrides = {}) {
       const { query, mode, graph } = parsed;
       if (Array.from(query).length > 1024) return { text: 'Search query must contain at most 1024 characters.', continueAgent: false };
       const started = clock();
+      if (closed) return failure('unavailable', clock() - started, current.timeoutMs ?? 5000, graph);
+      const maxEntries = current.poolMaxEntries ?? 4;
+      if (!Number.isInteger(maxEntries) || maxEntries < 1 || maxEntries > 4) return failure('configuration', clock() - started, current.timeoutMs ?? 5000, graph);
+      if (active.size >= maxEntries) return failure('busy', clock() - started, current.timeoutMs ?? 5000, graph);
       const timeoutMs = graph !== 'off' ? (current.graphTimeoutMs ?? 60000) : (current.timeoutMs ?? 5000);
       if (!Number.isInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > (graph !== 'off' ? 120000 : 30000)) return failure('configuration', clock() - started, timeoutMs, graph);
       const abort = new AbortController();
+      let settled;
+      const entry = { abort, done: new Promise(resolve => { settled = resolve; }) };
+      active.add(entry);
       const timer = setTimeout(() => abort.abort(new NotesError('timeout')), timeoutMs);
       let client, connectMs = 0, searchMs = 0, outcome = 'unavailable';
       try {
@@ -182,7 +199,8 @@ export function createFreshNotesCommand(config = {}, overrides = {}) {
               revalidate();
               const signal = init.signal ? AbortSignal.any([init.signal, abort.signal]) : abort.signal;
               signal.throwIfAborted();
-              const response = await fetchImpl(input, { ...init, redirect: 'error', signal });
+              const headers = new Headers(init.headers); headers.set('Authorization', `Bearer ${token}`);
+              const response = await fetchImpl(input, { ...init, headers, redirect: 'error', signal });
               if (response.ok && ![202, 204].includes(response.status) &&
                   response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
                 await response.body?.cancel(); throw new NotesError('response');
@@ -201,17 +219,22 @@ export function createFreshNotesCommand(config = {}, overrides = {}) {
           searchMs = finished - connected; outcome = 'ok';
           return { text: formatResults(envelope(result), mode, graph, { total: finished - started, connect: connected - started, search: finished - connected }), continueAgent: false };
         };
-        return await Promise.race([work(), deadline]);
+        entry.work = work();
+        return await Promise.race([entry.work, deadline]);
       } catch (error) {
-        outcome = abort.signal.aborted ? 'timeout' : error instanceof PoolError ? error.code : 'unavailable';
+        outcome = abort.signal.aborted ? (abort.signal.reason instanceof PoolError ? abort.signal.reason.code : 'unavailable') : error instanceof PoolError ? error.code : 'unavailable';
         return failure(outcome, clock() - started, timeoutMs, graph);
       } finally {
         const cleanupStarted = clock();
         clearTimeout(timer);
         abort.abort();
+        const cleanup = Promise.resolve().then(() => client?.close()).catch(() => {});
+        // Retain the reservation while an ignored abort or broken SDK close is
+        // still pending, even after the caller's bounded cleanup wait expires.
+        Promise.allSettled([entry.work, cleanup]).finally(() => { active.delete(entry); settled(); });
         if (client) {
           let closeTimer;
-          try { await Promise.race([Promise.resolve().then(() => client.close()).catch(() => {}), new Promise(resolve => { closeTimer = setTimeout(resolve, 1000); })]); }
+          try { await Promise.race([cleanup, new Promise(resolve => { closeTimer = setTimeout(resolve, 1000); })]); }
           finally { clearTimeout(closeTimer); }
         }
         reportTiming(overrides, ctx, { mode, graph, outcome, reused: false, connect_ms: connectMs, search_ms: searchMs, cleanup_ms: clock() - cleanupStarted, handler_ms: clock() - started, handler_start_epoch_ms: performance.timeOrigin + started, handler_finish_epoch_ms: performance.timeOrigin + clock() });
@@ -233,9 +256,10 @@ export function createNotesCommand(config = {}, overrides = {}) {
   const clock = overrides.now ?? (() => performance.now());
   const pool = new ReadConnectionPool({ loadSdk: overrides.loadSdk ?? loadSdk,
     fetch: overrides.fetch ?? globalThis.fetch, now: clock });
+  const fresh = createFreshNotesCommand(config, overrides);
   return {
     name: 'notes', description: 'Search shared notes directly without an agent model', acceptsArgs: true, requireAuth: true,
-    close: () => pool.close(), start: () => pool.start(),
+    close: () => Promise.all([pool.close(), fresh.close()]), start: () => { pool.start(); fresh.start(); },
     handler: async ctx => {
       const current = ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config;
       if (ctx.isAuthorizedSender !== true) return { text: 'This command requires authorization.', continueAgent: false };
@@ -250,8 +274,10 @@ export function createNotesCommand(config = {}, overrides = {}) {
       if (current.reuseConnections === false || overrides.allowReuse === false || env.GRAPHRAG_NOTES_DISABLE_REUSE === '1') {
         await pool.retireAll();
         if (pool.closed) return failure('unavailable', clock() - started, current.timeoutMs ?? 5000, graph);
-        return createFreshNotesCommand(current, overrides).handler(ctx);
+        if (pool.closing.size > 0) return failure('busy', clock() - started, current.timeoutMs ?? 5000, graph);
+        return fresh.handler(ctx);
       }
+      if (fresh.pendingCount() > 0) return failure('busy', clock() - started, current.timeoutMs ?? 5000, graph);
       const timeoutMs = graph !== 'off' ? (current.graphTimeoutMs ?? 60000) : (current.timeoutMs ?? 5000);
       if (!Number.isInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > (graph !== 'off' ? 120000 : 30000)) return failure('configuration', clock() - started, timeoutMs, graph);
       const abort = new AbortController(); const timer = setTimeout(() => abort.abort(new NotesError('timeout')), timeoutMs);

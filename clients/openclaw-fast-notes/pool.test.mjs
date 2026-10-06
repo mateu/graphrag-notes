@@ -218,6 +218,53 @@ test('shutdown denies fresh bypass admission too; explicit restart is required',
   const f = fixture({ reuseConnections: false });
   await f.command.close(); assert.match((await f.command.handler(context())).text, /unavailable/);
   assert.equal(f.count('connect'), 0); f.command.start();
-  assert.match((await f.command.handler(context())).text, /Notes/); assert.equal(f.count('connect'), 1);
+  assert.match((await f.command.handler(context())).text, /^Notes ·/); assert.equal(f.count('connect'), 1);
   await f.command.close();
+});
+
+test('shutdown cancels an active fresh search and fences late SDK initialization after restart', async () => {
+  for (const phase of ['search', 'initialize']) {
+    const f = fixture({ reuseConnections: false, graphTimeoutMs: 120000 });
+    if (phase === 'search') f.state.pending = true; else f.state.suspendConnect = true;
+    const pending = f.command.handler(context('--graph Atlas'));
+    await tick(); const before = f.count('call'), started = performance.now();
+    await f.command.close();
+    assert.ok(performance.now() - started < 1500);
+    assert.match((await pending).text, /unavailable/);
+    assert.match((await f.command.handler(context())).text, /unavailable/);
+    f.command.start(); f.state.pending = false; f.state.suspendConnect = false; f.connectHold.resolve();
+    await tick();
+    assert.equal(f.count('call'), before);
+    assert.match((await f.command.handler(context('--keyword Borealis'))).text, /^Notes ·/);
+    assert.equal(f.count('call'), before + 1);
+    await f.command.close();
+  }
+});
+
+test('fresh work and closing reservations remain bounded when SDK cleanup never settles', async () => {
+  const f = fixture({ reuseConnections: false }, { stalledClose: true });
+  const pending = Array.from({ length: 4 }, (_, i) => f.command.handler(context('--keyword fixture-' + i)));
+  await tick();
+  assert.match((await f.command.handler(context())).text, /busy/);
+  assert.equal(f.count('connect'), 4);
+  assert.ok((await Promise.all(pending)).every(reply => reply.text.startsWith('Notes ·')));
+  await f.command.close(); f.command.start();
+  assert.match((await f.command.handler(context())).text, /busy/);
+  assert.equal(f.count('connect'), 4);
+  await f.command.close();
+});
+
+test('fresh/reused configuration churn cannot bypass unfinished cleanup reservations', async () => {
+  for (const initialFresh of [true, false]) {
+    const f = fixture({}, { stalledClose: true });
+    const first = context(); first.config.plugins = { entries: { 'graphrag-fast-notes': { config: { reuseConnections: !initialFresh, poolMaxEntries: 1 } } } };
+    const pending = f.command.handler(first);
+    await tick();
+    if (initialFresh) await pending;
+    else assert.match((await pending).text, /^Notes ·/);
+    const next = context(); next.config.plugins = { entries: { 'graphrag-fast-notes': { config: { reuseConnections: initialFresh, poolMaxEntries: 1 } } } };
+    assert.match((await f.command.handler(next)).text, /busy/);
+    assert.equal(f.count('connect'), 1);
+    await f.command.close();
+  }
 });

@@ -12,6 +12,19 @@ const epoch = () => performance.timeOrigin + performance.now();
 const finite = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const policy = route => ({ mode: route === 'keyword' ? 'keyword' : 'hybrid', graph: route.startsWith('graph') ? 'on' : 'off' });
 
+export function parseResultMetadata(reply) {
+  const blocks = reply.split('\n\n').slice(1);
+  check(blocks.length >= 1 && blocks.length <= 5, 'ranked_provenance_failed');
+  const records = blocks.map(block => {
+    // The formatter emits this as each result block's final line. Corpus text
+    // can contain citation-looking strings without becoming metadata evidence.
+    const match = block.match(/\nID: (note:[a-f0-9]{64}) · Actor: mcp:((?:[a-zA-Z0-9_-]|\\_)+)$/);
+    check(match, 'ranked_provenance_failed');
+    return { id: match[1], actor: match[2].replace(/\\_/g, '_') };
+  });
+  return { ids: records.map(record => record.id), actors: records.map(record => record.actor) };
+}
+
 function metadata(value) {
   check(value && typeof value === 'object' && !Array.isArray(value), 'invalid_metadata');
   const fields = ['config_sha256', 'default_model_sha256', 'plugin_source_sha256', 'plugin_manifest_sha256'];
@@ -86,8 +99,8 @@ export async function runGatewayProfile(adapter, cases, pin, { rounds = 20, comm
           const timing = final.reply.match(/^Notes · (keyword|hybrid)(?: · graph (off|auto|on))? · (\d+) ms total \((\d+) ms connect, (\d+) ms search\)/);
           const desired = policy(spec.route); check(timing && timing[1] === desired.mode && (timing[2] ?? 'off') === desired.graph, 'policy_failed');
           row.mode = desired.mode; row.graph = desired.graph;
-          row.record_ids = [...final.reply.matchAll(/ID: (note:[a-f0-9]{64})/g)].map(match => match[1]);
-          row.actors = [...final.reply.matchAll(/Actor: mcp:([a-zA-Z0-9_-]+)/g)].map(match => match[1]);
+          const citations = parseResultMetadata(final.reply);
+          row.record_ids = citations.ids; row.actors = citations.actors;
           check(row.record_ids.length >= 1 && row.record_ids.length <= 5 && new Set(row.record_ids).size === row.record_ids.length &&
             row.record_ids[0] === spec.expected_first_id && row.actors.length === row.record_ids.length && row.actors[0] === spec.expected_actor &&
             (!spec.expected_ids || isDeepStrictEqual(row.record_ids, spec.expected_ids)), 'ranked_provenance_failed');

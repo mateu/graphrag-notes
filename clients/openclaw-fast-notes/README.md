@@ -55,7 +55,9 @@ is reached. Configurable limits are:
 
 `reuseConnections: false` selects fresh clients. Hosts without the public
 `registerService` lifecycle also use fresh clients. The registered service closes
-connections on stop or configuration reload. Closing has a bounded caller wait;
+connections on stop or configuration reload. Fresh reads also share this lifecycle
+and retain their resource reservations during pending initialization or cleanup.
+Switching between fresh and reused modes cannot bypass the bound. Closing has a bounded caller wait;
 a stuck SDK still occupies its reservation until initialization and cleanup
 actually settle. Stop/start does not bypass that resource limit.
 
@@ -94,7 +96,8 @@ route and report every failed command separately.
 gateway adapter, private known-note cases and diagnostic entries. It creates a
 fresh acceptance session, uses `deliver:false`, fences events by session and
 run ID, and joins a diagnostic entry by the same session and nested command
-interval. It checks ranked IDs and actor provenance, and requires independently
+interval. It checks the final formatted metadata line of each ranked result, decodes escaped
+actor underscores, and ignores citation-looking strings in note content. It requires independently
 pinned full readback before and after the run. Raw proof belongs outside the
 repository. Its report includes only fixed route names, counts and timings.
 
