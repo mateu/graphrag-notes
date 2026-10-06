@@ -79,6 +79,8 @@ command. It preserves the query, scope, limit, lookback, source URI, output
 format, endpoint and credential **environment variable name**. The retry uses
 `--mode keyword --graph off` and requires an explicit user invocation. It never
 prints the credential value or silently changes the requested search mode.
+Protocol/schema incompatibilities require matching client/service versions and
+do not produce a keyword retry, since changing retrieval mode cannot repair them.
 
 An explicit deep check differs from routine status: the service owner runs
 local `graphrag init --check` for active provider checks without
