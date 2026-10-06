@@ -1312,7 +1312,50 @@ struct CapturedGraphEntityId {
 #[derive(Debug, serde::Serialize, Deserialize, SurrealValue)]
 struct NestedGraphEntityPlan {
     id: RecordId,
-    plan: Vec<serde_json::Value>,
+    // The pinned EXPLAIN FULL operator is scalar: a nested SELECT exposes
+    // its complete object directly, rather than a one-element result array.
+    plan: serde_json::Value,
+}
+
+fn assert_mentions_access_plan(plan: &serde_json::Value, indexed: bool) {
+    fn collect<'a>(node: &'a serde_json::Value, operators: &mut Vec<&'a serde_json::Value>) {
+        assert!(node.is_object(), "plan node must remain an object: {node}");
+        assert!(node["operator"].is_string(), "missing operator: {node}");
+        operators.push(node);
+        if let Some(children) = node.get("children") {
+            for child in children
+                .as_array()
+                .expect("operator children must be an array")
+            {
+                collect(child, operators);
+            }
+        }
+    }
+    if std::env::var_os("GRAPHRAG_GRAPH_ALIAS_PLAN_REPORT").is_some() {
+        // Emit the complete selected plan before checking it. Do not reduce
+        // it to operator names or inspect SQL text/unexecuted embedded plans.
+        println!(
+            "graph-local-alias-access-plan={}",
+            serde_json::json!({"indexed_expected": indexed, "plan": plan})
+        );
+    }
+    assert!(
+        plan["total_rows"].as_u64().is_some(),
+        "EXPLAIN FULL must retain its actual execution count: {plan}"
+    );
+    let mut operators = Vec::new();
+    collect(plan, &mut operators);
+    let index_scan = operators.iter().any(|node| {
+        node["operator"] == "IndexScan" && node["attributes"]["index"] == "idx_mentions_entity_note"
+    });
+    let table_scan = operators
+        .iter()
+        .any(|node| node["operator"] == "TableScan" && node["attributes"]["table"] == "mentions");
+    assert_eq!(index_scan, indexed, "selected mention access plan: {plan}");
+    assert_eq!(
+        table_scan, !indexed,
+        "selected mention fallback plan: {plan}"
+    );
 }
 
 #[tokio::test]
@@ -1665,9 +1708,7 @@ async fn graph_alias_local_binding_plan_falls_back_for_unsafe_mention_shapes() {
         .unwrap();
     let plan: Vec<NestedGraphEntityPlan> = response.take(0).unwrap();
     assert_eq!(plan.len(), 1);
-    assert!(serde_json::to_string(&plan[0].plan)
-        .unwrap()
-        .contains("\"index\":\"idx_mentions_entity_note\""));
+    assert_mentions_access_plan(&plan[0].plan, true);
     let mut complex = Object::new();
     complex.insert("kind", 1.0f64);
     complex.insert("ordinal", 0i64);
@@ -1723,9 +1764,7 @@ async fn graph_alias_local_binding_plan_falls_back_for_unsafe_mention_shapes() {
             .unwrap();
         let plan: Vec<NestedGraphEntityPlan> = response.take(0).unwrap();
         assert_eq!(plan.len(), 1);
-        assert!(!serde_json::to_string(&plan[0].plan)
-            .unwrap()
-            .contains("\"index\":\"idx_mentions_entity_note\""));
+        assert_mentions_access_plan(&plan[0].plan, false);
         assert_alias_query_matches_original(
             &repo,
             "Needle Token",
@@ -1867,7 +1906,6 @@ async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_nativ
             assert_eq!(nested_plans.len(), entity_ids.len());
             for row in &nested_plans {
                 assert!(entity_ids.contains(&row.id));
-                let plan = serde_json::to_string(&row.plan).unwrap();
                 // The pinned streaming analyzer accepts literal simple keys
                 // but cannot plan object/array record-ID equality. Those
                 // native keys must retain exact results through its fallback.
@@ -1875,11 +1913,7 @@ async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_nativ
                     &row.id.key,
                     RecordIdKey::Number(_) | RecordIdKey::String(_) | RecordIdKey::Uuid(_)
                 );
-                assert_eq!(
-                    plan.contains("\"index\":\"idx_mentions_entity_note\""),
-                    local && simple_key,
-                    "local simple IDs expose the out-prefix; complex IDs keep fallback: {plan}"
-                );
+                assert_mentions_access_plan(&row.plan, local && simple_key);
             }
             outputs.push(rows);
             plans.push(serde_json::to_value(&nested_plans).unwrap());
