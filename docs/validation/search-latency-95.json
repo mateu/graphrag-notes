@@ -4162,7 +4162,54 @@
     "The three backend runs are observational; background load changed between runs, so total-time differences do not isolate cache or tracing effects.",
     "Warmed repeated queries use the durable embedding cache unless disabled explicitly.",
     "The live gateway uses the deployed service and a known-note workload; it is not the frozen corpus backend run.",
-    "Natural-language orchestration is measured separately and remains pending.",
     "Targets are operating goals; per-category misses remain visible even when pooled p95 passes."
-  ]
+  ],
+  "conversational_openai": {
+    "schema_version": 1,
+    "issue": 95,
+    "kind": "separate native conversational orchestration observations",
+    "surface": "isolated clawd gateway webchat route",
+    "model": "gpt-6.1-sol",
+    "provider": "openai",
+    "api": "openai-chatgpt-responses",
+    "selection": "explicit isolated OAuth profile",
+    "corpus": "fictional isolated one-note corpus; deterministic embedding/extraction provider doubles",
+    "policy": {
+      "mode": "hybrid",
+      "graph": "off"
+    },
+    "counts": {
+      "scheduled": 21,
+      "successful": 21,
+      "failed": 0
+    },
+    "warmed": {
+      "scheduled": 20,
+      "successful": 20,
+      "failed": 0,
+      "chat_send_to_terminal_event_ms": {
+        "p50": 12603.424868,
+        "p95": 18554.860999,
+        "min": 11302.182349,
+        "max": 18702.277823
+      }
+    },
+    "limits": [
+      "Each observation uses a fresh empty session and verifies actual paired native search/get_record calls and pinned provenance.",
+      "Wall time begins immediately before chat.send and ends at matching terminal chat event; gateway startup/session creation excluded.",
+      "Backend/tool durations were not inferred; source corpus and provider differ from shared-corpus direct benchmarks.",
+      "The first observation is first in this series; the gateway/model route was already exercised by capture recovery, so this is not a cold model claim."
+    ],
+    "normal_profile_config_unchanged": true,
+    "first_observed": {
+      "scheduled": 1,
+      "successful": 1,
+      "failed": 0,
+      "chat_send_to_terminal_event_ms": 11896.023217
+    },
+    "native_verified_calls": {
+      "search_notes": 21,
+      "get_record": 21
+    }
+  }
 }

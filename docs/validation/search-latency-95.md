@@ -88,9 +88,22 @@ UI timing spans chat.send to the matching final event, adding gateway dispatch.
 These nested observations are separate from same-RPC backend tracing above;
 no backend decomposition is claimed for the deployed gateway run.
 
-Conversational OpenAI tool orchestration is being measured separately before
-this issue is finalized. Its model/discovery/response time must not be labelled
-backend search latency.
+A separate isolated clawd gateway exercised actual OpenAI OAuth native MCP
+orchestration with gpt-6.1-sol/openai-chatgpt-responses. All **21 observations**
+passed paired search_notes/get_record execution and exact revision/content/
+provenance checks: one first-in-series observation and twenty repeated warm
+observations, each with a fresh empty session. Warm chat.send-to-terminal-event
+p50 was **12,603.4 ms** and p95 **18,554.9 ms**, with zero failures. The first
+observation was 11,896.0 ms; the route had already been exercised during capture
+recovery, so this is not a cold model measurement.
+
+This used a fictional one-note corpus and deterministic inference doubles,
+rather than the live or frozen real corpus. Gateway startup and session creation
+are excluded; tool/backend durations are not inferred from model wall time.
+These observations establish the separate orchestration cost of this tested
+route, not an absolute latency comparison across the different corpora. Model
+planning, tool selection and answer generation must not be labelled backend
+search latency. Normal daily configuration was preserved.
 
 ## Prioritized next work
 
