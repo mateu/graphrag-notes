@@ -112,6 +112,18 @@ fn graph_entity_aliases_local_sql(query: &str) -> String {
     )
 }
 
+#[cfg(test)]
+fn graph_entity_aliases_fresh_parent_sql(query: &str) -> String {
+    // Independent per-entity oracle: retain the original parent predicate,
+    // ordering and cap, but create its plan inside each entity's block. The
+    // pinned engine otherwise shares a correlated TopK threshold across rows.
+    // Do not substitute the local indexed ID or use the production shape guard.
+    format!(
+        "{{ LET $graph_reference_matching_aliases = ({query}); {}; }}",
+        graph_alias_union_sql("$graph_reference_matching_aliases")
+    )
+}
+
 fn graph_entity_mentions_local_result_sql(query: &str, result: &str) -> String {
     // The scalar subquery binds $parent only after its plan was built. The
     // pinned engine deliberately excludes that row-scoped parameter from
@@ -120,12 +132,15 @@ fn graph_entity_mentions_local_result_sql(query: &str, result: &str) -> String {
     // native ID for the existing (out, in) association index. Avoid RETURN:
     // it propagates control flow past the enclosing alias union expression.
     // A metadata-only prefix probe keeps the old query for unsafe alias
-    // shapes (including its error shielding/TopK behavior), and for complex
+    // shapes (including its per-entity error shielding/TopK behavior), and for complex
     // relation IDs whose primary/index encodings can visit equal-in ties in
     // a different order. The fast path keeps ORDER BY and LIMIT unchanged.
     // Bind the rows before applying the alias union: nesting a full SELECT
     // beneath flatten/distinct/sort/slice exceeds the default parser depth.
     // The last expression operates on that local value, without RETURN.
+    // Both branches receive a fresh per-entity plan: the pinned engine's
+    // unwrapped correlated plan reuses a TopK threshold between entities and
+    // can omit a later entity whose mentions equal an earlier page's cutoff.
     let aliases = "metadata.aliases ?? []";
     let safe_aliases = format!(
         "type::is_array({aliases}) AND array::len({aliases}) <= 8 \
@@ -1577,6 +1592,7 @@ impl Repository {
                     "{eligible} AND array::any(metadata.aliases ?? [], |$alias| {alias_matches})"
                 )
             },
+            graph_alias_union_sql,
         )
         .await
     }
@@ -1597,6 +1613,32 @@ impl Repository {
             since,
             source_uri,
             graph_alias_eligible_sql,
+            graph_alias_union_sql,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn find_graph_entities_fresh_parent_alias_order(
+        &self,
+        query: &str,
+        limit: usize,
+        ranked_note_ids: Option<&[RecordId]>,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        self.find_graph_entities_with_reference_sql(
+            query,
+            limit,
+            ranked_note_ids,
+            since,
+            source_uri,
+            |eligible, alias_matches| {
+                format!(
+                    "{eligible} AND array::any(metadata.aliases ?? [], |$alias| {alias_matches})"
+                )
+            },
+            graph_entity_aliases_fresh_parent_sql,
         )
         .await
     }
@@ -1611,6 +1653,7 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
         alias_predicate: fn(&str, &str) -> String,
+        extracted_aliases_query: fn(&str) -> String,
     ) -> Result<Vec<GraphEntityMatch>> {
         let query = graph_query_normalize(query);
         if query.is_empty() || limit == 0 {
@@ -1641,7 +1684,7 @@ impl Repository {
                     limit,
                     scope.as_ref(),
                     alias_predicate,
-                    graph_alias_union_sql,
+                    extracted_aliases_query,
                 )
                 .await?;
             if !rows.is_empty() {

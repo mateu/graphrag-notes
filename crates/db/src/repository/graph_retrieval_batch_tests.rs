@@ -6,7 +6,7 @@ use super::*;
 use crate::init_memory;
 use chrono::TimeZone;
 use std::ops::Bound;
-use surrealdb::types::{Object, RecordIdKey, RecordIdKeyRange};
+use surrealdb::types::{Object, RecordIdKey, RecordIdKeyRange, ToSql};
 
 #[derive(Deserialize, SurrealValue)]
 struct EndpointComparison {
@@ -754,6 +754,22 @@ async fn alias_entity(repo: &Repository, key: &str, name: &str, extracted: bool)
     repo.upsert_entity(entity).await.unwrap().id.unwrap()
 }
 
+async fn alias_entity_at(repo: &Repository, id: RecordId, name: &str) -> RecordId {
+    let entity = Entity::new(name, graphrag_core::EntityType::Technology);
+    repo.db
+        .query("CREATE $id SET name = $name, canonical_name = $canonical, entity_type = 'technology', identity_key = $identity, metadata = $metadata")
+        .bind(("id", id.clone()))
+        .bind(("name", entity.name))
+        .bind(("canonical", entity.canonical_name))
+        .bind(("identity", format!("extracted-v1:{}", record_id_to_string(&id))))
+        .bind(("metadata", serde_json::json!({"aliases": ["GPT-4", "東京", "Needle Token"]})))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    id
+}
+
 async fn alias_mention(
     repo: &Repository,
     note_id: &RecordId,
@@ -771,23 +787,35 @@ async fn alias_mention(
         .unwrap();
 }
 
-// The references retain both the pre-optimization predicate and the alias-
-// first variant with its original $parent correlation. Compare all three
-// complete ordered graph payloads, including hydrated notes and provenance.
-async fn assert_alias_query_matches_original(
+// Retain both historical shared-plan references and the independent fresh
+// per-entity reference. Capture every complete payload before asserting so a
+// failure preserves entity rows, hydrated notes, seed order and provenance.
+struct AliasQueryComparison {
+    original: Vec<GraphEntityMatch>,
+    parent: Vec<GraphEntityMatch>,
+    fresh: Vec<GraphEntityMatch>,
+    candidate: Vec<GraphEntityMatch>,
+    payloads: Vec<serde_json::Value>,
+}
+
+async fn compare_alias_query_payloads(
     repo: &Repository,
     query: &str,
     limit: usize,
     ranked: Option<&[RecordId]>,
     since: Option<DateTime<Utc>>,
     uri: Option<String>,
-) -> Vec<GraphEntityMatch> {
+) -> AliasQueryComparison {
     let original = repo
         .find_graph_entities_original_alias_order(query, limit, ranked, since, uri.clone())
         .await
         .unwrap();
     let parent = repo
         .find_graph_entities_parent_alias_order(query, limit, ranked, since, uri.clone())
+        .await
+        .unwrap();
+    let fresh = repo
+        .find_graph_entities_fresh_parent_alias_order(query, limit, ranked, since, uri.clone())
         .await
         .unwrap();
     let candidate = match ranked {
@@ -798,18 +826,8 @@ async fn assert_alias_query_matches_original(
         None => repo.find_graph_entities(query, limit).await,
     }
     .unwrap();
-    assert_eq!(
-        serde_json::to_value(&candidate).unwrap(),
-        serde_json::to_value(&original).unwrap(),
-        "entity payload query={query:?}, limit={limit}, since={since:?}, uri={uri:?}"
-    );
-    assert_eq!(
-        serde_json::to_value(&candidate).unwrap(),
-        serde_json::to_value(&parent).unwrap(),
-        "local binding must preserve the alias-first parent query {query:?}"
-    );
     let mut payloads = Vec::new();
-    for entities in [&original, &parent, &candidate] {
+    for entities in [&original, &parent, &fresh, &candidate] {
         let ids = entities
             .iter()
             .map(|entity| entity.id.clone())
@@ -838,9 +856,50 @@ async fn assert_alias_query_matches_original(
             "entities": entities, "seeds": seeds, "notes": notes, "provenance": provenance,
         }));
     }
-    assert_eq!(payloads[0], payloads[1], "complete graph payload {query:?}");
-    assert_eq!(payloads[0], payloads[2], "local graph payload {query:?}");
-    candidate
+    if std::env::var_os("GRAPHRAG_GRAPH_ALIAS_PLAN_REPORT").is_some()
+        || payloads.windows(2).any(|pair| pair[0] != pair[1])
+    {
+        println!(
+            "graph-alias-differential-payload={}",
+            serde_json::json!({
+                "query": query, "limit": limit, "ranked": ranked, "since": since, "uri": uri,
+                "original_shared_plan": payloads[0], "parent_shared_plan": payloads[1],
+                "fresh_parent_plan": payloads[2], "candidate": payloads[3],
+            })
+        );
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    }
+    AliasQueryComparison {
+        original,
+        parent,
+        fresh,
+        candidate,
+        payloads,
+    }
+}
+
+async fn assert_alias_query_matches_original(
+    repo: &Repository,
+    query: &str,
+    limit: usize,
+    ranked: Option<&[RecordId]>,
+    since: Option<DateTime<Utc>>,
+    uri: Option<String>,
+) -> Vec<GraphEntityMatch> {
+    let comparison = compare_alias_query_payloads(repo, query, limit, ranked, since, uri).await;
+    assert_eq!(
+        comparison.payloads[2], comparison.payloads[3],
+        "fresh per-entity graph payload {query:?}"
+    );
+    assert_eq!(
+        comparison.payloads[0], comparison.payloads[1],
+        "historical graph payload {query:?}"
+    );
+    assert_eq!(
+        comparison.payloads[0], comparison.payloads[3],
+        "local graph payload {query:?}"
+    );
+    comparison.candidate
 }
 
 #[tokio::test]
@@ -1280,10 +1339,19 @@ async fn graph_alias_fast_path_keeps_malformed_and_oversized_error_order() {
                     uri.clone(),
                 )
                 .await;
+            let fresh = repo
+                .find_graph_entities_fresh_parent_alias_order(
+                    "Needle Token",
+                    10,
+                    Some(&[]),
+                    since,
+                    uri.clone(),
+                )
+                .await;
             let candidate = repo
                 .find_graph_entities_for_search("Needle Token", 10, &[], since, uri.clone())
                 .await;
-            for result in [parent, candidate] {
+            for result in [parent, fresh, candidate] {
                 match (&original, result) {
                     (Ok(original), Ok(candidate)) => assert_eq!(
                         serde_json::to_value(candidate).unwrap(),
@@ -1317,7 +1385,7 @@ struct NestedGraphEntityPlan {
     plan: serde_json::Value,
 }
 
-fn assert_mentions_access_plan(plan: &serde_json::Value, indexed: bool) {
+fn mention_plan_operators(plan: &serde_json::Value) -> Vec<&serde_json::Value> {
     fn collect<'a>(node: &'a serde_json::Value, operators: &mut Vec<&'a serde_json::Value>) {
         assert!(node.is_object(), "plan node must remain an object: {node}");
         assert!(node["operator"].is_string(), "missing operator: {node}");
@@ -1331,6 +1399,16 @@ fn assert_mentions_access_plan(plan: &serde_json::Value, indexed: bool) {
             }
         }
     }
+    assert!(
+        plan["total_rows"].as_u64().is_some(),
+        "EXPLAIN FULL must retain its actual execution count: {plan}"
+    );
+    let mut operators = Vec::new();
+    collect(plan, &mut operators);
+    operators
+}
+
+fn assert_mentions_access_plan(plan: &serde_json::Value, indexed: bool) {
     if std::env::var_os("GRAPHRAG_GRAPH_ALIAS_PLAN_REPORT").is_some() {
         // Emit the complete selected plan before checking it. Do not reduce
         // it to operator names or inspect SQL text/unexecuted embedded plans.
@@ -1339,12 +1417,7 @@ fn assert_mentions_access_plan(plan: &serde_json::Value, indexed: bool) {
             serde_json::json!({"indexed_expected": indexed, "plan": plan})
         );
     }
-    assert!(
-        plan["total_rows"].as_u64().is_some(),
-        "EXPLAIN FULL must retain its actual execution count: {plan}"
-    );
-    let mut operators = Vec::new();
-    collect(plan, &mut operators);
+    let operators = mention_plan_operators(plan);
     let index_scan = operators.iter().any(|node| {
         node["operator"] == "IndexScan" && node["attributes"]["index"] == "idx_mentions_entity_note"
     });
@@ -1356,6 +1429,88 @@ fn assert_mentions_access_plan(plan: &serde_json::Value, indexed: bool) {
         table_scan, !indexed,
         "selected mention fallback plan: {plan}"
     );
+}
+
+fn assert_mentions_dynamic_plan(plan: &serde_json::Value, resolved: Option<&RecordId>) {
+    // A block is planned without a transaction. Its runtime index selection
+    // creates a temporary operator that EXPLAIN does not retain as a child.
+    // Preserve the real tree/binding; never relabel DynamicScan as IndexScan.
+    println!("graph-local-alias-dynamic-plan={plan}");
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    let operators = mention_plan_operators(plan);
+    let scans = operators
+        .iter()
+        .filter(|node| {
+            node["operator"] == "DynamicScan" && node["attributes"]["source"] == "mentions"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(scans.len(), 1, "actual nested mention scan: {plan}");
+    let predicate = scans[0]["attributes"]["predicate"].as_str().unwrap();
+    let binding = resolved
+        .map(|id| format!("out = {}", id.to_sql()))
+        .unwrap_or_else(|| "out = $parent.id".to_string());
+    assert!(
+        predicate.contains(&binding),
+        "actual nested binding {binding:?}: {plan}"
+    );
+    assert!(
+        !operators.iter().any(|node| node["operator"] == "IndexScan"),
+        "do not infer a retained nested IndexScan child: {plan}"
+    );
+}
+
+async fn direct_alias_rows_and_plan(
+    repo: &Repository,
+    select: &str,
+    entity: &RecordId,
+    query: &str,
+    no_index: bool,
+) -> (Vec<Vec<String>>, serde_json::Value) {
+    let mut select = select.replace("out = $parent.id", "out = $entity");
+    if no_index {
+        select = select.replace("FROM mentions", "FROM mentions WITH NOINDEX");
+    }
+    let mut response = repo
+        .db
+        .query(format!("{select}; {select} EXPLAIN FULL;"))
+        .bind(("entity", entity.clone()))
+        .bind(("query", query.to_string()))
+        .bind(("since", Option::<String>::None))
+        .bind(("source_uri", Option::<String>::None))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let rows = response.take(0).unwrap();
+    let plans: Vec<serde_json::Value> = response.take(1).unwrap();
+    assert_eq!(plans.len(), 1);
+    (rows, plans.into_iter().next().unwrap())
+}
+
+async fn local_alias_rows(
+    repo: &Repository,
+    select: &str,
+    entity: &RecordId,
+    query: &str,
+) -> Vec<Vec<String>> {
+    let nested = graph::graph_entity_mentions_local_sql(select);
+    let rows: Vec<Vec<Vec<String>>> = repo
+        .db
+        .query(format!(
+            "SELECT VALUE ({nested}) FROM entity WHERE id = $entity"
+        ))
+        .bind(("entity", entity.clone()))
+        .bind(("query", query.to_string()))
+        .bind(("since", Option::<String>::None))
+        .bind(("source_uri", Option::<String>::None))
+        .await
+        .unwrap()
+        .check()
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    rows.into_iter().next().unwrap()
 }
 
 #[tokio::test]
@@ -1445,10 +1600,19 @@ async fn graph_alias_local_binding_preserves_malformed_errors_beyond_the_alias_p
                         None,
                     )
                     .await;
+                let fresh = repo
+                    .find_graph_entities_fresh_parent_alias_order(
+                        "Needle Token",
+                        10,
+                        Some(&[]),
+                        None,
+                        None,
+                    )
+                    .await;
                 let candidate = repo
                     .find_graph_entities_for_search("Needle Token", 10, &[], None, None)
                     .await;
-                for actual in [parent, candidate] {
+                for actual in [parent, fresh, candidate] {
                     match (&original, actual) {
                         (Ok(expected), Ok(actual)) => assert_eq!(
                             serde_json::to_value(expected).unwrap(),
@@ -1480,8 +1644,20 @@ async fn graph_alias_local_binding_preserves_malformed_errors_beyond_the_alias_p
 async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_rank_cap() {
     let repo = Repository::new(init_memory().await.unwrap());
     let owner = source(&repo, "local-duplicates", "fixture://local-duplicates").await;
-    let first = alias_entity(&repo, "local-duplicates-a", "A Compiler", true).await;
-    let second = alias_entity(&repo, "local-duplicates-b", "B Compiler", true).await;
+    // Retain the exact fictional IDs from the failed native attempt. Their
+    // primary-table order is Dense, B, A, independently of creation/name order.
+    let first = alias_entity_at(
+        &repo,
+        RecordId::new("entity", "qya4wam3ynpp12yfdhk5"),
+        "A Compiler",
+    )
+    .await;
+    let second = alias_entity_at(
+        &repo,
+        RecordId::new("entity", "dk4hu2m2xbcbsqnigtht"),
+        "B Compiler",
+    )
+    .await;
     let lower_rank = note(
         &repo,
         RecordId::new("note", "local-duplicates-a"),
@@ -1535,7 +1711,12 @@ async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_ra
     // Alias paging is explicitly ordered, but many relation rows can share
     // the same endpoint. Place different matching spellings across its 200-
     // mention boundary and retain exact union/cap behavior under those ties.
-    let dense = alias_entity(&repo, "local-duplicates-dense", "Dense Compiler", true).await;
+    let dense = alias_entity_at(
+        &repo,
+        RecordId::new("entity", "6r9zx8ys6vlwqop3jj64"),
+        "Dense Compiler",
+    )
+    .await;
     for index in 0..220 {
         repo.db
             .query("CREATE $id SET in = $note, out = $entity, metadata = $metadata")
@@ -1565,8 +1746,61 @@ async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_ra
             .collect::<Vec<_>>()
             .join(" ")
     );
+    let entity_order: Vec<RecordId> = repo
+        .db
+        .query("SELECT VALUE id FROM entity ORDER BY id ASC")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(entity_order, [dense.clone(), second.clone(), first.clone()]);
+    // An independently bound query proves B owns matching eligible evidence.
+    // It has no previous entity's shared correlated plan/TopK threshold.
+    let eligible = graph_endpoint_eligible_sql("in");
+    let second_aliases: Vec<Vec<String>> = repo
+        .db
+        .query(format!("SELECT VALUE array::filter(metadata.aliases ?? [], |$alias| $alias = 'Needle Token') FROM mentions WHERE out = $entity AND {eligible} AND array::any(metadata.aliases ?? [], |$alias| $alias = 'Needle Token') ORDER BY in ASC LIMIT 200"))
+        .bind(("entity", second.clone()))
+        .bind(("since", Option::<String>::None))
+        .bind(("source_uri", Option::<String>::None))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(second_aliases, [vec!["Needle Token".to_string()]]);
     for scope in [None, Some(ranked.as_slice())] {
-        assert_alias_query_matches_original(&repo, &query, 10, scope, None, None).await;
+        let comparison = compare_alias_query_payloads(&repo, &query, 10, scope, None, None).await;
+        assert_eq!(
+            comparison.payloads[2], comparison.payloads[3],
+            "candidate must preserve the independent fresh per-entity full graph payload"
+        );
+        assert_eq!(comparison.fresh.len(), 3);
+        assert_eq!(comparison.candidate.len(), 3);
+        assert!(comparison.fresh.iter().any(|row| row.id == second));
+        // The pinned unwrapped correlated query reuses Dense's note:z TopK
+        // cutoff when evaluating B. Equal note:z evidence is rejected before
+        // B's own empty heap is populated; A's lower note:a still survives.
+        // Preserve this false-negative as explicit bug evidence, not a waived
+        // comparison or a retry dependent on randomly generated entity IDs.
+        assert_eq!(comparison.original.len(), 2);
+        assert_eq!(comparison.parent.len(), 2);
+        assert_eq!(comparison.payloads[0], comparison.payloads[1]);
+        assert_eq!(
+            comparison
+                .original
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>(),
+            [first.clone(), dense.clone()]
+        );
+        assert_eq!(
+            comparison
+                .candidate
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>(),
+            [first.clone(), second.clone(), dense.clone()]
+        );
     }
 }
 
@@ -1708,7 +1942,12 @@ async fn graph_alias_local_binding_plan_falls_back_for_unsafe_mention_shapes() {
         .unwrap();
     let plan: Vec<NestedGraphEntityPlan> = response.take(0).unwrap();
     assert_eq!(plan.len(), 1);
-    assert_mentions_access_plan(&plan[0].plan, true);
+    assert_mentions_dynamic_plan(&plan[0].plan, Some(&entity));
+    let local_rows = local_alias_rows(&repo, &select, &entity, "Needle Token").await;
+    let (direct_rows, direct_plan) =
+        direct_alias_rows_and_plan(&repo, &select, &entity, "Needle Token", false).await;
+    assert_mentions_access_plan(&direct_plan, true);
+    assert_eq!(local_rows, direct_rows, "actual block/direct-bound rows");
     let mut complex = Object::new();
     complex.insert("kind", 1.0f64);
     complex.insert("ordinal", 0i64);
@@ -1751,8 +1990,8 @@ async fn graph_alias_local_binding_plan_falls_back_for_unsafe_mention_shapes() {
             .check()
             .unwrap();
         // This EXPLAIN runs inside the actual entity projection and selects
-        // the legacy branch at runtime; its result must not be the index plan
-        // of the separate safe-shape probe or of the unselected fast branch.
+        // the legacy branch. Retain its parent binding/DynamicScan tree,
+        // separately from the direct NOINDEX control's actual TableScan.
         let mut response = repo
             .db
             .query(sql.clone())
@@ -1764,7 +2003,12 @@ async fn graph_alias_local_binding_plan_falls_back_for_unsafe_mention_shapes() {
             .unwrap();
         let plan: Vec<NestedGraphEntityPlan> = response.take(0).unwrap();
         assert_eq!(plan.len(), 1);
-        assert_mentions_access_plan(&plan[0].plan, false);
+        assert_mentions_dynamic_plan(&plan[0].plan, None);
+        let local_rows = local_alias_rows(&repo, &select, &entity, "Needle Token").await;
+        let (direct_rows, direct_plan) =
+            direct_alias_rows_and_plan(&repo, &select, &entity, "Needle Token", true).await;
+        assert_mentions_access_plan(&direct_plan, false);
+        assert_eq!(local_rows, direct_rows, "unsafe block/NOINDEX control rows");
         assert_alias_query_matches_original(
             &repo,
             "Needle Token",
@@ -1913,7 +2157,23 @@ async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_nativ
                     &row.id.key,
                     RecordIdKey::Number(_) | RecordIdKey::String(_) | RecordIdKey::Uuid(_)
                 );
-                assert_mentions_access_plan(&row.plan, local && simple_key);
+                if local {
+                    assert_mentions_dynamic_plan(&row.plan, Some(&row.id));
+                    let local_rows =
+                        local_alias_rows(&repo, &select, &row.id, "Needle Token").await;
+                    let (direct_rows, direct_plan) =
+                        direct_alias_rows_and_plan(&repo, &select, &row.id, "Needle Token", false)
+                            .await;
+                    assert_mentions_access_plan(&direct_plan, simple_key);
+                    assert_eq!(
+                        local_rows,
+                        direct_rows,
+                        "block/direct typed entity {}",
+                        row.id.to_sql()
+                    );
+                } else {
+                    assert_mentions_access_plan(&row.plan, false);
+                }
             }
             outputs.push(rows);
             plans.push(serde_json::to_value(&nested_plans).unwrap());
@@ -1940,6 +2200,114 @@ async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_nativ
         )
         .await;
     }
+    // A runtime access-path fingerprint, separate from the production guard:
+    // the complex keys below MUST trigger the production fallback. The raw
+    // test-only local block bypasses that guard to expose DynamicScan's actual
+    // driver. Equal-in ties visit the primary and association encodings in
+    // opposite orders because nested numeric kind tags differ between them.
+    let probe_entity = alias_entity_at(
+        &repo,
+        RecordId::new("entity", "runtime-driver-probe"),
+        "Runtime Driver Probe",
+    )
+    .await;
+    for (key, label) in [
+        (
+            RecordIdKey::Array(
+                vec![
+                    surrealdb::types::Value::Number(surrealdb::types::Number::Int(1)),
+                    surrealdb::types::Value::Number(surrealdb::types::Number::Int(1)),
+                ]
+                .into(),
+            ),
+            "Integer Fingerprint",
+        ),
+        (
+            RecordIdKey::Array(
+                vec![
+                    surrealdb::types::Value::Number(surrealdb::types::Number::Float(1.0)),
+                    surrealdb::types::Value::Number(surrealdb::types::Number::Int(0)),
+                ]
+                .into(),
+            ),
+            "Float Fingerprint",
+        ),
+    ] {
+        repo.db
+            .query("CREATE $id SET in = $note, out = $entity, metadata = $metadata")
+            .bind(("id", RecordId::new("mentions", key)))
+            .bind(("note", note_ids[0].clone()))
+            .bind(("entity", probe_entity.clone()))
+            .bind((
+                "metadata",
+                serde_json::json!({"aliases": ["Needle Token", label]}),
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    let alias_matches = "string::contains($query, $alias)";
+    let predicate = graph::graph_alias_eligible_sql(&eligible, alias_matches);
+    let select = format!("SELECT VALUE {{ id: id, in: in, out: out, aliases: array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) }} FROM mentions WHERE out = $parent.id AND {predicate} ORDER BY in ASC LIMIT 1");
+    let direct = select.replace("out = $parent.id", "out = $entity");
+    let no_index = direct.replace("FROM mentions", "FROM mentions WITH NOINDEX");
+    let local_select = select.replace("out = $parent.id", "out = $graph_entity_id");
+    let local = format!("{{ LET $graph_entity_id = id; ({local_select}); }}");
+    let local_plan = format!("{{ LET $graph_entity_id = id; ({local_select} EXPLAIN FULL); }}");
+    let mut response = repo
+        .db
+        .query(format!(
+            "{direct}; {direct} EXPLAIN FULL; {no_index}; {no_index} EXPLAIN FULL; \
+         SELECT VALUE ({local}) FROM entity WHERE id = $entity; \
+         SELECT id, ({local_plan}) AS plan FROM entity WHERE id = $entity;"
+        ))
+        .bind(("entity", probe_entity.clone()))
+        .bind((
+            "query",
+            "Needle Token Integer Fingerprint Float Fingerprint",
+        ))
+        .bind(("since", Option::<String>::None))
+        .bind(("source_uri", Option::<String>::None))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let index_rows: Vec<serde_json::Value> = response.take(0).unwrap();
+    let index_plans: Vec<serde_json::Value> = response.take(1).unwrap();
+    let table_rows: Vec<serde_json::Value> = response.take(2).unwrap();
+    let table_plans: Vec<serde_json::Value> = response.take(3).unwrap();
+    let local_rows: Vec<Vec<serde_json::Value>> = response.take(4).unwrap();
+    let local_plans: Vec<NestedGraphEntityPlan> = response.take(5).unwrap();
+    println!(
+        "graph-local-alias-runtime-driver-probe={}",
+        serde_json::json!({
+            "test_only_guard_bypass": true,
+            "indexed_control_rows": index_rows, "noindex_control_rows": table_rows,
+            "raw_local_block_rows": local_rows, "indexed_control_plan": index_plans,
+            "noindex_control_plan": table_plans, "actual_local_plan": local_plans,
+        })
+    );
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    assert_eq!(index_plans.len(), 1);
+    assert_eq!(table_plans.len(), 1);
+    assert_eq!(local_plans.len(), 1);
+    assert_mentions_access_plan(&index_plans[0], true);
+    assert_mentions_access_plan(&table_plans[0], false);
+    assert_mentions_dynamic_plan(&local_plans[0].plan, Some(&probe_entity));
+    assert_eq!(index_rows.len(), 1);
+    assert_eq!(table_rows.len(), 1);
+    assert_eq!(local_rows.len(), 1);
+    assert_eq!(index_rows[0]["aliases"][1], "Float Fingerprint");
+    assert_eq!(table_rows[0]["aliases"][1], "Integer Fingerprint");
+    assert_ne!(
+        index_rows, table_rows,
+        "probe must distinguish actual drivers"
+    );
+    assert_eq!(
+        local_rows[0], index_rows,
+        "raw block must use the indexed driver"
+    );
 }
 
 #[tokio::test]
