@@ -28,7 +28,8 @@ surrealdb-types = "3"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# Portable JSONL archives must recover the exact stored finite binary64 values.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 toml = "1.1"
 
 # HTTP clients for inference services

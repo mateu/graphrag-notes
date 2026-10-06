@@ -126,6 +126,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn portable_jsonl_preserves_finite_binary64_values() {
+        let mut values = vec![
+            0.0,
+            -0.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            -f64::MAX,
+        ];
+        values.extend((0..4096_u32).map(|index| {
+            let widened = f64::from(f32::from_bits(0x3d00_0001 + index * 7919));
+            f64::from_bits(widened.to_bits() + u64::from(index % 2))
+        }));
+        let record = PortableRecord {
+            table: "note".into(),
+            record: serde_json::json!({"id": "note:fictional", "embedding": values}),
+        };
+        let line = serde_json::to_string(&record).unwrap();
+        let decoded: PortableRecord = serde_json::from_str(&line).unwrap();
+        let decoded_bits = decoded.record["embedding"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap().to_bits())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decoded_bits,
+            values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn rejects_unknown_format_versions_and_unsafe_payloads() {
         let mut manifest = PortableBackupManifest::new(8, false);
         manifest.payload.sha256 = "0".repeat(64);

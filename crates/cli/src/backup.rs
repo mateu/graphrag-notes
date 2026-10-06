@@ -2406,7 +2406,8 @@ mod tests {
     #[tokio::test]
     async fn vector_backup_restores_entity_mentions_with_optional_embeddings() {
         let temp = tempdir().unwrap();
-        let repo = Repository::new(init_memory().await.unwrap());
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
         repo.record_embedding_metadata(
             &graphrag_db::compatibility::EmbeddingIdentity::new("fixture", "model", 1024),
             None,
@@ -2436,6 +2437,51 @@ mod tests {
             serde_json::json!([]),
             "the real extraction transaction persists absence as an empty array"
         );
+
+        // Generate fictional float32-origin components and finite binary64
+        // neighbors. The latter must survive as stored values, rather than
+        // merely rounding back to the same serving float32 vector.
+        let vector = (0..1024_u32)
+            .map(|index| {
+                let widened = f64::from(f32::from_bits(0x3d00_0001 + index * 7919));
+                if index % 2 == 0 {
+                    widened
+                } else {
+                    f64::from_bits(widened.to_bits() + 1)
+                }
+            })
+            .collect::<Vec<_>>();
+        let opaque =
+            serde_json::json!({"fractions": &vector[..16], "label": "fictional precision"});
+        db.query(
+            "CREATE source:precision SET source_type = 'manual', title = 'Precision source', \
+             uri = 'mcp://capture/precision/source', metadata.remote_capture.source = $opaque; \
+             UPDATE $note SET embedding = $vector, source_id = source:precision; \
+             UPDATE entity SET embedding = $vector WHERE name = 'Computed entity vector'; \
+             CREATE conversation:precision SET uuid = 'precision-conversation', \
+             summary = 'Fictional summary', summary_embedding = $vector, metadata = $opaque, \
+             created_at = time::now(), updated_at = time::now(); \
+             CREATE message:precision SET message_key = 'precision-message', \
+             conversation_id = conversation:precision, conversation_uuid = 'precision-conversation', \
+             message_index = 0, role = 'user', content = 'Fictional message', embedding = $vector; \
+             CREATE note_from_conversation:precision SET in = $note, out = conversation:precision; \
+             CREATE note_from_message:precision SET in = $note, out = message:precision; \
+             CREATE remote_capture_receipt:precision SET instance_id = 'precision-owner', \
+             request_id = 'precision-capture', payload_fingerprint = 'fictional', \
+             payload = $opaque, result = $opaque, note_id = $note, source_id = source:precision, \
+             created_at = time::now(), updated_at = time::now(); \
+             CREATE remote_mutation_receipt:precision SET instance_id = 'precision-owner', \
+             request_id = 'precision-mutation', operation = 'edit_note', target = $note, \
+             payload_fingerprint = 'fictional', payload = $opaque, result = $opaque, \
+             created_at = time::now(), updated_at = time::now();",
+        )
+        .bind(("note", note.id.as_ref().unwrap().clone()))
+        .bind(("vector", vector.clone()))
+        .bind(("opaque", opaque.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
         let archive = temp.path().join("optional-entity-vectors");
         let created = create_backup(&repo, &archive, true).await.unwrap();
         assert_eq!(verify_backup(&archive).unwrap(), created);
@@ -2451,6 +2497,30 @@ mod tests {
             })
             .unwrap();
         assert!(absent.record.get("embedding").is_none());
+        for (table, field) in [
+            ("note", "embedding"),
+            ("entity", "embedding"),
+            ("conversation", "summary_embedding"),
+            ("message", "embedding"),
+        ] {
+            let archived = records
+                .iter()
+                .find(|record| record.table == table && record.record[field].is_array())
+                .unwrap();
+            assert_eq!(
+                archived.record[field]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap().to_bits())
+                    .collect::<Vec<_>>(),
+                vector
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                "{table}.{field} must preserve every binary64 component through JSONL decoding"
+            );
+        }
         let target = temp.path().join("restored-optional-entity-vectors");
         restore_backup(&archive, &target, false).await.unwrap();
         let restored = Repository::new(init_persistent(&target).await.unwrap());
@@ -2465,7 +2535,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .embedding,
-            vec![0.1; 1024]
+            vector.iter().map(|value| *value as f32).collect::<Vec<_>>()
         );
         let restored_entities = restored.get_entities_for_note(&note_id).await.unwrap();
         assert_eq!(restored_entities.len(), 2);
@@ -2481,8 +2551,24 @@ mod tests {
                 .find(|entity| entity.name == "Computed entity vector")
                 .unwrap()
                 .embedding,
-            vec![0.2; 1024]
+            vector.iter().map(|value| *value as f32).collect::<Vec<_>>()
         );
+
+        // Compare complete canonical records, including exact vector lexemes,
+        // typed references, timestamps, metadata, and immutable receipts.
+        let reexported = temp.path().join("reexported-precision-vectors");
+        let reexported_summary = create_backup(&restored, &reexported, true).await.unwrap();
+        assert_eq!(verify_backup(&reexported).unwrap(), reexported_summary);
+        assert_eq!(reexported_summary.record_counts, created.record_counts);
+        let original_payload = fs::read(archive.join(RECORDS_FILE)).unwrap();
+        assert_eq!(
+            fs::read(reexported.join(RECORDS_FILE)).unwrap(),
+            original_payload
+        );
+        let exported_jsonl = temp.path().join("precision.jsonl");
+        export_jsonl(&restored, &exported_jsonl).await.unwrap();
+        verify_jsonl(&exported_jsonl).unwrap();
+        assert_eq!(fs::read(exported_jsonl).unwrap(), original_payload);
     }
 
     #[tokio::test]
