@@ -431,6 +431,49 @@ esac
         self.assertEqual((bundle / 'scripts/native-mcp/envelope.py').read_bytes(),
                          (self.repo / 'scripts/native-mcp/envelope.py').read_bytes())
 
+    def test_packaged_clients_run_without_changing_versioned_bundle(self):
+        # Exercise real importing entrypoints after packaging, with no providers.
+        for relative in ("scripts/validate-native-mcp.py", "scripts/validate-daily-workflow.py",
+                         "scripts/native-mcp/extended.py", "scripts/native-mcp/envelope.py",
+                         "scripts/refresh-openclaw-memory.py", "scripts/openclaw_memory_refresh.py",
+                         "scripts/benchmark-search.py", "scripts/evaluate-retrieval.py"):
+            if not (SCRIPT.parents[1] / relative).exists():
+                continue  # Draft dependencies are required before final source packaging.
+            (self.repo / relative).write_bytes((SCRIPT.parents[1] / relative).read_bytes())
+        self.commit()
+        self.build_record = self.root / "client-use-build.json"
+        self.seal_build()
+        release.package(self.package_args())
+        installed = self.install_fixture(self.root / "dist", clients_only=True)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        bundle = self.root / "installed-data/releases" / self.tag
+        driver = bundle / "scripts/validate-native-mcp.py"
+        environment = {k: v for k, v in os.environ.items() if k not in
+                       ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")}
+        invoked = subprocess.run([sys.executable, str(driver), "--help"],
+                                 capture_output=True, text=True, env=environment)
+        self.assertEqual(invoked.returncode, 0, invoked.stderr)
+        for name in ("refresh-openclaw-memory.py", "benchmark-search.py"):
+            if (SCRIPT.parents[1] / "scripts" / name).exists():
+                invoked = subprocess.run([sys.executable, str(bundle / "scripts" / name), "--help"],
+                                         capture_output=True, text=True, env=environment)
+                self.assertEqual(invoked.returncode, 0, invoked.stderr)
+        loader = """import importlib.util,runpy,sys
+runpy.run_path(sys.argv[1])
+for path in sys.argv[2:]:
+ spec=importlib.util.spec_from_file_location('installed_fixture',path)
+ module=importlib.util.module_from_spec(spec)
+ spec.loader.exec_module(module)
+"""
+        loaded = subprocess.run([sys.executable, "-c", loader, str(driver),
+                                 str(bundle / "scripts/native-mcp/extended.py"),
+                                 str(bundle / "scripts/validate-daily-workflow.py")],
+                                capture_output=True, text=True, env=environment)
+        self.assertEqual(loaded.returncode, 0, loaded.stderr)
+        self.assertEqual(list(bundle.rglob("__pycache__")), [])
+        reinstalled = self.install_fixture(self.root / "dist", clients_only=True)
+        self.assertEqual(reinstalled.returncode, 0, reinstalled.stderr)
+
     def test_client_bundle_installs_without_python_and_refuses_edited_version(self):
         info = release.package(self.package_args())
         installed = self.install_fixture(self.root / "dist")
