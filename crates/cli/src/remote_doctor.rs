@@ -314,7 +314,7 @@ pub(crate) async fn run(
                 _ => ReadinessState::Unknown,
             };
             report.application.sources = if retained_graph {
-                Readiness::new(state, "Bound client evidence describes indexed originals/vectors separately from retained older graph policy; current source freshness is unknown.", Some("Inspect collection status, and have the owner explicitly reprocess the retained graph-policy parts when ready."))
+                Readiness::new(state, "Bound client evidence describes indexed originals/vectors separately from retained older graph policy; current source freshness is unknown.", Some("Inspect collection status, and have the owner review an explicit upload-policy migration for retained graph parts."))
             } else {
                 Readiness::new(state, "Bound client collection refresh evidence is available; it does not prove the source is still current.", Some("Inspect client_refresh_evidence and run refresh/resume as appropriate."))
             };
@@ -373,7 +373,11 @@ pub(crate) async fn run(
                     evidence.last_success_at.as_deref().unwrap_or("unknown")
                 );
                 if let Some(parts) = evidence.retained_extraction_policy_parts {
-                    println!("  Retained older extraction-policy parts: {parts}; collection status describes indexed original/vector evidence separately. Graph policy needs explicit owner reprocessing.");
+                    if parts > 0 {
+                        println!("  Retained older extraction-policy parts: {parts}; collection status describes indexed original/vector evidence separately. Graph policy needs explicit owner reprocessing.");
+                    } else {
+                        println!("  Retained older extraction-policy parts: 0 (bound client evidence; current graph policy not established).");
+                    }
                 }
                 if let Some(plan) = &evidence.retry.plan_sha256 {
                     println!("  Pending cleanup retry: review the saved plan, then use the refresh adapter with --reconcile --yes --plan-sha256 {plan}.");

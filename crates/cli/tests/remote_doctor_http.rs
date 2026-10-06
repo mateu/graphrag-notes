@@ -212,6 +212,15 @@ async fn remote_walkthrough_distinguishes_unknown_stopped_auth_transport_and_par
         .unwrap();
     let report: Value = serde_json::from_slice(&complete.stdout).unwrap();
     assert_eq!(report["application"]["sources"]["state"], "unknown");
+    let human = command(&endpoint, TOKEN)
+        .args(["doctor", "--refresh-status-file", status.to_str().unwrap()])
+        .output()
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&human.stdout)
+        .contains("Retained older extraction-policy parts: 0"));
+    assert!(!String::from_utf8_lossy(&human.stdout)
+        .contains("Graph policy needs explicit owner reprocessing"));
     evidence["status"] = json!("partial");
     evidence["retry"] = json!({"action":"reconcile", "plan_sha256":"c".repeat(64)});
     std::fs::write(&status, serde_json::to_vec(&evidence).unwrap()).unwrap();

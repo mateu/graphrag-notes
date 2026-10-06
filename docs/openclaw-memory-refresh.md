@@ -86,12 +86,15 @@ is current. `retained_extraction_policy_parts` records that count separately in
 status evidence. Remote doctor reports partial source readiness with owner
 reprocessing guidance, even when the indexed original/vector refresh completed.
 Changed or retired graph parts with that older policy fail with
-`retained_extraction_policy_requires_owner_reprocessing` until the owner has
-explicitly reprocessed and the collection's policy evidence has been reviewed.
+`retained_extraction_policy_requires_owner_reprocessing` pending a separate,
+reviewed owner upload-policy migration. Ordinary `extract-entities --force-note`
+enriches notes but does not rewrite the originating upload job's policy snapshot
+or clear this fence. This adapter does not implement that policy migration;
+do not edit its saved state to bypass the old applied-policy evidence.
 Registered unchanged graph parts can be retained with the same explicit
 `--adopt-existing-policy` choice without any upload or job. Use matching client
-and service builds; a service lacking the applied-policy fields fails before
-admission and needs upgrading.
+and service builds; source inspection lacking the applied-policy fields fails
+verification and needs upgrading.
 
 Metadata registration sets the server's `preserve_unchanged` upload guard. Under
 the generation lock, exact input, title, extraction choice and original applied policy must
