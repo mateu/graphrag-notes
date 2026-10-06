@@ -17,6 +17,10 @@ pub const MAX_REMOTE_UPLOAD_CHUNKS: usize = 200;
 const MAX_REMOTE_JSON_BYTES: usize = 16 * 1024;
 const MAX_REMOTE_CLAIM_SCAN: usize = 100;
 const FENCE: &str = "remote-upload-worker-fence";
+// Status requests must not materialize private extraction checkpoints (up to
+// 16 MiB each) or saved inputs. Project their redaction inside the database,
+// before a caller's bounded list can be deserialized in the service process.
+const STATUS_FIELDS: &str = "id, job_type, source_generation, scope, item_ids, status, total_count, completed_count, failed_count, checkpoint, last_error, created_at, updated_at, finished_at, remote_instance_id, remote_request_id, remote_payload_fingerprint, {} AS remote_input, remote_admission, IF remote_result.policy_migration_stage IS NOT NONE THEN NONE ELSE remote_result END AS remote_result, remote_source_id, remote_source_uri, remote_source_generation, remote_admission_order, remote_phase, remote_migration_contract_version, remote_cancel_requested, remote_service_epoch, remote_worker_token";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RemoteUploadInput {
@@ -593,10 +597,9 @@ impl Repository {
         id: &str,
     ) -> Result<Option<RemoteUploadJobStatus>> {
         identity(instance)?;
-        Ok(self
-            .remote_job_row(instance, &job_id(id)?)
-            .await?
-            .map(JobRow::status))
+        let row: Option<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE id = $id AND job_type = 'remote_upload' AND remote_instance_id = $instance LIMIT 1"))
+            .bind(("id", job_id(id)?)).bind(("instance", instance.to_string())).await?.take(0)?;
+        Ok(row.map(JobRow::status))
     }
 
     async fn remote_job_rows(&self, instance: &str, limit: usize) -> Result<Vec<JobRow>> {
@@ -627,12 +630,15 @@ impl Repository {
         instance: &str,
         limit: usize,
     ) -> Result<Vec<RemoteUploadJobStatus>> {
-        Ok(self
-            .remote_job_rows(instance, limit)
-            .await?
-            .into_iter()
-            .map(JobRow::status)
-            .collect())
+        identity(instance)?;
+        if !(1..=200).contains(&limit) {
+            return Err(DbError::InvalidRemoteRequest(
+                "job limit must be 1–200".into(),
+            ));
+        }
+        let rows: Vec<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance ORDER BY updated_at DESC, id ASC LIMIT $limit"))
+            .bind(("instance", instance.to_string())).bind(("limit", limit)).await?.take(0)?;
+        Ok(rows.into_iter().map(JobRow::status).collect())
     }
 
     async fn cancel_remote_upload_row(&self, instance: &str, id: &str) -> Result<JobRow> {

@@ -182,6 +182,11 @@ impl Repository {
             .get_source(&job.source_uri)
             .await?
             .ok_or_else(|| DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id)))?;
+        if source.successful_generation >= source.generation {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
         let mut scopes = Vec::new();
         let mut old_ids = HashSet::new();
         let mut new_ids = HashSet::new();
@@ -311,6 +316,11 @@ impl Repository {
             .get_source(&job.source_uri)
             .await?
             .ok_or_else(|| DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id)))?;
+        if source.successful_generation >= source.generation {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
         let mut old_ids = HashSet::new();
         let mut new_ids = HashSet::new();
         for (old_id, new_id, _) in successors {
@@ -368,8 +378,23 @@ impl Repository {
                 )));
             }
         }
-        // Live manual relationships are copied under the lifecycle fence. Old
-        // mentions must never overwrite the explicitly refreshed graph.
+        // A prior promotion attempt may have copied relationships before its
+        // graph/visibility transaction failed. Rebuild those private successor
+        // dependents from the current live generation so deleted manual edges
+        // and removed chat provenance cannot reappear on a later retry.
+        let hidden_notes = job
+            .job
+            .item_ids
+            .iter()
+            .map(|id| parse_record_id(id, Some("note")))
+            .collect::<Result<Vec<_>>>()?;
+        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} LET $owned_notes = (SELECT VALUE id FROM note WHERE id IN $notes AND source_id = $source AND source_generation = $generation); IF array::len($owned_notes) != array::len($notes) {{ THROW '{FENCE}'; }}; DELETE supports WHERE in IN $notes OR out IN $notes; DELETE contradicts WHERE in IN $notes OR out IN $notes; DELETE derived_from WHERE in IN $notes OR out IN $notes; DELETE related_to WHERE in IN $notes OR out IN $notes; DELETE note_from_conversation WHERE in IN $notes; DELETE note_from_message WHERE in IN $notes; COMMIT TRANSACTION;", guard_sql()))
+            .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
+            .bind(("source", job.source_id.clone())).bind(("generation", job.source_generation))
+            .bind(("notes", hidden_notes)).await?;
+        check_write(response.take_errors(), lease)?;
+        // Live manual relationships are then copied under the lifecycle fence.
+        // Old mentions never overwrite the explicitly refreshed graph.
         self.copy_note_dependents_to_successors_with_options_locked(successors, false, false)
             .await?;
         let mut metadata = source.metadata;

@@ -651,6 +651,28 @@ async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_e
         .await
         .unwrap();
     let old_edge = accepted.resulting_edge_id.unwrap();
+    let direct_manual = repo
+        .create_note(graphrag_core::Note::new("Fictional direct manual endpoint"))
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    repo.create_edge(
+        &old_id,
+        &direct_manual,
+        graphrag_core::EdgeType::RelatedTo,
+        None,
+    )
+    .await
+    .unwrap();
+    let direct_edge = repo
+        .get_note_edges(&graphrag_core::record_id_to_string(&old_id))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|edge| edge.in_id == direct_manual || edge.out_id == direct_manual)
+        .unwrap()
+        .id;
     let old_mentions = raw(&repo, "mentions").await;
     let old_entities = raw(&repo, "entity").await;
     let old_notes = raw(&repo, "note").await;
@@ -725,6 +747,17 @@ async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_e
         .await
         .unwrap();
     assert_eq!(failed.phase, "migration_extracting");
+    // The copy succeeded before visibility failed. A subsequent user deletion
+    // of the still-live direct edge must remove its stale staged counterpart
+    // on retry, rather than publishing a resurrected manual relationship.
+    let staged_edges = raw(&repo, "related_to").await;
+    assert_eq!(staged_edges.len(), 4);
+    db.query("DELETE $edge")
+        .bind(("edge", direct_edge))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
     assert_eq!(
         resumed
             .get_uploaded_source(&original.source_id)
@@ -779,6 +812,11 @@ async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_e
         "completed"
     );
     assert_eq!(raw(&repo, "related_to").await.len(), 1);
+    assert!(repo
+        .get_note_edges(&graphrag_core::record_id_to_string(&direct_manual))
+        .await
+        .unwrap()
+        .is_empty());
     let retargeted = repo
         .get_edge_proposal(&proposal_id)
         .await

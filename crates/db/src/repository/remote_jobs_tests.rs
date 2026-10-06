@@ -1829,3 +1829,69 @@ async fn minimal_recovery_fence_settles_damaged_post_claim_input_without_restart
         );
     }
 }
+
+#[tokio::test]
+async fn status_query_redacts_private_checkpoints_and_saved_input_before_materializing_rows() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let private = serde_json::json!({"policy_migration_stage":{"version":1,"batches":[],"padding":"x".repeat(256*1024)}});
+    let public_result = serde_json::json!({"status":"completed","generation":1});
+    for (request, result) in [
+        ("private-checkpoint", private.clone()),
+        ("public-outcome", public_result.clone()),
+    ] {
+        let admitted = repo
+            .admit_remote_upload(input("owner", request, "Fictional exact input"))
+            .await
+            .unwrap();
+        db.query("UPDATE $id SET remote_result = $result, remote_input = $input")
+            .bind((
+                "id",
+                job_id(admitted.result["job_id"].as_str().unwrap()).unwrap(),
+            ))
+            .bind(("result", result))
+            .bind((
+                "input",
+                serde_json::json!({"damaged_private_input":"x".repeat(256*1024)}),
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    let projected: Vec<serde_json::Value> = db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE remote_instance_id = 'owner' ORDER BY id"))
+        .await.unwrap().take(0).unwrap();
+    assert_eq!(projected.len(), 2);
+    assert!(serde_json::to_vec(&projected).unwrap().len() < 8192);
+    assert!(projected
+        .iter()
+        .all(|row| row["remote_input"] == serde_json::json!({})));
+    assert!(projected
+        .iter()
+        .all(|row| row["remote_result"]["policy_migration_stage"].is_null()));
+    let statuses = repo
+        .list_remote_upload_job_statuses("owner", 100)
+        .await
+        .unwrap();
+    assert_eq!(statuses.len(), 2);
+    assert_eq!(
+        statuses.iter().filter(|row| row.result.is_none()).count(),
+        1
+    );
+    assert!(statuses
+        .iter()
+        .any(|row| row.result.as_ref() == Some(&public_result)));
+    for status in statuses {
+        let single = repo
+            .get_remote_upload_job_status(
+                "owner",
+                &record_id_to_string(status.job.id.as_ref().unwrap()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(single.result, status.result);
+    }
+    let saved: Vec<serde_json::Value> = db.query("SELECT remote_result FROM processing_job WHERE remote_request_id = 'private-checkpoint'").await.unwrap().take(0).unwrap();
+    assert_eq!(saved[0]["remote_result"], private);
+}
