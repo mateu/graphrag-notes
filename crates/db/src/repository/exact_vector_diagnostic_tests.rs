@@ -1552,14 +1552,12 @@ async fn exact_vector_page_trace_preserves_results_and_offset_arithmetic() {
         .unwrap()
         .check()
         .unwrap();
-    let query_vector = vec![1.0_f32, 0.0, 0.0, 0.0];
+    let mut query_vector = vec![0.0_f32; 1024];
+    query_vector[0] = 1.0;
     for ordinal in 0..9 {
-        let note = Note::new(format!("fictional page trace {ordinal}")).with_embedding(vec![
-            1.0,
-            ordinal as f32 / 8.0,
-            0.0,
-            0.0,
-        ]);
+        let mut embedding = query_vector.clone();
+        embedding[1] = ordinal as f32 / 8.0;
+        let note = Note::new(format!("fictional page trace {ordinal}")).with_embedding(embedding);
         db.query("CREATE $id CONTENT $note; CREATE $shadow SET note_id=$id,embedding_cbor=encoding::cbor::encode($note.embedding),created_at=$note.created_at")
             .bind(("id", RecordId::new("note", format!("page-trace-{ordinal}"))))
             .bind(("shadow", RecordId::new("exact_vector_cbor_probe", format!("page-trace-{ordinal}"))))
