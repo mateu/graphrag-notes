@@ -515,7 +515,10 @@ esac
         plugin_files = [relative for relative in release.RELEASE_PAYLOADS
                         if relative.startswith("clients/openclaw-fast-notes/")]
         self.assertEqual(len(plugin_files), 13)
-        for relative in plugin_files + ["docs/validation/openclaw-dispatch-108.md"]:
+        source_payloads = plugin_files + ["docs/validation/openclaw-dispatch-108.md",
+                                         "docs/validation/openclaw-browser-108.md",
+                                         "docs/validation/openclaw-browser-108.json"]
+        for relative in source_payloads:
             (self.repo / relative).write_bytes((source / relative).read_bytes())
         self.commit()
         self.build_record = self.root / "openclaw-client-build.json"
@@ -532,13 +535,14 @@ esac
         self.assertEqual(package["version"], lock["packages"][""]["version"])
         for filename in package["files"] + ["package-lock.json"]:
             self.assertTrue((plugin / filename).is_file(), filename)
-        for relative in plugin_files:
+        for relative in source_payloads:
             contents = (bundle / relative).read_bytes()
             self.assertEqual(contents, (source / relative).read_bytes())
             self.assertEqual(info["payload_sha256"]["release/" + relative],
                              hashlib.sha256(contents).hexdigest())
         self.assertEqual(len(list(plugin.glob("*.test.mjs"))), 6)
-        for document in (plugin / "README.md", bundle / "docs/validation/openclaw-dispatch-108.md"):
+        for document in (plugin / "README.md", bundle / "docs/validation/openclaw-dispatch-108.md",
+                         bundle / "docs/validation/openclaw-browser-108.md"):
             for target in re.findall(r"\]\(([^)]+)\)", document.read_text()):
                 if not target.startswith(("https://", "http://", "#")):
                     self.assertTrue((document.parent / target.split("#", 1)[0]).is_file(), target)
