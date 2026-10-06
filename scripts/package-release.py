@@ -99,6 +99,8 @@ RELEASE_PAYLOADS = (
     "docs/validation/fulltext-hydration-107.json",
     "docs/validation/openclaw-dispatch-108.md",
     "docs/validation/openclaw-dispatch-108.json",
+    "docs/validation/extraction-policy-110.md",
+    "docs/validation/extraction-policy-110.json",
     "docs/validation/mcp-native-clients-76.json",
     "docs/validation/mcp-native-clients-76.md",
     "docs/validation/mcp-native-clients-77.json",
