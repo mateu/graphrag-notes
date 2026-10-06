@@ -67,10 +67,13 @@ jobs:
         include:
           - runner: macos-15
             target: aarch64-apple-darwin
+            cargo_features: allocator
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+            cargo_features: ''
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            cargo_features: ''
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +107,14 @@ jobs:
       - name: Build locked CLI
         env:
           BUILD_TARGET: ${{ matrix.target }}
-        run: cargo build --locked --release -p graphrag-cli --bin graphrag --target "$BUILD_TARGET"
+          BUILD_FEATURES: ${{ matrix.cargo_features }}
+        run: |
+          set -o pipefail
+          flags=()
+          if [[ -n "$BUILD_FEATURES" ]]; then flags+=(--features "$BUILD_FEATURES"); fi
+          cargo build --locked --release -p graphrag-cli --bin graphrag \
+            --target "$BUILD_TARGET" "${flags[@]}" --message-format=json-render-diagnostics \
+            | tee "$RUNNER_TEMP/cargo-$BUILD_TARGET.jsonl"
       - name: Seal exact native binary and check version, help, and runtime dependencies
         env:
           BUILD_TARGET: ${{ matrix.target }}
@@ -114,6 +124,7 @@ jobs:
           python3 scripts/package-release.py record-build \
             --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" \
             --target "$BUILD_TARGET" --binary "target/$BUILD_TARGET/release/graphrag" \
+            --cargo-messages "$RUNNER_TEMP/cargo-$BUILD_TARGET.jsonl" \
             --output "$RUNNER_TEMP/native-$BUILD_TARGET.json"
       - name: Package binary with starter notes
         env:
@@ -124,7 +135,8 @@ jobs:
           python3 scripts/package-release.py package \
             --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" \
             --binary "target/$BUILD_TARGET/release/graphrag" \
-            --build-record "$RUNNER_TEMP/native-$BUILD_TARGET.json" --output dist
+            --build-record "$RUNNER_TEMP/native-$BUILD_TARGET.json" \
+            --cargo-messages "$RUNNER_TEMP/cargo-$BUILD_TARGET.jsonl" --output dist
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}

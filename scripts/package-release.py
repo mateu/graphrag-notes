@@ -88,6 +88,7 @@ RELEASE_PAYLOADS = (
     "docs/releases/0.1.0-rc.2.md",
     "docs/releases/0.1.0-rc.3.md",
     "docs/releases/0.1.0-rc.4.md",
+    "docs/releases/0.1.0-rc.5.md",
     "docs/releases/README.md",
     "docs/remote-diagnostics.md",
     "docs/remote-upload-jobs.md",
@@ -326,6 +327,108 @@ def write_json(path: Path, data: dict) -> None:
         output.write(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
+def requires_feature_proof(version: str) -> bool:
+    """The compiler-feature release contract starts at rc.5; older seals remain readable."""
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-(.*))?", version)
+    require(match is not None, "invalid feature-policy version")
+    numbers = tuple(int(match[i]) for i in (1, 2, 3))
+    return numbers > (0, 1, 0) or (numbers == (0, 1, 0) and (
+        match[4] is None or match[4] not in {"rc.1", "rc.2", "rc.3", "rc.4"}))
+
+
+def validate_feature_proof(proof: dict, target: str, version: str, binary_hash: str) -> None:
+    """Validate public feature facts without trusting a requested feature flag."""
+    require(isinstance(proof, dict) and set(proof) == {
+        "schema_version", "target", "binary_sha256", "cargo_messages_sha256", "allocator", "packages"
+    }, "missing or unexpected compiler feature proof fields")
+    require(proof["schema_version"] == 1 and proof["target"] == target
+            and proof["binary_sha256"] == binary_hash
+            and isinstance(proof["cargo_messages_sha256"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", proof["cargo_messages_sha256"]),
+            "compiler feature proof identity differs from the native build")
+    opted_in = target == "aarch64-apple-darwin"
+    require(proof["allocator"] == ("rust-mimalloc" if opted_in else "system"),
+            "compiler allocator differs from the supported target policy")
+    expected = {
+        "graphrag-cli": (version, ["allocator"] if opted_in else []),
+        "graphrag-db": (version, (["allocator"] if opted_in else []) + ["default", "rocksdb"]),
+        "surrealdb": ("3.2.4", (["allocator"] if opted_in else []) + ["kv-mem", "kv-rocksdb"]),
+        "surrealdb-core": ("3.2.4", (["allocator"] if opted_in else []) + ["kv-mem", "kv-rocksdb"]),
+        "surrealdb-types": ("3.2.4", None),
+    }
+    if opted_in:
+        expected.update({"mimalloc": ("0.1.52", ["default"]), "libmimalloc-sys": ("0.1.49", [])})
+    packages = proof["packages"]
+    require(isinstance(packages, dict) and set(packages) == set(expected),
+            "compiler feature proof has missing or unexpected packages")
+    for name, (package_version, features) in expected.items():
+        item = packages[name]
+        require(isinstance(item, dict) and set(item) == {"version", "features"}
+                and item["version"] == package_version and isinstance(item["features"], list)
+                and all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]+", value)
+                        for value in item["features"])
+                and item["features"] == sorted(set(item["features"]))
+                and (features is None or item["features"] == features),
+                f"compiler features/version differ for {name}")
+
+
+def cargo_feature_proof(path: Path, binary: Path, target: str, version: str,
+                        *, inspect_artifact: bool = True) -> dict:
+    """Bind actual Cargo artifacts to the sealed binary; never execute Cargo.
+
+    At recording, hash the compiler's executable and the supplied binary (which
+    may be an immutable copy). Packaging reparses the identical retained log and
+    compares its proof with that seal; it does not depend on a mutable Cargo cache.
+    Public facts omit Cargo package IDs, executable paths and worktree locations.
+    """
+    regular_file(path, "Cargo JSON messages")
+    require(path.stat().st_size <= 128 * 1024 * 1024, "Cargo JSON messages exceed 128 MiB")
+    raw = path.read_bytes()
+    rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    require(all(isinstance(row, dict) for row in rows), "Cargo JSON messages must be objects")
+    require([row for row in rows if row.get("reason") == "build-finished"] == [
+        {"reason": "build-finished", "success": True}], "Cargo build did not finish successfully exactly once")
+    require(not any(row.get("reason") == "compiler-message"
+                    and row.get("message", {}).get("level") == "error" for row in rows),
+            "Cargo build contains a compiler error")
+    names = {"graphrag-cli", "graphrag-db", "surrealdb", "surrealdb-core", "surrealdb-types",
+             "mimalloc", "libmimalloc-sys", "tikv-jemallocator", "tikv-jemalloc-sys"}
+    selected = {}
+    for row in rows:
+        if row.get("reason") != "compiler-artifact":
+            continue
+        match = re.search(r"#([^#/@]+)@([^/]+)$", row.get("package_id", ""))
+        require(match is not None, "Cargo artifact lacks a complete package identity")
+        name, package_version = match.groups()
+        if name not in names:
+            continue
+        kind = row.get("target", {}).get("kind")
+        if kind == ["custom-build"]:
+            continue
+        require(kind == (["bin"] if name == "graphrag-cli" else ["lib"])
+                and row["target"]["name"] == ("graphrag" if name == "graphrag-cli" else name.replace("-", "_")),
+                f"unexpected Cargo artifact target for {name}")
+        require(name not in selected, f"duplicate Cargo artifact for {name}")
+        profile = row.get("profile", {})
+        require(profile.get("test") is False and profile.get("opt_level") == "3"
+                and profile.get("debug_assertions") is False and profile.get("overflow_checks") is False,
+                f"Cargo artifact is not a release artifact for {name}")
+        selected[name] = {"version": package_version, "features": row.get("features")}
+        if name == "graphrag-cli":
+            require(isinstance(row.get("executable"), str) and row["executable"],
+                    "Cargo CLI artifact lacks its executable")
+            if inspect_artifact:
+                executable = regular_file(Path(row["executable"]), "Cargo CLI executable")
+                require(sha256(executable) == sha256(binary),
+                        "Cargo CLI executable differs from the sealed binary")
+    proof = {"schema_version": 1, "target": target, "binary_sha256": sha256(binary),
+             "cargo_messages_sha256": hashlib.sha256(raw).hexdigest(),
+             "allocator": "rust-mimalloc" if target == "aarch64-apple-darwin" else "system",
+             "packages": selected}
+    validate_feature_proof(proof, target, version, proof["binary_sha256"])
+    return proof
+
+
 def record_build(args) -> dict:
     repo = args.repo.resolve()
     source = validate_source(repo, args.tag, args.expected_commit, clean=False)
@@ -337,6 +440,11 @@ def record_build(args) -> dict:
     facts = native_facts(binary, args.target, repo, source["rust_toolchain"])
     record = {"schema_version": 1, "source": source, "native": facts,
               "binary_sha256": sha256(binary), "binary_smoke": smoke}
+    if requires_feature_proof(source["version"]):
+        require(getattr(args, "cargo_messages", None) is not None, "release needs retained Cargo JSON messages")
+        record["cargo_features"] = cargo_feature_proof(args.cargo_messages, binary, args.target, source["version"])
+        require(sha256(binary) == record["binary_sha256"] == record["cargo_features"]["binary_sha256"],
+                "binary changed while recording compiler features")
     write_json(args.output, record)
     return record
 
@@ -506,6 +614,12 @@ def package(args) -> dict:
     native = record["native"]
     require(isinstance(native, dict), "build record native facts must be an object")
     target = native["target"]
+    feature_proof = None
+    if requires_feature_proof(source["version"]):
+        require(getattr(args, "cargo_messages", None) is not None, "release needs retained Cargo JSON messages")
+        feature_proof = cargo_feature_proof(args.cargo_messages, binary, target, source["version"], inspect_artifact=False)
+        require(record.get("cargo_features") == feature_proof,
+                "compiler feature proof differs from the sealed build record")
     intrinsic = inspect_binary(binary, target)
     require(all(native.get(name) == value for name, value in intrinsic.items()),
             "build record native facts differ from the actual binary")
@@ -565,6 +679,8 @@ def package(args) -> dict:
                 "client_archive": client_asset, "client_archive_sha256": client_hash,
                 "archive": asset, "archive_sha256": archive_hash,
                 "validation": {**checks, "binary_version_and_help": smoke, "archive_integrity": {"status": "passed"}}}
+        if feature_proof is not None:
+            info["cargo_features"] = feature_proof
         write_json(staged / "BUILDINFO.json", info)
         (staged / "BUILDINFO.identity").write_bytes(release_identity(info, sha256(staged / "BUILDINFO.json")))
         (staged / "SHA256SUMS").write_text(
@@ -587,6 +703,9 @@ def assemble(args) -> dict:
             "assembled artifacts have inconsistent versions/tags")
     require(len({(record["source_commit"], record["source_tree"], record["compile_inputs_sha256"]) for record in records}) == 1,
             "assembled artifacts have inconsistent source provenance")
+    for record in records:
+        if requires_feature_proof(record["version"]):
+            validate_feature_proof(record.get("cargo_features"), record["target"], record["version"], record["binary_sha256"])
     with tempfile.TemporaryDirectory(prefix=".graphrag-assemble-", dir=output.parent) as temp:
         staged = Path(temp)
         for path in sorted(args.input.glob("*/BUILDINFO.json")):
@@ -663,6 +782,8 @@ def main() -> int:
         else:
             sub.add_argument("--binary", type=Path, required=True)
             sub.add_argument("--output", type=Path, required=True)
+            sub.add_argument("--cargo-messages", type=Path,
+                             help="Retained successful Cargo JSON build log (required since rc.5)")
         if name == "record-build":
             sub.add_argument("--target", choices=TARGETS, required=True)
         if name == "package":

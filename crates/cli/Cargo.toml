@@ -8,6 +8,10 @@ rust-version.workspace = true
 name = "graphrag"
 path = "src/main.rs"
 
+[features]
+# Explicitly selected only by the measured Apple Silicon release build.
+allocator = ["graphrag-db/allocator"]
+
 [dependencies]
 graphrag-core = { path = "../core" }
 graphrag-db = { path = "../db", features = ["rocksdb"] }

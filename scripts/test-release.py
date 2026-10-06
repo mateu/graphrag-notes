@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -110,6 +111,152 @@ class ReleaseTests(unittest.TestCase):
         return argparse.Namespace(repo=self.repo, tag=self.tag, expected_commit=self.commit_id,
                                   binary=self.binary, output=self.root / output, build_record=self.build_record,
                                   validation_file=None, require_gates=False, **kwargs)
+
+    def cargo_rows(self, target):
+        opted_in = target == "aarch64-apple-darwin"
+        versions_features = {
+            "graphrag-cli": (self.version, ["allocator"] if opted_in else []),
+            "graphrag-db": (self.version, (["allocator"] if opted_in else []) + ["default", "rocksdb"]),
+            "surrealdb": ("3.2.4", (["allocator"] if opted_in else []) + ["kv-mem", "kv-rocksdb"]),
+            "surrealdb-core": ("3.2.4", (["allocator"] if opted_in else []) + ["kv-mem", "kv-rocksdb"]),
+            "surrealdb-types": ("3.2.4", ["default"]),
+        }
+        if opted_in:
+            versions_features.update({"mimalloc": ("0.1.52", ["default"]), "libmimalloc-sys": ("0.1.49", [])})
+        rows = []
+        for name, (version, features) in versions_features.items():
+            rows.append({"reason": "compiler-artifact", "package_id": f"registry+https://fixture.invalid#index#{name}@{version}",
+                         "target": {"kind": ["bin"] if name == "graphrag-cli" else ["lib"],
+                                    "name": "graphrag" if name == "graphrag-cli" else name.replace("-", "_")},
+                         "features": features, "profile": {"opt_level": "3", "test": False,
+                                                              "debug_assertions": False, "overflow_checks": False},
+                         "executable": str(self.binary) if name == "graphrag-cli" else None})
+        return rows + [{"reason": "build-finished", "success": True}]
+
+    def write_cargo_rows(self, rows, name="cargo.jsonl"):
+        path = self.root / name
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        return path
+
+    def rc5_build(self):
+        old = self.version
+        self.version, self.tag = "0.1.0-rc.5", "v0.1.0-rc.5"
+        for path in (self.repo / "Cargo.toml", self.repo / "Cargo.lock", self.binary):
+            path.write_text(path.read_text().replace(old, self.version))
+        self.commit()
+        self.build_record = self.root / "rc5-build.json"
+        messages = self.write_cargo_rows(self.cargo_rows(self.target))
+        args = argparse.Namespace(repo=self.repo, tag=self.tag, expected_commit=self.commit_id,
+                                 binary=self.binary, output=self.build_record, target=self.target, cargo_messages=messages)
+        with patch.object(release, "native_facts", return_value=self.facts):
+            release.record_build(args)
+        return messages
+
+    def test_compiler_feature_proof_follows_actual_target_packages_and_omits_private_paths(self):
+        for target in release.TARGETS:
+            messages = self.write_cargo_rows(self.cargo_rows(target))
+            proof = release.cargo_feature_proof(messages, self.binary, target, self.version)
+            self.assertEqual(proof["binary_sha256"], release.sha256(self.binary))
+            self.assertEqual(proof["cargo_messages_sha256"], release.sha256(messages))
+            self.assertEqual(proof["allocator"], "rust-mimalloc" if target.startswith("aarch64") else "system")
+            self.assertNotIn(str(self.root), json.dumps(proof))
+            self.assertNotIn("fixture.invalid", json.dumps(proof))
+
+    def test_compiler_executable_bytes_must_match_but_allow_an_immutable_copy(self):
+        messages = self.write_cargo_rows(self.cargo_rows(self.target))
+        copied = self.root / "immutable-copy"
+        copied.write_bytes(self.binary.read_bytes())
+        release.cargo_feature_proof(messages, copied, self.target, self.version)
+        copied.write_bytes(b"different executable bytes\n")
+        with self.assertRaisesRegex(release.ReleaseError, "executable differs"):
+            release.cargo_feature_proof(messages, copied, self.target, self.version)
+
+    def test_compiler_failed_missing_duplicate_debug_and_allocator_drift_are_rejected(self):
+        target = "aarch64-apple-darwin"
+        original = self.cargo_rows(target)
+        mutations = []
+        rows = deepcopy(original); rows[-1]["success"] = False; mutations.append(rows)
+        mutations.append(deepcopy(original[:-1]))
+        mutations.append(deepcopy(original + [original[-1]]))
+        mutations.append(deepcopy(original + [original[0]]))
+        for field, value in (("opt_level", "0"), ("test", True), ("debug_assertions", True), ("overflow_checks", True)):
+            rows = deepcopy(original); rows[0]["profile"][field] = value; mutations.append(rows)
+        for index in range(len(original) - 1):
+            rows = deepcopy(original); rows.pop(index); mutations.append(rows)
+        for index, features in ((0, []), (1, ["default", "rocksdb"]), (2, ["kv-mem", "kv-rocksdb"]),
+                                (3, ["kv-mem", "kv-rocksdb"]), (5, ["default", "secure"]), (6, ["override"])):
+            rows = deepcopy(original); rows[index]["features"] = features; mutations.append(rows)
+        rows = deepcopy(original); rows[2]["package_id"] = rows[2]["package_id"].replace("3.2.4", "3.3.0"); mutations.append(rows)
+        rows = deepcopy(original); rows.append({"reason": "compiler-message", "message": {"level": "error"}}); mutations.append(rows)
+        for index, rows in enumerate(mutations):
+            with self.subTest(index=index), self.assertRaises(release.ReleaseError):
+                release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
+        for target in ("x86_64-apple-darwin", "x86_64-unknown-linux-gnu"):
+            rows = self.cargo_rows(target); rows[0]["features"] = ["allocator"]
+            with self.assertRaises(release.ReleaseError):
+                release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
+            rows = self.cargo_rows(target); rows.insert(-1, deepcopy(original[5]))
+            with self.assertRaises(release.ReleaseError):
+                release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
+
+    def test_rc5_rechecks_sealed_compiler_log_without_depending_on_mutable_cache(self):
+        messages = self.rc5_build()
+        # Record-time verification saw the actual executable. Packaging can use
+        # an immutable copy after a later build replaces that cache path.
+        copied = self.root / "sealed-graphrag"
+        copied.write_bytes(self.binary.read_bytes()); copied.chmod(0o755)
+        rows = [json.loads(line) for line in messages.read_text().splitlines()]
+        rows[0]["executable"] = str(self.root / "cargo-cache-artifact")
+        cache = Path(rows[0]["executable"]); cache.write_bytes(self.binary.read_bytes())
+        messages = self.write_cargo_rows(rows)
+        self.build_record = self.root / "copied-build.json"
+        args = argparse.Namespace(repo=self.repo, tag=self.tag, expected_commit=self.commit_id,
+                                 binary=copied, output=self.build_record, target=self.target, cargo_messages=messages)
+        with patch.object(release, "native_facts", return_value=self.facts):
+            release.record_build(args)
+        self.binary = copied
+        cache.write_bytes(b"later unrelated build\n")
+        info = release.package(self.package_args(cargo_messages=messages))
+        self.assertEqual(info["cargo_features"], json.loads(self.build_record.read_text())["cargo_features"])
+        assembled = release.assemble(argparse.Namespace(input=self.root, output=self.root / "assembly",
+                                                        tag=self.tag, targets=[self.target]))
+        self.assertEqual(assembled["targets"], [self.target])
+        messages.write_text(messages.read_text() + "\n")
+        with self.assertRaisesRegex(release.ReleaseError, "sealed build record"):
+            release.package(self.package_args("changed-log", cargo_messages=messages))
+        self.assertFalse((self.root / "changed-log").exists())
+
+    def test_rc5_missing_feature_log_forged_seal_and_assembly_policy_are_rejected(self):
+        messages = self.rc5_build()
+        with self.assertRaisesRegex(release.ReleaseError, "retained Cargo"):
+            release.package(self.package_args("missing-log"))
+        args = argparse.Namespace(repo=self.repo, tag=self.tag, expected_commit=self.commit_id,
+                                 binary=self.binary, output=self.root / "missing-build.json", target=self.target)
+        with patch.object(release, "native_facts", return_value=self.facts), self.assertRaisesRegex(release.ReleaseError, "retained Cargo"):
+            release.record_build(args)
+        original = json.loads(self.build_record.read_text())
+        altered = deepcopy(original); altered["cargo_features"]["cargo_messages_sha256"] = "0" * 64
+        self.build_record.write_text(json.dumps(altered))
+        with self.assertRaisesRegex(release.ReleaseError, "sealed build record"):
+            release.package(self.package_args("forged-seal", cargo_messages=messages))
+        self.build_record.write_text(json.dumps(original))
+        release.package(self.package_args("native", cargo_messages=messages))
+        info_path = self.root / "native/BUILDINFO.json"
+        info = json.loads(info_path.read_text()); del info["cargo_features"]
+        info_path.write_text(json.dumps(info))
+        with self.assertRaisesRegex(release.ReleaseError, "compiler feature proof"):
+            release.assemble(argparse.Namespace(input=self.root, output=self.root / "bad-assembly",
+                                               tag=self.tag, targets=[self.target]))
+
+    def test_allocator_feature_does_not_enable_library_or_cli_defaults(self):
+        import tomllib
+        source = SCRIPT.parents[1]
+        db = tomllib.loads((source / "crates/db/Cargo.toml").read_text())["features"]
+        cli = tomllib.loads((source / "crates/cli/Cargo.toml").read_text()).get("features", {})
+        self.assertEqual(db["default"], ["rocksdb"])
+        self.assertEqual(db["allocator"], ["surrealdb/allocator"])
+        self.assertEqual(cli.get("default", []), [])
+        self.assertEqual(cli["allocator"], ["graphrag-db/allocator"])
 
     def test_version_lock_tag_commit_and_clean_source_checks(self):
         source = release.validate_source(self.repo, self.tag, self.commit_id)
