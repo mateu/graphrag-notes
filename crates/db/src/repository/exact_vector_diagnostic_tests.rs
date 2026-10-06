@@ -1181,7 +1181,10 @@ async fn exact_vector_skinny_storage_diagnostic() {
             if engine_export {
                 let saved_embedding = &note.embedding;
                 assert_eq!(
-                    saved_embedding.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    saved_embedding
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>(),
                     embedding.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
                     "fixture round-trip changes native float32 vector bits"
                 );
