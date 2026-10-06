@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tempfile
 from unittest import mock
 from pathlib import Path
@@ -36,6 +37,42 @@ class Client:
 
 
 class SearchBenchmarkTests(unittest.TestCase):
+    def test_http_rejects_duplicate_fields_nonfinite_json_and_boolean_schema(self):
+        class Handler(BaseHTTPRequestHandler):
+            variant = "valid"
+            def log_message(self, *args):
+                pass
+            def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                value = {"jsonrpc": "2.0", "id": request["id"], "result": {"structuredContent": {
+                    "schema_version": 1, "error": None, "data": {"records": []}}}}
+                body = json.dumps(value)
+                if self.variant == "duplicate":
+                    body = body.replace('"jsonrpc": "2.0"', '"jsonrpc": "bad", "jsonrpc": "2.0"')
+                elif self.variant == "nonfinite":
+                    body = body.replace('"records": []', '"records": [], "extra": NaN')
+                elif self.variant == "boolean":
+                    body = body.replace('"schema_version": 1', '"schema_version": true')
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body.encode())))
+                self.end_headers()
+                self.wfile.write(body.encode())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = benchmark.McpClient(f"http://127.0.0.1:{server.server_port}/mcp", "fictional", 2)
+            self.assertEqual(client.call("search_notes", {})[0], {"records": []})
+            for variant in ("duplicate", "nonfinite", "boolean"):
+                Handler.variant = variant
+                with self.subTest(variant=variant), self.assertRaises(benchmark.BenchmarkError) as error:
+                    client.call("search_notes", {})
+                self.assertEqual(error.exception.code, "protocol")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_report_uses_suite_and_runner_loaded_before_requests(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

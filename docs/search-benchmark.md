@@ -74,7 +74,8 @@ Transport timeouts close the client request and count that comparison as failed;
 there is no automatic retry or mode fallback. They do not guarantee upstream
 inference immediately stops. The suite deadline prevents admitting new requests
 once expired and bounds subsequent request socket timeouts; every scheduled
-comparison remains accounted for. An unavailable initialization marks all work
+comparison remains accounted for. Socket timeouts bound blocking I/O, rather
+than a total slow-response wall deadline. An unavailable initialization marks all work
 assigned to that lane failed. Inspect server traces for work that completes after
 a timed-out connection. Hard cancellation of upstream provider work is a
 separate service capability, not inferred from closing an HTTP socket.

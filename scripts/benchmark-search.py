@@ -57,6 +57,19 @@ def rpc_hash(identifier):
     return hashlib.sha256(json.dumps(identifier, separators=(",", ":")).encode()).hexdigest()
 
 
+def strict_json(raw):
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise ValueError("duplicate JSON field")
+            value[key] = item
+        return value
+    def constant(value):
+        raise ValueError("non-finite JSON constant")
+    return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
@@ -93,7 +106,7 @@ class McpClient:
         if len(raw) > 2 * 1024 * 1024:
             raise BenchmarkError("response_too_large")
         try:
-            value = json.loads(raw)
+            value = strict_json(raw)
             if not isinstance(value, dict) or value.get("jsonrpc") != "2.0" or value.get("id") != identifier or "error" in value or "result" not in value:
                 raise BenchmarkError("protocol")
         except (ValueError, UnicodeError):
@@ -113,7 +126,7 @@ class McpClient:
         if not isinstance(result, dict):
             raise BenchmarkError("protocol")
         envelope = result.get("structuredContent")
-        if not isinstance(envelope, dict) or envelope.get("schema_version") != 1 or "error" not in envelope or "data" not in envelope:
+        if not isinstance(envelope, dict) or type(envelope.get("schema_version")) is not int or envelope["schema_version"] != 1 or "error" not in envelope or "data" not in envelope:
             raise BenchmarkError("protocol")
         if envelope["error"] is not None:
             error = envelope["error"]
