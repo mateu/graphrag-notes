@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import http.client
 import importlib.util
 import ipaddress
 import json
@@ -85,30 +86,40 @@ class McpClient:
         self.deadline = deadline
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
-    def request(self, method, params):
+    def request(self, method, params, notification=False):
         identifier = str(uuid.uuid4())
         key = rpc_hash(identifier)
         remaining = self.deadline - time.monotonic() if self.deadline is not None else self.timeout
         if remaining <= 0:
             raise BenchmarkError("suite_deadline", key)
-        body = json.dumps({"jsonrpc": "2.0", "id": identifier, "method": method, "params": params},
-                          separators=(",", ":")).encode()
+        message = {"jsonrpc": "2.0", "method": method, "params": params}
+        if not notification:
+            message["id"] = identifier
+        body = json.dumps(message, separators=(",", ":")).encode()
         request = urllib.request.Request(self.url, data=body, headers={
             "Authorization": "Bearer " + self.token, "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"})
         started = time.monotonic()
         try:
             with self.opener.open(request, timeout=min(self.timeout, remaining)) as response:
+                expected_length = response.length
                 raw = response.read(2 * 1024 * 1024 + 1)
+                status = response.status
+                if expected_length is not None and len(raw) <= 2 * 1024 * 1024 and len(raw) != expected_length:
+                    raise BenchmarkError("transport_or_timeout", key)
             elapsed = (time.monotonic() - started) * 1000
         except urllib.error.HTTPError as error:
             code = "unauthorized" if error.code == 401 else "forbidden" if error.code == 403 else "busy" if error.code == 429 else "http_error"
             error.close()
             raise BenchmarkError(code, key) from None
-        except (urllib.error.URLError, OSError, TimeoutError):
+        except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException):
             raise BenchmarkError("transport_or_timeout", key) from None
         if len(raw) > 2 * 1024 * 1024:
             raise BenchmarkError("response_too_large")
+        if notification:
+            if status != 202 or raw:
+                raise BenchmarkError("protocol", key)
+            return None, elapsed, key
         try:
             value = strict_json(raw)
             if not isinstance(value, dict) or value.get("jsonrpc") != "2.0" or value.get("id") != identifier or "error" in value or "result" not in value:
@@ -123,7 +134,8 @@ class McpClient:
             "clientInfo": {"name": "private-search-benchmark", "version": "1"}})
         if not isinstance(result, dict) or result.get("protocolVersion") != "2025-11-25":
             raise BenchmarkError("protocol")
-        return elapsed
+        _, notification_ms, _ = self.request("notifications/initialized", {}, notification=True)
+        return elapsed + notification_ms
 
     def call(self, name, arguments):
         result, elapsed, key = self.request("tools/call", {"name": name, "arguments": arguments})
@@ -279,9 +291,9 @@ def summary(report):
                     if values:
                         group["backend_phases"][name] = distribution(values)
                 budget = 250 if policy == "keyword-off" else 1000
-                group["target_ms"] = budget
+                group["target_ms"] = budget if phase == "warmed" else None
                 p95 = group["search_rpc"]["p95_ms"]
-                group["within_target"] = p95 <= budget if p95 is not None and not group["failed"] else None
+                group["within_target"] = p95 <= budget if phase == "warmed" and p95 is not None and not group["failed"] else None
                 result["groups"].append(group)
     pairs = []
     indexed = {(r["concurrency"], r["phase"], r["round"], r["name"], r["policy"]): r for r in report["samples"]}

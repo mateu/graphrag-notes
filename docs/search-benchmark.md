@@ -31,7 +31,8 @@ failure labels and suite hash; it never exports arbitrary suite metadata.
 
 ## What is measured
 
-Each lane initializes MCP once, then performs search and revision-pinned
+Each lane completes MCP initialization and the initialized notification once,
+then performs search and revision-pinned
 inspection before its next search. The measured `search_rpc_ms` spans the HTTP
 search request/response, excluding initialization, result inspection and any
 language model deciding which tool to use. Clients use stateless HTTP requests;
@@ -72,10 +73,12 @@ the paired same-query/round graph-minus-hybrid RPC delta<=250ms. This delta is a
 comparison across sequential homogeneous policy batches, not an additive
 internal graph timer or a simultaneous paired experiment. Policy order and
 changing background load can affect deltas; repeat under controlled load before
-making a causal attribution. Failures prevent a successful budget claim. Keep hardware
+making a causal attribution. First-use percentiles have no operating-budget
+verdict. Failures prevent a successful budget claim. Keep hardware
 limits, corpus/load size and sample denominators beside any published result.
 
 Transport timeouts close the client request and count that comparison as failed;
+truncated HTTP bodies are also counted without abandoning scheduled work.
 there is no automatic retry or mode fallback. They do not guarantee upstream
 inference immediately stops. The suite deadline prevents admitting new requests
 once expired and bounds subsequent request socket timeouts; every scheduled
