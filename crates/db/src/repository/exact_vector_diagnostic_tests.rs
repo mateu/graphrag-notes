@@ -745,11 +745,6 @@ async fn exact_vector_paged_semantics_diagnostic() {
     .unwrap()
     .check()
     .unwrap();
-    db.query(CBOR_COMPUTED_EMBEDDING)
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
     let mut source = Source::manual();
     source.uri = Some("fixture://vector-current".into());
     source.successful_generation = 2;
@@ -890,6 +885,7 @@ async fn exact_vector_paged_semantics_diagnostic() {
     negative_nan_query[0] = -f32::NAN;
     let mut infinite_query = positive.clone();
     infinite_query[0] = f32::INFINITY;
+    install_single_sql_cbor_probe(&db).await;
     for embedding in [
         &positive,
         &vec![0.0; 1024],
@@ -993,14 +989,30 @@ fn skinny_query(limit: usize) -> String {
     )
 }
 
-const CBOR_COMPUTED_EMBEDDING: &str = "DEFINE FIELD embedding ON exact_vector_cbor_probe \
-    TYPE option<array<float>> COMPUTED \
+const CBOR_COMPUTED_EMBEDDING: &str = "DEFINE FIELD embedding ON exact_vector_sql_cbor_probe \
+    TYPE any COMPUTED \
     IF embedding_uses_primary = true THEN note_id.embedding \
     ELSE IF embedding_cbor IS NONE THEN NONE \
     ELSE encoding::cbor::decode(embedding_cbor) END";
 
 fn cbor_single_sql_query(limit: usize) -> String {
-    skinny_query(limit).replace("FROM exact_vector_probe", "FROM exact_vector_cbor_probe")
+    skinny_query(limit).replace(
+        "FROM exact_vector_probe",
+        "FROM exact_vector_sql_cbor_probe",
+    )
+}
+
+async fn install_single_sql_cbor_probe(db: &DbConnection) {
+    // Keep the raw paged comparison free of this virtual field: a computed
+    // field can be evaluated by the pinned scan pipeline even when omitted
+    // from a selective projection. It must not contaminate that comparator.
+    db.query("DEFINE TABLE exact_vector_sql_cbor_probe SCHEMALESS; FOR $id IN ((SELECT VALUE id FROM exact_vector_cbor_probe ORDER BY id ASC) ?? []) { CREATE type::record('exact_vector_sql_cbor_probe',record::id($id)) CONTENT object::remove($id.*,'id'); }")
+        .await.unwrap().check().unwrap();
+    db.query(CBOR_COMPUTED_EMBEDDING)
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -1030,13 +1042,6 @@ async fn exact_vector_skinny_storage_diagnostic() {
             .check()
             .unwrap();
         let single_sql = std::env::var_os("GRAPHRAG_VECTOR_PROBE_SINGLE_SQL").is_some();
-        if single_sql {
-            db.query(CBOR_COMPUTED_EMBEDDING)
-                .await
-                .unwrap()
-                .check()
-                .unwrap();
-        }
         let mut sources = Vec::new();
         for index in 0..4 {
             let mut source =
@@ -1118,6 +1123,9 @@ async fn exact_vector_skinny_storage_diagnostic() {
                 .unwrap()
                 .check()
                 .unwrap();
+        }
+        if single_sql {
+            install_single_sql_cbor_probe(&db).await;
         }
         for (filter, since, source_uri) in [
             ("all", None, None),

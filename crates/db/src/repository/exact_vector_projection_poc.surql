@@ -9,7 +9,7 @@ DEFINE FIELD embedding_cbor ON exact_note_vector_probe TYPE option<bytes>;
 
 DEFINE FIELD embedding_uses_primary ON exact_note_vector_probe TYPE bool;
 
-DEFINE FIELD embedding ON exact_note_vector_probe TYPE option<array<float>> COMPUTED
+DEFINE FIELD embedding ON exact_note_vector_probe TYPE any COMPUTED
     IF embedding_uses_primary THEN record_id.embedding
     ELSE IF embedding_cbor IS NONE THEN NONE ELSE encoding::cbor::decode(embedding_cbor) END;
 
@@ -47,7 +47,7 @@ DEFINE FIELD embedding_cbor ON exact_message_vector_probe TYPE option<bytes>;
 
 DEFINE FIELD embedding_uses_primary ON exact_message_vector_probe TYPE bool;
 
-DEFINE FIELD embedding ON exact_message_vector_probe TYPE option<array<float>> COMPUTED
+DEFINE FIELD embedding ON exact_message_vector_probe TYPE any COMPUTED
     IF embedding_uses_primary THEN record_id.embedding
     ELSE IF embedding_cbor IS NONE THEN NONE ELSE encoding::cbor::decode(embedding_cbor) END;
 
@@ -82,7 +82,7 @@ DEFINE FIELD embedding_cbor ON exact_conversation_vector_probe TYPE option<bytes
 
 DEFINE FIELD embedding_uses_primary ON exact_conversation_vector_probe TYPE bool;
 
-DEFINE FIELD embedding ON exact_conversation_vector_probe TYPE option<array<float>> COMPUTED
+DEFINE FIELD embedding ON exact_conversation_vector_probe TYPE any COMPUTED
     IF embedding_uses_primary THEN record_id.summary_embedding
     ELSE IF embedding_cbor IS NONE THEN NONE ELSE encoding::cbor::decode(embedding_cbor) END;
 
