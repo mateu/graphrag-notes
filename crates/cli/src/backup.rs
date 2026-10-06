@@ -2568,7 +2568,14 @@ mod tests {
         let exported_jsonl = temp.path().join("precision.jsonl");
         export_jsonl(&restored, &exported_jsonl).await.unwrap();
         verify_jsonl(&exported_jsonl).unwrap();
-        assert_eq!(fs::read(exported_jsonl).unwrap(), original_payload);
+        let ordinary_archive = temp.path().join("original-without-vectors");
+        create_backup(&repo, &ordinary_archive, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read(exported_jsonl).unwrap(),
+            fs::read(ordinary_archive.join(RECORDS_FILE)).unwrap()
+        );
     }
 
     #[tokio::test]
