@@ -37,6 +37,28 @@ class Client:
 
 
 class SearchBenchmarkTests(unittest.TestCase):
+    def test_every_warm_policy_uses_all_four_persistent_lanes_without_mixed_batches(self):
+        seen, active = {}, {}
+        lock = threading.Lock()
+        original = benchmark.sample
+        def observed(client, item, policy, phase, number, concurrency, connect_ms):
+            with lock:
+                self.assertTrue(all(value == policy for value in active.values()))
+                active[id(client)] = policy
+                if phase == "warmed":
+                    seen.setdefault(policy, set()).add(id(client))
+            try:
+                time.sleep(0.001)
+                return original(client, item, policy, phase, number, concurrency, connect_ms)
+            finally:
+                with lock:
+                    active.pop(id(client))
+        with mock.patch.object(benchmark, "sample", side_effect=observed):
+            rows = benchmark.run({"cases": [case()]}, Client, 8, [4])
+        self.assertEqual(len(rows), 36)
+        self.assertTrue(all(len(lanes) == 4 for lanes in seen.values()))
+        self.assertEqual(len(set.union(*seen.values())), 4)
+
     def test_nullable_eval_options_use_resolved_mcp_arguments_and_metrics(self):
         item = case()
         item["eval"].update(scope=None, limit=None, k=None, relevance=[{"id": "note:atlas", "grade": None}])
@@ -200,7 +222,7 @@ class SearchBenchmarkTests(unittest.TestCase):
                         raise AssertionError("client shared across threads")
                 time.sleep(0.001)
                 return super().call(name, args)
-        rows = benchmark.run({"cases": [case()]}, BoundClient, 2, [4])
+        rows = benchmark.run({"cases": [case()]}, BoundClient, 4, [4])
         self.assertEqual(len(seen), 4)
         self.assertTrue(all(row["status"] == "ok" for row in rows))
 

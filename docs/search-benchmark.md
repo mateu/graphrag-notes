@@ -39,7 +39,10 @@ this does not model a persistent SDK connection pool. One and four lanes are
 explicit client loads, bounded to eight; outstanding provider work may consume
 separate server/provider concurrency limits. Four lanes do not claim four
 simultaneous search requests at every instant because readbacks occur between
-searches. Compare against an OpenClaw direct gateway separately.
+searches. Each policy runs in a homogeneous batch across all requested lanes,
+with a barrier before advancing to the next policy. Cases rotate between rounds;
+small first-use batches can have fewer active lanes. Compare against an OpenClaw
+direct gateway separately.
 
 The first observation for each policy is separate from twenty warmed repetitions.
 It is **not** evidence of a cold embedding model or an empty filesystem cache:
@@ -66,8 +69,10 @@ Public p50/p95 use nearest-rank p95 and require at least twenty successful
 samples. Counts, failures and per-category timings stay visible. The warmed RPC
 operating targets are keyword<=250ms and hybrid/graph<=1000ms; graph overhead is
 the paired same-query/round graph-minus-hybrid RPC delta<=250ms. This delta is an
-interleaved comparison, not an additive internal graph timer or a simultaneous
-paired experiment. Failures prevent a successful budget claim. Keep hardware
+comparison across sequential homogeneous policy batches, not an additive
+internal graph timer or a simultaneous paired experiment. Policy order and
+changing background load can affect deltas; repeat under controlled load before
+making a causal attribution. Failures prevent a successful budget claim. Keep hardware
 limits, corpus/load size and sample denominators beside any published result.
 
 Transport timeouts close the client request and count that comparison as failed;

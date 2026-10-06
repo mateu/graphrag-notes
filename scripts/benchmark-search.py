@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import statistics
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -179,19 +180,37 @@ def run(suite, factory, rounds, concurrency_values):
                 client = error
             clients.append(client)
             initialization.append(initialized)
-        jobs = [(item, policy, phase, number) for phase, count in (("first_observed", 1), ("warmed", rounds))
-                for number in range(count) for item in suite["cases"] for policy in evaluation.POLICIES]
+        # Each batch has one policy on every active lane. Keep persistent lane
+        # workers and rotate cases between rounds so policy or case ordering
+        # cannot permanently pin a route to a single client.
+        batches = []
+        cases = suite["cases"]
+        for phase, count in (("first_observed", 1), ("warmed", rounds)):
+            for policy in evaluation.POLICIES:
+                jobs = []
+                for number in range(count):
+                    offset = number % len(cases)
+                    jobs.extend((item, policy, phase, number)
+                                for item in cases[offset:] + cases[:offset])
+                batches.append(jobs)
+        barrier = threading.Barrier(concurrency)
         def lane(index):
             output = []
-            for item, policy, phase, number in jobs[index::concurrency]:
-                client = clients[index]
-                if isinstance(client, BenchmarkError):
-                    output.append({"name": item["name"], "category": item["category"], "policy": policy,
-                                   "phase": phase, "round": number, "concurrency": concurrency,
-                                   "status": "failed", "error": client.code})
-                else:
-                    output.append(sample(client, item, policy, phase, number, concurrency, initialization[index]))
-            return output
+            try:
+                for jobs in batches:
+                    for item, policy, phase, number in jobs[index::concurrency]:
+                        client = clients[index]
+                        if isinstance(client, BenchmarkError):
+                            output.append({"name": item["name"], "category": item["category"], "policy": policy,
+                                           "phase": phase, "round": number, "concurrency": concurrency,
+                                           "status": "failed", "error": client.code})
+                        else:
+                            output.append(sample(client, item, policy, phase, number, concurrency, initialization[index]))
+                    barrier.wait()
+                return output
+            except BaseException:
+                barrier.abort()
+                raise
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             outputs = list(pool.map(lane, range(concurrency)))
         # Fixed identity/order aids comparisons even when completion order differs.
@@ -322,6 +341,7 @@ def main(argv=None):
                 for row in samples:
                     row["backend_phases"] = phases.get(row.get("rpc_id_sha256"), {})
             report = {"schema_version": 1, "metadata": suite["metadata"], "samples": samples,
+                      "load_schedule": "homogeneous_policy_batches",
                       "suite_sha256": suite_sha256, "runner_sha256": RUNNER_SHA256,
                       "evaluation_runner_sha256": evaluation.RUNNER_SHA256}
             write_report(args.output, report)
