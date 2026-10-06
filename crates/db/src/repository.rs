@@ -4,6 +4,8 @@
 // ownership below; transaction-sensitive cross-domain paths stay documented
 // at their owning domain rather than introducing a second data-access layer.
 mod chats;
+#[cfg(test)]
+mod exact_vector_diagnostic_tests;
 mod folder_sync;
 mod graph;
 #[cfg(test)]
