@@ -75,7 +75,7 @@ test('missing or overlapping same-session intervals and forged phase durations r
 test('inadequate warm samples produce no percentiles and malformed cases allocate no adapter', async () => {
   const proof = await runGatewayProfile(fixture().adapter, cases, pin);
   proof.calls = proof.calls.filter(call => call.round !== 20);
-  const summary = summarizeProfile(proof); assert.ok(Object.values(summary.routes).every(row => row.warm_successes === 19 && row.warm === null));
+  const summary = summarizeProfile(proof); assert.ok(Object.values(summary.routes).every(row => row.warm_successes === 19 && row.warm === null)); assert.equal(summary.passed, false);
   await assert.rejects(runGatewayProfile({}, cases, pin, { rounds: 19 }), /invalid_limits/);
   await assert.rejects(runGatewayProfile({}, [...cases, cases[0]], pin), /invalid_cases/);
 });

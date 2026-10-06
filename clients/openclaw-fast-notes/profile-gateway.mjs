@@ -142,12 +142,15 @@ export function joinDiagnostics(proof) {
 }
 
 function distribution(values) {
+  check(values.length > 0 && values.every(finite), 'invalid_proof');
   const sorted = values.toSorted((a, b) => a - b);
   return { observations: sorted.length, median_ms: (sorted[Math.floor((sorted.length - 1) / 2)] + sorted[Math.ceil((sorted.length - 1) / 2)]) / 2,
     p95_ms: sorted[Math.ceil(sorted.length * .95) - 1], min_ms: sorted[0], max_ms: sorted.at(-1) };
 }
 export function summarizeProfile(proof) {
-  check(proof?.schema_version === 1 && proof.kind === 'openclaw-direct-profile' && Array.isArray(proof.calls), 'invalid_proof');
+  check(proof?.schema_version === 1 && proof.kind === 'openclaw-direct-profile' && Array.isArray(proof.calls) &&
+    Number.isInteger(proof.rounds) && proof.rounds >= 20 && proof.rounds <= 100 &&
+    proof.calls.every(call => call && typeof call === 'object' && !Array.isArray(call) && ['ok', 'failed'].includes(call.outcome)), 'invalid_proof');
   const result = { schema_version: 1, passed: proof.passed === true, metadata: Object.fromEntries(Object.entries(metadata(proof.metadata)).filter(([key]) => !['config_sha256', 'default_model_sha256'].includes(key))),
     browser_render_verified: proof.browser_render_verified === true, model_requested: false,
     owned_session_archived: proof.owned_session_archived === true, requested: proof.calls.length,
@@ -166,5 +169,8 @@ export function summarizeProfile(proof) {
     if (successes.length >= 20) row.warm = Object.fromEntries(['gateway_reply_ms', 'connect_ms', 'search_ms', 'handler_ms', 'dispatch_before_ms', 'dispatch_after_ms'].map(key => [key,
       distribution(successes.map(call => key === 'gateway_reply_ms' ? call[key] : call.handler[key]))]));
   }
+  result.passed = result.passed && result.requested === 2 + 4 * (proof.rounds + 1) && result.failed === 0 &&
+    result.contract_requested === 2 && result.contract_failed === 0 && result.owned_session_archived &&
+    Object.values(result.routes).every(row => row.requested === proof.rounds + 1 && row.warm_requested === proof.rounds && row.warm_successes === proof.rounds && row.first?.outcome === 'ok');
   return result;
 }
