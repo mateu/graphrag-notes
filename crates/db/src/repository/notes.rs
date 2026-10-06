@@ -42,6 +42,7 @@ pub(super) fn editor_snapshot_guard(require_manual: bool) -> String {
          AND source_generation = $editor_expected.source_generation \
          AND chunk_key = $editor_expected.chunk_key \
          AND chunk_location_key = $editor_expected.chunk_location_key \
+         AND extraction_scope = $editor_expected.extraction_scope \
          AND chunk_ordinal = $editor_expected.chunk_ordinal \
          AND (chunk_heading_path ?? []) = $editor_expected.chunk_heading_path \
          AND source_start_line = $editor_expected.source_start_line \
@@ -70,27 +71,55 @@ fn editor_source_id(expected: &Note) -> Result<RecordId> {
 }
 
 /// Keep the entity upsert semantics aligned with `Repository::upsert_entity`:
-/// canonical names identify rows, existing type/creation time survive, and
-/// metadata aliases merge distinctly. Running these writes after the snapshot
+/// explicit identities identify rows, existing type/creation time survive, and
+/// legacy metadata aliases merge distinctly, while extracted metadata reflects
+/// the current result. Per-mention evidence owns aliases used by graph search.
+/// Running these writes after the snapshot
 /// guard and inside the note transaction prevents failed edits from changing
 /// shared entities or leaving unused rows behind. Resolve IDs after all
-/// upserts so repeated canonical names create only one mention.
+/// upserts so repeated identities create only one mention.
 pub(super) fn replacement_entities_transaction() -> &'static str {
     "FOR $entity IN $replacement_entities { \
-        INSERT INTO entity (entity_type, name, canonical_name, embedding, metadata, created_at) \
-        VALUES ($entity.entity_type, $entity.name, $entity.canonical_name, \
+        INSERT INTO entity (entity_type, name, canonical_name, identity_key, embedding, metadata, created_at) \
+        VALUES ($entity.entity_type, $entity.name, $entity.canonical_name, $entity.identity_key ?? string::concat('legacy:', $entity.canonical_name), \
                 $entity.embedding ?? [], $entity.metadata, time::now()) \
         ON DUPLICATE KEY UPDATE \
             name = $entity.name, embedding = $entity.embedding ?? [], \
-            metadata = object::extend( \
+            metadata = IF string::starts_with($entity.identity_key ?? '', 'extracted-v1:') THEN \
+                object::extend(object::extend(metadata ?? {}, $entity.metadata ?? {}), \
+                    { aliases: array::slice($entity.metadata.aliases ?? [], 0, 8) }) \
+            ELSE object::extend( \
                 object::extend(metadata ?? {}, $entity.metadata ?? {}), \
-                { aliases: array::distinct(array::concat( \
+                { extraction: IF $entity.metadata.extraction = NONE THEN metadata.extraction ELSE object::extend($entity.metadata.extraction, { \
+                    mention_spellings: array::distinct(array::concat(metadata.extraction.mention_spellings ?? [], $entity.metadata.extraction.mention_spellings ?? [])), \
+                    alias_spellings: array::distinct(array::concat(metadata.extraction.alias_spellings ?? [], $entity.metadata.extraction.alias_spellings ?? [])), \
+                    reported_types: array::distinct(array::concat(metadata.extraction.reported_types ?? [], $entity.metadata.extraction.reported_types ?? [])) \
+                }) END, aliases: array::distinct(array::concat( \
                     metadata.aliases ?? [], $entity.metadata.aliases ?? [] \
                 )) } \
-            ); \
+            ) END; \
      }; \
      LET $entity_ids = (SELECT VALUE id FROM entity \
-                       WHERE canonical_name IN $replacement_entity_names); "
+                       WHERE identity_key IN $replacement_entity_names); "
+}
+
+/// Store the current extraction evidence on its owning mention. Shared source
+/// entities may have different valid aliases in different chunks; replacing or
+/// deleting one chunk must not preserve its aliases or erase another's.
+pub(super) fn replacement_mentions_transaction(note_variable: &str) -> String {
+    format!(
+        "FOR $entity_id IN $entity_ids {{ \
+            LET $evidence = array::filter($replacement_entities, |$entity| \
+                ($entity.identity_key ?? string::concat('legacy:', $entity.canonical_name)) = $entity_id.identity_key)[0].metadata; \
+            LET $current_evidence = IF $evidence = NONE THEN NONE ELSE object::extend($evidence, \
+                    {{ aliases: array::slice($evidence.aliases ?? [], 0, 8) }}) END; \
+            IF array::len((SELECT VALUE id FROM mentions WHERE in = {note_variable} AND out = $entity_id LIMIT 1)) = 0 {{ \
+                CREATE mentions SET in = {note_variable}, out = $entity_id, metadata = $current_evidence; \
+            }} ELSE {{ \
+                UPDATE mentions SET metadata = $current_evidence WHERE in = {note_variable} AND out = $entity_id; \
+            }}; \
+         }}; "
+    )
 }
 
 fn check_note_mutation_errors(
@@ -147,6 +176,7 @@ impl Repository {
                     embedding = $embedding, source_id = $source_id, \
                     source_generation = $source_generation, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    extraction_scope = $extraction_scope, \
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
@@ -174,6 +204,7 @@ impl Repository {
             ))
             .bind(("chunk_key", note.chunk_key.clone()))
             .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("extraction_scope", note.extraction_scope.clone()))
             .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
             .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
             .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
@@ -244,11 +275,20 @@ impl Repository {
             .unwrap_or_default();
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let replacement_entities = replacement_entities_transaction();
+        let replacement_mentions = replacement_mentions_transaction("$id");
         let entity_names: Vec<String> = entities
             .iter()
-            .map(|entity| entity.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect();
-        let note_id = RecordId::new("note", Uuid::new_v4().to_string());
+        let note_id = note
+            .id
+            .clone()
+            .unwrap_or_else(|| RecordId::new("note", Uuid::new_v4().to_string()));
+        if note_id.table.as_str() != "note" || note_id.key.is_range() {
+            return Err(DbError::QueryFailed(
+                "atomic note creation requires one note ID".into(),
+            ));
+        }
         let mut response = self
             .db
             .query(format!(
@@ -261,6 +301,7 @@ impl Repository {
                     embedding = $embedding, source_id = $source_id, \
                     source_generation = $source_generation, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    extraction_scope = $extraction_scope, \
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
@@ -268,7 +309,7 @@ impl Repository {
                     content_hash = $content_hash, \
                     search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
-                 FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
+                 {replacement_mentions}\
                  COMMIT TRANSACTION;"
             ))
             .bind(("editor_source", editor_source))
@@ -283,6 +324,7 @@ impl Repository {
             .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
             .bind(("chunk_key", note.chunk_key.clone()))
             .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("extraction_scope", note.extraction_scope.clone()))
             .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
             .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
             .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
@@ -366,6 +408,7 @@ impl Repository {
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    extraction_scope = IF $extraction_scope = NONE THEN extraction_scope ELSE $extraction_scope END, \
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
@@ -387,6 +430,7 @@ impl Repository {
             .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
             .bind(("chunk_key", note.chunk_key.clone()))
             .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("extraction_scope", note.extraction_scope.clone()))
             .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
             .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
             .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
@@ -471,9 +515,10 @@ impl Repository {
             (existing, String::new(), None)
         };
         let replacement_entities = replacement_entities_transaction();
+        let replacement_mentions = replacement_mentions_transaction("$id");
         let entity_names: Vec<String> = entities
             .iter()
-            .map(|entity| entity.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect();
         let search_content = search_content_for_note_update(&existing, &note);
 
@@ -485,6 +530,7 @@ impl Repository {
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    extraction_scope = IF $extraction_scope = NONE THEN extraction_scope ELSE $extraction_scope END, \
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
@@ -495,7 +541,7 @@ impl Repository {
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at RETURN AFTER; \
                  DELETE mentions WHERE in = $id; \
-                 FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
+                 {replacement_mentions}\
                  COMMIT TRANSACTION;"
             ))
             .bind(("editor_source", editor_source))
@@ -510,6 +556,7 @@ impl Repository {
             .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
             .bind(("chunk_key", note.chunk_key.clone()))
             .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("extraction_scope", note.extraction_scope.clone()))
             .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
             .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
             .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))

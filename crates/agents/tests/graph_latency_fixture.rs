@@ -371,10 +371,22 @@ impl Fixture {
                 .await
                 .unwrap();
             probes.entry("vector").or_default().push(ms(started));
+            // Independent probes use a bounded keyword candidate list. The
+            // end-to-end measurements above use the actual hybrid ranking.
+            let ranked_note_ids = fulltext
+                .iter()
+                .map(|hit| hit.id.clone())
+                .collect::<Vec<_>>();
             let started = Instant::now();
             let entities = self
                 .repo
-                .find_graph_entities(query, config.max_seed_entities)
+                .find_graph_entities_for_search(
+                    query,
+                    config.max_seed_entities,
+                    &ranked_note_ids,
+                    since,
+                    source.clone(),
+                )
                 .await
                 .unwrap();
             probes
@@ -391,11 +403,12 @@ impl Fixture {
             let started = Instant::now();
             let seeds = self
                 .repo
-                .graph_notes_for_entities(
+                .graph_notes_for_entities_ranked(
                     &entities
                         .iter()
                         .map(|entity| entity.id.clone())
                         .collect::<Vec<_>>(),
+                    &ranked_note_ids,
                     config.max_seed_notes,
                     since,
                     source.clone(),

@@ -42,15 +42,43 @@ impl Repository {
         // entity-extraction pass. Chat provenance identifies origin rather
         // than extracted content, so it follows every safely reconciled chunk.
         for (old_id, new_id) in &successors {
+            let old: Option<Note> = self.db.select(old_id.clone()).await?;
+            let new: Option<Note> = self.db.select(new_id.clone()).await?;
+            if let (Some(old), Some(new)) = (old, new) {
+                if old.source_generation.is_some()
+                    && new.source_generation.is_some()
+                    && old.source_id == new.source_id
+                {
+                    if let Some(scope) = self.note_extraction_scope(&old).await? {
+                        // The anchor follows safe one-to-one reconciliation
+                        // even without mentions; entity evidence still copies
+                        // only for exact content below. Unmatched new chunks
+                        // keep their own final-ID-derived scope.
+                        self.db.query("BEGIN TRANSACTION; UPDATE $old SET extraction_scope = $scope; UPDATE $new SET extraction_scope = $scope; COMMIT TRANSACTION;")
+                            .bind(("old", old_id.clone())).bind(("new", new_id.clone()))
+                            .bind(("scope", scope)).await?.check()?;
+                    }
+                }
+            }
             if exact_content_successors.contains(old_id) {
-                let entity_ids: Vec<RecordId> = self
+                #[derive(Deserialize, SurrealValue)]
+                struct MentionEvidence {
+                    out: RecordId,
+                    metadata: Option<serde_json::Value>,
+                }
+                let mentions: Vec<MentionEvidence> = self
                     .db
-                    .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+                    .query("SELECT out, metadata FROM mentions WHERE in = $note_id")
                     .bind(("note_id", old_id.clone()))
                     .await?
                     .take(0)?;
-                for entity_id in entity_ids {
-                    self.link_note_to_entity_locked(new_id, &entity_id).await?;
+                for mention in mentions {
+                    self.link_note_to_entity_with_metadata_locked(
+                        new_id,
+                        &mention.out,
+                        mention.metadata,
+                    )
+                    .await?;
                 }
             }
 

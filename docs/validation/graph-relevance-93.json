@@ -1,0 +1,1725 @@
+{
+  "schema_version": 1,
+  "compiled_source": "3dc616a09ce37465dd96a3298ddf3e405ab62a54",
+  "binary_sha256": "ddc33f9b5c15bc40affe392b7691267945785ed34cfb2b20baa6a05d08d561cf",
+  "frozen_baseline_suite_sha256": "2a8576ac4a4360c03f874e38c61b56d0850bb2099b052f5334bfcf2bda02e615",
+  "case_count": 50,
+  "calibration_cases": 34,
+  "holdout_cases": 16,
+  "answerable_cases": 46,
+  "reviewed_no_answer_cases": 4,
+  "suite_authorship": "agent_curated_not_human_reviewed",
+  "author_exposure": "graph author saw provisional curation before assignment; final frozen cases and pilot selection were not examined during graph implementation",
+  "comparison_limits": "partial known-positive judgments; unseen hits unjudged; holdout is a reserved regression set rather than a statistically blind population estimate",
+  "pilot": {
+    "schema_version": 1,
+    "compiled_source": "3dc616a09ce37465dd96a3298ddf3e405ab62a54",
+    "binary_sha256": "ddc33f9b5c15bc40affe392b7691267945785ed34cfb2b20baa6a05d08d561cf",
+    "selected_notes": 8,
+    "new_entities": 117,
+    "new_mentions": 124,
+    "type_counts": {
+      "technology": 37,
+      "organization": 16,
+      "project": 14,
+      "concept": 32,
+      "other": 3,
+      "person": 4,
+      "location": 11
+    },
+    "unchanged_note_payloads_sources_generations_embeddings": true,
+    "historical_mentions_preserved": 458,
+    "repeat_entity_ids_stable": true,
+    "repeat_logical_mentions_and_metadata_stable": true,
+    "force_recreates_mention_row_ids": true,
+    "aliases_valid_bounded": true,
+    "changed_fields": {},
+    "accepted_edges_before_after": 0,
+    "notes_with_new_mentions": 8,
+    "existing_portable_remote_upload_jobs_unchanged": true,
+    "local_extraction_jobs_not_exported_in_portable_archive": true
+  },
+  "evaluation_runs": {
+    "baseline": {
+      "policy_cases": 200,
+      "failures": 0
+    },
+    "candidate_before_pilot": {
+      "policy_cases": 200,
+      "failures": 0
+    },
+    "candidate_after_pilot": {
+      "policy_cases": 200,
+      "failures": 0
+    }
+  },
+  "paired_changes": {
+    "baseline_before": [
+      {
+        "policy": "keyword-off",
+        "split": "calibration",
+        "cases": 34,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "calibration",
+        "cases": 34,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-auto",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 23,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 28,
+        "recall_judged_cases": 32,
+        "recall_improved": 3,
+        "recall_unchanged": 29,
+        "rr_improved": 4
+      },
+      {
+        "policy": "hybrid-on",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 23,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 28,
+        "recall_judged_cases": 32,
+        "recall_improved": 3,
+        "recall_unchanged": 29,
+        "rr_improved": 4
+      },
+      {
+        "policy": "keyword-off",
+        "split": "holdout",
+        "cases": 16,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "holdout",
+        "cases": 16,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-auto",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 9,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-on",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 9,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      }
+    ],
+    "before_after": [
+      {
+        "policy": "keyword-off",
+        "split": "calibration",
+        "cases": 34,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "calibration",
+        "cases": 34,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-auto",
+        "split": "calibration",
+        "cases": 34,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-on",
+        "split": "calibration",
+        "cases": 34,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "keyword-off",
+        "split": "holdout",
+        "cases": 16,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "holdout",
+        "cases": 16,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-auto",
+        "split": "holdout",
+        "cases": 16,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-on",
+        "split": "holdout",
+        "cases": 16,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      }
+    ],
+    "baseline_after": [
+      {
+        "policy": "keyword-off",
+        "split": "calibration",
+        "cases": 34,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "calibration",
+        "cases": 34,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-auto",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 23,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 28,
+        "recall_judged_cases": 32,
+        "recall_improved": 3,
+        "recall_unchanged": 29,
+        "rr_improved": 4
+      },
+      {
+        "policy": "hybrid-on",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 23,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 28,
+        "recall_judged_cases": 32,
+        "recall_improved": 3,
+        "recall_unchanged": 29,
+        "rr_improved": 4
+      },
+      {
+        "policy": "keyword-off",
+        "split": "holdout",
+        "cases": 16,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "holdout",
+        "cases": 16,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-auto",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 9,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-on",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 9,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      }
+    ]
+  },
+  "before_pilot_groups": [
+    {
+      "policy": "keyword-off",
+      "split": "calibration",
+      "cases": 34,
+      "successful": 34,
+      "formulations": {
+        "question": 24,
+        "terms": 10,
+        "title": 0
+      },
+      "failed": 0,
+      "unjudged_hits": 11,
+      "fully_judged_cases": 31,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.029411764705882353,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.0,
+          "cases_scored": 34
+        },
+        "ndcg_at_k": {
+          "mean": 0.2185917312163316,
+          "cases_scored": 29
+        },
+        "negative_empty": {
+          "mean": 1.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": 0.07586206896551725,
+          "cases_scored": 29
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.2375,
+          "cases_scored": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.24479166666666666,
+          "cases_scored": 32
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.0823529411764706,
+          "cases_scored": 34
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.14705882352941177,
+          "cases_scored": 34
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.0,
+            "cases_scored": 22
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.0,
+            "cases_scored": 22
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 0.76,
+            "cases_scored": 10
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.7833333333333333,
+            "cases_scored": 10
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 2,
+        "returned_false_positives": 0
+      }
+    },
+    {
+      "policy": "keyword-off",
+      "split": "holdout",
+      "cases": 16,
+      "successful": 16,
+      "formulations": {
+        "question": 10,
+        "terms": 4,
+        "title": 2
+      },
+      "failed": 0,
+      "unjudged_hits": 9,
+      "fully_judged_cases": 13,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.0,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.0,
+          "cases_scored": 16
+        },
+        "ndcg_at_k": {
+          "mean": 0.2727272727272727,
+          "cases_scored": 11
+        },
+        "negative_empty": {
+          "mean": 1.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": 0.05454545454545456,
+          "cases_scored": 11
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.42857142857142855,
+          "cases_scored": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.42857142857142855,
+          "cases_scored": 14
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.07500000000000001,
+          "cases_scored": 16
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.1875,
+          "cases_scored": 16
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.0,
+            "cases_scored": 8
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.0,
+            "cases_scored": 8
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 2,
+        "returned_false_positives": 0
+      }
+    },
+    {
+      "policy": "hybrid-off",
+      "split": "calibration",
+      "cases": 34,
+      "successful": 34,
+      "formulations": {
+        "question": 24,
+        "terms": 10,
+        "title": 0
+      },
+      "failed": 0,
+      "unjudged_hits": 117,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.08823529411764706,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
+          "cases_scored": 34
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.678125,
+          "cases_scored": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.7135416666666666,
+          "cases_scored": 32
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.2529411764705882,
+          "cases_scored": 34
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.9411764705882353,
+          "cases_scored": 34
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.6409090909090909,
+            "cases_scored": 22
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.6742424242424243,
+            "cases_scored": 22
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 0.76,
+            "cases_scored": 10
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.8,
+            "cases_scored": 10
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-off",
+      "split": "holdout",
+      "cases": 16,
+      "successful": 16,
+      "formulations": {
+        "question": 10,
+        "terms": 4,
+        "title": 2
+      },
+      "failed": 0,
+      "unjudged_hits": 58,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.0625,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.625,
+          "cases_scored": 16
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.15000000000000002,
+          "cases_scored": 16
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.875,
+          "cases_scored": 16
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-auto",
+      "split": "calibration",
+      "cases": 34,
+      "successful": 34,
+      "formulations": {
+        "question": 24,
+        "terms": 10,
+        "title": 0
+      },
+      "failed": 0,
+      "unjudged_hits": 117,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.08823529411764706,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
+          "cases_scored": 34
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.678125,
+          "cases_scored": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.7135416666666666,
+          "cases_scored": 32
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.2529411764705882,
+          "cases_scored": 34
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.9411764705882353,
+          "cases_scored": 34
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.6409090909090909,
+            "cases_scored": 22
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.6742424242424243,
+            "cases_scored": 22
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 0.76,
+            "cases_scored": 10
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.8,
+            "cases_scored": 10
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-auto",
+      "split": "holdout",
+      "cases": 16,
+      "successful": 16,
+      "formulations": {
+        "question": 10,
+        "terms": 4,
+        "title": 2
+      },
+      "failed": 0,
+      "unjudged_hits": 58,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.0625,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.625,
+          "cases_scored": 16
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.15000000000000002,
+          "cases_scored": 16
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.875,
+          "cases_scored": 16
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-on",
+      "split": "calibration",
+      "cases": 34,
+      "successful": 34,
+      "formulations": {
+        "question": 24,
+        "terms": 10,
+        "title": 0
+      },
+      "failed": 0,
+      "unjudged_hits": 117,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.08823529411764706,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
+          "cases_scored": 34
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.678125,
+          "cases_scored": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.7135416666666666,
+          "cases_scored": 32
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.2529411764705882,
+          "cases_scored": 34
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.9411764705882353,
+          "cases_scored": 34
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.6409090909090909,
+            "cases_scored": 22
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.6742424242424243,
+            "cases_scored": 22
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 0.76,
+            "cases_scored": 10
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.8,
+            "cases_scored": 10
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-on",
+      "split": "holdout",
+      "cases": 16,
+      "successful": 16,
+      "formulations": {
+        "question": 10,
+        "terms": 4,
+        "title": 2
+      },
+      "failed": 0,
+      "unjudged_hits": 58,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.0625,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.625,
+          "cases_scored": 16
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.15000000000000002,
+          "cases_scored": 16
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.875,
+          "cases_scored": 16
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    }
+  ],
+  "after_pilot_groups": [
+    {
+      "policy": "keyword-off",
+      "split": "calibration",
+      "cases": 34,
+      "successful": 34,
+      "formulations": {
+        "question": 24,
+        "terms": 10,
+        "title": 0
+      },
+      "failed": 0,
+      "unjudged_hits": 11,
+      "fully_judged_cases": 31,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.029411764705882353,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.0,
+          "cases_scored": 34
+        },
+        "ndcg_at_k": {
+          "mean": 0.2185917312163316,
+          "cases_scored": 29
+        },
+        "negative_empty": {
+          "mean": 1.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": 0.07586206896551725,
+          "cases_scored": 29
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.2375,
+          "cases_scored": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.24479166666666666,
+          "cases_scored": 32
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.0823529411764706,
+          "cases_scored": 34
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.14705882352941177,
+          "cases_scored": 34
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.0,
+            "cases_scored": 22
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.0,
+            "cases_scored": 22
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 0.76,
+            "cases_scored": 10
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.7833333333333333,
+            "cases_scored": 10
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 2,
+        "returned_false_positives": 0
+      }
+    },
+    {
+      "policy": "keyword-off",
+      "split": "holdout",
+      "cases": 16,
+      "successful": 16,
+      "formulations": {
+        "question": 10,
+        "terms": 4,
+        "title": 2
+      },
+      "failed": 0,
+      "unjudged_hits": 9,
+      "fully_judged_cases": 13,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.0,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.0,
+          "cases_scored": 16
+        },
+        "ndcg_at_k": {
+          "mean": 0.2727272727272727,
+          "cases_scored": 11
+        },
+        "negative_empty": {
+          "mean": 1.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": 0.05454545454545456,
+          "cases_scored": 11
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.42857142857142855,
+          "cases_scored": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.42857142857142855,
+          "cases_scored": 14
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.07500000000000001,
+          "cases_scored": 16
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.1875,
+          "cases_scored": 16
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.0,
+            "cases_scored": 8
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.0,
+            "cases_scored": 8
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 2,
+        "returned_false_positives": 0
+      }
+    },
+    {
+      "policy": "hybrid-off",
+      "split": "calibration",
+      "cases": 34,
+      "successful": 34,
+      "formulations": {
+        "question": 24,
+        "terms": 10,
+        "title": 0
+      },
+      "failed": 0,
+      "unjudged_hits": 117,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.08823529411764706,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
+          "cases_scored": 34
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.678125,
+          "cases_scored": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.7135416666666666,
+          "cases_scored": 32
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.2529411764705882,
+          "cases_scored": 34
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.9411764705882353,
+          "cases_scored": 34
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.6409090909090909,
+            "cases_scored": 22
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.6742424242424243,
+            "cases_scored": 22
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 0.76,
+            "cases_scored": 10
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.8,
+            "cases_scored": 10
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-off",
+      "split": "holdout",
+      "cases": 16,
+      "successful": 16,
+      "formulations": {
+        "question": 10,
+        "terms": 4,
+        "title": 2
+      },
+      "failed": 0,
+      "unjudged_hits": 58,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.0625,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.625,
+          "cases_scored": 16
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.15000000000000002,
+          "cases_scored": 16
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.875,
+          "cases_scored": 16
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-auto",
+      "split": "calibration",
+      "cases": 34,
+      "successful": 34,
+      "formulations": {
+        "question": 24,
+        "terms": 10,
+        "title": 0
+      },
+      "failed": 0,
+      "unjudged_hits": 117,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.08823529411764706,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
+          "cases_scored": 34
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.678125,
+          "cases_scored": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.7135416666666666,
+          "cases_scored": 32
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.2529411764705882,
+          "cases_scored": 34
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.9411764705882353,
+          "cases_scored": 34
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.6409090909090909,
+            "cases_scored": 22
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.6742424242424243,
+            "cases_scored": 22
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 0.76,
+            "cases_scored": 10
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.8,
+            "cases_scored": 10
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-auto",
+      "split": "holdout",
+      "cases": 16,
+      "successful": 16,
+      "formulations": {
+        "question": 10,
+        "terms": 4,
+        "title": 2
+      },
+      "failed": 0,
+      "unjudged_hits": 58,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.0625,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.625,
+          "cases_scored": 16
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.15000000000000002,
+          "cases_scored": 16
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.875,
+          "cases_scored": 16
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-on",
+      "split": "calibration",
+      "cases": 34,
+      "successful": 34,
+      "formulations": {
+        "question": 24,
+        "terms": 10,
+        "title": 0
+      },
+      "failed": 0,
+      "unjudged_hits": 117,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.08823529411764706,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
+          "cases_scored": 34
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.678125,
+          "cases_scored": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.7135416666666666,
+          "cases_scored": 32
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.2529411764705882,
+          "cases_scored": 34
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.9411764705882353,
+          "cases_scored": 34
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.6409090909090909,
+            "cases_scored": 22
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.6742424242424243,
+            "cases_scored": 22
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 0.76,
+            "cases_scored": 10
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.8,
+            "cases_scored": 10
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": null,
+            "cases_scored": 0
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    },
+    {
+      "policy": "hybrid-on",
+      "split": "holdout",
+      "cases": 16,
+      "successful": 16,
+      "formulations": {
+        "question": 10,
+        "terms": 4,
+        "title": 2
+      },
+      "failed": 0,
+      "unjudged_hits": 58,
+      "fully_judged_cases": 2,
+      "metrics": {
+        "duplicate_full_content_count": {
+          "mean": 0.0625,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.625,
+          "cases_scored": 16
+        },
+        "ndcg_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "negative_empty": {
+          "mean": 0.0,
+          "cases_scored": 2
+        },
+        "precision_at_k": {
+          "mean": null,
+          "cases_scored": 0
+        },
+        "recall_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "mean": 0.8571428571428571,
+          "cases_scored": 14
+        },
+        "top_k_useful_lower_bound": {
+          "mean": 0.15000000000000002,
+          "cases_scored": 16
+        },
+        "top_k_useful_upper_bound": {
+          "mean": 0.875,
+          "cases_scored": 16
+        }
+      },
+      "formulation_metrics": {
+        "question": {
+          "recall_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 0.75,
+            "cases_scored": 8
+          }
+        },
+        "terms": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 4
+          }
+        },
+        "title": {
+          "recall_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          },
+          "reciprocal_rank_of_judged_positives": {
+            "mean": 1.0,
+            "cases_scored": 2
+          }
+        }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
+      }
+    }
+  ],
+  "interpretation": "candidate removes four calibration graph reciprocal-rank regressions relative to old graph; pilot itself adds typed evidence without changing judged RR or recall; no observed advantage over hybrid/off on this limited suite"
+}
