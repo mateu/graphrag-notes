@@ -8,7 +8,7 @@ remain private. Curation and independent review were delegated to Codex under
 owner authorization; this is not an observed human relevance study.
 
 The [sanitized report](retrieval-92-baseline.json) records aggregate results,
-counts and source/snapshot hashes. All **200 policy comparisons** passed search
+counts and public build/suite hashes. Exact backup identity remains private. All **200 policy comparisons** passed search
 and independent revision-pinned readback. Four policies used identical limits
 (top five), filters, judgments and a restored snapshot of **9,751 notes**.
 The installed release binary was compiled from `31b56957`; repository revision

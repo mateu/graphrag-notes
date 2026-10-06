@@ -726,7 +726,6 @@
     "source_revision": "e71748b82a63fadfb589ea486c46bbf8c3a488e1",
     "binary_compiled_inputs_revision": "31b56957fc23a51fbf9489ff8d9e5eb487f55734",
     "binary_sha256": "f2c43195869b04161ac8a33c0b95837705384af79498c8f25269614914437e89",
-    "snapshot_manifest_sha256": "623afebd1cde34dfc1c70e46d60409f4d6802aa9cd32eb5b5d12eda9b575a83c",
     "embedding": {
       "provider": "ollama",
       "model": "bge-m3:latest",
@@ -747,7 +746,7 @@
       "accepted_inter_note_edges": 0
     },
     "review": "Source-grounded delegated Codex curation plus independent delegated Codex review; no observed human judgment or user study. Three source-grounding corrections applied before ranking changes; earlier provisional runs retained privately.",
-    "private_evidence": "Exact config/model identity, question formulations, graded judgments, raw ranks, revisions, content hashes and prior reports retained in owner-private runspace."
+    "private_evidence": "Exact backup identity, config/model identity, question formulations, graded judgments, raw ranks, revisions, content hashes and prior reports retained in owner-private runspace."
   },
   "paired_graph_comparison": {
     "hybrid-auto": {
