@@ -349,6 +349,14 @@ impl RemoteApplicationOperations for EmbeddedApplication {
     async fn get_uploaded_source(&self, id: &str) -> ApplicationResult<UploadedSource> {
         crate::remote_jobs::source(self, id).await
     }
+    async fn delete_uploaded_source(
+        &self,
+        caller: CallerIdentity,
+        request: DeleteUploadedSourceRequest,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        self.remote_delete_uploaded_source_impl(caller, request)
+            .await
+    }
     async fn get_remote_job(
         &self,
         caller: CallerIdentity,

@@ -35,6 +35,22 @@ pub struct UploadAdmission {
     pub replayed: bool,
 }
 
+/// Explicit retirement of one uploaded source in a client-registered collection.
+/// The authenticated owner and stored provenance independently constrain scope.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteUploadedSourceRequest {
+    #[schemars(length(min = 1, max = 128))]
+    pub request_id: String,
+    #[schemars(length(min = 1, max = 512))]
+    pub id: String,
+    #[schemars(length(min = 64, max = 64))]
+    pub revision: String,
+    #[schemars(length(min = 1, max = 64))]
+    pub collection_id: String,
+    pub confirmed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct RemoteJobStatus {
     pub id: String,

@@ -132,6 +132,15 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
             "Uploaded sources are unavailable in this adapter".into(),
         ))
     }
+    async fn delete_uploaded_source(
+        &self,
+        _caller: CallerIdentity,
+        _request: DeleteUploadedSourceRequest,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        Err(ApplicationError::Compatibility(
+            "Uploaded source retirement is unavailable in this adapter".into(),
+        ))
+    }
     async fn get_remote_job(
         &self,
         _caller: CallerIdentity,

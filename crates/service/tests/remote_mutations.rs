@@ -163,7 +163,7 @@ async fn independent_capabilities_confirmations_trusted_actor_and_durable_replay
     for (name, expected) in [
         ("reader", 8),
         ("editor", 1),
-        ("deleter", 1),
+        ("deleter", 2),
         ("acceptor", 1),
         ("rejector", 1),
         ("undoer", 1),
@@ -172,6 +172,23 @@ async fn independent_capabilities_confirmations_trusted_actor_and_durable_replay
         let list = fixture.rpc(name, "tools/list", json!({})).await;
         assert_eq!(list["result"]["tools"].as_array().unwrap().len(), expected);
     }
+    let source_delete = json!({"request_id":"retire-source","id":format!("source:{}", "a".repeat(64)),"revision":"0".repeat(64),"collection_id":"fixture-memory","confirmed":false});
+    assert_eq!(
+        error(
+            &fixture
+                .tool("reader", "delete_uploaded_source", source_delete.clone())
+                .await
+        ),
+        "forbidden"
+    );
+    assert_eq!(
+        error(
+            &fixture
+                .tool("deleter", "delete_uploaded_source", source_delete)
+                .await
+        ),
+        "validation"
+    );
     let before = fixture.tool("reader", "get_note", json!({"id":id})).await;
     let revision = data(&before)["revision"].as_str().unwrap();
     let edit = json!({"request_id":"edit-1","id":id,"revision":revision,"patch":{"title":"Reviewed","tags":["shared"]}});

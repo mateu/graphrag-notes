@@ -672,7 +672,11 @@ impl ToolService {
                     Err(_) => failure("internal", "Capture outcome is uncertain; retain the identical draft and request_id for a safe retry.", true),
                 }
             }
-            name if matches!(name, "upload_source" | "cancel_job" | "resume_job") => {
+            name if matches!(
+                name,
+                "upload_source" | "cancel_job" | "resume_job" | "delete_uploaded_source"
+            ) =>
+            {
                 // These short durable mutations never share the provider/capture
                 // semaphore. Explicit cancellation remains reachable while a
                 // worker is preparing or inside a guarded atomic write.

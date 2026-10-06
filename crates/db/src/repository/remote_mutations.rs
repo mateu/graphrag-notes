@@ -40,6 +40,9 @@ pub enum RemoteMutationEffect {
     Delete {
         expected: Box<Note>,
     },
+    DeleteSource {
+        expected: Box<Source>,
+    },
     Decision {
         expected: Box<ProposedEdge>,
         endpoints: Vec<Note>,
@@ -75,7 +78,7 @@ fn validate_input(input: &RemoteMutationInput) -> Result<()> {
     }
     if !matches!(
         input.operation.as_str(),
-        "edit" | "delete" | "accept" | "reject" | "undo"
+        "edit" | "delete" | "delete_source" | "accept" | "reject" | "undo"
     ) || input.payload_fingerprint.len() != 64
         || !input
             .payload_fingerprint
@@ -236,6 +239,7 @@ impl Repository {
             )
         );
         let mut expected_note = None;
+        let mut expected_source = None;
         let mut replacement = None;
         let mut entities = Vec::new();
         let mut expected_proposal = None;
@@ -245,6 +249,17 @@ impl Repository {
         let target;
         let effects;
         match effect {
+            RemoteMutationEffect::DeleteSource { expected } => {
+                if input.operation != "delete_source" {
+                    return Err(conflict());
+                }
+                target = expected.id.clone().ok_or_else(conflict)?;
+                // Source identity/state and job admission are checked inside
+                // the same transaction as retirement and receipt publication.
+                // Generation-free detached/manual notes keep their provenance.
+                effects = source_retirement_sql().into();
+                expected_source = Some(*expected);
+            }
             RemoteMutationEffect::Edit {
                 expected,
                 replacement: note,
@@ -339,6 +354,46 @@ impl Repository {
             .bind(("target", target.clone()))
             .bind(("editor_source", target))
             .bind(("editor_expected", expected_note))
+            .bind((
+                "expected_source_metadata",
+                expected_source
+                    .as_ref()
+                    .map(|source| source.metadata.clone()),
+            ))
+            .bind((
+                "expected_source_generation",
+                expected_source.as_ref().map(|source| source.generation),
+            ))
+            .bind((
+                "expected_source_successful",
+                expected_source
+                    .as_ref()
+                    .map(|source| source.successful_generation),
+            ))
+            .bind((
+                "expected_source_title",
+                expected_source
+                    .as_ref()
+                    .and_then(|source| source.title.clone()),
+            ))
+            .bind((
+                "expected_source_content",
+                expected_source
+                    .as_ref()
+                    .and_then(|source| source.content.clone()),
+            ))
+            .bind((
+                "expected_source_hash",
+                expected_source
+                    .as_ref()
+                    .and_then(|source| source.content_hash.clone()),
+            ))
+            .bind((
+                "expected_source_uri",
+                expected_source
+                    .as_ref()
+                    .and_then(|source| source.normalized_uri.clone()),
+            ))
             .bind(("replacement", replacement))
             .bind(("replacement_embedding", replacement_embedding))
             .bind(("replacement_entities", entities))
@@ -439,4 +494,49 @@ fn proposal_guard() -> String {
         .collect::<Vec<_>>()
         .join(" AND ");
     format!("IF array::len((SELECT VALUE id FROM proposed_edge WHERE id=$target AND {comparison} LIMIT 1)) != 1 {{ THROW 'remote-mutation-revision-conflict'; }}; ")
+}
+
+/// The effect is bounded to generation-owned notes. A manual/detached note has
+/// no source_generation and therefore survives, retaining its source metadata.
+fn source_retirement_sql() -> &'static str {
+    r#"
+    IF array::len((SELECT VALUE id FROM source WHERE id=$target
+        AND source_type='markdown' AND metadata=$expected_source_metadata
+        AND metadata.remote_upload.instance_id=$instance
+        AND metadata.remote_upload.source.metadata.collection_id=$payload.collection_id
+        AND generation=$expected_source_generation
+        AND successful_generation=$expected_source_successful AND status='ready'
+        AND title=$expected_source_title AND content=$expected_source_content
+        AND content_hash=$expected_source_hash LIMIT 1)) != 1 {
+        THROW 'remote-mutation-revision-conflict';
+    };
+    IF array::len((SELECT VALUE id FROM processing_job WHERE job_type='remote_upload'
+        AND remote_source_uri=$expected_source_uri
+        AND status IN ['queued','running'] LIMIT 1)) != 0 {
+        THROW 'remote-mutation-revision-conflict';
+    };
+    LET $owned_notes=(SELECT VALUE id FROM note WHERE source_id=$target
+        AND source_generation IS NOT NONE);
+    FOR $owned_note IN $owned_notes {
+        UPDATE proposed_edge SET status='superseded',superseded_at=time::now(),
+            supersession_reason='proposal endpoint removed by remote source retirement',
+            resulting_edge_id=NONE,updated_at=time::now()
+            WHERE status IN ['pending','accepting','accepted']
+            AND (in=$owned_note OR out=$owned_note);
+        DELETE supports WHERE in=$owned_note OR out=$owned_note;
+        DELETE contradicts WHERE in=$owned_note OR out=$owned_note;
+        DELETE derived_from WHERE in=$owned_note OR out=$owned_note;
+        DELETE related_to WHERE in=$owned_note OR out=$owned_note;
+        DELETE mentions WHERE in=$owned_note;
+        DELETE note_from_message WHERE in=$owned_note;
+        DELETE note_from_conversation WHERE in=$owned_note;
+        DELETE $owned_note;
+    };
+    IF array::len((SELECT VALUE id FROM note WHERE source_id=$target LIMIT 1)) = 0 {
+        DELETE $target;
+    } ELSE {
+        UPDATE $target SET successful_generation=0,content_hash=NONE,status='ready',
+            last_error=NONE,updated_at=time::now();
+    };
+    "#
 }

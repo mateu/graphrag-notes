@@ -945,3 +945,209 @@ async fn unchanged_line_endings_return_latest_input_without_rewriting_chunk_span
         );
     }
 }
+
+#[tokio::test]
+async fn uploaded_source_retirement_is_scoped_revision_guarded_and_replayable() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let application = healthy(&repo);
+    let mut upload = request("retire-original");
+    upload
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("collection_id".into(), "fixture-memory".into());
+    let first = application
+        .upload_source(caller("openclaw"), upload)
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let delete = DeleteUploadedSourceRequest {
+        request_id: "retire-reviewed".into(),
+        id: first.source_id.clone(),
+        revision: view.revision.clone(),
+        collection_id: "fixture-memory".into(),
+        confirmed: true,
+    };
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("foreign"), delete.clone())
+            .await,
+        Err(ApplicationError::Validation(_))
+    ));
+    let mut wrong = delete.clone();
+    wrong.collection_id = "unrelated".into();
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("openclaw"), wrong)
+            .await,
+        Err(ApplicationError::Validation(_))
+    ));
+    let mut stale = delete.clone();
+    stale.revision = "0".repeat(64);
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("openclaw"), stale)
+            .await,
+        Err(ApplicationError::RevisionConflict(_))
+    ));
+    let mut unconfirmed = delete.clone();
+    unconfirmed.confirmed = false;
+    assert!(application
+        .delete_uploaded_source(caller("openclaw"), unconfirmed)
+        .await
+        .is_err());
+
+    let mut detached = graphrag_core::Note::new("Detached manual note retains its original source");
+    detached.source_id = repo.get_source(&first.source_id).await.unwrap().unwrap().id;
+    let detached = repo.create_note(detached).await.unwrap();
+    let manual = repo
+        .create_note(graphrag_core::Note::new("Unrelated manual note"))
+        .await
+        .unwrap();
+    let result = application
+        .delete_uploaded_source(caller("openclaw"), delete.clone())
+        .await
+        .unwrap();
+    assert!(!result.replayed);
+    assert_eq!(result.outcome.operation, "delete_source");
+    assert_eq!(result.outcome.actor, "mcp:openclaw");
+    let retained = repo.get_source(&first.source_id).await.unwrap().unwrap();
+    assert_eq!(retained.successful_generation, 0);
+    assert!(retained.content_hash.is_none());
+    assert!(repo
+        .get_source_chunks(retained.id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(repo
+        .get_note(&graphrag_core::record_id_to_string(
+            detached.id.as_ref().unwrap()
+        ))
+        .await
+        .unwrap()
+        .is_some());
+    assert!(repo
+        .get_note(&graphrag_core::record_id_to_string(
+            manual.id.as_ref().unwrap()
+        ))
+        .await
+        .unwrap()
+        .is_some());
+    let replay = application
+        .delete_uploaded_source(caller("openclaw"), delete.clone())
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.outcome, result.outcome);
+    let mut reused = delete;
+    reused.collection_id = "other".into();
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("openclaw"), reused)
+            .await,
+        Err(ApplicationError::RevisionConflict(_))
+    ));
+}
+
+#[tokio::test]
+async fn queued_upload_blocks_retirement_and_receipt_failure_rolls_it_back() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let application = healthy(&repo);
+    let mut upload = request("retire-blocked");
+    upload
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("collection_id".into(), "fixture-memory".into());
+    let first = application
+        .upload_source(caller("openclaw"), upload.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let delete = DeleteUploadedSourceRequest {
+        request_id: "retire-blocked-request".into(),
+        id: first.source_id.clone(),
+        revision: view.revision,
+        collection_id: "fixture-memory".into(),
+        confirmed: true,
+    };
+    upload.request_id = "queued-new-generation".into();
+    upload.content.push_str("\nLater text");
+    let pending = application
+        .upload_source(caller("openclaw"), upload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("openclaw"), delete)
+            .await,
+        Err(ApplicationError::RevisionConflict(_))
+    ));
+    application
+        .cancel_remote_job(caller("openclaw"), &pending.job_id)
+        .await
+        .unwrap();
+    let view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let delete = DeleteUploadedSourceRequest {
+        request_id: "retire-rollback".into(),
+        id: first.source_id.clone(),
+        revision: view.revision,
+        collection_id: "fixture-memory".into(),
+        confirmed: true,
+    };
+    let before = repo
+        .get_source_chunks(
+            repo.get_source(&first.source_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id
+                .as_ref()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    db.query("DEFINE FIELD OVERWRITE result ON remote_mutation_receipt TYPE object ASSERT false;")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(application
+        .delete_uploaded_source(caller("openclaw"), delete)
+        .await
+        .is_err());
+    let after = repo
+        .get_source_chunks(
+            repo.get_source(&first.source_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id
+                .as_ref()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after.len(), before.len());
+    let receipts: Vec<serde_json::Value> = db
+        .query("SELECT * FROM remote_mutation_receipt")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(receipts.is_empty());
+}
