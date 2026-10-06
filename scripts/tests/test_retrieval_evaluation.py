@@ -120,8 +120,34 @@ class RetrievalEvaluationTests(unittest.TestCase):
             argv = run.call_args.args[0]
             self.assertEqual(argv[-2:], ["--", query])
             self.assertEqual(argv.count("--format"), 1)
-            self.assertIn("file:///fictional/a b.md", argv)
+            self.assertIn("--source-uri=file:///fictional/a b.md", argv)
             self.assertNotIn("shell", run.call_args.kwargs)
+
+    def test_option_like_source_uri_is_an_attached_literal_value(self):
+        item = case()
+        item["eval"]["source_uri"] = "-missing-uri"
+        client = evaluation.RemoteCli("fixture", "http://127.0.0.1:3000/mcp", "TEST_TOKEN", 10)
+        with mock.patch.object(client, "call", return_value={"records": []}) as call:
+            client.search(item, "keyword-off")
+        self.assertIn("--source-uri=-missing-uri", call.call_args.args[0])
+        self.assertNotIn("-missing-uri", call.call_args.args[0])
+
+    def test_eval_ids_are_trimmed_and_unicode_lowercased_before_merging(self):
+        item = case()
+        item["eval"].update(expected_ids=[" NOTE:ÉCOLE ", "note:école"],
+                            relevance=[{"id": " Note:École ", "grade": 3}])
+        result = evaluation.metrics(item, [record("NOTE:ÉCOLE")])
+        self.assertEqual(result["known_positive_total"], 1)
+        self.assertEqual(result["reciprocal_rank_of_judged_positives"], 1)
+        self.assertEqual(result["recall_of_judged_positives"], 1)
+
+    def test_no_answer_false_positives_count_results_beyond_k(self):
+        item = case()
+        item["answerability"] = "unanswerable"
+        item["eval"].update(k=5, limit=20, relevance=[])
+        result = evaluation.metrics(item, [record("note:" + str(i)) for i in range(20)])
+        self.assertEqual(result["retrieved"], 5)
+        self.assertEqual(result["false_positive_count"], 20)
 
     def test_failure_stays_in_requested_policy_without_fallback(self):
         calls = []

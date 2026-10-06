@@ -94,14 +94,14 @@ def judgments(case):
     grades = {}
     require(isinstance(case.get("expected_ids", []), list), "expected IDs must be a list")
     for identifier in case.get("expected_ids", []):
-        require(isinstance(identifier, str) and identifier, "invalid expected ID")
+        identifier = normalized_id(identifier)
         grades[identifier] = 1
     require(isinstance(case.get("relevance", []), list), "relevance must be a list")
     explicit = {}
     for item in case.get("relevance", []):
         require(isinstance(item, dict) and set(item) <= {"id", "grade"}, "invalid relevance entry")
         identifier, grade = item.get("id"), item.get("grade", 1)
-        require(isinstance(identifier, str) and identifier, "invalid judged ID")
+        identifier = normalized_id(identifier)
         require(type(grade) is int and 0 <= grade <= 63, "invalid relevance grade")
         require(identifier not in explicit or explicit[identifier] == grade, "conflicting relevance judgments")
         explicit[identifier] = grade
@@ -109,11 +109,16 @@ def judgments(case):
     return grades
 
 
+def normalized_id(value):
+    require(isinstance(value, str) and value.strip(), "invalid judgment/result ID")
+    return value.strip().lower()
+
+
 def metrics(item, records):
     case, k = item["eval"], item["eval"].get("k", 5)
     grades = judgments(case) if item["answerability"] != "unjudged" else {}
     ranked = records[:k]
-    ids = [record["id"] for record in ranked]
+    ids = [normalized_id(record["id"]) for record in ranked]
     require(len(ids) == len(set(ids)), "duplicate ranked records")
     positive = {identifier for identifier, grade in grades.items() if grade > 0}
     known = [grades.get(identifier) for identifier in ids]
@@ -133,7 +138,8 @@ def metrics(item, records):
               "reciprocal_rank_of_judged_positives": next((1 / (i + 1) for i, g in enumerate(known) if g and g > 0), 0.0)
                                   if positive else None,
               "precision_at_k": relevant / k if fully_judged and positive else None,
-              "false_positive_count": sum(g == 0 for g in known),
+              "false_positive_count": len(records) if negative else
+                                      sum(grades.get(normalized_id(record["id"])) == 0 for record in records),
               "negative_empty": len(ids) == 0 if negative else None,
               "ndcg_at_k": None}
     if fully_judged and positive:
@@ -178,7 +184,7 @@ class RemoteCli:
                 "--limit", str(case.get("limit", 5))]
         for key in ("since_days", "source_uri"):
             if case.get(key) is not None:
-                args += ["--" + key.replace("_", "-"), str(case[key])]
+                args += ["--" + key.replace("_", "-") + "=" + str(case[key])]
         # Query as one argv token after '--': shell syntax and leading dashes are data.
         args += ["--", case["query"]]
         data = self.call(args, "search_notes")

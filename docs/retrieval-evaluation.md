@@ -90,6 +90,10 @@ judgments cover a candidate pool or the whole snapshot; several chunks repeating
 a fact can legitimately be relevant, so known-positive recall is not necessarily
 recall of all relevant documents.
 
+Judgment IDs and scored result IDs are trimmed and Unicode-lowercased like the
+existing eval-v2 implementation; inspection still requires the exact server ID
+and revision. Explicit conflicting grades for one normalized ID are rejected.
+
 ## Reading reports
 
 The private report retains each requested policy/case, ranks, guarded readback
@@ -104,7 +108,9 @@ such repeated chunks are not confused with duplicate canonical IDs.
   is a lower bound while unjudged hits remain; it is not exact MRR of all useful
   notes. Precision and nDCG are withheld when top-k contains unjudged hits.
 - Reviewed no-answer cases report empty-result success and false-positive
-  counts; their recall/nDCG are undefined rather than artificially perfect.
+  counts across all returned records (including results beyond k); their
+  recall/nDCG are undefined rather than artificially perfect. Precision,
+  usefulness and ranking metrics still use top-k.
 - Aggregate metrics include scored-case counts and failures, with separate
   calibration and holdout groups. Compare those denominators, not just means.
 - Single search timings are diagnostic. They exclude guarded inspection and
