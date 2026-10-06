@@ -233,12 +233,18 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(len(self.client.sources), 1)
 
     def test_unchanged_refresh_has_no_duplicate_upload_or_inference(self):
+        for index in range(10):
+            self.write(f'memory/fiction-{index}.md', f'# Fiction {index}\nExact unchanged text.'.encode())
         self.prepare(); self.run_refresh()
         first = list(self.state['documents'])
+        before_saves = len(self.saved)
         self.prepare(); self.run_refresh()
-        self.assertEqual(self.state['counts']['unchanged'], 1)
-        self.assertEqual(len(self.client.receipts), 1)
-        self.assertEqual(self.client.embedding_calls, 1)
+        # Read-only revalidation checkpoints at completion, rather than
+        # repeatedly rewriting the full pinned corpus for every part.
+        self.assertLessEqual(len(self.saved) - before_saves, 2)
+        self.assertEqual(self.state['counts']['unchanged'], 11)
+        self.assertEqual(len(self.client.receipts), 11)
+        self.assertEqual(self.client.embedding_calls, 11)
         self.assertEqual(self.client.extraction_calls, 0)
         self.assertEqual(list(self.state['documents']), first)
 
