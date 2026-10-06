@@ -171,7 +171,7 @@ if awk '$0 == "release/PAYLOADS.sha256" {found=1} END {exit !found}' "$temp_dir/
     tar -xOf "$temp_dir/$asset" release/PAYLOADS.sha256 > "$temp_dir/payloads"
     awk '
       substr($0,65,2)!="  " || length(substr($0,1,64))!=64 || substr($0,1,64)~/[^0-9a-f]/ {exit 1}
-      { path=substr($0,67); if(path!~/^release\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/ || path=="release/PAYLOADS.sha256" || seen[path]++) exit 1; print path }
+      { path=substr($0,67); if((path!~/^release\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/ && path!="release/.env.example") || path=="release/PAYLOADS.sha256" || seen[path]++) exit 1; print path }
     ' "$temp_dir/payloads" > "$temp_dir/payload-paths" || fail 'release payload manifest is invalid'
     for identity in release/VERSION release/SOURCE-COMMIT release/PAYLOADS.json; do
         awk -v name="$identity" '$0==name {found=1} END {exit !found}' "$temp_dir/payload-paths" || fail 'release bundle is missing its identity'

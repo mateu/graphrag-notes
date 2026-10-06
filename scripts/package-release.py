@@ -34,6 +34,7 @@ RELEASE_GATES = (
 # judgments, private reports, credentials and corpus data are never enumerated.
 RELEASE_PAYLOADS = (
     "README.md",
+    ".env.example",
     "config.toml",
     "scripts/provision-mcp-credentials.py",
     "scripts/validate-native-mcp.py",

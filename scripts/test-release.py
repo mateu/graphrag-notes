@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -484,6 +485,30 @@ esac
         self.assertEqual((bundle / 'VERSION').read_text(), self.version + '\n')
         self.assertEqual((bundle / 'scripts/native-mcp/envelope.py').read_bytes(),
                          (self.repo / 'scripts/native-mcp/envelope.py').read_bytes())
+
+    def test_installed_readme_links_and_environment_template_exist_without_overwriting_env(self):
+        template = SCRIPT.parent.parent / ".env.example"
+        readme = SCRIPT.parent.parent / "README.md"
+        (self.repo / ".env.example").write_bytes(template.read_bytes())
+        (self.repo / "README.md").write_bytes(readme.read_bytes())
+        self.commit()
+        info = release.package(self.package_args())
+        self.assertIn("release/.env.example", info["payload_sha256"])
+        self.assertNotIn("release/.env", info["payload_sha256"])
+        data = self.root / "installed-data"
+        data.mkdir()
+        environment = data / ".env"
+        environment.write_text("# Existing operator environment fixture; preserve\n")
+        for clients_only in (False, True):
+            installed = self.install_fixture(self.root / "dist", clients_only=clients_only)
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            bundle = data / "releases" / self.tag
+            self.assertEqual((bundle / ".env.example").read_bytes(), template.read_bytes())
+            for target in re.findall(r"\]\(([^)]+)\)", (bundle / "README.md").read_text()):
+                if not target.startswith(("https://", "http://", "#")):
+                    self.assertTrue((bundle / target.split("#", 1)[0]).is_file(), target)
+            self.assertEqual(environment.read_text(), "# Existing operator environment fixture; preserve\n")
+            self.assertFalse((bundle / ".env").exists())
 
     def test_packaged_clients_run_without_changing_versioned_bundle(self):
         # Exercise real importing entrypoints after packaging, with no providers.
