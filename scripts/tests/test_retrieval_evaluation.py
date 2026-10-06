@@ -33,6 +33,15 @@ def inspect(value):
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
+    def test_nested_eval_schema_version_requires_an_integer(self):
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "suite.json"
+            item = case()
+            item["eval"]["schema_version"] = 2.0
+            path.write_text(json.dumps({"schema_version": 1, "metadata": {}, "cases": [item]}))
+            with self.assertRaises(evaluation.EvaluationError):
+                evaluation.load_suite(path)
+
     def test_null_optional_eval_fields_match_absent_fields_end_to_end(self):
         with tempfile.TemporaryDirectory() as name:
             path = Path(name) / "suite.json"

@@ -101,7 +101,7 @@ def load_suite(path, *, captured_bytes=None):
         require(item.get("answerability") in {"answerable", "unanswerable", "unjudged"},
                 "invalid answerability")
         case = item.get("eval")
-        require(isinstance(case, dict) and case.get("schema_version") == 2, "eval case must use v2")
+        require(isinstance(case, dict) and type(case.get("schema_version")) is int and case["schema_version"] == 2, "eval case must use v2")
         require(set(case) <= {"schema_version", "query", "scope", "limit", "k", "since_days",
                               "source_uri", "relevance", "expected_ids"}, "unsupported eval field")
         require(isinstance(case.get("query"), str) and case["query"].strip(), "query missing")
