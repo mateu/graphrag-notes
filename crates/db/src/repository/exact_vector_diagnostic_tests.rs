@@ -442,6 +442,23 @@ struct VectorPhases {
     scanned: usize,
     peak_page_rows: usize,
     peak_projected_embedding_bytes: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    page_trace: Vec<VectorPageTrace>,
+}
+
+/// Same-call page observations. Engine execution nests inside SDK await;
+/// these durations are not added together to infer a causal total.
+#[derive(serde::Serialize)]
+struct VectorPageTrace {
+    page_index: usize,
+    query_start_offset_ms: f64,
+    sdk_completed_offset_ms: f64,
+    dto_completed_offset_ms: f64,
+    sdk_await_ms: f64,
+    dto_take_ms: f64,
+    engine_execution_ms: Option<f64>,
+    rows: usize,
+    projected_embedding_bytes: usize,
 }
 
 impl PartialEq for ExactVectorCandidate {
@@ -542,7 +559,33 @@ async fn paged_exact_vectors_checkpoint(
     cbor: bool,
     since: Option<String>,
     source: Option<String>,
+    checkpoint: Option<FirstPageCheckpoint>,
+) -> (Vec<SearchResult>, VectorPhases) {
+    paged_exact_vectors_checkpoint_with_trace(
+        db,
+        embedding,
+        limit,
+        page,
+        cbor,
+        since,
+        source,
+        checkpoint,
+        std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_TRACE").is_some(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn paged_exact_vectors_checkpoint_with_trace(
+    db: &DbConnection,
+    embedding: &[f32],
+    limit: usize,
+    page: usize,
+    cbor: bool,
+    since: Option<String>,
+    source: Option<String>,
     mut checkpoint: Option<FirstPageCheckpoint>,
+    trace_enabled: bool,
 ) -> (Vec<SearchResult>, VectorPhases) {
     assert!(
         (1..=512).contains(&page),
@@ -550,6 +593,7 @@ async fn paged_exact_vectors_checkpoint(
     );
     let enforce_fictional_payload_cap =
         std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some();
+    let call_start = trace_enabled.then(std::time::Instant::now);
     let mut phases = VectorPhases::default();
     let start = std::time::Instant::now();
     let snapshot = VectorSnapshot::begin(db).await;
@@ -562,16 +606,40 @@ async fn paged_exact_vectors_checkpoint(
     let mut seq = 0;
     loop {
         let start = std::time::Instant::now();
-        let rows: Vec<VectorOnlyRow> = tx
+        let query_start_offset_ms = call_start.map(|clock| clock.elapsed().as_secs_f64() * 1000.0);
+        let request = tx
             .query(page_query(after.is_some(), cbor))
             .bind(("range", page_range(after.as_ref(), cbor)))
             .bind(("page", page))
             .bind(("since", since.clone()))
-            .bind(("source_uri", source.clone()))
-            .await
-            .unwrap()
-            .take(0)
-            .unwrap();
+            .bind(("source_uri", source.clone()));
+        let (rows, mut trace): (Vec<VectorOnlyRow>, Option<VectorPageTrace>) =
+            if let Some(clock) = call_start {
+                let mut response = request.with_stats().await.unwrap();
+                let sdk_completed_offset_ms = clock.elapsed().as_secs_f64() * 1000.0;
+                let (stats, rows) = response.take::<Vec<VectorOnlyRow>>(0).unwrap();
+                let rows = rows.unwrap();
+                let dto_completed_offset_ms = clock.elapsed().as_secs_f64() * 1000.0;
+                let query_start_offset_ms = query_start_offset_ms.unwrap();
+                (
+                    rows,
+                    Some(VectorPageTrace {
+                        page_index: phases.pages,
+                        query_start_offset_ms,
+                        sdk_completed_offset_ms,
+                        dto_completed_offset_ms,
+                        sdk_await_ms: sdk_completed_offset_ms - query_start_offset_ms,
+                        dto_take_ms: dto_completed_offset_ms - sdk_completed_offset_ms,
+                        engine_execution_ms: stats
+                            .execution_time
+                            .map(|duration| duration.as_secs_f64() * 1000.0),
+                        rows: 0,
+                        projected_embedding_bytes: 0,
+                    }),
+                )
+            } else {
+                (request.await.unwrap().take(0).unwrap(), None)
+            };
         phases.scan_ms += start.elapsed().as_secs_f64() * 1000.0;
         phases.pages += 1;
         let count = rows.len();
@@ -594,6 +662,13 @@ async fn paged_exact_vectors_checkpoint(
         phases.peak_projected_embedding_bytes = phases
             .peak_projected_embedding_bytes
             .max(projected_embedding_bytes);
+        if let Some(trace) = trace.as_mut() {
+            trace.rows = count;
+            trace.projected_embedding_bytes = projected_embedding_bytes;
+        }
+        if let Some(trace) = trace {
+            phases.page_trace.push(trace);
+        }
         if enforce_fictional_payload_cap {
             assert!(
                 projected_embedding_bytes <= page * 8192,
@@ -1055,8 +1130,21 @@ async fn install_single_sql_cbor_probe(db: &DbConnection) {
 #[tokio::test]
 #[ignore = "opt-in exact skinny storage experiment; no state duplication adopted"]
 async fn exact_vector_skinny_storage_diagnostic() {
+    exact_vector_skinny_storage_diagnostic_inner("current_thread").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "opt-in host-default runtime control; no concurrency default changes"]
+async fn exact_vector_skinny_storage_host_default_diagnostic() {
+    exact_vector_skinny_storage_diagnostic_inner("host_default").await;
+}
+
+async fn exact_vector_skinny_storage_diagnostic_inner(runtime: &str) {
     use chrono::TimeZone;
     use sha2::{Digest, Sha256};
+    let worker_threads = tokio::runtime::Handle::current().metrics().num_workers();
+    let page_trace_enabled = std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_TRACE").is_some();
+    let diagnostic_clock = page_trace_enabled.then(std::time::Instant::now);
     let count = std::env::var("GRAPHRAG_VECTOR_PROBE_RECORDS")
         .ok()
         .map(|v| v.parse::<usize>().unwrap())
@@ -1324,9 +1412,14 @@ async fn exact_vector_skinny_storage_diagnostic() {
                     (0..variant_count).map(|_| Vec::new()).collect();
                 let mut sql_samples: Vec<Vec<NativeSqlPhases>> =
                     (0..variant_count).map(|_| Vec::new()).collect();
+                let mut call_offsets: Vec<Vec<f64>> =
+                    (0..variant_count).map(|_| Vec::new()).collect();
                 let category_start = std::time::Instant::now();
                 for (sequence, variant) in schedule.into_iter().enumerate() {
                     let (name, sql) = &variants[variant];
+                    if let Some(clock) = diagnostic_clock {
+                        call_offsets[variant].push(clock.elapsed().as_secs_f64() * 1000.0);
+                    }
                     let start = std::time::Instant::now();
                     let page = diagnostic_variant_page(name);
                     let rows = if let Some(page) = page {
@@ -1405,6 +1498,7 @@ async fn exact_vector_skinny_storage_diagnostic() {
                     "backend":backend,"order":order,"variant_sequence":sequences[variant],
                     "category_elapsed_ms":category_elapsed_ms,"phase_samples":phase_samples[variant],
                     "native_sql_phase_samples":sql_samples[variant],
+                    "call_offsets_ms":if page_trace_enabled {Some(&call_offsets[variant])} else {None},
                     "native_sql_stats_requested":native_sql_stats_requested && page.is_none(),
                     "paged_rows_per_query":page,
                     "body_payload_bytes":if count>160 {None} else {Some(repeats*"payload ".len())},
@@ -1420,6 +1514,9 @@ async fn exact_vector_skinny_storage_diagnostic() {
         "{}",
         serde_json::json!({"fictional_records_per_population":count,"populations":bodies.len(),"dense_vectors":dense,
         "dimension":1024,"provider_calls":0,"engine":"surrealdb-core 3.2.4",
+        "tokio_runtime":runtime,"tokio_worker_threads":worker_threads,
+        "query_concurrency":1,"page_trace_enabled":page_trace_enabled,
+        "page_trace_offset_kind":"monotonic offsets within each call; call_offsets_ms uses one diagnostic clock",
         "first_sample_kind":"first measured after unmeasured legacy reference query",
         "native_sql_stats_requested":std::env::var_os("GRAPHRAG_VECTOR_PROBE_SINGLE_SQL").is_some()
             || std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some(),
@@ -1442,6 +1539,109 @@ fn diagnostic_variant_page(name: &str) -> Option<usize> {
         "cbor_paged" | "cbor_paged_256" => Some(256),
         "cbor_paged_512" => Some(512),
         _ => None,
+    }
+}
+
+#[tokio::test]
+async fn exact_vector_page_trace_preserves_results_and_offset_arithmetic() {
+    // Pass tracing explicitly instead of changing process-wide environment
+    // variables while unrelated CI tests run.
+    let db = init_memory().await.unwrap();
+    db.query("DEFINE TABLE exact_vector_cbor_probe SCHEMALESS")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let query_vector = vec![1.0_f32, 0.0, 0.0, 0.0];
+    for ordinal in 0..9 {
+        let note = Note::new(format!("fictional page trace {ordinal}")).with_embedding(vec![
+            1.0,
+            ordinal as f32 / 8.0,
+            0.0,
+            0.0,
+        ]);
+        db.query("CREATE $id CONTENT $note; CREATE $shadow SET note_id=$id,embedding_cbor=encoding::cbor::encode($note.embedding),created_at=$note.created_at")
+            .bind(("id", RecordId::new("note", format!("page-trace-{ordinal}"))))
+            .bind(("shadow", RecordId::new("exact_vector_cbor_probe", format!("page-trace-{ordinal}"))))
+            .bind(("note", note)).await.unwrap().check().unwrap();
+    }
+    let reference = query(&db, old_query(5), &query_vector, 5, None, None).await;
+    for cbor in [false, true] {
+        let (ordinary, ordinary_phases) = paged_exact_vectors_checkpoint_with_trace(
+            &db,
+            &query_vector,
+            5,
+            3,
+            cbor,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await;
+        let (traced, phases) = paged_exact_vectors_checkpoint_with_trace(
+            &db,
+            &query_vector,
+            5,
+            3,
+            cbor,
+            None,
+            None,
+            None,
+            true,
+        )
+        .await;
+        assert_ordered_vector_rows(&reference, &ordinary);
+        assert_ordered_vector_rows(&reference, &traced);
+        assert!(ordinary_phases.page_trace.is_empty());
+        assert!(serde_json::to_value(ordinary_phases)
+            .unwrap()
+            .get("page_trace")
+            .is_none());
+        assert_eq!(phases.pages, 4, "includes the final empty page");
+        assert_eq!(phases.page_trace.len(), phases.pages);
+        assert_eq!(
+            phases
+                .page_trace
+                .iter()
+                .map(|page| page.rows)
+                .sum::<usize>(),
+            phases.scanned
+        );
+        assert_eq!(phases.scanned, 9);
+        assert_eq!(
+            phases.page_trace.iter().map(|page| page.rows).max(),
+            Some(phases.peak_page_rows)
+        );
+        assert_eq!(
+            phases
+                .page_trace
+                .iter()
+                .map(|page| page.projected_embedding_bytes)
+                .max(),
+            Some(phases.peak_projected_embedding_bytes)
+        );
+        let mut previous_end = 0.0;
+        for (index, page) in phases.page_trace.iter().enumerate() {
+            assert_eq!(page.page_index, index);
+            assert!(page.query_start_offset_ms >= previous_end);
+            assert!(page.sdk_completed_offset_ms >= page.query_start_offset_ms);
+            assert!(page.dto_completed_offset_ms >= page.sdk_completed_offset_ms);
+            assert_eq!(
+                page.sdk_await_ms,
+                page.sdk_completed_offset_ms - page.query_start_offset_ms
+            );
+            assert_eq!(
+                page.dto_take_ms,
+                page.dto_completed_offset_ms - page.sdk_completed_offset_ms
+            );
+            assert!(page
+                .engine_execution_ms
+                .is_some_and(|elapsed| elapsed.is_finite() && elapsed >= 0.0));
+            assert!(page.rows <= 3);
+            assert_eq!(page.projected_embedding_bytes == 0, page.rows == 0);
+            previous_end = page.dto_completed_offset_ms;
+        }
     }
 }
 
