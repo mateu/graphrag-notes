@@ -262,7 +262,10 @@ class Upstream:
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def send(self, body, headers, method="POST"):
-        selected = {k: v for k, v in headers.items() if k.lower() in FORWARD_HEADERS}
+        selected = {k.lower(): v for k, v in headers.items() if k.lower() in FORWARD_HEADERS}
+        selected.setdefault("accept", "application/json, text/event-stream")
+        if body is not None:
+            selected.setdefault("content-type", "application/json")
         request = urllib.request.Request(self.server, data=body, headers=selected, method=method)
         try:
             try:
@@ -282,7 +285,7 @@ class Upstream:
         if meta is not None:
             params["_meta"] = meta
         selected = dict(headers)
-        selected.update({"Content-Type": "application/json", "Accept": "application/json", "Mcp-Method": "tools/call"})
+        selected.update({"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Mcp-Method": "tools/call"})
         return self.send(encode({"jsonrpc": "2.0", "id": "journal-check", "method": "tools/call", "params": params}), selected)
 
 

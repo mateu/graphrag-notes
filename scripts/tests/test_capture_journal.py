@@ -318,6 +318,11 @@ class JournalTests(unittest.TestCase):
             def do_POST(self):
                 raw = self.rfile.read(int(self.headers["Content-Length"]))
                 value = json.loads(raw)
+                accept = self.headers.get("Accept", "")
+                if "application/json" not in accept or "text/event-stream" not in accept or self.headers.get("Content-Type") != "application/json":
+                    self.send_response(406)
+                    self.end_headers()
+                    return
                 token = self.headers.get("Authorization")
                 seen_credentials.append(token)
                 if token not in {HEADERS["Authorization"], "Bearer fictional-rotated-token"}:
