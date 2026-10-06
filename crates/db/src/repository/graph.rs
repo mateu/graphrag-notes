@@ -96,7 +96,23 @@ pub(super) fn graph_alias_eligible_sql(eligible: &str, alias_matches: &str) -> S
     )
 }
 
+#[cfg(test)]
 pub(super) fn graph_entity_mentions_local_sql(query: &str) -> String {
+    graph_entity_mentions_local_result_sql(query, "$graph_entity_matching_aliases")
+}
+
+fn graph_alias_union_sql(rows: &str) -> String {
+    format!("array::slice(array::sort(array::distinct(array::flatten(({rows})))), 0, 8)")
+}
+
+fn graph_entity_aliases_local_sql(query: &str) -> String {
+    graph_entity_mentions_local_result_sql(
+        query,
+        &graph_alias_union_sql("$graph_entity_matching_aliases"),
+    )
+}
+
+fn graph_entity_mentions_local_result_sql(query: &str, result: &str) -> String {
     // The scalar subquery binds $parent only after its plan was built. The
     // pinned engine deliberately excludes that row-scoped parameter from
     // index analysis. A block evaluates LET against the current entity row
@@ -107,6 +123,9 @@ pub(super) fn graph_entity_mentions_local_sql(query: &str) -> String {
     // shapes (including its error shielding/TopK behavior), and for complex
     // relation IDs whose primary/index encodings can visit equal-in ties in
     // a different order. The fast path keeps ORDER BY and LIMIT unchanged.
+    // Bind the rows before applying the alias union: nesting a full SELECT
+    // beneath flatten/distinct/sort/slice exceeds the default parser depth.
+    // The last expression operates on that local value, without RETURN.
     let aliases = "metadata.aliases ?? []";
     let safe_aliases = format!(
         "type::is_array({aliases}) AND array::len({aliases}) <= 8 \
@@ -116,9 +135,11 @@ pub(super) fn graph_entity_mentions_local_sql(query: &str) -> String {
     let local = query.replace("out = $parent.id", "out = $graph_entity_id");
     format!(
         "{{ LET $graph_entity_id = id; \
+         LET $graph_entity_matching_aliases = \
          IF array::len((SELECT VALUE id FROM mentions WHERE out = $graph_entity_id \
              AND NOT (({simple_id}) AND ({safe_aliases})) LIMIT 1)) = 0 \
-         THEN ({local}) ELSE ({query}) END; }}"
+         THEN ({local}) ELSE ({query}) END; \
+         {result}; }}"
     )
 }
 
@@ -1531,7 +1552,7 @@ impl Repository {
             limit,
             scope,
             graph_alias_eligible_sql,
-            graph_entity_mentions_local_sql,
+            graph_entity_aliases_local_sql,
         )
         .await
     }
@@ -1620,7 +1641,7 @@ impl Repository {
                     limit,
                     scope.as_ref(),
                     alias_predicate,
-                    str::to_string,
+                    graph_alias_union_sql,
                 )
                 .await?;
             if !rows.is_empty() {
@@ -1639,7 +1660,7 @@ impl Repository {
         limit: i64,
         scope: Option<&GraphEntityQueryScope>,
         alias_predicate: fn(&str, &str) -> String,
-        mentions_subquery: fn(&str) -> String,
+        extracted_aliases_query: fn(&str) -> String,
     ) -> Result<Vec<GraphEntityMatch>> {
         // Keep stored names and aliases on the exact same lexical boundary
         // contract as `graph_query_normalize`: punctuation becomes a space,
@@ -1660,13 +1681,13 @@ impl Repository {
         // entity display payload. Filtering before the bounded page retains a
         // matching alias on a high-degree source entity without preserving an
         // edited, deleted, hidden-generation or out-of-scope chunk's evidence.
-        let matching_aliases = mentions_subquery(&format!(
+        let extracted_aliases = extracted_aliases_query(&format!(
             "SELECT VALUE array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) \
              FROM mentions WHERE out = $parent.id AND {alias_eligible} ORDER BY in ASC LIMIT 200"
         ));
         let aliases = format!(
             "IF string::starts_with(identity_key ?? '', 'extracted-v1:') THEN \
-             array::slice(array::sort(array::distinct(array::flatten(({matching_aliases})))), 0, 8) \
+             {extracted_aliases} \
              ELSE metadata.aliases ?? [] END"
         );
         let match_condition = match tier {

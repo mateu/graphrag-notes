@@ -846,6 +846,15 @@ async fn assert_alias_query_matches_original(
 #[tokio::test]
 async fn graph_alias_fast_path_preserves_high_degree_pages_tiers_and_alias_caps() {
     let repo = Repository::new(init_memory().await.unwrap());
+    // An empty table still parses the complete exact/contained/prefix SQL.
+    // Cover both scoped and unscoped alias blocks at the engine's unchanged
+    // default depth before any matching rows can hide an unvisited tier.
+    for ranked in [None, Some(&[][..])] {
+        let rows =
+            assert_alias_query_matches_original(&repo, "syntax absent", 2, ranked, None, None)
+                .await;
+        assert!(rows.is_empty());
+    }
     let owner = source(&repo, "alias-pages", "fixture://alias-pages").await;
     let extracted = alias_entity(&repo, "alias-pages", "Compiler", true).await;
     let legacy = alias_entity(&repo, "legacy-pages", "Legacy Compiler", false).await;
