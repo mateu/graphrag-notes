@@ -319,6 +319,136 @@ fn assert_lexical_exact(actual: &[SearchResult], expected: &[SearchResult]) {
     );
 }
 
+async fn assert_runtime_lexical_exact(db: &DbConnection) {
+    let repo = Repository::new(db.clone());
+    for text in [
+        "quasar",
+        " QUASAR ",
+        "unique23",
+        "absent fictional constellation",
+        "quasar!",
+        "quásar",
+    ] {
+        for limit in [0, 1, 5, 50, 200] {
+            for (since, source) in [
+                (None, None),
+                (Some("2025-06-01T00:00:00Z".to_owned()), None),
+                (None, Some("file:///fictional/lexical-primary".to_owned())),
+            ] {
+                let expected =
+                    filtered_query(db, &old_query(), text, limit, since.clone(), source.clone())
+                        .await;
+                let actual = repo
+                    .fulltext_search_notes(
+                        text,
+                        limit,
+                        since.map(|value| {
+                            chrono::DateTime::parse_from_rfc3339(&value)
+                                .unwrap()
+                                .with_timezone(&chrono::Utc)
+                        }),
+                        source,
+                    )
+                    .await
+                    .unwrap();
+                assert_lexical_exact(&actual, &expected);
+            }
+        }
+    }
+    let mut response = db.query("SELECT VALUE id FROM note ORDER BY id ASC; SELECT VALUE record_id FROM note_search ORDER BY id ASC;").await.unwrap();
+    let primary: Vec<RecordId> = response.take(0).unwrap();
+    let derived: Vec<RecordId> = response.take(1).unwrap();
+    assert_eq!(
+        primary, derived,
+        "every primary row participates in BM25 statistics and native ties"
+    );
+}
+
+async fn populate_native_lexical_ties(db: &DbConnection) {
+    for id in [
+        "note:7",
+        "note:`7`",
+        "note:u'6ae26491-bfd2-4ed1-8739-c5edb99b473d'",
+        "note:`6ae26491-bfd2-4ed1-8739-c5edb99b473d`",
+        "note:{group:'fictional',ordinal:7}",
+    ] {
+        let surrealdb_types::Value::RecordId(id) = surrealdb::parse::value(id).unwrap() else {
+            panic!("fixture must have a native record ID");
+        };
+        db.query("CREATE $id SET content = 'quasar equal native tie', title = 'quasar', search_content = NONE, created_at = d'2026-01-01T00:00:00Z';")
+            .bind(("id", id)).await.unwrap().check().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn runtime_thin_lexical_ranking_preserves_mutations_filters_and_native_ties() {
+    let db = init_memory().await.unwrap();
+    populate_lexical_fixture(&db, 48).await;
+    populate_native_lexical_ties(&db).await;
+    for mutation in [
+        "RETURN NONE;",
+        "UPDATE note:`lexical-0017` SET title = ' QUASAR ', content = 'quasar altered fictional text', search_content = NONE; DELETE note:`lexical-0018`;",
+        "UPDATE source:`lexical-primary` SET successful_generation = 3, uri = 'file:///fictional/renamed';",
+    ] {
+        db.query(mutation).await.unwrap().check().unwrap();
+        assert_runtime_lexical_exact(&db).await;
+    }
+    let before: Vec<serde_json::Value> = db
+        .query("SELECT * FROM note_search ORDER BY id ASC")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    let failed = db.query("BEGIN TRANSACTION; UPDATE note:`lexical-0001` SET content = 'quasar must roll back'; DELETE note:`lexical-0002`; THROW 'fictional atomic failure'; COMMIT TRANSACTION;").await.unwrap();
+    assert!(failed.check().is_err());
+    let after: Vec<serde_json::Value> = db
+        .query("SELECT * FROM note_search ORDER BY id ASC")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(before, after);
+    assert_runtime_lexical_exact(&db).await;
+}
+
+#[tokio::test]
+async fn lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exact_indexes() {
+    let db = init_memory().await.unwrap();
+    // Exercise the actual migration over an existing v20 corpus, rather than
+    // installing a manufactured copy of its schema over an empty database.
+    db.query("REMOVE EVENT materialize_note_search ON note; REMOVE EVENT delete_note_search ON note; REMOVE FUNCTION fn::materialize_note_search; REMOVE TABLE note_search; DELETE schema_migration WHERE version = 21;")
+        .await.unwrap().check().unwrap();
+    populate_lexical_fixture(&db, 48).await;
+    populate_native_lexical_ties(&db).await;
+    crate::schema::initialize_schema(&db).await.unwrap();
+    assert_runtime_lexical_exact(&db).await;
+
+    let original = Repository::new(db.clone());
+    let restored = Repository::new(init_memory().await.unwrap());
+    assert!(!PORTABLE_TABLES.contains(&"note_search"));
+    for table in ["source", "note"] {
+        let rows = original.portable_records_page(table, 0, 200).await.unwrap();
+        for row in &rows {
+            let roundtrip = serde_json::from_slice(&serde_json::to_vec(row).unwrap()).unwrap();
+            restored
+                .restore_portable_record(table, roundtrip)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            rows,
+            restored.portable_records_page(table, 0, 200).await.unwrap()
+        );
+    }
+    assert_runtime_lexical_exact(&restored.db).await;
+    for text in ["quasar", "unique23", "absent fictional constellation"] {
+        assert_lexical_exact(
+            &restored.fulltext_search(text, 50).await.unwrap(),
+            &original.fulltext_search(text, 50).await.unwrap(),
+        );
+    }
+}
+
 #[tokio::test]
 async fn thin_lexical_population_and_hydration_preserve_weighted_scores_and_visibility() {
     let db = init_memory().await.unwrap();
