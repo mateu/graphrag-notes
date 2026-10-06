@@ -1220,7 +1220,8 @@ async fn retirement_invalidates_dormant_jobs_and_portable_restore_preserves_the_
             .await
             .unwrap();
         assert!(repo.get_source(&first.source_id).await.unwrap().is_none());
-        let restored = Repository::new(init_memory().await.unwrap());
+        let restored_db = init_memory().await.unwrap();
+        let restored = Repository::new(restored_db.clone());
         for table in ["processing_job", "remote_mutation_receipt"] {
             for row in repo.portable_records_page(table, 0, 100).await.unwrap() {
                 restored.restore_portable_record(table, row).await.unwrap();
@@ -1245,6 +1246,19 @@ async fn retirement_invalidates_dormant_jobs_and_portable_restore_preserves_the_
                     .await,
                 Err(ApplicationError::RevisionConflict(_))
             ));
+            let (changed, embeddings, extractions) = endpoint_app(
+                candidate,
+                "http://changed-provider.invalid",
+                "http://changed-extractor.invalid",
+            );
+            let error = changed
+                .resume_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, ApplicationError::RevisionConflict(_)));
+            assert!(error.to_string().contains("retired"));
+            assert_eq!(embeddings.load(Ordering::Relaxed), 0);
+            assert_eq!(extractions.load(Ordering::Relaxed), 0);
             assert!(candidate
                 .claim_remote_upload_job("openclaw", &dormant.job_id, "later", "worker")
                 .await
@@ -1274,6 +1288,33 @@ async fn retirement_invalidates_dormant_jobs_and_portable_restore_preserves_the_
                 .unwrap()
                 .is_none());
         }
+        // Damaged restored execution input cannot mask permanent retirement
+        // with validation/repair guidance or remove owner-scoped status access.
+        restored_db
+            .query("UPDATE $job SET remote_input={}")
+            .bind((
+                "job",
+                graphrag_db::parse_record_id(&dormant.job_id, Some("processing_job")).unwrap(),
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let application = healthy(&restored);
+        assert!(matches!(
+            application
+                .resume_remote_job(caller("openclaw"), &dormant.job_id)
+                .await,
+            Err(ApplicationError::RevisionConflict(_))
+        ));
+        assert_eq!(
+            application
+                .get_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap()
+                .phase,
+            "retired"
+        );
     }
 }
 

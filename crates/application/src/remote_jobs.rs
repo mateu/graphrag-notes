@@ -357,6 +357,21 @@ pub(crate) async fn resume(
     id: &str,
 ) -> ApplicationResult<RemoteJobStatus> {
     job_id(id)?;
+    // Retirement is definitive even when its saved input is damaged or current
+    // provider configuration differs. Read the bounded status before decoding
+    // execution input or producing compatibility/repair guidance.
+    let status = app
+        .repo
+        .get_remote_upload_job_status(&caller.instance_id, id)
+        .await?
+        .ok_or_else(|| {
+            ApplicationError::NotFound("This instance has no uploaded job with that ID".into())
+        })?;
+    if status.phase == "retired" {
+        return Err(ApplicationError::RevisionConflict(
+            "This upload was retired with its source and cannot resume. Use a new upload request only to deliberately recreate the source.".into(),
+        ));
+    }
     let job = app
         .repo
         .get_remote_upload_job(&caller.instance_id, id)
