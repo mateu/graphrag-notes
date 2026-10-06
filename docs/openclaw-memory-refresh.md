@@ -143,6 +143,13 @@ cannot be selected. A changed plan or source revision stops cleanup. After a
 lost acknowledgement or interruption, rerun the identical reconciliation command
 and hash to recover its receipts. Resume pending cleanup before a newer refresh.
 
+If cleanup was interrupted, freshness evidence reports `retry.action=reconcile`
+and the original public-safe `retry.plan_sha256`; the human retry gives that
+exact plan command. Normal evidence uses `resume` or `refresh` and a null plan.
+An unchanged part is pending until it has been reverified during this attempt;
+its copied last-good source snapshot is retained separately and does not claim
+that a failed revalidation succeeded.
+
 ## Validation and optional scheduling
 
 `python3 -m unittest discover -s scripts/tests -p test_openclaw_memory_refresh.py`

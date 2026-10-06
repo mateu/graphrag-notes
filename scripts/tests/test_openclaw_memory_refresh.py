@@ -184,6 +184,26 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(self.client.extraction_calls, 0)
         self.assertEqual(list(self.state['documents']), first)
 
+    def test_failed_unchanged_revalidation_is_failed_pending_evidence(self):
+        self.prepare(); self.run_refresh()
+        last_success = self.state['last_success_at']
+        prior = json.loads(json.dumps(self.state['documents']))
+        self.prepare()
+        self.client.bad_source = True
+        with self.assertRaisesRegex(m.ImportFailure, 'committed_source_mismatch'):
+            self.run_refresh()
+        value = m.evidence(self.state)
+        self.assertEqual(value['status'], 'failed')
+        self.assertEqual(value['counts']['failed'], 1)
+        self.assertEqual(value['pending_parts'], 1)
+        self.assertEqual(value['last_success_at'], last_success)
+        self.assertEqual(self.state['documents'], prior)
+        self.client.bad_source = False
+        self.run_refresh()
+        self.assertEqual(m.evidence(self.state)['pending_parts'], 0)
+        self.assertEqual(self.state['counts']['failed'], 0)
+        self.assertEqual(len(self.client.receipts), 1)
+
     def test_content_aba_gets_new_request_with_stable_document_identity(self):
         for raw in (b'# Atlas\n\nA', b'# Atlas\n\nB', b'# Atlas\n\nA'):
             self.write('memory/atlas.md', raw)
@@ -280,6 +300,31 @@ class RefreshTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(m.main(['--state-dir', str(self.root / 'state'), '--status', '--format', 'json']), 0)
         self.assertEqual(json.loads(output.getvalue())['status'], 'unknown')
+
+    def test_uncertain_cleanup_has_exact_reconciliation_retry_evidence(self):
+        self.prepare(); self.run_refresh()
+        with sqlite3.connect(self.database) as connection:
+            connection.execute('DELETE FROM memory_index_sources')
+        self.prepare(); self.run_refresh()
+        preview = m.reconciliation_preview(self.client, self.state)
+        original_call = self.client.call
+        def fail_delete(name, arguments):
+            if name == 'delete_uploaded_source':
+                raise m.ImportFailure('transport')
+            return original_call(name, arguments)
+        with patch.object(self.client, 'call', side_effect=fail_delete):
+            with self.assertRaises(m.ImportFailure):
+                m.reconcile(self.client, self.state, preview['plan_sha256'], self.save)
+        value = m.evidence(self.state)
+        self.assertEqual(value['retry']['action'], 'reconcile')
+        self.assertEqual(value['retry']['plan_sha256'], preview['plan_sha256'])
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            m.emit(value, 'human')
+        self.assertIn('--reconcile --yes --plan-sha256 ' + preview['plan_sha256'], output.getvalue())
+        with self.assertRaisesRegex(m.ImportFailure, 'pending_reconciliation_requires_same_plan'):
+            self.prepare()
+        m.reconcile(self.client, self.state, preview['plan_sha256'], self.save)
+        self.assertEqual(self.state['counts']['missing'], 0)
 
     def test_symlink_original_and_partial_inventory_cannot_enable_cleanup(self):
         original = self.workspace / 'memory/atlas.md'

@@ -387,8 +387,10 @@ def evidence(state):
             'endpoint_sha256': endpoint_hash(config['server']), 'instance_id': config['instance_id'],
             'status': state['status'], 'last_attempt_at': state.get('last_attempt_at'),
             'last_success_at': state.get('last_success_at'), 'counts': state.get('counts', {}),
-            'pending_parts': sum(not task['entry'].get('source_verified') for task in pending.get('tasks', {}).values()),
-            'error_code': state.get('error_code'), 'retry': {'action': 'resume' if pending else 'refresh'}}
+            'pending_parts': sum(not task.get('verified_this_attempt', False) for task in pending.get('tasks', {}).values()),
+            'error_code': state.get('error_code'),
+            'retry': {'action': 'resume' if pending else 'reconcile' if state.get('reconciliation') else 'refresh',
+                      'plan_sha256': state.get('reconciliation', {}).get('plan_sha256')}}
 
 
 def new_state(config):
@@ -409,6 +411,7 @@ def prepare(state, documents, failures, attempt=None):
         previous = registry.get(key)
         action = 'created' if not previous else 'unchanged' if previous['payload_hash'] == task['payload_hash'] else 'changed'
         task['action'] = action
+        task['verified_this_attempt'] = False
         counts[action] += 1
         if action == 'unchanged':
             task['entry'] = json.loads(json.dumps(previous['entry']))
@@ -449,12 +452,14 @@ def run_refresh(client, state, save, args):
             if key in checked:
                 continue
             entry = task['entry']
-            if task['action'] == 'unchanged':
-                source_matches(client, task, entry, principal)
-                checked.add(key)
-                save()
-                continue
             try:
+                if task['action'] == 'unchanged':
+                    source_matches(client, task, entry, principal)
+                    task['verified_this_attempt'] = True
+                    entry.pop('error_code', None)
+                    checked.add(key)
+                    save()
+                    continue
                 if not entry.get('admission'):
                     if active >= args.max_inflight:
                         continue
@@ -471,6 +476,7 @@ def run_refresh(client, state, save, args):
                     state['documents'][key] = {'payload_hash': task['payload_hash'], 'entry': entry,
                                                'document_key': key, 'provenance': task['payload']['provenance']}
                     checked.add(key)
+                    task['verified_this_attempt'] = True
                     entry.pop('error_code', None)
                     save()
                 elif job['status'] in ('failed', 'interrupted'):
@@ -499,6 +505,7 @@ def run_refresh(client, state, save, args):
                         raise ImportFailure('job_deadline')
                     active += 1
             except ImportFailure as error:
+                task['verified_this_attempt'] = False
                 entry['error_code'] = error.code
                 state['error_code'] = error.code
                 state['counts']['failed'] = sum(bool(t['entry'].get('error_code')) for t in tasks.values())
@@ -634,6 +641,8 @@ def emit(value, format):
         print('Reason: ' + value['error_code'])
     if value.get('retry', {}).get('action') == 'resume':
         print('Retry: rerun with the same --state-dir and --resume; add --resume-jobs only after repairing a failed provider.')
+    elif value.get('retry', {}).get('action') == 'reconcile':
+        print('Retry: rerun with the same --state-dir --reconcile --yes --plan-sha256 ' + value['retry']['plan_sha256'])
 
 
 def main(argv=None):
@@ -727,7 +736,7 @@ def main(argv=None):
         code = error.code if isinstance(error, ImportFailure) else 'paused' if isinstance(error, KeyboardInterrupt) else 'invalid_input_or_unexpected_failure'
         if state is not None and save:
             state['status'] = 'paused' if code == 'paused' else 'partial' if state.get('pending') and any(
-                t['entry'].get('source_verified') for t in state['pending']['tasks'].values()) else 'failed'
+                t.get('verified_this_attempt', False) for t in state['pending']['tasks'].values()) else 'failed'
             state['error_code'] = code
             try:
                 save()
