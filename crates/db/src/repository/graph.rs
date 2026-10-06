@@ -75,6 +75,12 @@ pub(super) fn graph_mention_batch_sql(entity_count: usize) -> String {
     sql
 }
 
+struct GraphEntityQueryScope {
+    ranked_note_ids: Vec<RecordId>,
+    since: Option<String>,
+    source_uri: Option<String>,
+}
+
 impl Repository {
     #[instrument(skip(self))]
     pub async fn create_edge(
@@ -996,7 +1002,8 @@ impl Repository {
                         {
                             extraction: IF $metadata.extraction = NONE THEN metadata.extraction ELSE object::extend($metadata.extraction, {
                                 mention_spellings: array::distinct(array::concat(metadata.extraction.mention_spellings ?? [], $metadata.extraction.mention_spellings ?? [])),
-                                alias_spellings: array::distinct(array::concat(metadata.extraction.alias_spellings ?? [], $metadata.extraction.alias_spellings ?? []))
+                                alias_spellings: array::distinct(array::concat(metadata.extraction.alias_spellings ?? [], $metadata.extraction.alias_spellings ?? [])),
+                                reported_types: array::distinct(array::concat(metadata.extraction.reported_types ?? [], $metadata.extraction.reported_types ?? []))
                             }) END,
                             aliases: array::distinct(array::concat(
                                 metadata.aliases ?? [],
@@ -1317,6 +1324,36 @@ impl Repository {
         normalized_query: &str,
         limit: usize,
     ) -> Result<Vec<GraphEntityMatch>> {
+        self.find_graph_entities_scoped(normalized_query, limit, None)
+            .await
+    }
+
+    /// Match only entities with eligible mention evidence, preferring those
+    /// attached to bounded direct query hits. Scoped homonyms and orphaned
+    /// legacy rows cannot displace a useful entity merely by record-ID order.
+    pub async fn find_graph_entities_for_search(
+        &self,
+        query: &str,
+        limit: usize,
+        ranked_note_ids: &[RecordId],
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        let scope = GraphEntityQueryScope {
+            ranked_note_ids: ranked_note_ids.iter().take(200).cloned().collect(),
+            since: since.map(|value| value.to_rfc3339()),
+            source_uri,
+        };
+        self.find_graph_entities_scoped(query, limit, Some(&scope))
+            .await
+    }
+
+    async fn find_graph_entities_scoped(
+        &self,
+        normalized_query: &str,
+        limit: usize,
+        scope: Option<&GraphEntityQueryScope>,
+    ) -> Result<Vec<GraphEntityMatch>> {
         let normalized_query = graph_query_normalize(normalized_query);
         if normalized_query.is_empty() || limit == 0 {
             return Ok(Vec::new());
@@ -1331,7 +1368,13 @@ impl Repository {
         // prefix seeds, preventing ordinary sentence words from crowding the
         // cap.
         let exact = self
-            .query_graph_entities(&normalized_query, GraphEntityMatchTier::Exact, &[], limit)
+            .query_graph_entities(
+                &normalized_query,
+                GraphEntityMatchTier::Exact,
+                &[],
+                limit,
+                scope,
+            )
             .await?;
         if !exact.is_empty() {
             return Ok(exact);
@@ -1343,6 +1386,7 @@ impl Repository {
                 GraphEntityMatchTier::ContainedPhrase,
                 &[],
                 limit,
+                scope,
             )
             .await?;
         if !phrases.is_empty() {
@@ -1362,6 +1406,7 @@ impl Repository {
             GraphEntityMatchTier::Prefix,
             &prefixes,
             limit,
+            scope,
         )
         .await
     }
@@ -1372,6 +1417,7 @@ impl Repository {
         tier: GraphEntityMatchTier,
         prefixes: &[String],
         limit: i64,
+        scope: Option<&GraphEntityQueryScope>,
     ) -> Result<Vec<GraphEntityMatch>> {
         // Keep stored names and aliases on the exact same lexical boundary
         // contract as `graph_query_normalize`: punctuation becomes a space,
@@ -1440,18 +1486,28 @@ impl Repository {
             .as_ref()
             .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
             .unwrap_or_default();
-        let ordering = if phrase_specificity.is_some() {
-            "graph_match_specificity DESC, canonical_name ASC, id ASC"
-        } else if prefix_plausibility.is_some() {
-            "graph_prefix_plausibility ASC, canonical_name ASC, id ASC"
+        let eligible = graph_endpoint_eligible_sql("in");
+        let (select_direct, mention_condition, direct_order) = if scope.is_some() {
+            (
+                format!(", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"),
+                format!("AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"),
+                "graph_direct_rank ASC, ",
+            )
         } else {
-            "canonical_name ASC, id ASC"
+            (String::new(), String::new(), "")
+        };
+        let ordering = if phrase_specificity.is_some() {
+            format!("graph_match_specificity DESC, {direct_order}canonical_name ASC, id ASC")
+        } else if prefix_plausibility.is_some() {
+            format!("graph_prefix_plausibility ASC, {direct_order}canonical_name ASC, id ASC")
+        } else {
+            format!("{direct_order}canonical_name ASC, id ASC")
         };
         let query = format!(
             r#"
-                SELECT id, name, canonical_name, metadata{select_specificity}{select_prefix_plausibility}
+                SELECT id, name, canonical_name, metadata{select_specificity}{select_prefix_plausibility}{select_direct}
                 FROM entity
-                WHERE {match_condition}
+                WHERE ({match_condition}) {mention_condition}
                 ORDER BY {ordering}
                 LIMIT $limit
                 "#,
@@ -1461,6 +1517,13 @@ impl Repository {
             .query(query)
             .bind(("query", normalized_query.to_string()))
             .bind(("limit", limit));
+        if let Some(scope) = scope {
+            query = query
+                .bind(("ranked_notes", scope.ranked_note_ids.clone()))
+                .bind(("ranked_limit", scope.ranked_note_ids.len().max(1) as i64))
+                .bind(("since", scope.since.clone()))
+                .bind(("source_uri", scope.source_uri.clone()));
+        }
         for (index, prefix) in prefixes.iter().enumerate() {
             query = query.bind((format!("prefix_{index}"), prefix.clone()));
         }

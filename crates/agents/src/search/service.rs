@@ -835,11 +835,23 @@ impl SearchAgent {
         source_uri: Option<String>,
         require_entity_seed: bool,
     ) -> Result<GraphSearchResults> {
+        let ranked_note_ids = baseline
+            .iter()
+            .filter(|hit| hit.hit_type == SearchHitType::Note)
+            .take(200)
+            .map(|hit| RecordId::new("note", hit.id.strip_prefix("note:").unwrap_or(&hit.id)))
+            .collect::<Vec<_>>();
         let normalized_query = Entity::canonicalize(query);
         let started = Instant::now();
         let entities = self
             .repo
-            .find_graph_entities(&normalized_query, self.graph.max_seed_entities)
+            .find_graph_entities_for_search(
+                &normalized_query,
+                self.graph.max_seed_entities,
+                &ranked_note_ids,
+                since,
+                source_uri.clone(),
+            )
             .await?;
         debug!(
             phase = "graph_entity_matching",
@@ -861,12 +873,6 @@ impl SearchAgent {
             .map(|(rank, entity_id)| (record_id_to_string(entity_id), rank))
             .collect::<HashMap<_, _>>();
         let started = Instant::now();
-        let ranked_note_ids = baseline
-            .iter()
-            .filter(|hit| hit.hit_type == SearchHitType::Note)
-            .take(200)
-            .map(|hit| RecordId::new("note", hit.id.strip_prefix("note:").unwrap_or(&hit.id)))
-            .collect::<Vec<_>>();
         let mut entity_seed_ids = self
             .repo
             .graph_notes_for_entities_ranked(
@@ -891,6 +897,7 @@ impl SearchAgent {
             .iter()
             .map(|seed| seed.note_id.clone())
             .collect::<Vec<_>>();
+        let seed_evidence_started = Instant::now();
         let records = self
             .repo
             .graph_notes_by_ids(&candidate_ids, since, source_uri.clone())
@@ -924,6 +931,12 @@ impl SearchAgent {
                 ),
             );
         }
+        debug!(
+            phase = "graph_seed_evidence",
+            elapsed_ms = seed_evidence_started.elapsed().as_secs_f64() * 1000.0,
+            count = seed_strengths.len(),
+            "Retrieval phase completed"
+        );
         let direct_ranks = baseline
             .iter()
             .enumerate()
@@ -1498,8 +1511,22 @@ fn graph_seed_query_strength(
     }
     let mut evidence = terms(content);
     evidence.extend(terms(title.unwrap_or_default()));
+    let lexical = |value: &str| {
+        value
+            .split(|ch: char| !ch.is_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let query_phrase = format!(" {} ", lexical(query));
     for label in matched_labels {
-        evidence.extend(terms(label));
+        // Count only labels/aliases that actually match this query phrase;
+        // other aliases cannot supply unrelated query details.
+        let phrase = lexical(label);
+        if !phrase.is_empty() && query_phrase.contains(&format!(" {phrase} ")) {
+            evidence.extend(terms(label));
+        }
     }
     let coverage = query_terms.intersection(&evidence).count() as f32 / query_terms.len() as f32;
     // A verified mention is useful evidence, but cannot claim unsupported
@@ -3155,6 +3182,91 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn scoped_homonyms_prefer_direct_evidence_and_ignore_orphaned_legacy_entities() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        db.query("CREATE entity:aaaa_orphan CONTENT {name:'Atlas',canonical_name:'atlas',entity_type:'concept',metadata:{}};").await.unwrap().check().unwrap();
+        let generic = repo
+            .create_note(Note::new("Atlas generic background"))
+            .await
+            .unwrap();
+        let relevant = repo
+            .create_note(Note::new("Atlas deterministic retry configuration"))
+            .await
+            .unwrap();
+        for (scope, note) in [("source:noise", &generic), ("source:relevant", &relevant)] {
+            let mut entity = Entity::new("Atlas", EntityType::Project);
+            entity.identity_key = Some(scope.into());
+            entity.metadata = serde_json::json!({"aliases":["Launch Atlas"]});
+            let entity = repo.upsert_entity(entity).await.unwrap();
+            repo.link_note_to_entity(note.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        let entities = repo
+            .find_graph_entities_for_search(
+                "Atlas",
+                1,
+                &[relevant.id.clone().unwrap(), generic.id.clone().unwrap()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 1);
+        let seeds = repo
+            .graph_notes_for_entities_ranked(
+                &[entities[0].id.clone()],
+                &[relevant.id.clone().unwrap()],
+                1,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeds[0].note_id, relevant.id.clone().unwrap());
+        let entities = repo
+            .find_graph_entities_for_search(
+                "Launch Atlas",
+                4,
+                &[relevant.id.clone().unwrap()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 2); // Alias matches retain distinct identities.
+        assert_ne!(entities[0].id, entities[1].id);
+        let results = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(GraphRetrievalConfig {
+                max_seed_entities: 1,
+                max_seed_notes: 1,
+                ..Default::default()
+            })
+            .search_with_scope_graph(
+                "Atlas deterministic retry configuration",
+                10,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.summary.entities_matched, 1);
+        let evidence = results
+            .hits
+            .iter()
+            .find(|hit| hit.id == record_id_to_string(relevant.id.as_ref().unwrap()))
+            .unwrap()
+            .graph
+            .as_ref()
+            .unwrap();
+        assert_eq!(evidence.query_entities, vec!["Atlas"]);
+        assert_eq!(evidence.hops, 0);
+    }
+
     #[test]
     fn seed_strength_requires_query_details_and_respects_alias_evidence() {
         assert_eq!(
@@ -3181,7 +3293,7 @@ mod tests {
         );
         assert_eq!(
             graph_seed_query_strength("zeta", None, "Unrelated", &["Zeta Gateway"]),
-            1.0
+            0.15
         );
         assert!(
             graph_seed_query_strength(

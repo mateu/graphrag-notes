@@ -511,7 +511,7 @@ pub(crate) enum Commands {
         #[arg(long = "note-id")]
         note_ids: Vec<String>,
 
-        /// Clear existing mentions before re-extracting (use with --all or --note-id)
+        /// Replace existing mentions after successful extraction (use with --all or --note-id)
         #[arg(long)]
         force: bool,
     },
