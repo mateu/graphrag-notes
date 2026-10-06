@@ -99,10 +99,10 @@ Proposal cards retain proposal metadata plus both endpoint revisions. The
 shared decision operation rebuilds the card and refuses changed proposals or
 endpoints before invoking the existing accept/reject/undo repository methods.
 Acceptance requires explicit human confirmation and remains manual and
-audited. This preserves the existing inbox's freshness check and lifecycle
-coordination; it does not claim that its pre-mutation read is a new SQL
-compare-and-swap. Stronger remote concurrency guarantees must be implemented
-and tested in #56 before exposing competing-client mutation tools.
+audited. Remote decisions retain the repository lifecycle guard, validate
+proposal and endpoint snapshots in the committing transaction, and commit
+the authenticated decision receipt with its effect. Competing clients must
+refresh stale revisions rather than silently replace another decision.
 
 ## Provider availability and cancellation
 
@@ -129,10 +129,13 @@ On cancellation or provider failure before commit, the client retains its
 private draft and reports recovery guidance.
 
 Existing checkpointed processing continues to use librarian/reindex
-cancellation flags at item boundaries and existing durable job records. A
-future service owns those jobs independently of a client connection. A
-disconnect will not imply cancellation; explicit cancel/resume and reconnect
-behavior, durable capture retry identities, and upload limits are #56 work.
+cancellation flags at item boundaries and existing durable job records. The
+service owns uploaded jobs independently of a client connection. Disconnect
+does not imply cancellation; explicit owned cancel/resume, durable upload
+admissions and capture retry receipts support recovery. Source generations
+and retirement fences prevent stale resumed jobs from publishing replaced
+content. See [uploaded jobs](remote-upload-jobs.md) and
+[capture recovery](capture-journal.md).
 
 ## Local paths and interaction
 
@@ -142,11 +145,13 @@ arguments must not become application operation requests. Local open validates
 the selected revision and uses the existing literal-argv opener behavior.
 
 Source URIs describe the corpus owner's source, not a file automatically
-available on another client. A future remote client must use an explicit path
-mapping or supported source-content workflow before opening such a URI.
+available on another client. A remote client needs an explicit path
+mapping or supplied source-content workflow before opening such a URI.
 Remote imports upload content with stable identity rather than asking the
-service to read arbitrary client-supplied paths. Host-managed folders and
-client uploads require distinct refresh contracts in #56.
+service to read arbitrary client-supplied paths. Host-managed folders use their local sync contract;
+client uploads use stable authenticated document keys, durable jobs and
+registered incremental refresh. See [folder sync](folder-sync.md) and
+[OpenClaw refresh](openclaw-memory-refresh.md).
 
 The terminal must remain readable in a narrow window and usable with piped
 commands for deterministic tests. An interactive line editor may add keyboard
@@ -160,7 +165,7 @@ provider unavailable, cancellation, and internal failures. Database ownership
 errors are produced during bootstrap before an operation backend exists. The
 CLI adapter preserves established exit codes and machine output behavior.
 Future unauthorized, forbidden, service-unreachable, and retry-identity
-conflicts require #56 implementation rather than fictitious local behavior.
+conflicts remain explicit remote errors with retained client recovery state.
 
 The boundary introduces no schema migration, no new source-generation policy,
 and no change to existing archives or embedded installations. macOS and Linux
@@ -178,4 +183,5 @@ Terminal walkthroughs cover an empty corpus, unavailable providers, result
 selection without retyping IDs, open/copy, proposal review, narrow terminals,
 competing database ownership, and recovery to the prompt after errors.
 Non-interactive CLI/JSON regression checks remain required. Network and real
-OpenClaw/Hermes interoperability validation belongs to #56.
+OpenClaw/Hermes interoperability evidence and its version limits are recorded
+in the [shared walkthrough](shared-mcp-walkthrough.md).
