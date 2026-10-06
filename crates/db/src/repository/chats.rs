@@ -364,6 +364,11 @@ pub struct GraphEntityMatch {
 pub struct GraphEntityNoteSeed {
     pub note_id: RecordId,
     pub entity_id: RecordId,
+    /// Alias evidence for this specific eligible mention. Source-shared
+    /// entity display metadata must not credit another chunk's aliases.
+    #[serde(default)]
+    #[surreal(default)]
+    pub aliases: Vec<String>,
 }
 
 /// Data required to persist an edge proposal. The repository canonicalizes

@@ -64,6 +64,12 @@ pub struct Note {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunk_location_key: Option<String>,
 
+    /// Opaque source-chunk extraction lineage. Unlike the positional chunk
+    /// location, this survives safely reconciled source generations. Manual
+    /// and legacy records may omit it; detached notes do not inherit its scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extraction_scope: Option<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunk_ordinal: Option<u64>,
 
@@ -134,6 +140,7 @@ impl Note {
             source_generation: None,
             chunk_key: None,
             chunk_location_key: None,
+            extraction_scope: None,
             chunk_ordinal: None,
             chunk_heading_path: Vec::new(),
             source_start_line: None,

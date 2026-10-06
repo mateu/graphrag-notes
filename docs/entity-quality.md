@@ -17,14 +17,18 @@ the original text and provenance. Alias hints never assert entity identity or
 create accepted note edges. Strict malformed JSON still fails; the existing
 tolerant JSON recovery remains available when configured.
 
-Schema 19 adds an explicit entity identity key, optional mention evidence, and
-an index on entity/note mention pairs. It preserves every existing entity ID, type, mention, and
+Schema 19 adds an explicit entity identity key, optional mention evidence, a
+durable optional note extraction scope, and an index on entity/note mention pairs. It preserves every existing entity ID, type, mention, and
 canonical label. Older/manual entity upserts and older portable backups use
 the legacy canonical-name key. New extracted keys include type and evidence
 scope; matching still uses the readable canonical label and aliases.
 
-People and projects use note-local evidence scopes, or stable source chunk
-locations when available. Other types can share a canonical label only within
+People and projects use note-local evidence scopes. Generated source chunks
+retain an opaque extraction scope across safely reconciled one-to-one successors,
+even when a generation has no entities. A new unmatched chunk starts with its
+final note ID, so positional shifts cannot reuse another live chunk's scope.
+Older scoped Person/Project evidence can supply a validated scope before its
+first durable adoption; conflicting scopes fail before replacing mentions. Other types can share a canonical label only within
 the same generated source; manual/detached notes use their final note ID even
 when retaining a source link as provenance. Capture and edit preparation uses
 the final note ID, including authenticated capture request IDs, so later forced
@@ -32,8 +36,9 @@ extraction reuses these identities. Same spelling across sources,
 different types, and aliases do not merge rows. Two same-named people/projects
 in different notes remain ambiguous independent entities. Within one note the
 provider must distinguish them with different labels; extraction has no
-evidence to infer a global identity. Identical chunk locations preserve scoped
-keys across source refreshes. This deliberately avoids silently relabeling the
+evidence to infer a global identity. Safe source successors preserve scoped
+keys across earlier insertions, removals and forced reprocessing; an uncertain
+reconciliation creates independent identities. This deliberately avoids silently relabeling the
 older globally deduplicated entities.
 
 Extracted entity display metadata reflects the latest prepared result instead
@@ -43,6 +48,9 @@ aliases while preserving another chunk's valid aliases on a shared source
 entity. Exact-content source successors copy this evidence. Deleted notes and
 hidden generations contribute no aliases. Each mention and returned match
 keeps the eight-alias cap; legacy/manual aliases retain their older behavior.
+Seed ranking and strength use only the candidate note's own eligible mention
+aliases, so a shared entity cannot lend another chunk's query evidence. A bounded
+query-matching mention page precedes the direct-rank and ID fallback pages.
 
 Graph matching keeps whole-query/contained-phrase/prefix tiers and stable ties.
 For retrieval it requires a visible, source/time-eligible mention and prefers

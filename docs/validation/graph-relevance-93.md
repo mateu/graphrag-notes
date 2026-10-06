@@ -1,6 +1,15 @@
 # Graph relevance validation (#93)
 
-The provider-free fictional fixture compared patched-main retrieval (`287d8ea4`) with final candidate source `3dc616a09ce37465dd96a3298ddf3e405ab62a54` at 256 and 2,048 notes, using matching standalone-agent feature settings. Each of twelve cases ran graph off/auto/on with three warmed observations per policy. The fixture asserts bounds, uniqueness, current source visibility, source/time filters, deterministic ranked evidence, and accepted-only paths.
+The numerical observations below belong to the frozen `3dc616a` checkpoint.
+Subsequent review fixes add durable source extraction lineage and restrict alias
+seed scoring to the owning mention. Their fictional regressions cover earlier
+chunk insertions/removals, zero-mention successors, portable restore, remote
+upload extraction and an alias owner beyond the first ID page. Final candidate
+corpus and performance acceptance must use a fresh schema-18 restore because
+the unmerged schema-19 migration now includes the optional lineage field.
+Historical checkpoint archives and hashes remain paired with their original artifact.
+
+The provider-free fictional fixture compared patched-main retrieval (`287d8ea4`) with checkpoint source `3dc616a09ce37465dd96a3298ddf3e405ab62a54` at 256 and 2,048 notes, using matching standalone-agent feature settings. Each of twelve cases ran graph off/auto/on with three warmed observations per policy. The fixture asserts bounds, uniqueness, current source visibility, source/time filters, deterministic ranked evidence, and accepted-only paths.
 
 These are debug-build warmed medians on one Apple Silicon host under concurrent development work. They exclude external model calls and remote transport. Three observations do not establish p95 values or a latency guarantee; independent phase probes are not additive traces.
 

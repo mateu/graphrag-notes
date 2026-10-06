@@ -7,6 +7,7 @@ use super::chats::{
     EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEdgeRow, ProposedEdgeRow,
 };
 use super::*;
+use graphrag_core::{normalized_content_hash, EntityType};
 use surrealdb_types::ToSql;
 
 /// Fetch the stored endpoint before inspecting fields. Plain `endpoint.id`
@@ -69,10 +70,14 @@ pub(super) fn graph_mention_batch_sql(entity_count: usize) -> String {
     let eligible = graph_endpoint_eligible_sql("in");
     for index in 0..entity_count {
         sql.push_str(&format!(
-            "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_{index} AND {eligible} ORDER BY in ASC LIMIT $limit;"
+            "SELECT in AS note_id, out AS entity_id, ({}) AS aliases FROM mentions WHERE out = $entity_{index} AND {eligible} ORDER BY in ASC LIMIT $limit;", graph_mention_aliases_sql()
         ));
     }
     sql
+}
+
+fn graph_mention_aliases_sql() -> &'static str {
+    "array::slice(IF string::starts_with(out.identity_key ?? '', 'extracted-v1:') THEN metadata.aliases ?? [] ELSE out.metadata.aliases ?? [] END, 0, 8)"
 }
 
 struct GraphEntityQueryScope {
@@ -82,6 +87,54 @@ struct GraphEntityQueryScope {
 }
 
 impl Repository {
+    /// A generated chunk's opaque extraction lineage survives reconciliation
+    /// independently of its current position or whether it has entity mentions.
+    /// Earlier scoped extraction can be adopted only from validated evidence.
+    pub async fn note_extraction_scope(&self, note: &Note) -> Result<Option<String>> {
+        let (Some(source), Some(id), Some(_)) = (&note.source_id, &note.id, note.source_generation)
+        else {
+            return Ok(None);
+        };
+        let prefix = format!("{}:chunk:", record_id_to_string(source));
+        let valid = |scope: &str| {
+            scope.starts_with(&prefix)
+                && scope.len() <= 1024
+                && !scope.chars().any(char::is_control)
+        };
+        if let Some(scope) = &note.extraction_scope {
+            if !valid(scope) {
+                return Err(DbError::QueryFailed(
+                    "invalid source extraction scope".into(),
+                ));
+            }
+            return Ok(Some(scope.clone()));
+        }
+        let mut scopes = HashSet::new();
+        for entity in self.get_entities_for_note(&record_id_to_string(id)).await? {
+            if !matches!(entity.entity_type, EntityType::Person | EntityType::Project) {
+                continue;
+            }
+            let Some(scope) = entity.metadata["extraction"]["scope"].as_str() else {
+                continue;
+            };
+            let identity =
+                serde_json::json!([scope, entity.entity_type, entity.canonical_name]).to_string();
+            let key = format!("extracted-v1:{}", normalized_content_hash(&identity));
+            if valid(scope) && entity.identity_key.as_deref() == Some(key.as_str()) {
+                scopes.insert(scope.to_owned());
+            }
+        }
+        if scopes.len() > 1 {
+            return Err(DbError::QueryFailed(
+                "ambiguous source extraction scope; preserve current mentions and review the chunk"
+                    .into(),
+            ));
+        }
+        Ok(Some(scopes.into_iter().next().unwrap_or_else(|| {
+            format!("{prefix}{}", record_id_to_string(id))
+        })))
+    }
+
     #[instrument(skip(self))]
     pub async fn create_edge(
         &self,
@@ -1106,6 +1159,11 @@ impl Repository {
         entities: Vec<Entity>,
         replace: bool,
     ) -> Result<usize> {
+        let note: Option<Note> = self.db.select(note_id.clone()).await?;
+        let scope = match note {
+            Some(note) => self.note_extraction_scope(&note).await?,
+            None => None,
+        };
         let entity_names = entities
             .iter()
             .map(Entity::effective_identity_key)
@@ -1129,11 +1187,13 @@ impl Repository {
                      OR source_generation = source_id.successful_generation \
                      OR (source_generation = source_id.generation AND source_id.status = 'pending')) LIMIT 1); \
                  IF array::len($writable) != 1 {{ THROW 'entity replacement endpoint is no longer writable'; }}; {} \
+                 IF $extraction_scope != NONE {{ UPDATE $note_id SET extraction_scope = $extraction_scope; }}; \
                  {deletion} {} COMMIT TRANSACTION;",
                 super::notes::replacement_entities_transaction(),
                 super::notes::replacement_mentions_transaction("$note_id")
             ))
             .bind(("note_id", note_id.clone()))
+            .bind(("extraction_scope", scope))
             .bind(("replacement_entities", entities))
             .bind(("replacement_entity_names", entity_names))
             .await?;
@@ -1611,7 +1671,31 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<GraphEntityNoteSeed>> {
-        if ranked_note_ids.is_empty() {
+        self.graph_notes_for_entities_ranked_for_query(
+            entity_ids,
+            ranked_note_ids,
+            limit,
+            since,
+            source_uri,
+            "",
+        )
+        .await
+    }
+
+    /// Keep query alias support on its owning mention before the seed page
+    /// cap; a source-shared entity's union of aliases cannot rank other chunks.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn graph_notes_for_entities_ranked_for_query(
+        &self,
+        entity_ids: &[RecordId],
+        ranked_note_ids: &[RecordId],
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        query: &str,
+    ) -> Result<Vec<GraphEntityNoteSeed>> {
+        let query_text = graph_query_normalize(query);
+        if ranked_note_ids.is_empty() && query_text.is_empty() {
             return self
                 .graph_notes_for_entities(entity_ids, limit, since, source_uri)
                 .await;
@@ -1628,11 +1712,15 @@ impl Repository {
             DbError::QueryFailed("graph note limit exceeds database integer range".into())
         })?;
         let eligible = graph_endpoint_eligible_sql("in");
+        let aliases = graph_mention_aliases_sql();
+        let alias_lexical = r#"string::trim(string::replace(string::lowercase($alias), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
+        let alias_match = format!("$query != '' AND array::any({aliases}, |$alias| {alias_lexical} != '' AND string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))");
         let mut sql = String::new();
         for index in 0..entity_ids.len() {
             sql.push_str(&format!(
-                "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_{index} AND in IN $ranked_notes AND {eligible} ORDER BY in ASC LIMIT $ranked_limit;\
-                 SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_{index} AND in NOT IN $ranked_notes AND {eligible} ORDER BY in ASC LIMIT $limit;"
+                "SELECT in AS note_id, out AS entity_id, ({aliases}) AS aliases FROM mentions WHERE out = $entity_{index} AND {eligible} AND ({alias_match}) ORDER BY in ASC LIMIT $limit;\
+                 SELECT in AS note_id, out AS entity_id, ({aliases}) AS aliases FROM mentions WHERE out = $entity_{index} AND in IN $ranked_notes AND {eligible} ORDER BY in ASC LIMIT $ranked_limit;\
+                 SELECT in AS note_id, out AS entity_id, ({aliases}) AS aliases FROM mentions WHERE out = $entity_{index} AND in NOT IN $ranked_notes AND {eligible} ORDER BY in ASC LIMIT $limit;"
             ));
         }
         let ranks = ranked_note_ids
@@ -1643,7 +1731,8 @@ impl Repository {
         let mut query = self
             .db
             .query(sql)
-            .bind(("ranked_limit", ranked_note_ids.len() as i64))
+            .bind(("query", query_text.clone()))
+            .bind(("ranked_limit", ranked_note_ids.len().max(1) as i64))
             .bind(("ranked_notes", ranked_note_ids))
             .bind(("limit", limit))
             .bind(("since", since.map(|value| value.to_rfc3339())))
@@ -1654,16 +1743,35 @@ impl Repository {
         let mut response = query.await?.check()?;
         let mut seeds = Vec::new();
         for index in 0..entity_ids.len() {
-            let mut preferred: Vec<GraphEntityNoteSeed> = response.take(index * 2)?;
-            let fallback: Vec<GraphEntityNoteSeed> = response.take(index * 2 + 1)?;
+            let mut preferred: Vec<GraphEntityNoteSeed> = response.take(index * 3)?;
+            let direct: Vec<GraphEntityNoteSeed> = response.take(index * 3 + 1)?;
+            let fallback: Vec<GraphEntityNoteSeed> = response.take(index * 3 + 2)?;
+            preferred.extend(direct);
+            preferred.extend(fallback);
+            let owns_query_alias = |seed: &GraphEntityNoteSeed| {
+                seed.aliases.iter().any(|alias| {
+                    let phrase = graph_query_normalize(alias);
+                    !phrase.is_empty() && format!(" {query_text} ").contains(&format!(" {phrase} "))
+                })
+            };
             preferred.sort_by(|a, b| {
-                ranks[&record_id_to_string(&a.note_id)]
-                    .cmp(&ranks[&record_id_to_string(&b.note_id)])
+                owns_query_alias(b)
+                    .cmp(&owns_query_alias(a))
+                    .then_with(|| {
+                        ranks
+                            .get(&record_id_to_string(&a.note_id))
+                            .unwrap_or(&usize::MAX)
+                            .cmp(
+                                ranks
+                                    .get(&record_id_to_string(&b.note_id))
+                                    .unwrap_or(&usize::MAX),
+                            )
+                    })
                     .then_with(|| {
                         record_id_to_string(&a.note_id).cmp(&record_id_to_string(&b.note_id))
                     })
             });
-            preferred.extend(fallback);
+            preferred.dedup_by(|a, b| a.note_id == b.note_id);
             preferred.truncate(limit as usize);
             seeds.extend(preferred);
         }

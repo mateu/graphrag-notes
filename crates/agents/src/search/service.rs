@@ -936,12 +936,13 @@ impl SearchAgent {
         let started = Instant::now();
         let mut entity_seed_ids = self
             .repo
-            .graph_notes_for_entities_ranked(
+            .graph_notes_for_entities_ranked_for_query(
                 &entity_ids,
                 &ranked_note_ids,
                 self.graph.max_seed_notes,
                 since,
                 source_uri.clone(),
+                query,
             )
             .await?;
         debug!(
@@ -987,17 +988,15 @@ impl SearchAgent {
             let matching_labels = entity_seed_ids
                 .iter()
                 .filter(|seed| record_id_to_string(&seed.note_id) == id)
-                .filter_map(|seed| entities.iter().find(|entity| entity.id == seed.entity_id))
-                .flat_map(|entity| {
-                    std::iter::once(entity.name.as_str()).chain(
-                        entity
-                            .metadata
-                            .get("aliases")
-                            .and_then(serde_json::Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(serde_json::Value::as_str),
-                    )
+                .filter_map(|seed| {
+                    entities
+                        .iter()
+                        .find(|entity| entity.id == seed.entity_id)
+                        .map(|entity| (entity, seed))
+                })
+                .flat_map(|(entity, seed)| {
+                    std::iter::once(entity.name.as_str())
+                        .chain(seed.aliases.iter().map(String::as_str))
                 })
                 .collect::<Vec<_>>();
             seed_strengths.insert(
@@ -2585,14 +2584,17 @@ mod tests {
             GraphEntityNoteSeed {
                 note_id: RecordId::new("note", "atlas-a"),
                 entity_id: atlas.clone(),
+                aliases: Vec::new(),
             },
             GraphEntityNoteSeed {
                 note_id: RecordId::new("note", "atlas-b"),
                 entity_id: atlas.clone(),
+                aliases: Vec::new(),
             },
             GraphEntityNoteSeed {
                 note_id: RecordId::new("note", "beacon-a"),
                 entity_id: beacon.clone(),
+                aliases: Vec::new(),
             },
         ];
 
@@ -3398,6 +3400,126 @@ mod tests {
             .unwrap();
         assert_eq!(evidence.query_entities, vec!["Atlas"]);
         assert_eq!(evidence.hops, 0);
+    }
+
+    #[tokio::test]
+    async fn shared_entity_alias_seeds_only_its_owning_chunk_before_the_note_cap() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let mut source = repo
+            .begin_file_import(
+                graphrag_core::SourceType::Markdown,
+                "Fictional shared compiler".into(),
+                "fixture://compiler-alias.md".into(),
+                "Two fictional tool references".into(),
+                "fixture-alias".into(),
+                false,
+            )
+            .await
+            .unwrap()
+            .source;
+        let wrong = RecordId::new("note", "aaaa_wrong_chunk");
+        let owner = RecordId::new("note", "zzzz_alias_owner");
+        for id in [&wrong, &owner] {
+            db.query("CREATE $id SET content='A fictional tool reference', source_id=$source, source_generation=$generation")
+                .bind(("id", id.clone())).bind(("source", source.id.clone()))
+                .bind(("generation", source.generation)).await.unwrap().check().unwrap();
+        }
+        repo.complete_file_import(&mut source).await.unwrap();
+        for (id, aliases) in [
+            (&wrong, vec!["unrelated label"]),
+            (&owner, vec!["silver prism"]),
+        ] {
+            let mut entity = Entity::new("Compiler", EntityType::Technology);
+            entity.identity_key = Some("extracted-v1:fictional-shared-compiler".into());
+            entity.metadata = serde_json::json!({"aliases": aliases});
+            repo.upsert_entities_and_link_note(id, vec![entity])
+                .await
+                .unwrap();
+        }
+        let entities = repo
+            .find_graph_entities_for_search("silver prism", 1, &[], None, None)
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 1);
+        let entity_ids = [entities[0].id.clone()];
+        assert_eq!(
+            repo.graph_notes_for_entities_ranked(&entity_ids, &[], 1, None, None)
+                .await
+                .unwrap()[0]
+                .note_id,
+            wrong
+        );
+        let seeds = repo
+            .graph_notes_for_entities_ranked_for_query(
+                &entity_ids,
+                &[],
+                2,
+                None,
+                None,
+                "silver prism",
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeds[0].note_id, owner);
+        assert_eq!(seeds[0].aliases, vec!["silver prism"]);
+        assert_eq!(seeds[1].aliases, vec!["unrelated label"]);
+        let correct_answer = repo
+            .create_note(Note::new("The fictional tool is ready for launch"))
+            .await
+            .unwrap();
+        let wrong_answer = repo
+            .create_note(Note::new("Unrelated historical tool path"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            &owner,
+            correct_answer.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        repo.create_edge(
+            &wrong,
+            wrong_answer.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            Some(1.0),
+        )
+        .await
+        .unwrap();
+        let result = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(GraphRetrievalConfig {
+                max_seed_entities: 1,
+                max_seed_notes: 1,
+                max_hops: 1,
+                per_node_fanout: 1,
+                candidate_cap: 2,
+                ..Default::default()
+            })
+            .search_with_scope_graph(
+                "silver prism",
+                5,
+                SearchScope::Notes,
+                None,
+                None,
+                GraphMode::Auto,
+            )
+            .await
+            .unwrap();
+        let correct = result
+            .hits
+            .iter()
+            .find(|hit| hit.id == record_id_to_string(correct_answer.id.as_ref().unwrap()))
+            .unwrap();
+        assert_eq!(
+            correct.graph.as_ref().unwrap().seed_note_id,
+            record_id_to_string(&owner)
+        );
+        assert!(result
+            .hits
+            .iter()
+            .all(|hit| hit.id != record_id_to_string(wrong_answer.id.as_ref().unwrap())));
     }
 
     #[test]

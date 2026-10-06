@@ -42,6 +42,24 @@ impl Repository {
         // entity-extraction pass. Chat provenance identifies origin rather
         // than extracted content, so it follows every safely reconciled chunk.
         for (old_id, new_id) in &successors {
+            let old: Option<Note> = self.db.select(old_id.clone()).await?;
+            let new: Option<Note> = self.db.select(new_id.clone()).await?;
+            if let (Some(old), Some(new)) = (old, new) {
+                if old.source_generation.is_some()
+                    && new.source_generation.is_some()
+                    && old.source_id == new.source_id
+                {
+                    if let Some(scope) = self.note_extraction_scope(&old).await? {
+                        // The anchor follows safe one-to-one reconciliation
+                        // even without mentions; entity evidence still copies
+                        // only for exact content below. Unmatched new chunks
+                        // keep their own final-ID-derived scope.
+                        self.db.query("BEGIN TRANSACTION; UPDATE $old SET extraction_scope = $scope; UPDATE $new SET extraction_scope = $scope; COMMIT TRANSACTION;")
+                            .bind(("old", old_id.clone())).bind(("new", new_id.clone()))
+                            .bind(("scope", scope)).await?.check()?;
+                    }
+                }
+            }
             if exact_content_successors.contains(old_id) {
                 #[derive(Deserialize, SurrealValue)]
                 struct MentionEvidence {
