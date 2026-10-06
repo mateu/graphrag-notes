@@ -18,6 +18,8 @@ import urllib.parse
 import urllib.request
 import uuid
 
+RUNNER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
 SPEC = importlib.util.spec_from_file_location("retrieval_evaluation", Path(__file__).with_name("evaluate-retrieval.py"))
 evaluation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(evaluation)
@@ -287,7 +289,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         os.umask(0o077)
-        suite = evaluation.load_suite(args.suite)
+        suite_bytes = args.suite.read_bytes()
+        suite_sha256 = hashlib.sha256(suite_bytes).hexdigest()
+        suite = evaluation.load_suite(args.suite, captured_bytes=suite_bytes)
         concurrency = [int(v) for v in args.concurrency.split(",")]
         evaluation.require(concurrency and len(set(concurrency)) == len(concurrency) and all(1 <= v <= 8 for v in concurrency), "invalid concurrency")
         evaluation.require(1 <= args.rounds <= 200 and 0 < args.timeout <= 300 and math.isfinite(args.timeout), "invalid bounds")
@@ -307,8 +311,8 @@ def main(argv=None):
             for row in samples:
                 row["backend_phases"] = phases.get(row.get("rpc_id_sha256"), {})
         report = {"schema_version": 1, "metadata": suite["metadata"], "samples": samples,
-                  "suite_sha256": hashlib.sha256(args.suite.read_bytes()).hexdigest(),
-                  "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+                  "suite_sha256": suite_sha256, "runner_sha256": RUNNER_SHA256,
+                  "evaluation_runner_sha256": evaluation.RUNNER_SHA256}
         evaluation.write_new(args.output, report)
         evaluation.write_new(args.summary, summary(report))
         failed = sum(r["status"] != "ok" for r in samples)

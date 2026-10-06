@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import hashlib
+import tempfile
+from unittest import mock
 from pathlib import Path
 import threading
 import time
@@ -33,6 +36,30 @@ class Client:
 
 
 class SearchBenchmarkTests(unittest.TestCase):
+    def test_report_uses_suite_and_runner_loaded_before_requests(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            root.chmod(0o700)
+            suite, output, aggregate = (root / value for value in ("suite.json", "report.json", "summary.json"))
+            original = json.dumps({"schema_version": 1, "metadata": {}, "cases": [case()]}).encode()
+            suite.write_bytes(original)
+            def replace_inputs(loaded, factory, rounds, concurrency):
+                self.assertEqual(loaded["cases"][0]["name"], "fictional-atlas")
+                suite.write_text("replaced suite")
+                return []
+            runner = root / "runner.py"
+            runner.write_text("replacement code")
+            with mock.patch.object(benchmark, "run", side_effect=replace_inputs), \
+                    mock.patch.object(benchmark, "__file__", str(runner)), \
+                    mock.patch.dict("os.environ", {"FIXTURE_TOKEN": "fictional"}), mock.patch("sys.stdout"):
+                code = benchmark.main(["--suite", str(suite), "--endpoint", "http://127.0.0.1:1/mcp",
+                    "--credential-env", "FIXTURE_TOKEN", "--output", str(output), "--summary", str(aggregate)])
+            report = json.loads(output.read_text())
+            self.assertEqual(code, 0)
+            self.assertEqual(report["suite_sha256"], hashlib.sha256(original).hexdigest())
+            self.assertEqual(report["runner_sha256"], benchmark.RUNNER_SHA256)
+            self.assertEqual(report["evaluation_runner_sha256"], benchmark.evaluation.RUNNER_SHA256)
+
     def test_endpoint_refuses_insecure_remote_userinfo_and_redirect_locations(self):
         for value in ("http://example.test/mcp", "http://user:secret@localhost/mcp",
                       "http://localhost/mcp?token=secret", "http://localhost/other", "http:///mcp"):
