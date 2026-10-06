@@ -42,6 +42,7 @@ async function fixture(config = {}) {
       // Force overlap across independently correlated SDK requests.
       await new Promise(resolve => setTimeout(resolve, 10));
     } else throw new Error('unexpected fixture method');
+    if (message.method === 'initialize') state.onInitialize?.();
     const body = JSON.stringify({ jsonrpc: '2.0', id: message.id, result });
     if (state.gzip || state.gzipHeaderOverhead || state.gzipDecodedOversized) {
       let compressed = gzipSync(state.gzipDecodedOversized ? 'x'.repeat(2 * 1024 * 1024 + 1) : body);
@@ -59,7 +60,7 @@ async function fixture(config = {}) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}/mcp`;
-  const command = createNotesCommand({ timeoutMs: 5000, ...config });
+  const command = createNotesCommand({ timeoutMs: 5000, ...config }, { env: {} });
   const ctx = (query = 'Atlas', token = 'principal-one') => ({ isAuthorizedSender: true,
     args: '--keyword ' + query, config: { mcp: { servers: { graphrag: { url, headers: { Authorization: 'Bearer ' + token } } } } } });
   return { calls, revoked, state, command, ctx,
@@ -203,4 +204,25 @@ test('fresh SDK partial JSON response is cancelled at the deadline without anoth
     assert.match((await f.command.handler(f.ctx('Cirrus'))).text, /Cirrus/);
     assert.equal(f.calls.filter(c => c.method === 'tools/call').length, 3);
   } finally { await f.close(); }
+});
+
+test('fresh SDK refuses endpoint or credential rotation during initialization before search dispatch', async () => {
+  for (const change of ['endpoint', 'credential']) {
+    const f = await fixture({ reuseConnections: false });
+    const ctx = f.ctx();
+    try {
+      f.state.onInitialize = () => {
+        const server = ctx.config.mcp.servers.graphrag;
+        if (change === 'endpoint') server.url = 'http://127.0.0.1:1/mcp';
+        else server.headers.Authorization = 'Bearer principal-two';
+      };
+      assert.match((await f.command.handler(ctx)).text, /connection changed/);
+      assert.equal(f.calls.filter(c => c.method === 'initialize').length, 1);
+      assert.equal(f.calls.filter(c => c.method === 'tools/call').length, 0);
+      assert.ok(f.calls.every(c => c.token === 'Bearer principal-one'));
+      f.state.onInitialize = null;
+      assert.match((await f.command.handler(f.ctx('Cirrus', 'principal-two'))).text, /Actor: mcp:two/);
+      assert.equal(f.calls.filter(c => c.method === 'tools/call').length, 1);
+    } finally { await f.close(); }
+  }
 });

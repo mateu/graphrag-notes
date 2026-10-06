@@ -14,6 +14,7 @@ function fixture(options = {}) {
       transport = value; events.push(['connect', opts]);
       if (options.connectError) throw new Error('Bearer private-fixture-credential ' + 'http://private.invalid');
       if (options.connectPending) await new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(opts.signal.reason), { once: true }));
+      await value.config.fetch(value.url, {});
     }
     async callTool(value, schema, opts) {
       events.push(['call', value, opts]);
@@ -55,7 +56,6 @@ test('default search has exact graph-enabled hybrid arguments, header, citation/
   assert.match(reply.text, /note:abc123/); assert.match(reply.text, /Actor: mcp:openclaw-shiva/); assert.match(reply.text, /ms total .*ms connect, .*ms search/);
   assert.equal(reply.continueAgent, false); assert.equal(f.events.at(-1)[0], 'close');
   assert.equal(f.transport.config.requestInit.headers.Authorization, 'Bearer private-fixture-credential');
-  await f.transport.config.fetch(f.transport.url, {});
   assert.equal(f.fetchOptions.redirect, 'error'); assert.equal(f.fetchOptions.signal.aborted, true);
 });
 

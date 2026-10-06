@@ -146,24 +146,32 @@ export function createFreshNotesCommand(config = {}, overrides = {}) {
     acceptsArgs: true, requireAuth: true,
     handler: async (ctx) => {
       if (ctx.isAuthorizedSender !== true) return { text: 'This command requires authorization.', continueAgent: false };
+      const current = { ...(ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config) };
       let parsed;
-      try { parsed = parseNotesArguments(ctx.args ?? '', config); }
+      try { parsed = parseNotesArguments(ctx.args ?? '', current); }
       catch { return { text: `Invalid or conflicting search flags. ${HELP}`, continueAgent: false }; }
       if (!parsed) return { text: HELP, continueAgent: false };
       const { query, mode, graph } = parsed;
       if (Array.from(query).length > 1024) return { text: 'Search query must contain at most 1024 characters.', continueAgent: false };
       const started = clock();
-      const timeoutMs = graph !== 'off' ? (config.graphTimeoutMs ?? 60000) : (config.timeoutMs ?? 5000);
+      const timeoutMs = graph !== 'off' ? (current.graphTimeoutMs ?? 60000) : (current.timeoutMs ?? 5000);
       if (!Number.isInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > (graph !== 'off' ? 120000 : 30000)) return failure('configuration', clock() - started, timeoutMs, graph);
       const abort = new AbortController();
       const timer = setTimeout(() => abort.abort(new NotesError('timeout')), timeoutMs);
       let client, connectMs = 0, searchMs = 0, outcome = 'unavailable';
       try {
-        const { endpoint, token } = connection(config, ctx, env);
+        const { endpoint, token } = connection(current, ctx, env);
+        const revalidate = () => {
+          const latest = ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config;
+          const selected = connection(latest, ctx, env);
+          if (selected.endpoint.href !== endpoint.href || selected.token !== token || latest.sdkAnchor !== current.sdkAnchor) throw new NotesError('reconfigured');
+          if (ctx.isAuthorizedSender !== true) throw new NotesError('forbidden');
+        };
         const deadline = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(new NotesError('timeout')), { once: true }));
         const work = async () => {
-          const { Client, StreamableHTTPClientTransport } = await sdkLoader(config);
+          const { Client, StreamableHTTPClientTransport } = await sdkLoader(current);
           abort.signal.throwIfAborted();
+          revalidate();
           client = new Client({ name: 'graphrag-fast-notes', version: '0.5.0' }, { capabilities: {} });
           // Do not log SDK errors, URLs, headers, queries, or returned corpus text.
           client.onerror = () => {};
@@ -171,7 +179,9 @@ export function createFreshNotesCommand(config = {}, overrides = {}) {
             requestInit: { headers: { Authorization: `Bearer ${token}` } },
             reconnectionOptions: { maxRetries: 0 },
             fetch: async (input, init = {}) => {
+              revalidate();
               const signal = init.signal ? AbortSignal.any([init.signal, abort.signal]) : abort.signal;
+              signal.throwIfAborted();
               const response = await fetchImpl(input, { ...init, redirect: 'error', signal });
               if (response.ok && ![202, 204].includes(response.status) &&
                   response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
@@ -182,6 +192,7 @@ export function createFreshNotesCommand(config = {}, overrides = {}) {
           });
           await client.connect(transport, { signal: abort.signal, timeout: timeoutMs });
           abort.signal.throwIfAborted();
+          revalidate();
           const connected = clock();
           connectMs = connected - started;
           const result = await client.callTool({ name: 'search_notes', arguments: { query, mode, graph, scope: 'notes', limit: 5 } }, undefined, { signal: abort.signal, timeout: timeoutMs });
