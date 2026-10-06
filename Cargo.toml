@@ -23,8 +23,8 @@ tokio = { version = "1.43", features = ["full"] }
 async-trait = "0.1"
 
 # SurrealDB - minimal features in workspace, crates add what they need
-surrealdb = { version = "3", default-features = false }
-surrealdb-types = "3"
+surrealdb = { version = "=3.3.0", default-features = false }
+surrealdb-types = "=3.3.0"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
