@@ -37,6 +37,21 @@ class Client:
 
 
 class SearchBenchmarkTests(unittest.TestCase):
+    def test_nullable_eval_options_use_resolved_mcp_arguments_and_metrics(self):
+        item = case()
+        item["eval"].update(scope=None, limit=None, k=None, relevance=[{"id": "note:atlas", "grade": None}])
+        class Checked(Client):
+            def call(self, name, args):
+                if name == "search_notes":
+                    self.arguments = args
+                return super().call(name, args)
+        client = Checked()
+        row = benchmark.sample(client, item, "hybrid-off", "warmed", 0, 1, 2)
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(row["metrics"]["k"], 5)
+        self.assertEqual(client.arguments["scope"], "notes")
+        self.assertEqual(client.arguments["limit"], 5)
+
     def test_raw_and_summary_path_alias_is_rejected_before_measurement(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

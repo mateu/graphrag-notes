@@ -144,8 +144,8 @@ def sample(client, item, policy, phase, round_number, concurrency, connect_ms):
     try:
         case = item["eval"]
         mode, graph = evaluation.POLICIES[policy]
-        args = {"query": case["query"], "mode": mode, "graph": graph, "scope": case.get("scope", "notes"),
-                "limit": case.get("limit", 5), "since_days": case.get("since_days"), "source_uri": case.get("source_uri")}
+        args = {"query": case["query"], "mode": mode, "graph": graph, "scope": evaluation.optional_default(case, "scope", "notes"),
+                "limit": evaluation.optional_default(case, "limit", 5), "since_days": case.get("since_days"), "source_uri": case.get("source_uri")}
         data, elapsed, key = client.call("search_notes", args)
         records = data.get("records")
         evaluation.validate_records(records, args["limit"])
