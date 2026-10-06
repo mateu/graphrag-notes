@@ -68,6 +68,17 @@ fn conflict(instance: &str, request: &str) -> DbError {
 }
 
 impl Repository {
+    /// Stable authenticated request identity, shared with preparation before
+    /// inference. Opaque caller provenance never participates in this key.
+    pub fn remote_capture_note_id(instance: &str, request: &str) -> Result<RecordId> {
+        let bytes = serde_json::to_vec(&(instance, request))
+            .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?;
+        Ok(RecordId::new(
+            "note",
+            format!("{:x}", Sha256::digest(bytes)),
+        ))
+    }
+
     async fn remote_capture_row(
         &self,
         instance: &str,
@@ -153,7 +164,8 @@ impl Repository {
         let key_bytes = serde_json::to_vec(&(&input.authenticated_instance_id, &input.request_id))
             .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?;
         let key = format!("{:x}", Sha256::digest(key_bytes));
-        let note_id = RecordId::new("note", key.clone());
+        let note_id =
+            Self::remote_capture_note_id(&input.authenticated_instance_id, &input.request_id)?;
         let source_id = RecordId::new("source", key.clone());
         let receipt_id = RecordId::new("remote_capture_receipt", key.clone());
         let uri = format!("mcp://capture/{key}");

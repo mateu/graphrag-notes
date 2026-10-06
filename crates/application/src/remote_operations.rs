@@ -311,10 +311,14 @@ impl RemoteApplicationOperations for EmbeddedApplication {
         .with_runtime_config(self.runtime.clone())
         .with_cancellation_flag(cancellation.flag());
         let (note, entities) = librarian
-            .prepare_manual_capture(
+            .prepare_manual_capture_with_id(
                 request.content.clone(),
                 request.title.clone(),
                 request.tags.clone(),
+                graphrag_db::Repository::remote_capture_note_id(
+                    &caller.instance_id,
+                    &request.request_id,
+                )?,
             )
             .await?;
         if cancellation.is_cancelled() {
