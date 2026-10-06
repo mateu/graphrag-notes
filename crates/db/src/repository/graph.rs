@@ -96,6 +96,68 @@ pub(super) fn graph_alias_eligible_sql(eligible: &str, alias_matches: &str) -> S
     )
 }
 
+#[cfg(test)]
+pub(super) fn graph_entity_mentions_local_sql(query: &str) -> String {
+    graph_entity_mentions_local_result_sql(query, "$graph_entity_matching_aliases")
+}
+
+fn graph_alias_union_sql(rows: &str) -> String {
+    format!("array::slice(array::sort(array::distinct(array::flatten(({rows})))), 0, 8)")
+}
+
+fn graph_entity_aliases_local_sql(query: &str) -> String {
+    graph_entity_mentions_local_result_sql(
+        query,
+        &graph_alias_union_sql("$graph_entity_matching_aliases"),
+    )
+}
+
+#[cfg(test)]
+fn graph_entity_aliases_fresh_parent_sql(query: &str) -> String {
+    // Independent per-entity oracle: retain the original parent predicate,
+    // ordering and cap, but create its plan inside each entity's block. The
+    // pinned engine otherwise shares a correlated TopK threshold across rows.
+    // Do not substitute the local indexed ID or use the production shape guard.
+    format!(
+        "{{ LET $graph_reference_matching_aliases = ({query}); {}; }}",
+        graph_alias_union_sql("$graph_reference_matching_aliases")
+    )
+}
+
+fn graph_entity_mentions_local_result_sql(query: &str, result: &str) -> String {
+    // The scalar subquery binds $parent only after its plan was built. The
+    // pinned engine deliberately excludes that row-scoped parameter from
+    // index analysis. A block evaluates LET against the current entity row
+    // and plans its last ordinary expression afterward, exposing the same
+    // native ID for the existing (out, in) association index. Avoid RETURN:
+    // it propagates control flow past the enclosing alias union expression.
+    // A metadata-only prefix probe keeps the old query for unsafe alias
+    // shapes (including its per-entity error shielding/TopK behavior), and for complex
+    // relation IDs whose primary/index encodings can visit equal-in ties in
+    // a different order. The fast path keeps ORDER BY and LIMIT unchanged.
+    // Bind the rows before applying the alias union: nesting a full SELECT
+    // beneath flatten/distinct/sort/slice exceeds the default parser depth.
+    // The last expression operates on that local value, without RETURN.
+    // Both branches receive a fresh per-entity plan: the pinned engine's
+    // unwrapped correlated plan reuses a TopK threshold between entities and
+    // can omit a later entity whose mentions equal an earlier page's cutoff.
+    let aliases = "metadata.aliases ?? []";
+    let safe_aliases = format!(
+        "type::is_array({aliases}) AND array::len({aliases}) <= 8 \
+         AND array::all({aliases}, |$alias| type::is_string($alias))"
+    );
+    let simple_id = "type::is_number(record::id(id)) OR type::is_string(record::id(id)) OR type::is_uuid(record::id(id))";
+    let local = query.replace("out = $parent.id", "out = $graph_entity_id");
+    format!(
+        "{{ LET $graph_entity_id = id; \
+         LET $graph_entity_matching_aliases = \
+         IF array::len((SELECT VALUE id FROM mentions WHERE out = $graph_entity_id \
+             AND NOT (({simple_id}) AND ({safe_aliases})) LIMIT 1)) = 0 \
+         THEN ({local}) ELSE ({query}) END; \
+         {result}; }}"
+    )
+}
+
 struct GraphEntityQueryScope {
     ranked_note_ids: Vec<RecordId>,
     since: Option<String>,
@@ -1505,6 +1567,7 @@ impl Repository {
             limit,
             scope,
             graph_alias_eligible_sql,
+            graph_entity_aliases_local_sql,
         )
         .await
     }
@@ -1517,6 +1580,80 @@ impl Repository {
         ranked_note_ids: Option<&[RecordId]>,
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        self.find_graph_entities_with_reference_sql(
+            query,
+            limit,
+            ranked_note_ids,
+            since,
+            source_uri,
+            |eligible, alias_matches| {
+                format!(
+                    "{eligible} AND array::any(metadata.aliases ?? [], |$alias| {alias_matches})"
+                )
+            },
+            graph_alias_union_sql,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn find_graph_entities_parent_alias_order(
+        &self,
+        query: &str,
+        limit: usize,
+        ranked_note_ids: Option<&[RecordId]>,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        self.find_graph_entities_with_reference_sql(
+            query,
+            limit,
+            ranked_note_ids,
+            since,
+            source_uri,
+            graph_alias_eligible_sql,
+            graph_alias_union_sql,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn find_graph_entities_fresh_parent_alias_order(
+        &self,
+        query: &str,
+        limit: usize,
+        ranked_note_ids: Option<&[RecordId]>,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        self.find_graph_entities_with_reference_sql(
+            query,
+            limit,
+            ranked_note_ids,
+            since,
+            source_uri,
+            |eligible, alias_matches| {
+                format!(
+                    "{eligible} AND array::any(metadata.aliases ?? [], |$alias| {alias_matches})"
+                )
+            },
+            graph_entity_aliases_fresh_parent_sql,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    async fn find_graph_entities_with_reference_sql(
+        &self,
+        query: &str,
+        limit: usize,
+        ranked_note_ids: Option<&[RecordId]>,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        alias_predicate: fn(&str, &str) -> String,
+        extracted_aliases_query: fn(&str) -> String,
     ) -> Result<Vec<GraphEntityMatch>> {
         let query = graph_query_normalize(query);
         if query.is_empty() || limit == 0 {
@@ -1546,9 +1683,8 @@ impl Repository {
                     &prefixes,
                     limit,
                     scope.as_ref(),
-                    |eligible, alias_matches| {
-                        format!("{eligible} AND array::any(metadata.aliases ?? [], |$alias| {alias_matches})")
-                    },
+                    alias_predicate,
+                    extracted_aliases_query,
                 )
                 .await?;
             if !rows.is_empty() {
@@ -1558,6 +1694,7 @@ impl Repository {
         Ok(Vec::new())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn query_graph_entities_with_alias_predicate(
         &self,
         normalized_query: &str,
@@ -1566,6 +1703,7 @@ impl Repository {
         limit: i64,
         scope: Option<&GraphEntityQueryScope>,
         alias_predicate: fn(&str, &str) -> String,
+        extracted_aliases_query: fn(&str) -> String,
     ) -> Result<Vec<GraphEntityMatch>> {
         // Keep stored names and aliases on the exact same lexical boundary
         // contract as `graph_query_normalize`: punctuation becomes a space,
@@ -1586,12 +1724,13 @@ impl Repository {
         // entity display payload. Filtering before the bounded page retains a
         // matching alias on a high-degree source entity without preserving an
         // edited, deleted, hidden-generation or out-of-scope chunk's evidence.
+        let extracted_aliases = extracted_aliases_query(&format!(
+            "SELECT VALUE array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) \
+             FROM mentions WHERE out = $parent.id AND {alias_eligible} ORDER BY in ASC LIMIT 200"
+        ));
         let aliases = format!(
             "IF string::starts_with(identity_key ?? '', 'extracted-v1:') THEN \
-             array::slice(array::sort(array::distinct(array::flatten((SELECT VALUE \
-                array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) \
-                FROM mentions WHERE out = $parent.id AND {alias_eligible} \
-                ORDER BY in ASC LIMIT 200)))), 0, 8) \
+             {extracted_aliases} \
              ELSE metadata.aliases ?? [] END"
         );
         let match_condition = match tier {
@@ -1656,6 +1795,10 @@ impl Repository {
             .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
             .unwrap_or_default();
         let (select_direct, mention_condition, direct_order) = if scope.is_some() {
+            // The direct-rank page is unordered and mentions are non-unique.
+            // Keep its original scan: an association index could change the
+            // capped subset when duplicate mentions outnumber ranked notes.
+            // Preserve the existence scan's original error/iteration order.
             (
                 format!(
                     ", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"
