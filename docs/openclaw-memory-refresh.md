@@ -187,7 +187,7 @@ policies do not imply a true collection default. Both commands below reuse this
 setting and select only the reviewed subset.
 
 ```bash
-EXTRACTION_ARGS=() # Use (--extract-entities) for a registered true default.
+EXTRACTION_ARGS=()
 python3 scripts/refresh-openclaw-memory.py \
   --database "$HOME/.openclaw/agents/main/agent/openclaw-agent.sqlite" \
   --workspace "$HOME/.openclaw/workspace" \
