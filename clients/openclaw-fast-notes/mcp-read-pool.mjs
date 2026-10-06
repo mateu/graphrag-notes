@@ -13,7 +13,9 @@ async function boundedResponse(response, signal) {
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_RESPONSE_BYTES)) {
     await response.body?.cancel(); throw new PoolError('response');
   }
-  const expected = length === null ? null : Number(length);
+  // Fetch decodes compression while retaining the encoded Content-Length.
+  const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
+  const expected = length === null || (encoding && encoding !== 'identity') ? null : Number(length);
   if (!response.body) {
     if (expected !== null && expected !== 0) throw new PoolError('response');
     return response;

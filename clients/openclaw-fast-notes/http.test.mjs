@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { gzipSync } from 'node:zlib';
 import { createNotesCommand } from './index.mjs';
 
 async function fixture() {
   const calls = [], revoked = new Set();
-  const state = { disconnect: false, expire: false, stall: false, sse: false, oversized: false, truncated: false, oversizedInitialize: false };
+  const state = { disconnect: false, expire: false, stall: false, sse: false, oversized: false, truncated: false, oversizedInitialize: false, gzip: false };
   const server = createServer(async (req, res) => {
     const token = req.headers.authorization;
     if (!token || revoked.has(token)) { res.writeHead(401); res.end('fictional secret'); return; }
@@ -37,8 +38,14 @@ async function fixture() {
       // Force overlap across independently correlated SDK requests.
       await new Promise(resolve => setTimeout(resolve, 10));
     } else throw new Error('unexpected fixture method');
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': token.replace('Bearer ', '') });
-    res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
+    const body = JSON.stringify({ jsonrpc: '2.0', id: message.id, result });
+    if (state.gzip) {
+      const compressed = gzipSync(body);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', 'Content-Length': String(compressed.length) });
+      res.end(compressed);
+    } else {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': token.replace('Bearer ', '') }); res.end(body);
+    }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}/mcp`;
@@ -128,4 +135,13 @@ test('initialization and chunked search JSON have a hard size bound; truncated J
       assert.equal(f.calls.filter(c => c.method === 'tools/call').length, before + 1);
     } finally { await f.close(); }
   }
+});
+
+test('valid compressed initialization/search JSON keeps decoded bound without comparing compressed length', async () => {
+  const f = await fixture(); f.state.gzip = true;
+  try {
+    assert.match((await f.command.handler(f.ctx())).text, /Atlas/);
+    assert.match((await f.command.handler(f.ctx('Borealis'))).text, /Borealis/);
+    assert.equal(f.calls.filter(c => c.method === 'initialize').length, 1);
+  } finally { await f.close(); }
 });
