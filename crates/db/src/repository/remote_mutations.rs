@@ -11,6 +11,7 @@ mod tests;
 pub struct MutationGuard {
     identity: Arc<Mutex<()>>,
     _guard: OwnedMutexGuard<()>,
+    remote_job_guard: Option<OwnedMutexGuard<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +106,19 @@ impl Repository {
         MutationGuard {
             identity: self.proposal_acceptance_lock.clone(),
             _guard: self.proposal_acceptance_lock.clone().lock_owned().await,
+            remote_job_guard: None,
+        }
+    }
+
+    /// Retiring uploaded sources also serializes admission, resume and worker
+    /// claims. Always take transition before lifecycle, matching generation
+    /// preparation; lifecycle-first would deadlock a preparing worker.
+    pub async fn uploaded_source_mutation_guard(&self) -> MutationGuard {
+        let remote_job_guard = self.remote_job_transition_lock.clone().lock_owned().await;
+        MutationGuard {
+            identity: self.proposal_acceptance_lock.clone(),
+            _guard: self.proposal_acceptance_lock.clone().lock_owned().await,
+            remote_job_guard: Some(remote_job_guard),
         }
     }
 
@@ -250,7 +264,7 @@ impl Repository {
         let effects;
         match effect {
             RemoteMutationEffect::DeleteSource { expected } => {
-                if input.operation != "delete_source" {
+                if input.operation != "delete_source" || guard.remote_job_guard.is_none() {
                     return Err(conflict());
                 }
                 target = expected.id.clone().ok_or_else(conflict)?;

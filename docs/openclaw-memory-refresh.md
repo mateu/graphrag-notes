@@ -5,6 +5,12 @@ OpenClaw index and workspace. It sends supplied Markdown through the existing
 authenticated MCP upload/jobs API; it never opens a GraphRAG database. A private
 SSH tunnel carries requests to the corpus owner. No scheduler is required.
 
+**Service requirement:** upgrade the host service to a version with
+`service_status` from #94 before applying a refresh or cleanup. The adapter checks
+that the authenticated caller matches the registered importer principal before
+any writes. Older services fail closed with `service_status_required`; dry-run
+and local status remain available without a service connection.
+
 ```sh
 python3 scripts/refresh-openclaw-memory.py \
   --database "$HOME/.openclaw/agents/main/agent/openclaw-agent.sqlite" \
@@ -119,12 +125,6 @@ this separate action is confirmed. The importer needs an explicit `delete`
 grant for cleanup, in addition to `read,upload,jobs`; ordinary refresh does not
 require deletion permissions.
 
-The host service must include `service_status` from #94. Before any upload or
-cleanup, the adapter verifies the authenticated caller matches the registered
-importer principal. Inspecting source provenance alone cannot establish which
-principal a supplied credential will use for a new upload. Older services fail
-closed with `service_status_required`; update the service before applying a plan.
-
 ```sh
 python3 scripts/refresh-openclaw-memory.py \
   --state-dir "$HOME/.graphrag/openclaw-memory-refresh" --reconcile --format json
@@ -142,7 +142,9 @@ python3 scripts/refresh-openclaw-memory.py \
 
 `delete_uploaded_source` verifies authenticated source ownership, stored
 collection provenance, a reviewed source revision, ready generation, and no
-queued/running upload against that source. Generated chunks and their dependent
+queued/running upload against that source. Upload admission, resume, and claim
+transitions are serialized with retirement so a concurrent job cannot bypass the
+active-job check. Generated chunks and their dependent
 links retire atomically with the durable receipt. Detached/manual notes survive,
 retaining original source provenance. Unrelated collections and manual captures
 cannot be selected. A changed plan or source revision stops cleanup. After a

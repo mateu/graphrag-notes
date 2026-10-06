@@ -168,7 +168,7 @@ impl EmbeddedApplication {
         if let Some(receipt) = self.repo.find_remote_mutation_receipt(&input).await? {
             return response(request.request_id, receipt);
         }
-        let guard = self.repo.mutation_guard().await;
+        let guard = self.repo.uploaded_source_mutation_guard().await;
         if let Some(receipt) = self.repo.find_remote_mutation_receipt(&input).await? {
             return response(request.request_id, receipt);
         }

@@ -1151,3 +1151,68 @@ async fn queued_upload_blocks_retirement_and_receipt_failure_rolls_it_back() {
         .unwrap();
     assert!(receipts.is_empty());
 }
+
+#[tokio::test]
+async fn uploaded_source_retirement_guard_serializes_concurrent_job_admission() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let application = Arc::new(healthy(&repo));
+    let mut upload = request("source-guard-original");
+    upload
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("collection_id".into(), "fixture-memory".into());
+    let first = application
+        .upload_source(caller("openclaw"), upload.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let guard = repo.uploaded_source_mutation_guard().await;
+    let view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let expected = repo.get_source(&first.source_id).await.unwrap().unwrap();
+    upload.request_id = "concurrent-later-upload".into();
+    upload.content.push_str("\nIntentional later upload");
+    let later_app = application.clone();
+    let later =
+        tokio::spawn(async move { later_app.upload_source(caller("openclaw"), upload).await });
+    // An admission started during the reviewed source snapshot cannot insert a
+    // phantom queued job before the guarded retirement transaction finishes.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!later.is_finished());
+    let payload = serde_json::json!({"id":view.id,"revision":view.revision,"collection_id":"fixture-memory","confirmed":true});
+    let input = graphrag_db::RemoteMutationInput {
+        instance_id: "openclaw".into(),
+        request_id: "guarded-retirement".into(),
+        operation: "delete_source".into(),
+        payload_fingerprint: remote_mutation_fingerprint("delete_source", &payload).unwrap(),
+        payload,
+        result: serde_json::json!({"operation":"delete_source"}),
+    };
+    repo.apply_remote_mutation(
+        &guard,
+        input,
+        graphrag_db::RemoteMutationEffect::DeleteSource {
+            expected: Box::new(expected),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(repo.get_source(&first.source_id).await.unwrap().is_none());
+    drop(guard);
+    let admission = tokio::time::timeout(Duration::from_secs(2), later)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(admission.source_id, first.source_id);
+    execute(&application, "epoch").await;
+    let current = application
+        .get_uploaded_source(&admission.source_id)
+        .await
+        .unwrap();
+    assert!(current.content.ends_with("Intentional later upload"));
+}
