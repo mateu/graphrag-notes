@@ -1,4 +1,7 @@
-//! Provider-free experiments against the pinned engine, before choosing SQL.
+//! Provider-free exactness regressions and opt-in execution experiments.
+//!
+//! Helpers and schemas in this module are test-only prototypes. They do not
+//! change runtime retrieval, migration registration or portable archive data.
 
 use super::*;
 use crate::init_memory;
@@ -764,7 +767,6 @@ async fn exact_vector_paged_float_diagnostic() {
 }
 
 #[tokio::test]
-#[ignore = "opt-in paged prototype edge-case equivalence; not adopted runtime code"]
 async fn exact_vector_paged_semantics_diagnostic() {
     use chrono::TimeZone;
     use surrealdb::types::{Object, RecordIdKey};
@@ -1384,7 +1386,6 @@ fn diagnostic_variant_page(name: &str) -> Option<usize> {
 }
 
 #[tokio::test]
-#[ignore = "opt-in actual SDK transaction cancellation fault experiment"]
 async fn exact_vector_snapshot_cancels_on_panic_abort_and_normal_exit() {
     let (db, _) = diagnostic_database("snapshot-cancellation").await;
     db.query("DEFINE TABLE vector_guard_probe SCHEMALESS; CREATE vector_guard_probe:one SET value='persisted'")
@@ -1441,7 +1442,6 @@ async fn exact_vector_snapshot_cancels_on_panic_abort_and_normal_exit() {
 }
 
 #[tokio::test]
-#[ignore = "opt-in coherent source promotion across actual paged SDK snapshot"]
 async fn exact_vector_snapshot_preserves_generation_and_payload_during_promotion() {
     let (db, _) = diagnostic_database("snapshot-promotion").await;
     db.query("DEFINE TABLE exact_vector_cbor_probe SCHEMALESS")
@@ -1775,7 +1775,6 @@ async fn assert_scope_projection_ranking(db: &DbConnection) {
 }
 
 #[tokio::test]
-#[ignore = "opt-in unadopted derived-state synchronous event/backfill/portable proof"]
 async fn exact_vector_projection_events_backfill_restore_and_fault_atomicity() {
     let (db, _) = diagnostic_database("projection-events").await;
     let mut vector = vec![0.0_f64; 1024];
@@ -2002,7 +2001,6 @@ async fn exact_vector_projection_events_backfill_restore_and_fault_atomicity() {
 }
 
 #[tokio::test]
-#[ignore = "opt-in unadopted single-SQL concurrent generation/payload coherence proof"]
 async fn exact_vector_single_sql_projection_preserves_snapshot_during_promotion() {
     let (db, _) = diagnostic_database("single-sql-promotion").await;
     let mut source = Source::manual();
