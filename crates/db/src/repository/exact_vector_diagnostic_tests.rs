@@ -142,6 +142,45 @@ async fn query(
     }
 }
 
+#[derive(Serialize)]
+struct NativeSqlPhases {
+    sdk_await_ms: f64,
+    dto_take_ms: f64,
+    engine_execution_ms: Option<f64>,
+}
+
+async fn query_with_native_stats(
+    db: &DbConnection,
+    sql: String,
+    embedding: &[f32],
+    limit: usize,
+    since: Option<String>,
+    source: Option<String>,
+) -> (Vec<SearchResult>, NativeSqlPhases) {
+    let start = std::time::Instant::now();
+    let mut response = db
+        .query(sql)
+        .bind(("embedding", embedding.to_vec()))
+        .bind(("limit", limit))
+        .bind(("since", since))
+        .bind(("source_uri", source))
+        .with_stats()
+        .await
+        .unwrap();
+    let sdk_await_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let take = std::time::Instant::now();
+    let (stats, rows) = response.take::<Vec<SearchResult>>(0).unwrap();
+    let rows = rows.unwrap();
+    (
+        rows,
+        NativeSqlPhases {
+            sdk_await_ms,
+            dto_take_ms: take.elapsed().as_secs_f64() * 1000.0,
+            engine_execution_ms: stats.execution_time.map(|v| v.as_secs_f64() * 1000.0),
+        },
+    )
+}
+
 #[tokio::test]
 #[ignore = "opt-in pinned-engine plans and paired timing, not a hardware CI budget"]
 async fn exact_vector_plan_and_projection_diagnostic() {
@@ -706,6 +745,11 @@ async fn exact_vector_paged_semantics_diagnostic() {
     .unwrap()
     .check()
     .unwrap();
+    db.query(CBOR_COMPUTED_EMBEDDING)
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
     let mut source = Source::manual();
     source.uri = Some("fixture://vector-current".into());
     source.successful_generation = 2;
@@ -824,7 +868,7 @@ async fn exact_vector_paged_semantics_diagnostic() {
     ] {
         let mut vector = precise.clone();
         vector[0] = exceptional;
-        db.query("CREATE $id SET content='fictional nonfinite legacy vector',embedding=$embedding; LET $stored=$id.embedding; LET $finite=math::min($stored)>math::NEG_INFINITY AND math::max($stored)<math::INFINITY; CREATE $shadow SET note_id=$id,created_at=$id.created_at,embedding_cbor=IF $finite THEN encoding::cbor::encode($stored) ELSE NONE END,embedding_fallback=IF $finite THEN NONE ELSE $stored END;")
+        db.query("CREATE $id SET content='fictional nonfinite legacy vector',embedding=$embedding; LET $stored=$id.embedding; LET $finite=math::min($stored)>math::NEG_INFINITY AND math::max($stored)<math::INFINITY; CREATE $shadow SET note_id=$id,created_at=$id.created_at,embedding_cbor=IF $finite THEN encoding::cbor::encode($stored) ELSE NONE END,embedding_uses_primary=$finite=false,embedding_fallback=IF $finite THEN NONE ELSE $stored END;")
             .bind(("id",RecordId::new("note",name)))
             .bind(("shadow",RecordId::new("exact_vector_cbor_probe",name)))
             .bind(("embedding",vector.clone())).await.unwrap().check().unwrap();
@@ -871,6 +915,30 @@ async fn exact_vector_paged_semantics_diagnostic() {
                     source.clone(),
                 )
                 .await;
+                let computed = query(
+                    &db,
+                    cbor_single_sql_query(limit),
+                    embedding,
+                    limit,
+                    since.clone(),
+                    source.clone(),
+                )
+                .await;
+                assert_eq!(
+                    serde_json::to_value(&old).unwrap(),
+                    serde_json::to_value(&computed).unwrap(),
+                    "computed exact engine KNN payloads"
+                );
+                assert_eq!(
+                    old.iter()
+                        .map(|r| r.vec_distance.map(f32::to_bits))
+                        .collect::<Vec<_>>(),
+                    computed
+                        .iter()
+                        .map(|r| r.vec_distance.map(f32::to_bits))
+                        .collect::<Vec<_>>(),
+                    "computed exact engine KNN distance bits"
+                );
                 for (page, cbor) in [
                     (1, false),
                     (3, false),
@@ -925,6 +993,16 @@ fn skinny_query(limit: usize) -> String {
     )
 }
 
+const CBOR_COMPUTED_EMBEDDING: &str = "DEFINE FIELD embedding ON exact_vector_cbor_probe \
+    TYPE option<array<float>> COMPUTED \
+    IF embedding_uses_primary = true THEN note_id.embedding \
+    ELSE IF embedding_cbor IS NONE THEN NONE \
+    ELSE encoding::cbor::decode(embedding_cbor) END";
+
+fn cbor_single_sql_query(limit: usize) -> String {
+    skinny_query(limit).replace("FROM exact_vector_probe", "FROM exact_vector_cbor_probe")
+}
+
 #[tokio::test]
 #[ignore = "opt-in exact skinny storage experiment; no state duplication adopted"]
 async fn exact_vector_skinny_storage_diagnostic() {
@@ -951,6 +1029,14 @@ async fn exact_vector_skinny_storage_diagnostic() {
             .unwrap()
             .check()
             .unwrap();
+        let single_sql = std::env::var_os("GRAPHRAG_VECTOR_PROBE_SINGLE_SQL").is_some();
+        if single_sql {
+            db.query(CBOR_COMPUTED_EMBEDDING)
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
         let mut sources = Vec::new();
         for index in 0..4 {
             let mut source =
@@ -1052,30 +1138,39 @@ async fn exact_vector_skinny_storage_diagnostic() {
                     source_uri.clone(),
                 )
                 .await;
-                let variants = [
+                let mut variants = vec![
                     ("baseline", old_query(limit)),
                     ("skinny", skinny_query(limit)),
                     ("cbor_paged", skinny_query(limit)),
                 ];
+                if single_sql {
+                    variants.push(("cbor_single_sql", cbor_single_sql_query(limit)));
+                }
+                let variant_count = variants.len();
                 let order = std::env::var("GRAPHRAG_VECTOR_PROBE_ORDER")
                     .unwrap_or_else(|_| "legacy_first".into());
                 let schedule: Vec<usize> = match order.as_str() {
-                    "legacy_first" => [0, 1, 2]
-                        .into_iter()
+                    "legacy_first" => (0..variant_count)
                         .flat_map(|v| std::iter::repeat_n(v, 21))
                         .collect(),
-                    "cbor_first" => [2, 0, 1]
-                        .into_iter()
+                    "cbor_first" => std::iter::once(variant_count - 1)
+                        .chain(0..variant_count - 1)
                         .flat_map(|v| std::iter::repeat_n(v, 21))
                         .collect(),
                     "alternating" => (0..21)
-                        .flat_map(|round| (0..3).map(move |v| (round + v) % 3))
+                        .flat_map(|round| {
+                            (0..variant_count).map(move |v| (round + v) % variant_count)
+                        })
                         .collect(),
                     _ => panic!("unsupported private diagnostic schedule"),
                 };
-                let mut samples: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
-                let mut sequences: [Vec<usize>; 3] = std::array::from_fn(|_| Vec::new());
-                let mut phase_samples: [Vec<VectorPhases>; 3] = std::array::from_fn(|_| Vec::new());
+                let mut samples: Vec<Vec<f64>> = (0..variant_count).map(|_| Vec::new()).collect();
+                let mut sequences: Vec<Vec<usize>> =
+                    (0..variant_count).map(|_| Vec::new()).collect();
+                let mut phase_samples: Vec<Vec<VectorPhases>> =
+                    (0..variant_count).map(|_| Vec::new()).collect();
+                let mut sql_samples: Vec<Vec<NativeSqlPhases>> =
+                    (0..variant_count).map(|_| Vec::new()).collect();
                 let category_start = std::time::Instant::now();
                 for (sequence, variant) in schedule.into_iter().enumerate() {
                     let (name, sql) = &variants[variant];
@@ -1092,6 +1187,18 @@ async fn exact_vector_skinny_storage_diagnostic() {
                         )
                         .await;
                         phase_samples[variant].push(phases);
+                        rows
+                    } else if single_sql {
+                        let (rows, phases) = query_with_native_stats(
+                            &db,
+                            sql.clone(),
+                            &query_embedding,
+                            limit,
+                            since.clone(),
+                            source_uri.clone(),
+                        )
+                        .await;
+                        sql_samples[variant].push(phases);
                         rows
                     } else {
                         query(
@@ -1142,6 +1249,8 @@ async fn exact_vector_skinny_storage_diagnostic() {
                         serde_json::json!({"variant":name,"filter":filter,"rows":baseline.len(),
                     "backend":backend,"order":order,"variant_sequence":sequences[variant],
                     "category_elapsed_ms":category_elapsed_ms,"phase_samples":phase_samples[variant],
+                    "native_sql_phase_samples":sql_samples[variant],
+                    "native_sql_stats_requested":single_sql && name != "cbor_paged",
                     "body_payload_bytes":if count>160 {None} else {Some(repeats*"payload ".len())},
                     "mixed_body_sizes":count>160,
                     "limit":limit,"full_rows_exact":true,"distance_bits_exact":true,
@@ -1154,7 +1263,10 @@ async fn exact_vector_skinny_storage_diagnostic() {
     println!(
         "{}",
         serde_json::json!({"fictional_records_per_population":count,"populations":bodies.len(),"dense_vectors":dense,
-        "dimension":1024,"provider_calls":0,"engine":"surrealdb-core 3.2.4","runs":runs})
+        "dimension":1024,"provider_calls":0,"engine":"surrealdb-core 3.2.4",
+        "first_sample_kind":"first measured after unmeasured legacy reference query",
+        "native_sql_stats_requested":std::env::var_os("GRAPHRAG_VECTOR_PROBE_SINGLE_SQL").is_some(),
+        "runs":runs})
     );
 }
 
@@ -1330,5 +1442,523 @@ async fn exact_vector_snapshot_route_lifecycle_diagnostic() {
     println!(
         "{}",
         serde_json::json!({"fictional":true,"provider_calls":0,"backend":backend,"sham":true,"runs":runs})
+    );
+}
+
+const PROJECTION_PROBE_SCHEMA: &str = include_str!("exact_vector_projection_poc.surql");
+
+#[derive(SurrealValue)]
+struct ProjectionPrimary {
+    id: RecordId,
+    embedding: Option<Vec<f64>>,
+}
+
+#[derive(SurrealValue)]
+struct ProjectionProbe {
+    id: RecordId,
+    record_id: RecordId,
+    embedding_cbor: Option<surrealdb::types::Bytes>,
+    embedding_uses_primary: bool,
+    embedding: Option<Vec<f64>>,
+}
+
+async fn assert_projection_probe(db: &DbConnection) {
+    for (primary, derived, embedding) in [
+        ("note", "exact_note_vector_probe", "embedding"),
+        ("message", "exact_message_vector_probe", "embedding"),
+        (
+            "conversation",
+            "exact_conversation_vector_probe",
+            "summary_embedding",
+        ),
+    ] {
+        let rows: Vec<ProjectionPrimary> = db
+            .query(format!(
+                "SELECT id,{embedding} AS embedding FROM {primary} ORDER BY id ASC"
+            ))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let projection:Vec<ProjectionProbe> = db.query(format!("SELECT id,record_id,embedding_cbor,embedding_uses_primary,embedding FROM {derived} ORDER BY id ASC"))
+            .await.unwrap().take(0).unwrap();
+        assert_eq!(
+            rows.len(),
+            projection.len(),
+            "allrows including missing vectors: {primary}"
+        );
+        for (row, indexed) in rows.iter().zip(projection) {
+            assert_eq!(row.id, indexed.record_id);
+            assert_eq!(row.id.key, indexed.id.key, "native typed key mirror");
+            let decoded = indexed.embedding;
+            if let Some(bytes) = indexed.embedding_cbor {
+                let decoded_bytes = ciborium::from_reader::<Vec<f64>, _>(bytes.as_ref()).unwrap();
+                assert!(!indexed.embedding_uses_primary);
+                assert_eq!(
+                    decoded_bytes
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>(),
+                    decoded
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>()
+                );
+            }
+            assert_eq!(
+                row.embedding
+                    .as_ref()
+                    .map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>()),
+                decoded
+                    .as_ref()
+                    .map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>())
+            );
+        }
+    }
+}
+
+async fn projection_ranked_query<T: SurrealValue>(
+    db: &DbConnection,
+    sql: String,
+    embedding: &[f32],
+    limit: usize,
+    since: Option<String>,
+    source: Option<String>,
+) -> Vec<T> {
+    db.query(sql)
+        .bind(("embedding", embedding.to_vec()))
+        .bind(("limit", limit))
+        .bind(("since", since))
+        .bind(("source_uri", source))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap()
+}
+
+fn assert_ordered_vector_rows<T: Serialize + FusionRecord>(old: &[T], new: &[T]) {
+    assert_eq!(
+        serde_json::to_value(old).unwrap(),
+        serde_json::to_value(new).unwrap()
+    );
+    assert_eq!(
+        old.iter()
+            .map(|r| r.vector_distance().map(f32::to_bits))
+            .collect::<Vec<_>>(),
+        new.iter()
+            .map(|r| r.vector_distance().map(f32::to_bits))
+            .collect::<Vec<_>>()
+    );
+}
+
+async fn assert_scope_projection_ranking(db: &DbConnection) {
+    let repository = Repository::new(db.clone());
+    let mut positive = vec![0.0_f32; 1024];
+    positive[0] = 1.0;
+    let mut nan = positive.clone();
+    nan[0] = -f32::NAN;
+    for embedding in [positive, vec![0.0; 1024], vec![1.0, 0.0], Vec::new(), nan] {
+        for (since, source) in [
+            (None, None),
+            (Some("2030-01-02T00:00:00Z".to_string()), None),
+            (None, Some("fixture://edited".to_string())),
+            (None, Some("fixture://absent".to_string())),
+        ] {
+            let timestamp = since.as_ref().map(|v| {
+                chrono::DateTime::parse_from_rfc3339(v)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            });
+            for limit in [1, 3, 50] {
+                let note_sql = skinny_query(limit)
+                    .replace("note_id", "record_id")
+                    .replace("FROM exact_vector_probe", "FROM exact_note_vector_probe");
+                let old = repository
+                    .vector_search_notes(embedding.clone(), limit, timestamp, source.clone())
+                    .await
+                    .unwrap();
+                if limit == 3 && since.is_none() && source.is_none() {
+                    let (traced, phases) = query_with_native_stats(
+                        db,
+                        note_sql.clone(),
+                        &embedding,
+                        limit,
+                        None,
+                        None,
+                    )
+                    .await;
+                    assert_ordered_vector_rows(&old, &traced);
+                    assert!(phases.engine_execution_ms.is_some());
+                }
+                let new: Vec<SearchResult> = projection_ranked_query(
+                    db,
+                    note_sql,
+                    &embedding,
+                    limit,
+                    since.clone(),
+                    source.clone(),
+                )
+                .await;
+                assert_ordered_vector_rows(&old, &new);
+                let message_sql = format!(
+                    "SELECT row.id AS id,row.conversation_id AS conversation_id,row.conversation_uuid AS conversation_uuid,\
+                     row.message_index AS message_index,row.role AS role,row.content AS content,row.created_at AS created_at,\
+                     row.conversation_id.source_uri AS source_uri,vec_distance FROM \
+                     (SELECT record_id.* AS row,vec_distance FROM \
+                      (SELECT id,record_id,vector::distance::knn() AS vec_distance FROM exact_message_vector_probe \
+                       WHERE embedding <|{limit},COSINE|> $embedding \
+                         AND ($since = NONE OR (created_at != NONE AND created_at >= <datetime>$since)) \
+                         AND ($source_uri = NONE OR conversation_id.source_uri = $source_uri) \
+                       ORDER BY vec_distance ASC,id ASC LIMIT $limit)) ORDER BY vec_distance ASC,id ASC"
+                );
+                let old = repository
+                    .vector_search_messages(embedding.clone(), limit, timestamp, source.clone())
+                    .await
+                    .unwrap();
+                let new: Vec<MessageSearchResult> = projection_ranked_query(
+                    db,
+                    message_sql,
+                    &embedding,
+                    limit,
+                    since.clone(),
+                    source.clone(),
+                )
+                .await;
+                assert_ordered_vector_rows(&old, &new);
+                let conversation_sql = format!(
+                    "SELECT row.id AS id,row.uuid AS uuid,row.title AS title,row.summary AS summary,\
+                     row.source_uri AS source_uri,row.updated_at AS updated_at,vec_distance FROM \
+                     (SELECT record_id.* AS row,vec_distance FROM \
+                      (SELECT id,record_id,vector::distance::knn() AS vec_distance FROM exact_conversation_vector_probe \
+                       WHERE embedding <|{limit},COSINE|> $embedding \
+                         AND ($since = NONE OR updated_at >= <datetime>$since) \
+                         AND ($source_uri = NONE OR source_uri = $source_uri) \
+                       ORDER BY vec_distance ASC,id ASC LIMIT $limit)) ORDER BY vec_distance ASC,id ASC"
+                );
+                let old = repository
+                    .vector_search_conversation_summaries(
+                        embedding.clone(),
+                        limit,
+                        timestamp,
+                        source.clone(),
+                    )
+                    .await
+                    .unwrap();
+                let new: Vec<ConversationSearchResult> = projection_ranked_query(
+                    db,
+                    conversation_sql,
+                    &embedding,
+                    limit,
+                    since.clone(),
+                    source.clone(),
+                )
+                .await;
+                assert_ordered_vector_rows(&old, &new);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "opt-in unadopted derived-state synchronous event/backfill/portable proof"]
+async fn exact_vector_projection_events_backfill_restore_and_fault_atomicity() {
+    let (db, _) = diagnostic_database("projection-events").await;
+    let mut vector = vec![0.0_f64; 1024];
+    vector[0] = 1.0;
+    vector[1] = 0.000_000_003;
+    for id in [
+        RecordId::new("note", 7i64),
+        RecordId::new("note", "string-fixture"),
+        RecordId::new(
+            "note",
+            surrealdb::types::RecordIdKey::Uuid(
+                uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000007")
+                    .unwrap()
+                    .into(),
+            ),
+        ),
+    ] {
+        db.query("CREATE $id SET content='fictional primary',embedding=$vector")
+            .bind(("id", id))
+            .bind(("vector", vector.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    db.query("CREATE note:missing_vector SET content='fixture absent vector'; CREATE conversation:fixture SET uuid='fixture',title='Fictional conversation',summary='Fictional summary',created_at=d'2030-01-01T00:00:00Z',updated_at=d'2030-01-03T00:00:00Z',source_uri='fixture://chat',summary_embedding=$vector; CREATE message:fixture SET message_key='fixture',conversation_id=conversation:fixture,conversation_uuid='fixture',message_index=0,role='user',content='Fictional message',embedding=$vector; CREATE conversation:missing_vector SET uuid='missing',created_at=d'2030-01-01T00:00:00Z',updated_at=d'2030-01-03T00:00:00Z'; CREATE message:missing_vector SET message_key='missing',conversation_id=conversation:missing_vector,conversation_uuid='missing',message_index=0,role='user',content='Fictional missing-vector message'")
+        .bind(("vector",vector.clone())).await.unwrap().check().unwrap();
+    for (index, key) in [
+        surrealdb::types::RecordIdKey::Number(7),
+        surrealdb::types::RecordIdKey::Uuid(
+            uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000007")
+                .unwrap()
+                .into(),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        db.query("CREATE $conversation SET uuid=$uuid,title='Native tie conversation',summary='Fictional native tie summary',summary_embedding=$vector,source_uri='fixture://edited',created_at=d'2030-01-01T00:00:00Z',updated_at=d'2030-01-03T00:00:00Z'; CREATE $message SET message_key=$uuid,conversation_id=$conversation,conversation_uuid=$uuid,message_index=0,role='user',content='Fictional native tie message',created_at=d'2030-01-03T00:00:00Z',embedding=$vector")
+            .bind(("conversation",RecordId::new("conversation",key.clone())))
+            .bind(("message",RecordId::new("message",key)))
+            .bind(("uuid",format!("native-tie-{index}")))
+            .bind(("vector",vector.clone())).await.unwrap().check().unwrap();
+    }
+    let repository = Repository::new(db.clone());
+    let mut original = Vec::new();
+    for table in PORTABLE_TABLES {
+        original.push((
+            *table,
+            repository
+                .portable_records_page(table, 0, 100)
+                .await
+                .unwrap(),
+        ));
+    }
+    db.query(PROJECTION_PROBE_SCHEMA)
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_projection_probe(&db).await;
+    assert_scope_projection_ranking(&db).await;
+    for (table, records) in &original {
+        assert_eq!(
+            repository
+                .portable_records_page(table, 0, 100)
+                .await
+                .unwrap(),
+            *records,
+            "backfill leaves every primary logical row unchanged"
+        );
+    }
+    // Ordinary SDK/SQL mutation, bulk mutation, and deletion all update the same
+    // synchronous projection; no caller-specific dual writes are required.
+    let created = repository
+        .create_note(Note::new("new post-projection note").with_embedding(vec![1.0; 1024]))
+        .await
+        .unwrap();
+    db.query("UPDATE note SET embedding=$vector WHERE content='fictional primary'; UPDATE message:fixture SET embedding=$vector,created_at=d'2030-01-04T00:00:00Z'; UPDATE conversation:fixture SET summary_embedding=$vector,updated_at=d'2030-01-05T00:00:00Z',source_uri='fixture://edited'; DELETE message:missing_vector")
+        .bind(("vector",vec![0.5_f64;1024])).await.unwrap().check().unwrap();
+    assert_projection_probe(&db).await;
+    assert_scope_projection_ranking(&db).await;
+    let created_id = created.id.unwrap();
+    db.query("DELETE $id")
+        .bind(("id", created_id))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_projection_probe(&db).await;
+    // A failed derived write fails the primary mutation in the same actual
+    // storage transaction. Verify full originals, including all vector bits.
+    db.query("DEFINE EVENT fail_projection ON exact_note_vector_probe WHEN true THEN {THROW 'fictional projection failure';}")
+        .await.unwrap().check().unwrap();
+    let before = repository
+        .portable_records_page("note", 0, 100)
+        .await
+        .unwrap();
+    let failed = repository
+        .create_note(
+            Note::new("must not survive failed projection").with_embedding(vec![1.0; 1024]),
+        )
+        .await;
+    assert!(failed.is_err());
+    assert!(db
+        .query("UPDATE note SET content='must roll back'")
+        .await
+        .unwrap()
+        .check()
+        .is_err());
+    assert!(db.query("DELETE note").await.unwrap().check().is_err());
+    assert_eq!(
+        repository
+            .portable_records_page("note", 0, 100)
+            .await
+            .unwrap(),
+        before
+    );
+    db.query("REMOVE EVENT fail_projection ON exact_note_vector_probe")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_projection_probe(&db).await;
+    for (primary, derived, update, create) in [
+        (
+            "message",
+            "exact_message_vector_probe",
+            "content='must roll back'",
+            "CREATE message:failed_projection SET message_key='failed-projection',conversation_id=conversation:fixture,conversation_uuid='fixture',message_index=2,role='user',content='must roll back'",
+        ),
+        (
+            "conversation",
+            "exact_conversation_vector_probe",
+            "summary='must roll back'",
+            "CREATE conversation:failed_projection SET uuid='failed-projection',created_at=d'2030-01-01T00:00:00Z',updated_at=d'2030-01-01T00:00:00Z',summary='must roll back'",
+        ),
+    ] {
+        let before = repository.portable_records_page(primary, 0, 100).await.unwrap();
+        db.query(format!("DEFINE EVENT fail_projection ON {derived} WHEN true THEN {{THROW 'fictional projection failure';}}"))
+            .await.unwrap().check().unwrap();
+        for sql in [create.to_string(),format!("UPDATE {primary} SET {update}"),format!("DELETE {primary}")] {
+            assert!(db.query(sql).await.unwrap().check().is_err(), "atomic {primary} projection failure");
+            assert_eq!(repository.portable_records_page(primary,0,100).await.unwrap(), before);
+        }
+        db.query(format!("REMOVE EVENT fail_projection ON {derived}"))
+            .await.unwrap().check().unwrap();
+    }
+    assert_projection_probe(&db).await;
+    // Projection tables are excluded by the existing logical archive allowlist;
+    // restore replays canonical rows through the same events without duplicate
+    // primaries or indexed rows. Compare full exported rows after bulk restore.
+    let (restored_db, _) = diagnostic_database("projection-restore").await;
+    let mut schema = restored_db.query(PROJECTION_PROBE_SCHEMA).await.unwrap();
+    let errors = schema.take_errors();
+    assert!(
+        errors.is_empty(),
+        "empty projection schema errors: {errors:?}"
+    );
+    let restored = Repository::new(restored_db.clone());
+    assert!(!PORTABLE_TABLES.iter().any(|table| [
+        "exact_note_vector_probe",
+        "exact_message_vector_probe",
+        "exact_conversation_vector_probe"
+    ]
+    .contains(table)));
+    for table in PORTABLE_TABLES {
+        let records = repository
+            .portable_records_page(table, 0, 100)
+            .await
+            .unwrap();
+        for record in &records {
+            restored
+                .restore_portable_record(table, record.clone())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            restored.portable_records_page(table, 0, 100).await.unwrap(),
+            records
+        );
+    }
+    assert_projection_probe(&restored_db).await;
+    assert_scope_projection_ranking(&restored_db).await;
+    // Deterministic explicit rebuild repairs removed derived rows without
+    // changing a primary row or adding duplicate materialized identities.
+    let before = restored
+        .portable_records_page("note", 0, 100)
+        .await
+        .unwrap();
+    restored_db.query("DELETE exact_note_vector_probe; FOR $id IN (SELECT VALUE id FROM note ORDER BY id ASC) {fn::materialize_exact_note_vector_probe($id.*);}")
+        .await.unwrap().check().unwrap();
+    assert_projection_probe(&restored_db).await;
+    assert_eq!(
+        restored
+            .portable_records_page("note", 0, 100)
+            .await
+            .unwrap(),
+        before
+    );
+    // Rare historical nonfinite vectors remain on the canonical row; the
+    // projection stores only a marker and reads their exact bits in its SQL
+    // snapshot rather than letting CBOR canonicalize NaN payloads/signs.
+    for (name, value) in [
+        ("positive_nan", f64::NAN),
+        ("negative_nan", -f64::NAN),
+        ("payload_nan", f64::from_bits(0x7ff8_0000_0000_0123)),
+        ("positive_infinity", f64::INFINITY),
+        ("negative_infinity", f64::NEG_INFINITY),
+    ] {
+        let mut vector = vec![1.0_f64; 1024];
+        vector[0] = value;
+        restored_db
+            .query("CREATE $id SET content='fictional historical nonfinite row',embedding=$vector")
+            .bind(("id", RecordId::new("note", name)))
+            .bind(("vector", vector))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    assert_projection_probe(&restored_db).await;
+    assert_scope_projection_ranking(&restored_db).await;
+}
+
+#[tokio::test]
+#[ignore = "opt-in unadopted single-SQL concurrent generation/payload coherence proof"]
+async fn exact_vector_single_sql_projection_preserves_snapshot_during_promotion() {
+    let (db, _) = diagnostic_database("single-sql-promotion").await;
+    let mut source = Source::manual();
+    source.uri = Some("fixture://single-sql-promotion".into());
+    source.generation = 2;
+    source.successful_generation = 1;
+    let source: Option<Source> = db
+        .create(("source", "single-sql-promotion"))
+        .content(source)
+        .await
+        .unwrap();
+    let source_id = source.unwrap().id.unwrap();
+    let embedding = vec![1.0_f32; 1024];
+    for generation in [1, 2] {
+        for index in 0..4 {
+            let mut note = Note::new("epoch:1").with_embedding(embedding.clone());
+            note.source_id = Some(source_id.clone());
+            note.source_generation = Some(generation);
+            let _: Option<Note> = db
+                .create(("note", format!("g{generation}-{index}")))
+                .content(note)
+                .await
+                .unwrap();
+        }
+    }
+    db.query(PROJECTION_PROBE_SCHEMA)
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let committed = commits.clone();
+    let writer = db.clone();
+    let task = tokio::spawn(async move {
+        for round in 0..32 {
+            let generation = if round % 2 == 0 { 2 } else { 1 };
+            writer.query("BEGIN TRANSACTION; UPDATE $source SET successful_generation=$generation; UPDATE note SET content=$content WHERE source_id=$source; COMMIT TRANSACTION")
+                .bind(("source",source_id.clone())).bind(("generation",generation))
+                .bind(("content",format!("epoch:{generation}"))).await.unwrap().check().unwrap();
+            committed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+    let sql = skinny_query(50)
+        .replace("note_id", "record_id")
+        .replace("FROM exact_vector_probe", "FROM exact_note_vector_probe");
+    let mut concurrent = 0;
+    for _ in 0..64 {
+        let before = commits.load(std::sync::atomic::Ordering::SeqCst);
+        let rows: Vec<SearchResult> =
+            projection_ranked_query(&db, sql.clone(), &embedding, 50, None, None).await;
+        let after = commits.load(std::sync::atomic::Ordering::SeqCst);
+        concurrent += usize::from(after > before);
+        assert_eq!(rows.len(), 4);
+        let content = &rows[0].content;
+        let generation = if content == "epoch:1" {
+            "g1-"
+        } else {
+            assert_eq!(content, "epoch:2");
+            "g2-"
+        };
+        assert!(rows
+            .iter()
+            .all(|r| r.content == *content && record_id_to_string(&r.id).contains(generation)));
+    }
+    task.await.unwrap();
+    assert_eq!(commits.load(std::sync::atomic::Ordering::SeqCst), 32);
+    assert!(
+        concurrent > 0,
+        "fixture must actually overlap a committed source/payload promotion with a read"
     );
 }
