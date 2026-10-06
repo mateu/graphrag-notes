@@ -4458,7 +4458,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|entity| entity.id.unwrap())
+            .map(|entity| record_id_to_string(entity.id.as_ref().unwrap()))
             .collect::<HashSet<_>>();
         // Simulate an earlier scoped extraction with no persisted anchor. Its
         // validated scope is adopted rather than switching typed identities.
@@ -4486,7 +4486,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|entity| entity.id.unwrap())
+            .map(|entity| record_id_to_string(entity.id.as_ref().unwrap()))
             .collect::<HashSet<_>>();
         assert_ne!(legacy_keys, first_keys);
         let shifted = "# Plan\n\nInserted independent paragraph has enough content.\n\nFirst stable paragraph has enough content.\n\nMiddle stable paragraph has enough content.\n\nAfter stable paragraph has enough content.";
@@ -4519,7 +4519,7 @@ mod tests {
                 .await
                 .unwrap()
                 .into_iter()
-                .map(|entity| entity.id.unwrap())
+                .map(|entity| record_id_to_string(entity.id.as_ref().unwrap()))
                 .collect::<HashSet<_>>(),
             legacy_keys
         );
@@ -4538,7 +4538,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|entity| entity.id.unwrap())
+            .map(|entity| record_id_to_string(entity.id.as_ref().unwrap()))
             .collect::<HashSet<_>>();
         assert!(inserted_keys.is_disjoint(&legacy_keys));
         assert_eq!(
@@ -4588,7 +4588,7 @@ mod tests {
                 .await
                 .unwrap()
                 .into_iter()
-                .map(|entity| entity.id.unwrap())
+                .map(|entity| record_id_to_string(entity.id.as_ref().unwrap()))
                 .collect::<HashSet<_>>(),
             legacy_keys
         );
@@ -4634,7 +4634,7 @@ mod tests {
                 .await
                 .unwrap()
                 .into_iter()
-                .map(|entity| entity.id.unwrap())
+                .map(|entity| record_id_to_string(entity.id.as_ref().unwrap()))
                 .collect::<HashSet<_>>(),
             legacy_keys
         );
