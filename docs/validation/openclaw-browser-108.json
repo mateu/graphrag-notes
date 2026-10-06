@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "issue": 108,
+  "date": "2026-10-06",
+  "acceptance_surface": "Normal signed-in OpenClaw browser control UI on clawd",
+  "status": "passed",
+  "routes_requested": 5,
+  "routes_visibly_rendered": 5,
+  "routes_failed": 0,
+  "capture_commands": 0,
+  "model_turns_requested": 0,
+  "gateway_session_owner": "one fresh acceptance session created and archived by the operator",
+  "archived_state_visibly_verified": true,
+  "owner_reported_screenshot_review": "Readable bounded title/snippet/ID/escaped actor/link labels and archived footer at a narrow viewport; screenshot remains private.",
+  "normal_config_default_models_and_configured_permissions_preserved": true,
+  "installed_plugin_version": "0.5.0",
+  "installed_runtime_and_package_manifest_identity_preserved": true,
+  "profile_flags_absent": true,
+  "effective_gateway_mcp_credential_verified": true,
+  "authenticated_expected_principal_and_storage_ready": true,
+  "status_inference_probed": false,
+  "identity_check_chat_commands": 0,
+  "identity_check_service_status_calls": 1,
+  "identity_check_source_record_calls": 0,
+  "corpus_owner_binary": "published 0.1.0-rc.3",
+  "corpus_owner_binary_sha256": "e17c039740355261d974b933a7052bcf3131dd735664db8b8c13b3c364f1a4e7",
+  "corpus_owner_preserved": true,
+  "runtime_source_matches_measured_checkpoint": "dbd320bd2e264d833cc2e125e9e33d0551ffa4a6",
+  "routes": [
+    {
+      "route": "keyword",
+      "mode": "keyword",
+      "graph": "off",
+      "visible_reply": true,
+      "known_canonical_note_id_visible": true,
+      "single_displayed_observation_ms": {
+        "handler_total": 46,
+        "connect": 26,
+        "search": 21
+      },
+      "visible_record_count": 5,
+      "independent_current_order_and_display_match": true,
+      "current_revision_pinned_readbacks": 5
+    },
+    {
+      "route": "hybrid-off",
+      "mode": "hybrid",
+      "graph": "off",
+      "visible_reply": true,
+      "known_canonical_note_id_visible": true,
+      "single_displayed_observation_ms": {
+        "handler_total": 508,
+        "connect": 0,
+        "search": 508
+      },
+      "visible_record_count": 5,
+      "independent_current_order_and_display_match": true,
+      "current_revision_pinned_readbacks": 5
+    },
+    {
+      "route": "hybrid-on-explicit",
+      "mode": "hybrid",
+      "graph": "on",
+      "visible_reply": true,
+      "known_canonical_note_id_visible": true,
+      "single_displayed_observation_ms": {
+        "handler_total": 509,
+        "connect": 0,
+        "search": 509
+      },
+      "visible_record_count": 5,
+      "independent_current_order_and_display_match": true,
+      "current_revision_pinned_readbacks": 5
+    },
+    {
+      "route": "saved-default-hybrid-on",
+      "mode": "hybrid",
+      "graph": "on",
+      "visible_reply": true,
+      "known_canonical_note_id_visible": true,
+      "single_displayed_observation_ms": {
+        "handler_total": 488,
+        "connect": 0,
+        "search": 488
+      },
+      "visible_record_count": 5,
+      "independent_current_order_and_display_match": true,
+      "current_revision_pinned_readbacks": 5
+    },
+    {
+      "route": "hybrid-on-flag",
+      "mode": "hybrid",
+      "graph": "on",
+      "visible_reply": true,
+      "known_canonical_note_id_visible": true,
+      "single_displayed_observation_ms": {
+        "handler_total": 504,
+        "connect": 20,
+        "search": 484
+      },
+      "visible_record_count": 5,
+      "independent_current_order_and_display_match": true,
+      "current_revision_pinned_readbacks": 5
+    }
+  ],
+  "limitations": [
+    "Five single direct-command observations, not latency percentiles, a budget evaluation, a throughput comparison or natural-language model orchestration.",
+    "Displayed phase values are rounded and nested; they may not sum exactly and are not independent intervals.",
+    "Preservation compares the accepted installed-normal historical baseline with the final post-UI snapshot; no snapshot is claimed to precede the first browser command.",
+    "Five independent current searches and 25 revision-pinned readbacks match the saved visible order, bounded title/snippet and displayed provenance. These current readbacks are separate from the original browser RPCs, whose revisions are not printed in the formatter.",
+    "The browser served the independently installed 0.5.0 plugin and published rc.3 backend; this does not establish rc.4 installation, deployment or performance.",
+    "Queries, note IDs/content, actors, session identifiers/URLs, screenshots and configuration/model/credential fingerprints stay private."
+  ],
+  "independent_current_canonical_confirmation": {
+    "status": "passed",
+    "same_normal_configuration_and_principal": true,
+    "search_routes": 5,
+    "returned_records": 25,
+    "revision_pinned_get_record_calls": 25,
+    "ordered_ids_bounded_titles_snippets_and_display_provenance_match_saved_ui": true,
+    "full_content_and_provenance_match_current_search_and_pinned_readback": true,
+    "dom_link_target_normalizations": 5,
+    "comparison_note": "Five displayed GitHub link labels shorten the URL prefix; their persisted link targets are restored for exact bounded snippet comparison.",
+    "original_ui_rpc_revisions_known": false,
+    "original_ui_rpc_pinned_readbacks_claimed": false,
+    "new_chat_commands": 0,
+    "new_sessions": 0,
+    "capture_calls": 0,
+    "automatic_replays": 0,
+    "configuration_models_permissions_plugin_and_gateway_owner_preserved": true
+  }
+}

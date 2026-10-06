@@ -114,8 +114,15 @@ intervals. Correctness fixtures run in CI; live latency thresholds are opt-in.
 
 ## Verification
 
+Run verification from a separate writable checkout or copied plugin directory.
+For a versioned release bundle, copy this directory out of
+`DATA_DIR/releases/vVERSION` before running npm installation or tests. npm creates
+`node_modules`; changing the installed version bundle prevents the release
+installer from verifying its exact contents during same-version reinstallation.
+Plugin installation in OpenClaw remains a separate operator action.
+
 ```sh
-cd clients/openclaw-fast-notes
+cd /path/to/writable/graphrag-fast-notes
 npm ci --ignore-scripts --no-audit --no-fund
 npm test
 ```

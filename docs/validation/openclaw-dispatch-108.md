@@ -52,6 +52,8 @@ The actual gateway listener appeared 26.56–29.63 seconds after systemd reporte
 
 ## Remaining acceptance
 
-Normal gateway final-event delivery is verified. Visible browser rendering remains pending because the browser connection exposed no available browser. [Issue #108](https://github.com/mateu/graphrag-notes/issues/108) remains open for that explicit criterion. The observations contain no natural-language model turns and measure no SSH handshake time. Two queries and 20 warm samples per route provide a narrow operational check, rather than a broad relevance or tail guarantee.
+At this original gateway acceptance checkpoint, normal gateway final-event delivery was verified and visible browser rendering remained pending because the browser connection exposed no available browser. The later [browser supplement](openclaw-browser-108.md) completes that separate criterion. The observations contain no natural-language model turns and measure no SSH handshake time. Two queries and 20 warm samples per route provide a narrow operational check, rather than a broad relevance or tail guarantee.
 
 See the [sanitized phase aggregate](openclaw-dispatch-108.json), [maintained client and profiling runner](../../clients/openclaw-fast-notes/README.md), and [PR #112](https://github.com/mateu/graphrag-notes/pull/112).
+
+The later [visible-browser supplement](openclaw-browser-108.md) completes the UI rendering criterion with five normal browser routes and an archived acceptance chat. It preserves this original 186-command timing cohort and its limits.
