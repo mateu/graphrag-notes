@@ -80,6 +80,22 @@ fn graph_mention_aliases_sql() -> &'static str {
     "array::slice(IF string::starts_with(out.identity_key ?? '', 'extracted-v1:') THEN metadata.aliases ?? [] ELSE out.metadata.aliases ?? [] END, 0, 8)"
 }
 
+pub(super) fn graph_alias_eligible_sql(eligible: &str, alias_matches: &str) -> String {
+    let aliases = "metadata.aliases ?? []";
+    let matches = format!("array::any({aliases}, |$alias| {alias_matches})");
+    // Endpoint dereferencing fetches the full note, including its vector.
+    // Normal extraction writes at most eight string aliases. Check those
+    // before fetching an endpoint that cannot contribute matching evidence.
+    // Flexible legacy/portable metadata can be malformed or oversized; keep
+    // its original evaluation order so an ineligible endpoint still shields
+    // invalid alias values from string/array coercion errors.
+    format!(
+        "(IF type::is_array({aliases}) AND array::len({aliases}) <= 8 \
+         AND array::all({aliases}, |$alias| type::is_string($alias)) \
+         THEN {matches} AND {eligible} ELSE {eligible} AND {matches} END)"
+    )
+}
+
 struct GraphEntityQueryScope {
     ranked_note_ids: Vec<RecordId>,
     since: Option<String>,
@@ -1482,6 +1498,75 @@ impl Repository {
         limit: i64,
         scope: Option<&GraphEntityQueryScope>,
     ) -> Result<Vec<GraphEntityMatch>> {
+        self.query_graph_entities_with_alias_predicate(
+            normalized_query,
+            tier,
+            prefixes,
+            limit,
+            scope,
+            graph_alias_eligible_sql,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn find_graph_entities_original_alias_order(
+        &self,
+        query: &str,
+        limit: usize,
+        ranked_note_ids: Option<&[RecordId]>,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityMatch>> {
+        let query = graph_query_normalize(query);
+        if query.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("graph entity limit exceeds database integer range".into())
+        })?;
+        let scope = ranked_note_ids.map(|ids| GraphEntityQueryScope {
+            ranked_note_ids: ids.iter().take(200).cloned().collect(),
+            since: since.map(|value| value.to_rfc3339()),
+            source_uri,
+        });
+        let prefixes = graph_prefix_terms(&query);
+        for tier in [
+            GraphEntityMatchTier::Exact,
+            GraphEntityMatchTier::ContainedPhrase,
+            GraphEntityMatchTier::Prefix,
+        ] {
+            if matches!(tier, GraphEntityMatchTier::Prefix) && prefixes.is_empty() {
+                break;
+            }
+            let rows = self
+                .query_graph_entities_with_alias_predicate(
+                    &query,
+                    tier,
+                    &prefixes,
+                    limit,
+                    scope.as_ref(),
+                    |eligible, alias_matches| {
+                        format!("{eligible} AND array::any(metadata.aliases ?? [], |$alias| {alias_matches})")
+                    },
+                )
+                .await?;
+            if !rows.is_empty() {
+                return Ok(rows);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    async fn query_graph_entities_with_alias_predicate(
+        &self,
+        normalized_query: &str,
+        tier: GraphEntityMatchTier,
+        prefixes: &[String],
+        limit: i64,
+        scope: Option<&GraphEntityQueryScope>,
+        alias_predicate: fn(&str, &str) -> String,
+    ) -> Result<Vec<GraphEntityMatch>> {
         // Keep stored names and aliases on the exact same lexical boundary
         // contract as `graph_query_normalize`: punctuation becomes a space,
         // while Unicode letters and numbers remain terms. This lets `GPT-4`
@@ -1496,6 +1581,7 @@ impl Repository {
             ),
             GraphEntityMatchTier::Prefix => "false".to_string(),
         };
+        let alias_eligible = alias_predicate(&eligible, &alias_matches);
         // Extracted aliases belong to current eligible mentions, not the last
         // entity display payload. Filtering before the bounded page retains a
         // matching alias on a high-degree source entity without preserving an
@@ -1504,8 +1590,7 @@ impl Repository {
             "IF string::starts_with(identity_key ?? '', 'extracted-v1:') THEN \
              array::slice(array::sort(array::distinct(array::flatten((SELECT VALUE \
                 array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) \
-                FROM mentions WHERE out = $parent.id AND {eligible} \
-                AND array::any(metadata.aliases ?? [], |$alias| {alias_matches}) \
+                FROM mentions WHERE out = $parent.id AND {alias_eligible} \
                 ORDER BY in ASC LIMIT 200)))), 0, 8) \
              ELSE metadata.aliases ?? [] END"
         );
@@ -1572,8 +1657,12 @@ impl Repository {
             .unwrap_or_default();
         let (select_direct, mention_condition, direct_order) = if scope.is_some() {
             (
-                format!(", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"),
-                format!("AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"),
+                format!(
+                    ", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"
+                ),
+                format!(
+                    "AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"
+                ),
                 "graph_direct_rank ASC, ",
             )
         } else {
@@ -1714,7 +1803,9 @@ impl Repository {
         let eligible = graph_endpoint_eligible_sql("in");
         let aliases = graph_mention_aliases_sql();
         let alias_lexical = r#"string::trim(string::replace(string::lowercase($alias), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
-        let alias_match = format!("$query != '' AND array::any({aliases}, |$alias| {alias_lexical} != '' AND string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))");
+        let alias_match = format!(
+            "$query != '' AND array::any({aliases}, |$alias| {alias_lexical} != '' AND string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))"
+        );
         let mut sql = String::new();
         for index in 0..entity_ids.len() {
             sql.push_str(&format!(

@@ -241,7 +241,9 @@ async fn legacy_edges(
     uri: Option<String>,
     visited: &HashMap<String, Vec<RecordId>>,
 ) -> Vec<NoteEdgeRow> {
-    let eligible = format!("(SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION})");
+    let eligible = format!(
+        "(SELECT VALUE id FROM note WHERE ($since = NONE OR created_at >= <datetime>$since) AND ($source_uri = NONE OR source_id.uri = $source_uri) AND {VISIBLE_NOTE_CONDITION})"
+    );
     let mut result = HashMap::new();
     for table in ["supports", "contradicts", "related_to", "derived_from"] {
         if !tables.iter().any(|candidate| candidate == table) {
@@ -249,8 +251,12 @@ async fn legacy_edges(
         }
         for id in ids {
             let direction = match (outbound, inbound) {
-                (true, true) => format!("((in = $note AND out IN {eligible} AND out NOT IN $visited) OR (out = $note AND in IN {eligible} AND in NOT IN $visited))"),
-                (true, false) => format!("in = $note AND out IN {eligible} AND out NOT IN $visited"),
+                (true, true) => format!(
+                    "((in = $note AND out IN {eligible} AND out NOT IN $visited) OR (out = $note AND in IN {eligible} AND in NOT IN $visited))"
+                ),
+                (true, false) => {
+                    format!("in = $note AND out IN {eligible} AND out NOT IN $visited")
+                }
                 (false, true) => format!("out = $note AND in IN {eligible} AND in NOT IN $visited"),
                 (false, false) => "false".into(),
             };
@@ -682,7 +688,10 @@ async fn out_only_mention_plan_diagnostic() {
         mention(&repo, &id, &entity_id).await;
     }
     let eligible = graph_endpoint_eligible_sql("in");
-    let sql = format!("SELECT in AS note_id, out AS entity_id, ({}) AS aliases FROM mentions WHERE out = $entity AND {eligible} ORDER BY in ASC LIMIT 200", "array::slice(IF string::starts_with(out.identity_key ?? '', 'extracted-v1:') THEN metadata.aliases ?? [] ELSE out.metadata.aliases ?? [] END, 0, 8)");
+    let sql = format!(
+        "SELECT in AS note_id, out AS entity_id, ({}) AS aliases FROM mentions WHERE out = $entity AND {eligible} ORDER BY in ASC LIMIT 200",
+        "array::slice(IF string::starts_with(out.identity_key ?? '', 'extracted-v1:') THEN metadata.aliases ?? [] ELSE out.metadata.aliases ?? [] END, 0, 8)"
+    );
     async fn rows(repo: &Repository, sql: &str, entity_id: &RecordId) -> Vec<GraphEntityNoteSeed> {
         repo.db
             .query(sql)
@@ -732,5 +741,621 @@ async fn out_only_mention_plan_diagnostic() {
     );
     if std::env::var_os("GRAPHRAG_GRAPH_PLAN_REPORT").is_some() {
         println!("before-plan={before_plan}\nafter-plan={after_plan}");
+    }
+}
+
+async fn alias_entity(repo: &Repository, key: &str, name: &str, extracted: bool) -> RecordId {
+    let mut entity = Entity::new(name, graphrag_core::EntityType::Technology);
+    entity.identity_key = Some(format!(
+        "{}:{key}",
+        if extracted { "extracted-v1" } else { "legacy" }
+    ));
+    entity.metadata = serde_json::json!({"aliases": ["GPT-4", "東京", "Needle Token"]});
+    repo.upsert_entity(entity).await.unwrap().id.unwrap()
+}
+
+async fn alias_mention(
+    repo: &Repository,
+    note_id: &RecordId,
+    entity_id: &RecordId,
+    metadata: serde_json::Value,
+) {
+    repo.db
+        .query("CREATE mentions SET in = $note, out = $entity, metadata = $metadata")
+        .bind(("note", note_id.clone()))
+        .bind(("entity", entity_id.clone()))
+        .bind(("metadata", metadata))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+}
+
+// The reference entrypoint retains the pre-optimization predicate, tiers,
+// scopes, ordering and caps. Compare complete alias evidence, then the full
+// ordered graph seed and hydrated-note payloads built from those entities.
+async fn assert_alias_query_matches_original(
+    repo: &Repository,
+    query: &str,
+    limit: usize,
+    ranked: Option<&[RecordId]>,
+    since: Option<DateTime<Utc>>,
+    uri: Option<String>,
+) -> Vec<GraphEntityMatch> {
+    let original = repo
+        .find_graph_entities_original_alias_order(query, limit, ranked, since, uri.clone())
+        .await
+        .unwrap();
+    let candidate = match ranked {
+        Some(ids) => {
+            repo.find_graph_entities_for_search(query, limit, ids, since, uri.clone())
+                .await
+        }
+        None => repo.find_graph_entities(query, limit).await,
+    }
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&candidate).unwrap(),
+        serde_json::to_value(&original).unwrap(),
+        "entity payload query={query:?}, limit={limit}, since={since:?}, uri={uri:?}"
+    );
+    let mut payloads = Vec::new();
+    for entities in [&original, &candidate] {
+        let ids = entities
+            .iter()
+            .map(|entity| entity.id.clone())
+            .collect::<Vec<_>>();
+        let seeds = repo
+            .graph_notes_for_entities_ranked_for_query(
+                &ids,
+                ranked.unwrap_or(&[]),
+                3,
+                since,
+                uri.clone(),
+                query,
+            )
+            .await
+            .unwrap();
+        let note_ids = seeds
+            .iter()
+            .map(|seed| seed.note_id.clone())
+            .collect::<Vec<_>>();
+        let notes = repo
+            .graph_notes_by_ids(&note_ids, since, uri.clone())
+            .await
+            .unwrap();
+        let provenance = repo.graph_note_provenance_ids(&note_ids).await.unwrap();
+        payloads.push(serde_json::json!({
+            "entities": entities, "seeds": seeds, "notes": notes, "provenance": provenance,
+        }));
+    }
+    assert_eq!(payloads[0], payloads[1], "complete graph payload {query:?}");
+    candidate
+}
+
+#[tokio::test]
+async fn graph_alias_fast_path_preserves_high_degree_pages_tiers_and_alias_caps() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "alias-pages", "fixture://alias-pages").await;
+    let extracted = alias_entity(&repo, "alias-pages", "Compiler", true).await;
+    let legacy = alias_entity(&repo, "legacy-pages", "Legacy Compiler", false).await;
+    let mut ids = Vec::new();
+    for index in 0..260 {
+        let id = note(
+            &repo,
+            RecordId::new("note", format!("alias-page-{index:03}")),
+            Some(owner.clone()),
+            Some(1),
+            timestamp(),
+        )
+        .await;
+        alias_mention(
+            &repo,
+            &id,
+            &extracted,
+            serde_json::json!({"aliases": if index == 259 {
+                vec!["Needle Token".to_string(), "GPT-4".to_string(), "東京".to_string()]
+            } else { vec![format!("Unrelated {index}")] }}),
+        )
+        .await;
+        ids.push(id);
+    }
+    alias_mention(&repo, &ids[0], &legacy, serde_json::json!({})).await;
+    let homonym = alias_entity(&repo, "alias-homonym", "Compiler", true).await;
+    alias_mention(
+        &repo,
+        &ids[0],
+        &homonym,
+        serde_json::json!({"aliases": ["Unrelated"]}),
+    )
+    .await;
+    // The only matching extracted alias lies beyond the first 200 note IDs:
+    // both predicates must match before the retained page, then cap aliases.
+    for query in [
+        "Needle Token",
+        "status Needle Token",
+        "GPT-4?",
+        "東京",
+        "compi",
+        "absent stellar",
+    ] {
+        for ranked in [None, Some(&ids[259..])] {
+            assert_alias_query_matches_original(&repo, query, 2, ranked, None, None).await;
+        }
+    }
+    let matches = assert_alias_query_matches_original(
+        &repo,
+        "Needle Token",
+        10,
+        Some(&[]),
+        None,
+        Some("fixture://alias-pages".into()),
+    )
+    .await;
+    assert!(matches.iter().any(|entity| entity.id == extracted));
+    assert_eq!(
+        matches
+            .iter()
+            .find(|entity| entity.id == extracted)
+            .unwrap()
+            .metadata["aliases"],
+        serde_json::json!(["Needle Token"])
+    );
+
+    // Dense matches cross the 200-mention limit and the eight-alias union cap.
+    // Keep per-mention arrays bounded, including repeated normalized aliases.
+    for (index, id) in ids.iter().enumerate() {
+        repo.db
+            .query("UPDATE mentions SET metadata = $metadata WHERE in = $note AND out = $entity")
+            .bind(("note", id.clone()))
+            .bind(("entity", extracted.clone()))
+            .bind((
+                "metadata",
+                serde_json::json!({"aliases": ["Needle Token", format!("Variant {}", index % 9)]}),
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    let query = "Needle Token Variant 0 Variant 1 Variant 2 Variant 3 Variant 4 Variant 5 Variant 6 Variant 7 Variant 8";
+    let matches = assert_alias_query_matches_original(
+        &repo,
+        query,
+        10,
+        Some(&ids[259..]),
+        Some(timestamp()),
+        Some("fixture://alias-pages".into()),
+    )
+    .await;
+    let aliases = matches
+        .iter()
+        .find(|entity| entity.id == extracted)
+        .unwrap()
+        .metadata["aliases"]
+        .as_array()
+        .unwrap();
+    assert_eq!(aliases.len(), 8);
+    assert_eq!(aliases[0], "Needle Token");
+    assert_eq!(aliases[7], "Variant 6");
+    for limit in [0, 1, 2] {
+        assert_alias_query_matches_original(
+            &repo,
+            "Compiler",
+            limit,
+            Some(&ids[259..]),
+            None,
+            None,
+        )
+        .await;
+    }
+    let preferred =
+        assert_alias_query_matches_original(&repo, "Compiler", 1, Some(&ids[259..]), None, None)
+            .await;
+    assert_eq!(
+        preferred[0].id, extracted,
+        "direct-note preference must precede ID ties"
+    );
+}
+
+#[tokio::test]
+async fn graph_alias_fast_path_preserves_native_endpoints_scope_and_nonfinite_vectors() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    // Legacy nonfinite primaries cannot enter HNSW. Alias eligibility does no
+    // vector arithmetic; preserve their stored F64 and serving F32 bits.
+    repo.db
+        .query("REMOVE INDEX idx_note_embedding ON note")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let current = source(&repo, "alias-current", "fixture://alias-current").await;
+    let foreign = source(&repo, "alias-foreign", "fixture://alias-foreign").await;
+    let missing = compound_note("alias-never-created");
+    let deleted = compound_note("alias-deleted");
+    let mut cases = vec![
+        (
+            RecordId::new("note", "alias-manual"),
+            None,
+            None,
+            timestamp(),
+        ),
+        (
+            RecordId::new("note", "alias-current"),
+            Some(current.clone()),
+            Some(1),
+            timestamp(),
+        ),
+        (
+            RecordId::new("note", "alias-pending"),
+            Some(current.clone()),
+            Some(2),
+            timestamp(),
+        ),
+        (
+            RecordId::new("note", "alias-superseded"),
+            Some(current.clone()),
+            Some(0),
+            timestamp(),
+        ),
+        (
+            RecordId::new("note", "alias-old"),
+            Some(current.clone()),
+            Some(1),
+            timestamp() - chrono::Duration::seconds(1),
+        ),
+        (
+            RecordId::new("note", "alias-foreign"),
+            Some(foreign),
+            Some(1),
+            timestamp(),
+        ),
+        (
+            RecordId::new("note", 42i64),
+            Some(current.clone()),
+            Some(1),
+            timestamp(),
+        ),
+        (
+            RecordId::new("note", "42"),
+            Some(current.clone()),
+            Some(1),
+            timestamp(),
+        ),
+        (
+            RecordId::new(
+                "note",
+                surrealdb_types::Uuid::from(uuid::Uuid::from_u128(126)),
+            ),
+            Some(current.clone()),
+            Some(1),
+            timestamp(),
+        ),
+        (
+            compound_note("alias-current"),
+            Some(current.clone()),
+            Some(1),
+            timestamp(),
+        ),
+        (deleted.clone(), Some(current.clone()), Some(1), timestamp()),
+    ];
+    let mut vector_bits_before = Vec::new();
+    let mut ranked = Vec::new();
+    for (index, (id, owner, generation, created)) in cases.iter().enumerate() {
+        note(&repo, id.clone(), owner.clone(), *generation, *created).await;
+        let mut vector = vec![1.0f64; 1024];
+        vector[0] = [
+            f64::NAN,
+            -f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1.0 + 1e-9,
+        ][index % 5];
+        repo.db
+            .query("UPDATE $note SET embedding = $embedding")
+            .bind(("note", id.clone()))
+            .bind(("embedding", vector))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let stored: Vec<Vec<f64>> = repo
+            .db
+            .query("SELECT VALUE embedding FROM $note")
+            .bind(("note", id.clone()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        vector_bits_before.push((
+            id.clone(),
+            stored[0]
+                .iter()
+                .map(|value| (value.to_bits(), (*value as f32).to_bits()))
+                .collect::<Vec<_>>(),
+        ));
+        ranked.push(id.clone());
+    }
+    repo.db
+        .query("DELETE $note")
+        .bind(("note", deleted.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    cases.push((missing, None, None, timestamp()));
+    cases.push((note_range(), None, None, timestamp()));
+    let mut entity_ids = Vec::new();
+    for (index, (id, _, _, _)) in cases.iter().enumerate() {
+        let entity = alias_entity(&repo, &format!("native-{index:02}"), "Compiler", true).await;
+        alias_mention(
+            &repo,
+            id,
+            &entity,
+            serde_json::json!({"aliases": ["Needle Token", "GPT-4", "東京"]}),
+        )
+        .await;
+        entity_ids.push(entity);
+    }
+    let legacy = alias_entity(&repo, "native-legacy", "Legacy Compiler", false).await;
+    alias_mention(&repo, &ranked[0], &legacy, serde_json::json!({})).await;
+    for (query, since, uri) in [
+        ("Needle Token", None, None),
+        (
+            "Needle Token",
+            Some(timestamp()),
+            Some("fixture://alias-current".into()),
+        ),
+        (
+            "status Needle Token",
+            Some(timestamp() + chrono::Duration::seconds(1)),
+            None,
+        ),
+        ("GPT-4", None, Some("fixture://alias-foreign".into())),
+        ("東京", None, None),
+        ("compi", None, None),
+    ] {
+        assert_alias_query_matches_original(&repo, query, 20, Some(&ranked), since, uri).await;
+    }
+    let matches = assert_alias_query_matches_original(
+        &repo,
+        "Needle Token",
+        20,
+        Some(&ranked),
+        Some(timestamp()),
+        Some("fixture://alias-current".into()),
+    )
+    .await;
+    // Exact timestamp is inclusive, failed origins retain successful gen 1,
+    // and key-only/deleted/staged evidence cannot supply an extracted alias.
+    let matched_ids = matches.iter().map(|entity| &entity.id).collect::<Vec<_>>();
+    assert!(matched_ids.contains(&&entity_ids[1]));
+    for excluded in [2, 3, 4, 5, 10, 11, 12] {
+        assert!(!matched_ids.contains(&&entity_ids[excluded]));
+    }
+    for (id, expected) in vector_bits_before {
+        if id == deleted {
+            continue;
+        }
+        let stored: Vec<Vec<f64>> = repo
+            .db
+            .query("SELECT VALUE embedding FROM $note")
+            .bind(("note", id))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(
+            stored[0]
+                .iter()
+                .map(|value| (value.to_bits(), (*value as f32).to_bits()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn graph_alias_fast_path_keeps_malformed_and_oversized_error_order() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "alias-errors", "fixture://alias-errors").await;
+    let visible = note(
+        &repo,
+        RecordId::new("note", "alias-visible"),
+        Some(owner.clone()),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    let hidden = note(
+        &repo,
+        RecordId::new("note", "alias-hidden"),
+        Some(owner),
+        Some(2),
+        timestamp(),
+    )
+    .await;
+    let dangling = compound_note("alias-errors-dangling");
+    let entity = alias_entity(&repo, "alias-errors", "Compiler", true).await;
+    let mut oversized = (0..8)
+        .map(|index| format!("Unrelated {index}"))
+        .collect::<Vec<_>>();
+    oversized.push("Needle Token".into());
+    for metadata in [
+        serde_json::json!({}),
+        serde_json::json!({"aliases": null}),
+        serde_json::json!({"aliases": []}),
+        serde_json::json!({"aliases": ["Needle Token", "GPT-4", "東京", "four", "five", "six", "seven", "eight"]}),
+        serde_json::json!({"aliases": oversized}),
+        serde_json::json!({"aliases": "Needle Token"}),
+        serde_json::json!({"aliases": {"value": "Needle Token"}}),
+        serde_json::json!({"aliases": [42, "Needle Token"]}),
+        serde_json::json!({"aliases": ["Needle Token", null]}),
+        serde_json::json!({"aliases": ["Unrelated", {"value": "Needle Token"}]}),
+    ] {
+        for (endpoint, since, uri) in [
+            (&visible, None, None),
+            (&hidden, None, None),
+            (&dangling, None, None),
+            (
+                &visible,
+                Some(timestamp() + chrono::Duration::seconds(1)),
+                None,
+            ),
+            (&visible, None, Some("fixture://elsewhere".to_string())),
+        ] {
+            repo.db
+                .query("DELETE mentions")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            alias_mention(&repo, endpoint, &entity, metadata.clone()).await;
+            let original = repo
+                .find_graph_entities_original_alias_order(
+                    "Needle Token",
+                    10,
+                    Some(&[]),
+                    since,
+                    uri.clone(),
+                )
+                .await;
+            if endpoint != &visible || since.is_some() || uri.is_some() {
+                assert!(
+                    original.as_ref().unwrap().is_empty(),
+                    "ineligible metadata must remain shielded: {metadata}"
+                );
+            } else {
+                let aliases = metadata.get("aliases").filter(|value| !value.is_null());
+                match aliases {
+                    Some(serde_json::Value::Array(values))
+                        if values.iter().all(serde_json::Value::is_string) =>
+                    {
+                        assert_eq!(
+                            original.as_ref().unwrap().len(),
+                            usize::from(values.iter().any(|value| value == "Needle Token"))
+                        );
+                    }
+                    None => assert!(original.as_ref().unwrap().is_empty()),
+                    _ => assert!(
+                        original.is_err(),
+                        "eligible malformed aliases must keep their error: {metadata}"
+                    ),
+                }
+            }
+            if endpoint == &hidden && metadata["aliases"].is_string() {
+                // A bare reorder is observably incompatible: this relation's
+                // invalid array used to be shielded by its hidden generation.
+                let eligible = graph_endpoint_eligible_sql("in");
+                assert!(repo.db.query(format!("SELECT VALUE in FROM mentions WHERE out = $entity AND array::any(metadata.aliases ?? [], |$alias| string::lowercase($alias) = $query) AND {eligible}"))
+                    .bind(("entity", entity.clone())).bind(("query", "needle token"))
+                    .bind(("since", Option::<String>::None)).bind(("source_uri", Option::<String>::None))
+                    .await.unwrap().check().is_err());
+            }
+            let candidate = repo
+                .find_graph_entities_for_search("Needle Token", 10, &[], since, uri.clone())
+                .await;
+            match (original, candidate) {
+                (Ok(original), Ok(candidate)) => assert_eq!(
+                    serde_json::to_value(candidate).unwrap(),
+                    serde_json::to_value(original).unwrap()
+                ),
+                (Err(original), Err(candidate)) => assert_eq!(
+                    original.to_string(),
+                    candidate.to_string(),
+                    "metadata={metadata}, endpoint={endpoint:?}"
+                ),
+                (original, candidate) => panic!(
+                    "changed error behavior metadata={metadata}, endpoint={endpoint:?}: original={original:?}, candidate={candidate:?}"
+                ),
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn graph_alias_fast_path_short_circuits_only_bounded_string_arrays_and_keeps_index_plan() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    // An invalid integer cast stands in for an expensive/erroring endpoint:
+    // no match skips it only on the trusted bounded shape. This proves actual
+    // pinned-engine expression behavior without a hardware timing assertion.
+    let eligible = "(<int>'fictional-invalid-int') > 0";
+    let matches = "$alias = 'Needle Token'";
+    let candidate = graph::graph_alias_eligible_sql(eligible, matches)
+        .replace("metadata.aliases", "$metadata.aliases");
+    let original =
+        format!("{eligible} AND array::any($metadata.aliases ?? [], |$alias| {matches})");
+    for (metadata, skips) in [
+        (serde_json::json!({}), true),
+        (serde_json::json!({"aliases": null}), true),
+        (serde_json::json!({"aliases": []}), true),
+        (serde_json::json!({"aliases": vec!["Unrelated"; 8]}), true),
+        (serde_json::json!({"aliases": ["Needle Token"]}), false),
+        (serde_json::json!({"aliases": vec!["Unrelated"; 9]}), false),
+        (serde_json::json!({"aliases": ["Unrelated", 1]}), false),
+        (serde_json::json!({"aliases": "Unrelated"}), false),
+    ] {
+        let original = repo
+            .db
+            .query(format!("RETURN ({original})"))
+            .bind(("metadata", metadata.clone()))
+            .await
+            .unwrap()
+            .check();
+        assert!(original.is_err());
+        let candidate = repo
+            .db
+            .query(format!("RETURN ({candidate})"))
+            .bind(("metadata", metadata))
+            .await
+            .unwrap()
+            .check();
+        if skips {
+            let result: Option<bool> = candidate.unwrap().take(0).unwrap();
+            assert_eq!(result, Some(false));
+        } else {
+            assert!(candidate.is_err());
+        }
+    }
+    let owner = source(&repo, "alias-plan", "fixture://alias-plan").await;
+    let entity = alias_entity(&repo, "alias-plan", "Compiler", true).await;
+    let id = note(
+        &repo,
+        RecordId::new("note", "alias-plan"),
+        Some(owner),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    alias_mention(
+        &repo,
+        &id,
+        &entity,
+        serde_json::json!({"aliases": ["Needle Token"]}),
+    )
+    .await;
+    let eligible = graph_endpoint_eligible_sql("in");
+    let predicates = [
+        format!("{eligible} AND array::any(metadata.aliases ?? [], |$alias| $alias = $query)"),
+        graph::graph_alias_eligible_sql(&eligible, "$alias = $query"),
+    ];
+    let mut plans = Vec::new();
+    for predicate in predicates {
+        let rows: Vec<serde_json::Value> = repo.db.query(format!("SELECT in, out FROM mentions WHERE out = $entity AND {predicate} ORDER BY in ASC LIMIT 200 EXPLAIN FULL"))
+            .bind(("entity", entity.clone())).bind(("query", "Needle Token"))
+            .bind(("since", Option::<String>::None)).bind(("source_uri", Option::<String>::None))
+            .await.unwrap().take(0).unwrap();
+        let plan = serde_json::to_string(&rows).unwrap();
+        assert!(
+            plan.contains("\"index\":\"idx_mentions_entity_note\""),
+            "existing association index must remain usable: {plan}"
+        );
+        plans.push(rows);
+    }
+    if std::env::var_os("GRAPHRAG_GRAPH_ALIAS_PLAN_REPORT").is_some() {
+        println!(
+            "graph-alias-plan={}",
+            serde_json::json!({"original": plans[0], "candidate": plans[1]})
+        );
     }
 }
