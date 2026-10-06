@@ -1037,31 +1037,41 @@ impl Repository {
         // Case folding and outer whitespace are the only equivalences here:
         // punctuation and internal whitespace can distinguish note titles.
         let normalized_title = query.trim().to_lowercase();
+        // Score/filter the exact mirrored lexical population before hydrating
+        // the bounded primary rows. A single SQL statement holds one engine
+        // snapshot for candidates, source visibility and canonical contents.
+        // The physical native keys mirror note IDs, preserving all tie types.
         let results: Vec<SearchResult> = self
             .db
             .query(
                 r#"
-                SELECT 
-                    id,
-                    title,
-                    content,
-                    note_type,
-                    tags,
-                    created_at,
-                    source_id.uri AS source_uri,
-                    ($normalized_title != '' AND string::lowercase(string::trim(title ?? '')) = $normalized_title) AS exact_title_match,
-                    (search::score(0) * 0.7 + search::score(1) * 0.2 + search::score(2) * 0.1) AS fts_score
-                FROM note
-                WHERE (search_content @0@ $query OR content @1@ $query OR title @2@ $query)
-                  AND ($since = NONE OR created_at >= <datetime>$since)
-                  AND ($source_uri = NONE OR source_id.uri = $source_uri)
-                  AND (
-                    source_id IS NONE
-                    OR source_generation IS NONE
-                    OR source_generation = source_id.successful_generation
-                  )
+                SELECT
+                    record_id AS id,
+                    record_id.title AS title,
+                    record_id.content AS content,
+                    record_id.note_type AS note_type,
+                    record_id.tags AS tags,
+                    record_id.created_at AS created_at,
+                    record_id.source_id.uri AS source_uri,
+                    exact_title_match,
+                    fts_score
+                FROM (
+                    SELECT id, record_id,
+                        ($normalized_title != '' AND string::lowercase(string::trim(title ?? '')) = $normalized_title) AS exact_title_match,
+                        (search::score(0) * 0.7 + search::score(1) * 0.2 + search::score(2) * 0.1) AS fts_score
+                    FROM note_search
+                    WHERE (search_content @0@ $query OR content @1@ $query OR title @2@ $query)
+                      AND ($since = NONE OR created_at >= <datetime>$since)
+                      AND ($source_uri = NONE OR source_id.uri = $source_uri)
+                      AND (
+                        source_id IS NONE
+                        OR source_generation IS NONE
+                        OR source_generation = source_id.successful_generation
+                      )
+                    ORDER BY exact_title_match DESC, fts_score DESC, id ASC
+                    LIMIT $limit
+                )
                 ORDER BY exact_title_match DESC, fts_score DESC, id ASC
-                LIMIT $limit
             "#,
             )
             .bind(("query", query.to_string()))

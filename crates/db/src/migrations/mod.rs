@@ -24,6 +24,7 @@ mod v017_remote_mutation_receipts;
 mod v018_remote_upload_jobs;
 mod v019_entity_identity;
 mod v020_source_policy_migration;
+mod v021_note_search;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -36,7 +37,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 20;
+pub const LATEST_SCHEMA_VERSION: u32 = 21;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -72,6 +73,7 @@ const MIGRATIONS: &[Migration] = &[
     v018_remote_upload_jobs::MIGRATION,
     v019_entity_identity::MIGRATION,
     v020_source_policy_migration::MIGRATION,
+    v021_note_search::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -335,6 +337,12 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
 
     if migration.version == v004_edge_proposals::MIGRATION.version {
         backfill_note_edge_dedupe_keys(db)
+            .await
+            .map_err(|error| migration_failed(migration, error))?;
+    }
+
+    if migration.version == v021_note_search::MIGRATION.version {
+        v021_note_search::backfill(db)
             .await
             .map_err(|error| migration_failed(migration, error))?;
     }
