@@ -65,6 +65,11 @@ class FakeService:
                 job['failed'] = False
             if not job['failed'] and not job.get('published'):
                 old = self.sources.get(admission['source_id'], {})
+                if payload.get('create_only') and old:
+                    job['failed'] = True
+                    self.fail_code = 'conflict'
+                    return self.call(name, value)
+                job['action'] = 'unchanged' if old.get('content') == payload['content'] and old.get('extract_entities') == payload['extract_entities'] else 'updated' if old else 'created'
                 if old.get('content') != payload['content']:
                     self.embedding_calls += 1
                     self.extraction_calls += payload['extract_entities']
@@ -83,7 +88,7 @@ class FakeService:
                     'completed': int(complete), 'total': 1, 'failed': 0, 'error_code': None if complete else self.fail_code,
                     'result': {'source_id': admission['source_id'], 'source_uri': admission['source_uri'],
                                'generation': job['generation'], 'note_ids': ['note:' + m.sha(value['id'].encode())],
-                               'extracted': payload['extract_entities']} if complete else None}
+                               'extracted': payload['extract_entities'], 'action': job.get('action')} if complete else None}
         if name == 'get_source':
             if 'document_key' in value:
                 value = {'id': 'source:' + m.sha(value['document_key'].encode())}
@@ -204,6 +209,58 @@ class RefreshTests(unittest.TestCase):
                 self.run_refresh()
             self.assertEqual(len(self.client.receipts), uploads)
 
+    def test_missing_policy_lookup_is_create_only_and_fences_late_source(self):
+        self.prepare()
+        m.review_existing_policies(self.client, self.state, self.save, self.args)
+        task = next(iter(self.state['pending']['tasks'].values()))
+        self.assertTrue(task['payload']['create_only'])
+        late = dict(task['payload'], request_id='older-pending-upload', extract_entities=True)
+        late.pop('create_only')
+        admission = self.client.call('upload_source', late)
+        self.client.call('get_job', {'id': admission['job_id']})
+        original = json.loads(json.dumps(self.client.sources[admission['source_id']]))
+        with self.assertRaisesRegex(m.ImportFailure, 'job_failed_nonretryable'):
+            m.run_refresh(self.client, self.state, self.save, self.args)
+        self.assertEqual(self.client.sources[admission['source_id']], original)
+        self.assertEqual(self.state['counts']['failed'], 1)
+
+    def test_operator_counts_distinguish_collection_registration_and_service_actions(self):
+        self.prepare(); self.run_refresh()
+        self.assertEqual(m.report(self.state)['service_actions']['created'], 1)
+        self.assertNotIn('service_actions', m.evidence(self.state))
+        self.state = m.new_state(self.config)
+        self.prepare(); self.run_refresh()
+        self.assertEqual(self.state['counts']['created'], 1)
+        self.assertEqual(m.report(self.state)['service_actions'], {'created': 0, 'updated': 0, 'unchanged': 1})
+        self.prepare(); self.run_refresh()
+        self.assertEqual(self.state['counts']['unchanged'], 1)
+        self.assertEqual(sum(m.report(self.state)['service_actions'].values()), 0)
+
+    def test_matching_policy_still_rejects_wrong_original_identity(self):
+        self.prepare(); self.run_refresh()
+        original = json.loads(json.dumps(next(iter(self.client.sources.values()))))
+        for field in ('host', 'agent', 'source_path', 'part'):
+            self.state = m.new_state(self.config)
+            source = json.loads(json.dumps(original))
+            source['provenance']['metadata'][field] = 'foreign'
+            self.client.sources[source['id']] = source
+            self.prepare(); uploads = len(self.client.receipts)
+            with self.assertRaisesRegex(m.ImportFailure, 'existing_source_provenance_mismatch'):
+                self.run_refresh()
+            self.assertEqual(len(self.client.receipts), uploads)
+
+    def test_legacy_default_policy_can_refresh_new_indexed_version_of_same_original(self):
+        self.prepare(); self.run_refresh()
+        source = next(iter(self.client.sources.values()))
+        source['provenance']['metadata'].pop('collection_id')
+        self.state = m.new_state(self.config)
+        self.write('memory/atlas.md', b'# Atlas\n\nNewer indexed default-policy version.')
+        self.prepare(); self.run_refresh()
+        self.assertEqual(self.state['status'], 'complete')
+        latest = list(self.client.jobs.values())[-1]['payload']
+        self.assertNotIn('preserve_unchanged', latest)
+        self.assertNotIn('create_only', latest)
+
     def test_snapshot_is_read_only_consistent_and_excludes_summaries(self):
         self.write('memory/session.md', b'Excluded indexed session', 'sessions')
         before = m.sha(self.database.read_bytes())
@@ -304,6 +361,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_lost_admission_and_interrupted_upload_resume_same_exact_payload(self):
         self.prepare()
+        m.review_existing_policies(self.client, self.state, self.save, self.args)
         pinned = json.loads(json.dumps(self.state['pending']))
         self.client.lost_ack = True
         self.run_refresh()

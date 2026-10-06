@@ -198,3 +198,20 @@ and search/inspection preserve expected provenance. Retain only sanitized counts
 and timings in public evidence. Optional cron/launchd/systemd scheduling should
 reuse the same private state, environment credential, and tunnel; detect a pending
 attempt and alert rather than enabling automatic failed-job resume or deletion.
+
+Collection counts describe registered parts. Operator output separately reports
+server source actions (`created`, `updated`, `unchanged`); registering an existing
+part may update its collection metadata while retaining its successful source
+generation, chunks and graph mentions. Freshness counts retain their part-based
+contract.
+
+Every existing source must match its original URI, label, host, agent, path,
+part ordinal and other provenance. For an edited legacy part using the same
+extraction policy, only `original_sha256` and `parts` are content-version facts;
+these may change with the newly indexed original. Registered edits validate the
+last verified provenance first. Graph-policy adoption still requires exact
+content/title and full original provenance apart from collection metadata.
+A negative source lookup pins a `create_only` admission: the service rechecks
+absence under its generation lock before any inference or source mutation.
+A source that appeared after the lookup produces a failed conflict job requiring
+an operator to inspect and start a reviewed new attempt.

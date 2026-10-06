@@ -393,6 +393,12 @@ def evidence(state):
                       'plan_sha256': state.get('reconciliation', {}).get('plan_sha256')}}
 
 
+def report(state):
+    # Keep the freshness evidence contract unchanged. Operator output also
+    # distinguishes collection membership from actual server generations.
+    return dict(evidence(state), counts_scope='collection_parts', service_actions=state.get('service_actions', {}))
+
+
 def new_state(config):
     return {'schema_version': 1, 'config': config, 'status': 'unknown', 'documents': {},
             'last_attempt_at': None, 'last_success_at': None,
@@ -425,6 +431,7 @@ def prepare(state, documents, failures, attempt=None):
     missing = sorted(set(registry) - set(tasks))
     counts['missing'] = len(missing)
     state.update(status='running', counts=counts, last_attempt_at=now(), error_code=None,
+                 service_actions=dict.fromkeys(('created', 'updated', 'unchanged'), 0),
                  pending={'tasks': tasks, 'desired_keys': sorted(tasks), 'missing_keys': missing, 'attempt': attempt})
     return state['pending']
 
@@ -495,6 +502,9 @@ def _review_existing_policies(client, state, save, args):
             if error.code == 'not_found':
                 if key in state['documents']:
                     raise ImportFailure('committed_source_mismatch') from None
+                payload = task['payload']
+                payload['create_only'] = True
+                payload['request_id'] = 'ocmem-' + sha(canonical([pending['attempt'], task['payload_hash'], False, True]))
                 task['policy_reviewed'] = True
                 continue
             if error.code in ('invalid_input', 'validation'):
@@ -512,17 +522,29 @@ def _review_existing_policies(client, state, save, args):
         prior_policy = policies.get(key)
         if prior_policy and prior_policy != {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash}:
             raise ImportFailure('registered_processing_policy_mismatch')
+        # Existing sources must belong to this original source, regardless of
+        # extraction policy. Compare edited registered parts with their last
+        # verified provenance, not their newly indexed original hash.
+        existing_provenance = json.loads(json.dumps(source.get('provenance')))
+        expected_provenance = json.loads(json.dumps(state['documents'].get(key, {}).get('provenance', payload['provenance'])))
+        if not isinstance(existing_provenance, dict) or not isinstance(existing_provenance.get('metadata'), dict):
+            raise ImportFailure('existing_source_provenance_mismatch')
+        existing_provenance['metadata'].pop('collection_id', None)
+        expected_provenance['metadata'].pop('collection_id', None)
+        if (key not in state['documents'] and source.get('content') != payload['content']
+                and source['extract_entities'] == payload['extract_entities']):
+            # An indexed original may have changed since a legacy import.
+            # Its content hash/split count are version facts; host, agent,
+            # URI, original path and part identity still must agree exactly.
+            for provenance in (existing_provenance, expected_provenance):
+                for version_key in ('original_sha256', 'parts'):
+                    provenance['metadata'].pop(version_key, None)
+        if existing_provenance != expected_provenance:
+            raise ImportFailure('existing_source_provenance_mismatch')
         if key not in state['documents'] and source['extract_entities'] != payload['extract_entities']:
             if not getattr(args, 'adopt_existing_policy', False):
                 raise ImportFailure('existing_extraction_policy_requires_adoption')
-            existing_provenance = json.loads(json.dumps(source.get('provenance')))
-            desired_provenance = json.loads(json.dumps(payload['provenance']))
-            if not isinstance(existing_provenance, dict) or not isinstance(existing_provenance.get('metadata'), dict):
-                raise ImportFailure('existing_adoption_source_mismatch')
-            existing_provenance['metadata'].pop('collection_id', None)
-            desired_provenance['metadata'].pop('collection_id', None)
-            if (source.get('content') != payload['content'] or source.get('title') != payload['title']
-                    or existing_provenance != desired_provenance):
+            if source.get('content') != payload['content'] or source.get('title') != payload['title']:
                 raise ImportFailure('existing_adoption_source_mismatch')
             payload['extract_entities'] = source['extract_entities']
         policies[key] = {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash}
@@ -530,9 +552,9 @@ def _review_existing_policies(client, state, save, args):
         # identities exclude it so a later unchanged run requires no upload.
         if key not in state['documents'] and source.get('content') == payload['content'] and source.get('title') == payload['title']:
             payload['preserve_unchanged'] = True
-        semantic = {k: v for k, v in payload.items() if k not in ('request_id', 'preserve_unchanged')}
+        semantic = {k: v for k, v in payload.items() if k not in ('request_id', 'preserve_unchanged', 'create_only')}
         task['payload_hash'] = sha(canonical(semantic))
-        payload['request_id'] = 'ocmem-' + sha(canonical([pending['attempt'], task['payload_hash'], bool(payload.get('preserve_unchanged'))]))
+        payload['request_id'] = 'ocmem-' + sha(canonical([pending['attempt'], task['payload_hash'], bool(payload.get('preserve_unchanged')), bool(payload.get('create_only'))]))
         task['policy_reviewed'] = True
     pending['policy_review_complete'] = True
     pending.pop('reviewing_key', None)
@@ -574,6 +596,11 @@ def run_refresh(client, state, save, args):
                 save()
                 if job['status'] == 'completed':
                     verify_completed(client, task, entry, job, principal)
+                    action = job.get('result', {}).get('action')
+                    if action in ('created', 'updated', 'unchanged'):
+                        task['service_action'] = action
+                    state['service_actions'] = {name: sum(t.get('service_action') == name for t in tasks.values())
+                                                for name in ('created', 'updated', 'unchanged')}
                     state['documents'][key] = {'payload_hash': task['payload_hash'], 'entry': json.loads(json.dumps(entry)),
                                                'document_key': key, 'provenance': task['payload']['provenance']}
                     checked.add(key)
@@ -733,7 +760,10 @@ def emit(value, format):
         return
     print('Memory refresh: ' + value['status'])
     if value.get('counts'):
-        print(', '.join(f'{key}: {count}' for key, count in value['counts'].items()))
+        label = 'Collection parts: ' if value.get('counts_scope') == 'collection_parts' else ''
+        print(label + ', '.join(f'{key}: {count}' for key, count in value['counts'].items()))
+    if value.get('service_actions'):
+        print('Server source generations: ' + ', '.join(f'{key}: {count}' for key, count in value['service_actions'].items()))
     if value.get('last_success_at'):
         print('Last successful refresh: ' + value['last_success_at'])
     if value.get('plan_sha256'):
@@ -776,7 +806,7 @@ def main(argv=None):
         else:
             state = new_state(config)
         if args.status:
-            emit(evidence(state), args.format)
+            emit(report(state), args.format)
             return 0
         if args.dry_run:
             if not args.database or not args.workspace:
@@ -811,7 +841,7 @@ def main(argv=None):
                 documents, failures, _ = snapshot(args.database, args.workspace)
                 if prepare(state, documents, failures) is None:
                     save()
-                    emit(evidence(state), args.format)
+                    emit(report(state), args.format)
                     return 1
             save()  # Persist exact inputs before any network/model request.
             token = os.environ.get(args.credential_env, '')
@@ -834,7 +864,7 @@ def main(argv=None):
             else:
                 review_existing_policies(client, state, save, args)
                 run_refresh(client, state, save, args)
-                emit(evidence(state), args.format)
+                emit(report(state), args.format)
             return 0
     except (Exception, KeyboardInterrupt) as error:
         code = error.code if isinstance(error, ImportFailure) else 'paused' if isinstance(error, KeyboardInterrupt) else 'invalid_input_or_unexpected_failure'

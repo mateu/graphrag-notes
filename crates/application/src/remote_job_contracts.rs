@@ -27,6 +27,9 @@ pub struct UploadSourceRequest {
     /// Register matching metadata only; never replace a source generation.
     #[serde(default)]
     pub preserve_unchanged: bool,
+    /// Create only if this source is still absent when the worker begins.
+    #[serde(default)]
+    pub create_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

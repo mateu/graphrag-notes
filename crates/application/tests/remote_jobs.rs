@@ -34,6 +34,7 @@ fn request(id: &str) -> UploadSourceRequest {
         }),
         extract_entities: false,
         preserve_unchanged: false,
+        create_only: false,
     }
 }
 fn app(
@@ -669,10 +670,14 @@ async fn reviewed_policy_registration_preserves_enriched_generation_and_fences_d
         ("body", "changed"),
         ("whitespace", "\r\n"),
         ("extraction", ""),
+        ("provenance", ""),
     ] {
         let mut unsafe_registration = registration.clone();
         unsafe_registration.request_id = format!("guard-{name}");
-        if name == "extraction" {
+        if name == "provenance" {
+            unsafe_registration.provenance.as_mut().unwrap().uri =
+                Some("file:///foreign.md".into());
+        } else if name == "extraction" {
             unsafe_registration.extract_entities = false;
         } else {
             unsafe_registration.content.push_str(drift);
@@ -711,6 +716,126 @@ async fn reviewed_policy_registration_preserves_enriched_generation_and_fences_d
             .replayed
     );
     assert_ne!(registered.job_id, admission.job_id);
+}
+
+#[tokio::test]
+async fn create_only_negative_lookup_is_fenced_at_generation_start() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let (application, embedding_calls, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://extraction.invalid",
+    );
+    // An older queued upload was invisible to get_source when the adapter
+    // reviewed absence. It becomes an enriched source before the later claim.
+    let mut older = request("older-pending");
+    older.extract_entities = true;
+    let older_admission = application
+        .upload_source(caller("owner"), older.clone())
+        .await
+        .unwrap();
+    assert!(application
+        .lookup_uploaded_source(caller("owner"), &older.document_key)
+        .await
+        .is_err());
+    let mut later = request("reviewed-absence");
+    later.create_only = true;
+    let later_admission = application
+        .upload_source(caller("owner"), later.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let before = application
+        .get_uploaded_source(&older_admission.source_id)
+        .await
+        .unwrap();
+    let source_id = graphrag_db::parse_record_id(&before.id, Some("source")).unwrap();
+    let chunks_before = repo.get_source_chunks(&source_id).await.unwrap();
+    let mut entity = graphrag_core::Entity::new("Atlas", graphrag_core::EntityType::Project);
+    entity.metadata = serde_json::json!({});
+    let entity = repo.upsert_entity(entity).await.unwrap();
+    repo.link_note_to_entity(
+        chunks_before[0].id.as_ref().unwrap(),
+        entity.id.as_ref().unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut query = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    let mentions: Vec<serde_json::Value> = query.take(0).unwrap();
+    embedding_calls.store(0, Ordering::Relaxed);
+    extraction_calls.store(0, Ordering::Relaxed);
+    let execution = application
+        .claim_remote_job("epoch", "later-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(application
+        .execute_remote_job(execution, ActionCancellation::new())
+        .await
+        .is_err());
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &later_admission.job_id)
+            .await
+            .unwrap()
+            .status,
+        "failed"
+    );
+    let after = application.get_uploaded_source(&before.id).await.unwrap();
+    assert_eq!(after, before);
+    assert_eq!(
+        repo.get_source_chunks(&source_id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n.id.clone())
+            .collect::<Vec<_>>(),
+        chunks_before
+            .iter()
+            .map(|n| n.id.clone())
+            .collect::<Vec<_>>()
+    );
+    let mut query = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    assert_eq!(query.take::<Vec<serde_json::Value>>(0).unwrap(), mentions);
+    assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+    assert!(
+        application
+            .upload_source(caller("owner"), later.clone())
+            .await
+            .unwrap()
+            .replayed
+    );
+    later.request_id = "invalid-dual-guard".into();
+    later.preserve_unchanged = true;
+    assert!(application
+        .upload_source(caller("owner"), later)
+        .await
+        .is_err());
+    // A distinct genuinely absent source is still admitted and processed.
+    let mut fresh = request("new-create-only");
+    fresh.document_key = "new-document".into();
+    fresh.create_only = true;
+    let fresh = application
+        .upload_source(caller("owner"), fresh)
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &fresh.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
 }
 
 struct BlockedEmbedding {

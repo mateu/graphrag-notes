@@ -27,6 +27,9 @@ pub struct RemoteUploadInput {
     pub extract_entities: bool,
     #[serde(default)]
     pub preserve_unchanged: bool,
+    /// Create only if this source is still absent when the worker begins.
+    #[serde(default)]
+    pub create_only: bool,
     pub processing_options: serde_json::Value,
 }
 
@@ -244,6 +247,11 @@ fn job_id(value: &str) -> Result<RecordId> {
 fn validate_input(input: &RemoteUploadInput) -> Result<()> {
     identity(&input.authenticated_instance_id)?;
     identity(&input.request_id)?;
+    if input.preserve_unchanged && input.create_only {
+        return Err(DbError::InvalidRemoteRequest(
+            "preserve_unchanged and create_only are mutually exclusive".into(),
+        ));
+    }
     if input.document_key.trim().is_empty()
         || input.document_key.trim() != input.document_key
         || input.document_key.chars().count() > 256
@@ -767,6 +775,13 @@ impl Repository {
         );
         let source_id = RecordId::new("source", source_key);
         let prior = self.get_source(&job.source_uri).await?;
+        // Revalidate a client's negative lookup under the generation lock. An
+        // earlier queued upload may have published since that lookup.
+        if input.create_only && prior.is_some() {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
         let hash = graphrag_core::normalized_content_hash(&input.markdown);
         let mut prior_completed = false;
         let mut prior_exact_input_matches = false;
@@ -792,7 +807,15 @@ impl Repository {
                         )));
                     }
                     prior_completed = other.job.status == "completed";
-                    prior_exact_input_matches = other.input.markdown == input.markdown;
+                    let mut prior_provenance = other.input.source_provenance.clone();
+                    let mut desired_provenance = input.source_provenance.clone();
+                    for provenance in [&mut prior_provenance, &mut desired_provenance] {
+                        if let Some(metadata) = provenance["metadata"].as_object_mut() {
+                            metadata.remove("collection_id");
+                        }
+                    }
+                    prior_exact_input_matches = other.input.markdown == input.markdown
+                        && prior_provenance == desired_provenance;
                 }
             }
         }

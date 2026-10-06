@@ -52,3 +52,10 @@ Terminalization checks the persisted cancellation flag atomically, so a concurre
 Portable backups include only remote-owned processing jobs, preserving admission input and outcomes as opaque user content, like note bodies. Local runtime jobs and caches remain excluded. Restore clears worker epochs/tokens so no old worker authority survives, while completed/cancelled results and replay identities remain. Uploaded provenance and active/pending processing snapshots are preserved, including their embedding configuration objects in exports with or without vectors; ordinary host filesystem metadata and secret fields retain the existing sanitizer. Logical source and note IDs in completed history may outlive deleted records without recreating them.
 
 Uploads and historical outcomes persist in the owner's corpus; this phase does not implement a retention policy or client replication. Use the owner's existing backup and source lifecycle controls.
+
+`upload_source` also accepts two mutually exclusive, default-false guards:
+`preserve_unchanged` requires an exact existing compatible original input and
+retains its successful generation; `create_only` requires the caller's source
+identity to remain absent when the worker begins. Both checks run under the
+source generation lock before inference. Unguarded legacy admission fingerprints
+remain byte-identical for durable retries.

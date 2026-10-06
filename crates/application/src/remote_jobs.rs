@@ -138,6 +138,11 @@ pub(crate) async fn upload(
     {
         return Err(ApplicationError::Validation("document_key must be nonempty, at most 256 characters/512 UTF-8 bytes, without controls or surrounding whitespace; content cannot contain NUL".into()));
     }
+    if request.preserve_unchanged && request.create_only {
+        return Err(ApplicationError::Validation(
+            "preserve_unchanged and create_only are mutually exclusive".into(),
+        ));
+    }
     // Keep legacy unguarded fingerprint bytes immutable for durable replay.
     let mut fingerprint_input = serde_json::to_vec(&(
         REMOTE_UPLOAD_PAYLOAD_VERSION,
@@ -151,6 +156,9 @@ pub(crate) async fn upload(
     .map_err(|e| ApplicationError::Internal(e.to_string()))?;
     if request.preserve_unchanged {
         fingerprint_input.extend_from_slice(b"\0preserve_unchanged");
+    }
+    if request.create_only {
+        fingerprint_input.extend_from_slice(b"\0create_only");
     }
     let fingerprint = format!("{:x}", Sha256::digest(&fingerprint_input));
     let admission = if let Some(admission) = app
@@ -189,6 +197,7 @@ pub(crate) async fn upload(
                     .map_err(|e| ApplicationError::Internal(e.to_string()))?,
                 extract_entities: request.extract_entities,
                 preserve_unchanged: request.preserve_unchanged,
+                create_only: request.create_only,
                 processing_options: options(app),
             })
             .await?
