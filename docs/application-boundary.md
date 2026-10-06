@@ -164,12 +164,13 @@ Application errors distinguish validation, not found, revision conflict,
 provider unavailable, cancellation, and internal failures. Database ownership
 errors are produced during bootstrap before an operation backend exists. The
 CLI adapter preserves established exit codes and machine output behavior.
-Future unauthorized, forbidden, service-unreachable, and retry-identity
-conflicts remain explicit remote errors with retained client recovery state.
+Unauthorized, forbidden, service-unreachable and retry-identity conflicts
+remain explicit remote errors with retained client recovery state.
 
-The boundary introduces no schema migration, no new source-generation policy,
-and no change to existing archives or embedded installations. macOS and Linux
-are supported targets. Windows is outside this project's requested scope.
+The local typed interface preserves embedded behavior. Shared uploads add
+durable staged generations and receipts; supported releases declare their
+schema/portable-backup compatibility in the matching release guide. macOS
+and Linux are supported targets. Windows is outside this project's requested scope.
 
 ## Validation
 
