@@ -23,6 +23,11 @@ use tokio::sync::Semaphore;
 const EMBEDDING_CACHE_VERSION: &str = "embedding-v1";
 const EXTRACTION_CACHE_VERSION: &str = "entity-extraction-v1";
 
+/// Identity of the extraction prompt/schema applied by the processing adapter.
+pub fn extraction_cache_version() -> &'static str {
+    EXTRACTION_CACHE_VERSION
+}
+
 /// Provider-wide limits for one class of local inference operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessingConfig {

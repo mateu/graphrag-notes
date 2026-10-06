@@ -163,6 +163,65 @@ async fn remote_walkthrough_distinguishes_unknown_stopped_auth_transport_and_par
     let report: Value = serde_json::from_slice(&partial.stdout).unwrap();
     assert_eq!(report["application"]["sources"]["state"], "partial");
     assert_eq!(report["client_refresh_evidence"]["counts"]["failed"], 1);
+    assert!(report["client_refresh_evidence"]
+        .get("retained_extraction_policy_parts")
+        .is_none());
+    evidence["status"] = json!("complete");
+    evidence["retained_extraction_policy_parts"] = json!(8);
+    std::fs::write(&status, serde_json::to_vec(&evidence).unwrap()).unwrap();
+    let retained = command(&endpoint, TOKEN)
+        .args([
+            "doctor",
+            "--format",
+            "json",
+            "--refresh-status-file",
+            status.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    let report: Value = serde_json::from_slice(&retained.stdout).unwrap();
+    assert_eq!(report["application"]["sources"]["state"], "partial");
+    assert_eq!(
+        report["client_refresh_evidence"]["retained_extraction_policy_parts"],
+        8
+    );
+    assert!(report["application"]["sources"]["next_action"]
+        .as_str()
+        .unwrap()
+        .contains("owner"));
+    let human = command(&endpoint, TOKEN)
+        .args(["doctor", "--refresh-status-file", status.to_str().unwrap()])
+        .output()
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&human.stdout)
+        .contains("Retained older extraction-policy parts: 8"));
+    evidence["retained_extraction_policy_parts"] = json!(0);
+    std::fs::write(&status, serde_json::to_vec(&evidence).unwrap()).unwrap();
+    let complete = command(&endpoint, TOKEN)
+        .args([
+            "doctor",
+            "--format",
+            "json",
+            "--refresh-status-file",
+            status.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    let report: Value = serde_json::from_slice(&complete.stdout).unwrap();
+    assert_eq!(report["application"]["sources"]["state"], "unknown");
+    let human = command(&endpoint, TOKEN)
+        .args(["doctor", "--refresh-status-file", status.to_str().unwrap()])
+        .output()
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&human.stdout)
+        .contains("Retained older extraction-policy parts: 0"));
+    assert!(!String::from_utf8_lossy(&human.stdout)
+        .contains("Graph policy needs explicit owner reprocessing"));
+    evidence["status"] = json!("partial");
     evidence["retry"] = json!({"action":"reconcile", "plan_sha256":"c".repeat(64)});
     std::fs::write(&status, serde_json::to_vec(&evidence).unwrap()).unwrap();
     let cleanup = command(&endpoint, TOKEN)

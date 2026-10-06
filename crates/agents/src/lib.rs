@@ -51,8 +51,8 @@ pub use librarian::{
     ProcessingRunResult,
 };
 pub use processing::{
-    classify_retry, retry_delay, ProcessingConfig, ProcessingStatsSnapshot, ResilientEmbedder,
-    ResilientEntityExtractor, RetryClassification,
+    classify_retry, extraction_cache_version, retry_delay, ProcessingConfig,
+    ProcessingStatsSnapshot, ResilientEmbedder, ResilientEntityExtractor, RetryClassification,
 };
 pub use reindex::{ReindexAgent, ReindexPreview, ReindexResult, ReindexScope};
 pub use search::{

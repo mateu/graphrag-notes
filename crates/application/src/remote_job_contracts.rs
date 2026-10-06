@@ -24,6 +24,16 @@ pub struct UploadSourceRequest {
     pub provenance: Option<CaptureProvenance>,
     #[serde(default)]
     pub extract_entities: bool,
+    /// Register matching metadata only; never replace a source generation.
+    #[serde(default)]
+    pub preserve_unchanged: bool,
+    /// Create only if this source is still absent when the worker begins.
+    #[serde(default)]
+    pub create_only: bool,
+    /// Revision of the existing source inspected before this upload.
+    #[serde(default)]
+    #[schemars(length(min = 64, max = 64))]
+    pub expected_source_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -33,6 +43,22 @@ pub struct UploadAdmission {
     pub source_id: String,
     pub source_uri: String,
     pub replayed: bool,
+}
+
+/// Explicit retirement of one uploaded source in a client-registered collection.
+/// The authenticated owner and stored provenance independently constrain scope.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteUploadedSourceRequest {
+    #[schemars(length(min = 1, max = 128))]
+    pub request_id: String,
+    #[schemars(length(min = 1, max = 512))]
+    pub id: String,
+    #[schemars(length(min = 64, max = 64))]
+    pub revision: String,
+    #[schemars(length(min = 1, max = 64))]
+    pub collection_id: String,
+    pub confirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -70,10 +96,20 @@ pub struct UploadedSource {
     pub content_hash: Option<String>,
     pub generation: u64,
     pub successful_generation: u64,
+    /// Explicit retained source stub after reviewed retirement.
+    pub retired: bool,
     pub status: String,
     pub instance_id: String,
     pub document_key: String,
     pub provenance: serde_json::Value,
+    pub extract_entities: bool,
+    /// Opaque processing snapshot identity, without provider URLs/settings.
+    pub processing_policy_sha256: String,
+    pub processing_policy_current: bool,
+    /// Embedding and chunk/runtime settings match; no inference is probed.
+    pub ingestion_policy_current: bool,
+    /// None when extraction was disabled; false retains an older graph policy.
+    pub extraction_policy_current: Option<bool>,
     pub revision: String,
 }
 

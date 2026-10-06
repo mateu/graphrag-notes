@@ -4,10 +4,10 @@ use crate::{
     Capability, Principal,
 };
 use graphrag_application::{
-    CallerIdentity, RemoteApplicationOperations, RemoteJobList, RemoteJobStatus, UploadAdmission,
-    UploadSourceRequest, UploadedSource,
+    CallerIdentity, DeleteUploadedSourceRequest, RemoteApplicationOperations, RemoteJobList,
+    RemoteJobStatus, UploadAdmission, UploadSourceRequest, UploadedSource,
 };
-use rmcp::model::{CallToolResult, Tool};
+use rmcp::model::{CallToolResult, Tool, ToolAnnotations};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -17,7 +17,10 @@ use serde_json::{Map, Value};
 struct SourceInput {
     /// Canonical source:ID returned by upload_source; never a client/server path.
     #[schemars(length(min = 1, max = 512))]
-    id: String,
+    id: Option<String>,
+    /// Look up this authenticated instance's existing opaque document key.
+    #[schemars(length(min = 1, max = 256))]
+    document_key: Option<String>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +43,7 @@ pub(crate) fn catalog() -> Vec<(Capability, Tool)> {
     vec![
         (Capability::Upload, definition::<UploadSourceRequest, UploadAdmission>("upload_source", "Upload supplied UTF-8 Markdown (at most 65536 bytes) under an opaque document_key scoped to this authenticated instance. No path is read or URL fetched. Reuse identical payload/request_id after a lost response; processing belongs to the returned durable job.", false)),
         (Capability::Read, definition::<SourceInput, UploadedSource>("get_source", "Inspect an uploaded source's latest supplied content and provenance, with attempted and successful generation labels. Server URIs are metadata, never client file actions.", true)),
+        (Capability::Delete, definition::<DeleteUploadedSourceRequest, graphrag_application::RemoteMutationResponse>("delete_uploaded_source", "Explicitly retire one ready uploaded source owned by this authenticated instance and registered collection_id, using its reviewed revision and confirmed=true. Generated chunks are removed; detached/manual notes and durable receipt history survive. Retry identical request_id/payload after an uncertain response.", false).with_annotations(ToolAnnotations::new().read_only(false).destructive(true).idempotent(true).open_world(false))),
         (Capability::Jobs, definition::<JobInput, RemoteJobStatus>("get_job", "Inspect this instance's server-owned uploaded Markdown job, safe checkpoint and result. HTTP disconnects do not cancel work.", true)),
         (Capability::Jobs, definition::<JobsInput, RemoteJobList>("list_jobs", "List bounded uploaded jobs owned by this authenticated instance.", true)),
         (Capability::Jobs, definition::<JobInput, RemoteJobStatus>("cancel_job", "Request explicit cancellation of this instance's job at a safe write boundary. Cancellation remains available while workers prepare or persist content.", false)),
@@ -57,6 +61,16 @@ pub(crate) async fn dispatch(
         instance_id: principal.instance_id.clone(),
     };
     match name {
+        "delete_uploaded_source" => {
+            let request = match parse(arguments) {
+                Ok(request) => request,
+                Err(error) => return error,
+            };
+            match application.delete_uploaded_source(caller, request).await {
+                Ok(result) => success(result),
+                Err(error) => application_failure(error),
+            }
+        }
         "upload_source" => {
             let request = match parse(arguments) {
                 Ok(request) => request,
@@ -72,7 +86,18 @@ pub(crate) async fn dispatch(
                 Ok(input) => input,
                 Err(error) => return error,
             };
-            match application.get_uploaded_source(&input.id).await {
+            let result = match (input.id, input.document_key) {
+                (Some(id), None) => application.get_uploaded_source(&id).await,
+                (None, Some(key)) => application.lookup_uploaded_source(caller, &key).await,
+                _ => {
+                    return failure(
+                        "invalid_input",
+                        "Supply exactly one of id or document_key",
+                        false,
+                    )
+                }
+            };
+            match result {
                 Ok(result) => success(result),
                 Err(error) => application_failure(error),
             }

@@ -42,6 +42,7 @@ pub use models::{
 pub use portable::{parse_portable_record_id, PORTABLE_TABLES};
 pub use remote_capture::{RemoteCaptureInput, RemoteCaptureReceipt};
 pub use remote_jobs::{
+    uploaded_processing_compatible, uploaded_source_id, uploaded_source_revision,
     RemoteJobAdmission, RemoteJobLease, RemoteUploadInput, RemoteUploadJob, RemoteUploadJobStatus,
     MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS,
 };

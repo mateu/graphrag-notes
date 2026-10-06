@@ -33,6 +33,9 @@ fn request(id: &str) -> UploadSourceRequest {
             metadata: Default::default(),
         }),
         extract_entities: false,
+        preserve_unchanged: false,
+        create_only: false,
+        expected_source_revision: None,
     }
 }
 fn app(
@@ -161,7 +164,8 @@ async fn changed_provider_endpoints_reject_resume_but_preserve_completed_receipt
     ] {
         let repo = Repository::new(init_memory().await.unwrap());
         let (original, _, _) = endpoint_app(&repo, EMBEDDING, EXTRACTION);
-        let input = request("endpoint-pinned-upload");
+        let mut input = request("endpoint-pinned-upload");
+        input.extract_entities = true;
         let admitted = original
             .upload_source(caller("owner"), input.clone())
             .await
@@ -536,6 +540,422 @@ async fn document_identity_refresh_and_unchanged_runs_keep_safe_generation_bound
         .await
         .unwrap();
     assert_ne!(independent.source_id, first.source_id);
+}
+
+#[tokio::test]
+async fn reviewed_policy_registration_preserves_enriched_generation_and_fences_drift() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let (application, embedding_calls, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://extraction.invalid",
+    );
+    let mut initial = request("enriched-origin");
+    initial.extract_entities = true;
+    initial.content = "# Atlas\n\nAtlas launch is Monday. Mira leads Atlas.".into();
+    let admission = application
+        .upload_source(caller("owner"), initial.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    use sha2::{Digest, Sha256};
+    let legacy_fingerprint = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(
+                1_u32,
+                "uploaded_markdown",
+                &initial.document_key,
+                &initial.content,
+                &initial.title,
+                &initial.provenance,
+                initial.extract_entities,
+            ))
+            .unwrap()
+        )
+    );
+    assert_eq!(
+        repo.get_remote_upload_job("owner", &admission.job_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .input
+            .payload_fingerprint,
+        legacy_fingerprint
+    );
+    let before = application
+        .get_uploaded_source(&admission.source_id)
+        .await
+        .unwrap();
+    let chunks = repo
+        .get_source_chunks(&graphrag_db::parse_record_id(&before.id, Some("source")).unwrap())
+        .await
+        .unwrap();
+    let chunk_ids: Vec<_> = chunks.iter().map(|n| n.id.clone()).collect();
+    // Model the historical pilot's enrichment of already uploaded chunks.
+    let mut entity = graphrag_core::Entity::new("Atlas", graphrag_core::EntityType::Project);
+    entity.metadata = serde_json::json!({});
+    let pilot_entity = repo.upsert_entity(entity).await.unwrap();
+    repo.link_note_to_entity(
+        chunks[0].id.as_ref().unwrap(),
+        pilot_entity.id.as_ref().unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut response = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    let mentions: Vec<serde_json::Value> = response.take(0).unwrap();
+    assert!(!mentions.is_empty());
+    assert!(before.extract_entities && before.processing_policy_current);
+    assert_eq!(before.processing_policy_sha256.len(), 64);
+    let lookup = application
+        .lookup_uploaded_source(caller("owner"), &initial.document_key)
+        .await
+        .unwrap();
+    assert_eq!(lookup.id, before.id);
+    assert!(application
+        .lookup_uploaded_source(caller("foreign"), &initial.document_key)
+        .await
+        .is_err());
+    assert!(!application
+        .lookup_uploaded_source(caller("owner"), "../invalid\0key")
+        .await
+        .is_ok());
+    embedding_calls.store(0, Ordering::Relaxed);
+    extraction_calls.store(0, Ordering::Relaxed);
+    let mut registration = initial.clone();
+    registration.request_id = "reviewed-register".into();
+    registration.preserve_unchanged = true;
+    registration
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("collection_id".into(), "fixture".into());
+    let registered = application
+        .upload_source(caller("owner"), registration.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let after = application.get_uploaded_source(&before.id).await.unwrap();
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(
+        repo.get_source_chunks(&graphrag_db::parse_record_id(&before.id, Some("source")).unwrap())
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n.id.clone())
+            .collect::<Vec<_>>(),
+        chunk_ids
+    );
+    let mut response = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    assert_eq!(
+        response.take::<Vec<serde_json::Value>>(0).unwrap(),
+        mentions
+    );
+    assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+    assert!(
+        application
+            .upload_source(caller("owner"), registration.clone())
+            .await
+            .unwrap()
+            .replayed
+    );
+    for (name, drift) in [
+        ("body", "changed"),
+        ("whitespace", "\r\n"),
+        ("extraction", ""),
+        ("provenance", ""),
+    ] {
+        let mut unsafe_registration = registration.clone();
+        unsafe_registration.request_id = format!("guard-{name}");
+        if name == "provenance" {
+            unsafe_registration.provenance.as_mut().unwrap().uri =
+                Some("file:///foreign.md".into());
+        } else if name == "extraction" {
+            unsafe_registration.extract_entities = false;
+        } else {
+            unsafe_registration.content.push_str(drift);
+        }
+        let job = application
+            .upload_source(caller("owner"), unsafe_registration)
+            .await
+            .unwrap();
+        let execution = application
+            .claim_remote_job("epoch", "worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(application
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await
+            .is_err());
+        assert_eq!(
+            application
+                .get_remote_job(caller("owner"), &job.job_id)
+                .await
+                .unwrap()
+                .status,
+            "failed"
+        );
+        let source = application.get_uploaded_source(&before.id).await.unwrap();
+        assert_eq!(source.generation, before.generation);
+        assert_eq!(source.content, initial.content);
+    }
+    // Unrelated legacy unguarded replay identities remain stable.
+    assert!(
+        application
+            .upload_source(caller("owner"), initial)
+            .await
+            .unwrap()
+            .replayed
+    );
+    assert_ne!(registered.job_id, admission.job_id);
+}
+
+#[tokio::test]
+async fn create_only_negative_lookup_is_fenced_at_generation_start() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let (application, embedding_calls, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://extraction.invalid",
+    );
+    // An older queued upload was invisible to get_source when the adapter
+    // reviewed absence. It becomes an enriched source before the later claim.
+    let mut older = request("older-pending");
+    older.extract_entities = true;
+    let older_admission = application
+        .upload_source(caller("owner"), older.clone())
+        .await
+        .unwrap();
+    assert!(application
+        .lookup_uploaded_source(caller("owner"), &older.document_key)
+        .await
+        .is_err());
+    let mut later = request("reviewed-absence");
+    later.create_only = true;
+    let later_admission = application
+        .upload_source(caller("owner"), later.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let before = application
+        .get_uploaded_source(&older_admission.source_id)
+        .await
+        .unwrap();
+    let source_id = graphrag_db::parse_record_id(&before.id, Some("source")).unwrap();
+    let chunks_before = repo.get_source_chunks(&source_id).await.unwrap();
+    let mut entity = graphrag_core::Entity::new("Atlas", graphrag_core::EntityType::Project);
+    entity.metadata = serde_json::json!({});
+    let entity = repo.upsert_entity(entity).await.unwrap();
+    repo.link_note_to_entity(
+        chunks_before[0].id.as_ref().unwrap(),
+        entity.id.as_ref().unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut query = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    let mentions: Vec<serde_json::Value> = query.take(0).unwrap();
+    embedding_calls.store(0, Ordering::Relaxed);
+    extraction_calls.store(0, Ordering::Relaxed);
+    let execution = application
+        .claim_remote_job("epoch", "later-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(application
+        .execute_remote_job(execution, ActionCancellation::new())
+        .await
+        .is_err());
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &later_admission.job_id)
+            .await
+            .unwrap()
+            .status,
+        "failed"
+    );
+    let after = application.get_uploaded_source(&before.id).await.unwrap();
+    assert_eq!(after, before);
+    assert_eq!(
+        repo.get_source_chunks(&source_id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n.id.clone())
+            .collect::<Vec<_>>(),
+        chunks_before
+            .iter()
+            .map(|n| n.id.clone())
+            .collect::<Vec<_>>()
+    );
+    let mut query = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    assert_eq!(query.take::<Vec<serde_json::Value>>(0).unwrap(), mentions);
+    assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+    assert!(
+        application
+            .upload_source(caller("owner"), later.clone())
+            .await
+            .unwrap()
+            .replayed
+    );
+    later.request_id = "invalid-dual-guard".into();
+    later.preserve_unchanged = true;
+    assert!(application
+        .upload_source(caller("owner"), later)
+        .await
+        .is_err());
+    // A distinct genuinely absent source is still admitted and processed.
+    let mut fresh = request("new-create-only");
+    fresh.document_key = "new-document".into();
+    fresh.create_only = true;
+    let fresh = application
+        .upload_source(caller("owner"), fresh)
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &fresh.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn expected_existing_revision_fences_changed_source_after_policy_review() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let (application, embedding_calls, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://extraction.invalid",
+    );
+    let initial = application
+        .upload_source(caller("owner"), request("legacy-origin"))
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let reviewed = application
+        .get_uploaded_source(&initial.source_id)
+        .await
+        .unwrap();
+    let mut older = request("older-queued-foreign-origin");
+    older.extract_entities = true;
+    older.content = "# Atlas\n\nAtlas unrelated enriched original.".into();
+    older.provenance.as_mut().unwrap().uri = Some("file:///foreign.md".into());
+    application
+        .upload_source(caller("owner"), older)
+        .await
+        .unwrap();
+    let mut changed = request("reviewed-changed-original");
+    changed.content.push_str("\nNew indexed version");
+    changed.expected_source_revision = Some(reviewed.revision.clone());
+    let later = application
+        .upload_source(caller("owner"), changed.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let before = application
+        .get_uploaded_source(&initial.source_id)
+        .await
+        .unwrap();
+    assert_ne!(before.revision, reviewed.revision);
+    let source_id = graphrag_db::parse_record_id(&before.id, Some("source")).unwrap();
+    let chunks = repo.get_source_chunks(&source_id).await.unwrap();
+    let mut entity = graphrag_core::Entity::new("Atlas", graphrag_core::EntityType::Project);
+    entity.metadata = serde_json::json!({});
+    let entity = repo.upsert_entity(entity).await.unwrap();
+    repo.link_note_to_entity(chunks[0].id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    let mut query = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    let mentions: Vec<serde_json::Value> = query.take(0).unwrap();
+    embedding_calls.store(0, Ordering::Relaxed);
+    extraction_calls.store(0, Ordering::Relaxed);
+    let execution = application
+        .claim_remote_job("epoch", "changed-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(application
+        .execute_remote_job(execution, ActionCancellation::new())
+        .await
+        .is_err());
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &later.job_id)
+            .await
+            .unwrap()
+            .status,
+        "failed"
+    );
+    assert_eq!(
+        application
+            .get_uploaded_source(&initial.source_id)
+            .await
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        repo.get_source_chunks(&source_id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n.id.clone())
+            .collect::<Vec<_>>(),
+        chunks.iter().map(|n| n.id.clone()).collect::<Vec<_>>()
+    );
+    let mut query = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    assert_eq!(query.take::<Vec<serde_json::Value>>(0).unwrap(), mentions);
+    assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+    assert!(
+        application
+            .upload_source(caller("owner"), changed.clone())
+            .await
+            .unwrap()
+            .replayed
+    );
+    changed.request_id = "reviewed-current-edit".into();
+    changed.expected_source_revision = Some(before.revision);
+    let accepted = application
+        .upload_source(caller("owner"), changed)
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &accepted.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
 }
 
 struct BlockedEmbedding {
@@ -944,4 +1364,736 @@ async fn unchanged_line_endings_return_latest_input_without_rewriting_chunk_span
             &backing.content.as_ref().unwrap()[start..end]
         );
     }
+}
+
+#[tokio::test]
+async fn uploaded_source_retirement_is_scoped_revision_guarded_and_replayable() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let application = healthy(&repo);
+    let mut upload = request("retire-original");
+    upload
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("collection_id".into(), "fixture-memory".into());
+    let first = application
+        .upload_source(caller("openclaw"), upload.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let delete = DeleteUploadedSourceRequest {
+        request_id: "retire-reviewed".into(),
+        id: first.source_id.clone(),
+        revision: view.revision.clone(),
+        collection_id: "fixture-memory".into(),
+        confirmed: true,
+    };
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("foreign"), delete.clone())
+            .await,
+        Err(ApplicationError::Validation(_))
+    ));
+    let mut wrong = delete.clone();
+    wrong.collection_id = "unrelated".into();
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("openclaw"), wrong)
+            .await,
+        Err(ApplicationError::Validation(_))
+    ));
+    let mut stale = delete.clone();
+    stale.revision = "0".repeat(64);
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("openclaw"), stale)
+            .await,
+        Err(ApplicationError::RevisionConflict(_))
+    ));
+    let mut unconfirmed = delete.clone();
+    unconfirmed.confirmed = false;
+    assert!(application
+        .delete_uploaded_source(caller("openclaw"), unconfirmed)
+        .await
+        .is_err());
+
+    let mut detached = graphrag_core::Note::new("Detached manual note retains its original source");
+    detached.source_id = repo.get_source(&first.source_id).await.unwrap().unwrap().id;
+    let detached = repo.create_note(detached).await.unwrap();
+    let manual = repo
+        .create_note(graphrag_core::Note::new("Unrelated manual note"))
+        .await
+        .unwrap();
+    let result = application
+        .delete_uploaded_source(caller("openclaw"), delete.clone())
+        .await
+        .unwrap();
+    assert!(!result.replayed);
+    assert_eq!(result.outcome.operation, "delete_source");
+    assert_eq!(result.outcome.actor, "mcp:openclaw");
+    let retained = repo.get_source(&first.source_id).await.unwrap().unwrap();
+    assert_eq!(retained.successful_generation, 0);
+    assert!(retained.content_hash.is_none());
+    assert!(repo
+        .get_source_chunks(retained.id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(repo
+        .get_note(&graphrag_core::record_id_to_string(
+            detached.id.as_ref().unwrap()
+        ))
+        .await
+        .unwrap()
+        .is_some());
+    assert!(repo
+        .get_note(&graphrag_core::record_id_to_string(
+            manual.id.as_ref().unwrap()
+        ))
+        .await
+        .unwrap()
+        .is_some());
+    let replay = application
+        .delete_uploaded_source(caller("openclaw"), delete.clone())
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.outcome, result.outcome);
+    let mut reused = delete;
+    reused.collection_id = "other".into();
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("openclaw"), reused)
+            .await,
+        Err(ApplicationError::RevisionConflict(_))
+    ));
+    let retired_view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    assert!(retired_view.retired);
+    assert_ne!(retired_view.revision, view.revision);
+    let mut stale_draft = upload.clone();
+    stale_draft.request_id = "retired-old-draft".into();
+    stale_draft.expected_source_revision = Some(view.revision.clone());
+    application
+        .upload_source(caller("openclaw"), stale_draft)
+        .await
+        .unwrap();
+    let stale = application
+        .claim_remote_job("epoch", "stale-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(application
+        .execute_remote_job(stale, ActionCancellation::new())
+        .await
+        .is_err());
+    assert_eq!(
+        application
+            .get_uploaded_source(&first.source_id)
+            .await
+            .unwrap(),
+        retired_view
+    );
+    let mut recreate = upload;
+    recreate.request_id = "deliberate-recreation".into();
+    recreate.expected_source_revision = Some(retired_view.revision);
+    let recreated = application
+        .upload_source(caller("openclaw"), recreate)
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let current = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    assert!(!current.retired);
+    assert!(current.generation > view.generation);
+    assert_eq!(current.generation, current.successful_generation);
+    assert!(repo
+        .get_note(&graphrag_core::record_id_to_string(
+            detached.id.as_ref().unwrap()
+        ))
+        .await
+        .unwrap()
+        .is_some());
+    assert!(!repo
+        .get_source_chunks(
+            &graphrag_db::parse_record_id(&recreated.source_id, Some("source")).unwrap()
+        )
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn queued_upload_blocks_retirement_and_receipt_failure_rolls_it_back() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let application = healthy(&repo);
+    let mut upload = request("retire-blocked");
+    upload
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("collection_id".into(), "fixture-memory".into());
+    let first = application
+        .upload_source(caller("openclaw"), upload.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let delete = DeleteUploadedSourceRequest {
+        request_id: "retire-blocked-request".into(),
+        id: first.source_id.clone(),
+        revision: view.revision,
+        collection_id: "fixture-memory".into(),
+        confirmed: true,
+    };
+    upload.request_id = "queued-new-generation".into();
+    upload.content.push_str("\nLater text");
+    let pending = application
+        .upload_source(caller("openclaw"), upload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        application
+            .delete_uploaded_source(caller("openclaw"), delete)
+            .await,
+        Err(ApplicationError::RevisionConflict(_))
+    ));
+    application
+        .cancel_remote_job(caller("openclaw"), &pending.job_id)
+        .await
+        .unwrap();
+    let view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let delete = DeleteUploadedSourceRequest {
+        request_id: "retire-rollback".into(),
+        id: first.source_id.clone(),
+        revision: view.revision,
+        collection_id: "fixture-memory".into(),
+        confirmed: true,
+    };
+    let before = repo
+        .get_source_chunks(
+            repo.get_source(&first.source_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id
+                .as_ref()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    db.query("DEFINE FIELD OVERWRITE result ON remote_mutation_receipt TYPE object ASSERT false;")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(application
+        .delete_uploaded_source(caller("openclaw"), delete)
+        .await
+        .is_err());
+    let after = repo
+        .get_source_chunks(
+            repo.get_source(&first.source_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .id
+                .as_ref()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after.len(), before.len());
+    let pending = application
+        .get_remote_job(caller("openclaw"), &pending.job_id)
+        .await
+        .unwrap();
+    assert_eq!(pending.phase, "admitted");
+    assert_eq!(pending.error_code, None);
+    let receipts: Vec<serde_json::Value> = db
+        .query("SELECT * FROM remote_mutation_receipt")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(receipts.is_empty());
+}
+
+#[tokio::test]
+async fn retirement_invalidates_dormant_jobs_and_portable_restore_preserves_the_fence() {
+    for terminal in ["failed", "cancelled"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let application = healthy(&repo);
+        let mut original = request("dormant-original");
+        original
+            .provenance
+            .as_mut()
+            .unwrap()
+            .metadata
+            .insert("collection_id".into(), "fixture-memory".into());
+        let first = application
+            .upload_source(caller("openclaw"), original.clone())
+            .await
+            .unwrap();
+        execute(&application, "epoch").await;
+        let mut replacement = original.clone();
+        replacement.request_id = "dormant-replacement".into();
+        replacement.content.push_str("\nDormant replacement text");
+        let dormant = application
+            .upload_source(caller("openclaw"), replacement.clone())
+            .await
+            .unwrap();
+        if terminal == "cancelled" {
+            application
+                .cancel_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap();
+        } else {
+            let execution = application
+                .claim_remote_job("epoch", "fixture-worker")
+                .await
+                .unwrap()
+                .unwrap();
+            application
+                .recover_remote_job(execution, "provider_unavailable".into())
+                .await
+                .unwrap();
+        }
+        let before = application
+            .get_remote_job(caller("openclaw"), &dormant.job_id)
+            .await
+            .unwrap();
+        assert_eq!(before.status, terminal);
+        assert_eq!(before.generation, None);
+        let view = application
+            .get_uploaded_source(&first.source_id)
+            .await
+            .unwrap();
+        let delete = DeleteUploadedSourceRequest {
+            request_id: "retire-dormant".into(),
+            id: first.source_id.clone(),
+            revision: view.revision,
+            collection_id: "fixture-memory".into(),
+            confirmed: true,
+        };
+        let preflight = repo.remote_upload_resume_preflight_guard().await;
+        let retirement_app = healthy(&repo);
+        let retirement_request = delete.clone();
+        let retirement = tokio::spawn(async move {
+            retirement_app
+                .delete_uploaded_source(caller("openclaw"), retirement_request)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !retirement.is_finished(),
+            "retirement must wait through resume status/decode/compatibility preflight"
+        );
+        assert_ne!(
+            application
+                .get_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap()
+                .phase,
+            "retired"
+        );
+        drop(preflight);
+        tokio::time::timeout(Duration::from_secs(2), retirement)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(repo.get_source(&first.source_id).await.unwrap().is_none());
+        let restored_db = init_memory().await.unwrap();
+        let restored = Repository::new(restored_db.clone());
+        for table in ["processing_job", "remote_mutation_receipt"] {
+            for row in repo.portable_records_page(table, 0, 100).await.unwrap() {
+                restored.restore_portable_record(table, row).await.unwrap();
+            }
+        }
+        for candidate in [&repo, &restored] {
+            let application = healthy(candidate);
+            let retired = application
+                .get_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap();
+            assert_eq!(retired.status, terminal);
+            assert_eq!(
+                retired.cancellation_requested,
+                before.cancellation_requested
+            );
+            assert_eq!(retired.phase, "retired");
+            assert_eq!(retired.error_code.as_deref(), Some("source_retired"));
+            assert!(matches!(
+                application
+                    .resume_remote_job(caller("openclaw"), &dormant.job_id)
+                    .await,
+                Err(ApplicationError::RevisionConflict(_))
+            ));
+            let (changed, embeddings, extractions) = endpoint_app(
+                candidate,
+                "http://changed-provider.invalid",
+                "http://changed-extractor.invalid",
+            );
+            let error = changed
+                .resume_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, ApplicationError::RevisionConflict(_)));
+            assert!(error.to_string().contains("retired"));
+            assert_eq!(embeddings.load(Ordering::Relaxed), 0);
+            assert_eq!(extractions.load(Ordering::Relaxed), 0);
+            assert!(candidate
+                .claim_remote_upload_job("openclaw", &dormant.job_id, "later", "worker")
+                .await
+                .is_err());
+            assert!(application
+                .claim_remote_job("later", "worker")
+                .await
+                .unwrap()
+                .is_none());
+            // Original immutable admissions and deletion receipts still replay.
+            let replay = application
+                .upload_source(caller("openclaw"), replacement.clone())
+                .await
+                .unwrap();
+            assert!(replay.replayed);
+            assert_eq!(replay.job_id, dormant.job_id);
+            assert!(
+                application
+                    .delete_uploaded_source(caller("openclaw"), delete.clone())
+                    .await
+                    .unwrap()
+                    .replayed
+            );
+            assert!(candidate
+                .get_source(&first.source_id)
+                .await
+                .unwrap()
+                .is_none());
+        }
+        // Damaged restored execution input cannot mask permanent retirement
+        // with validation/repair guidance or remove owner-scoped status access.
+        restored_db
+            .query("UPDATE $job SET remote_input={}")
+            .bind((
+                "job",
+                graphrag_db::parse_record_id(&dormant.job_id, Some("processing_job")).unwrap(),
+            ))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let application = healthy(&restored);
+        assert!(matches!(
+            application
+                .resume_remote_job(caller("openclaw"), &dormant.job_id)
+                .await,
+            Err(ApplicationError::RevisionConflict(_))
+        ));
+        assert_eq!(
+            application
+                .get_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap()
+                .phase,
+            "retired"
+        );
+    }
+}
+
+#[tokio::test]
+async fn uploaded_source_retirement_guard_serializes_concurrent_job_admission() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let application = Arc::new(healthy(&repo));
+    let mut upload = request("source-guard-original");
+    upload
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("collection_id".into(), "fixture-memory".into());
+    let first = application
+        .upload_source(caller("openclaw"), upload.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let guard = repo.uploaded_source_mutation_guard().await;
+    let view = application
+        .get_uploaded_source(&first.source_id)
+        .await
+        .unwrap();
+    let expected = repo.get_source(&first.source_id).await.unwrap().unwrap();
+    upload.request_id = "concurrent-later-upload".into();
+    upload.content.push_str("\nIntentional later upload");
+    let later_app = application.clone();
+    let later =
+        tokio::spawn(async move { later_app.upload_source(caller("openclaw"), upload).await });
+    // An admission started during the reviewed source snapshot cannot insert a
+    // phantom queued job before the guarded retirement transaction finishes.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!later.is_finished());
+    let payload = serde_json::json!({"id":view.id,"revision":view.revision,"collection_id":"fixture-memory","confirmed":true});
+    let input = graphrag_db::RemoteMutationInput {
+        instance_id: "openclaw".into(),
+        request_id: "guarded-retirement".into(),
+        operation: "delete_source".into(),
+        payload_fingerprint: remote_mutation_fingerprint("delete_source", &payload).unwrap(),
+        payload,
+        result: serde_json::json!({"operation":"delete_source"}),
+    };
+    repo.apply_remote_mutation(
+        &guard,
+        input,
+        graphrag_db::RemoteMutationEffect::DeleteSource {
+            expected: Box::new(expected),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(repo.get_source(&first.source_id).await.unwrap().is_none());
+    drop(guard);
+    let admission = tokio::time::timeout(Duration::from_secs(2), later)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(admission.source_id, first.source_id);
+    execute(&application, "epoch").await;
+    let current = application
+        .get_uploaded_source(&admission.source_id)
+        .await
+        .unwrap();
+    assert!(current.content.ends_with("Intentional later upload"));
+}
+
+#[tokio::test]
+async fn applied_policy_drift_preserves_reviewed_graph_and_ignores_unused_extraction() {
+    for extract in [false, true] {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let (application, embedding_calls, extraction_calls) = endpoint_app(
+            &repo,
+            "http://embedding.invalid",
+            "http://extraction.invalid",
+        );
+        let mut input = request("legacy-prompt-upload");
+        input.extract_entities = extract;
+        let admission = application
+            .upload_source(caller("owner"), input.clone())
+            .await
+            .unwrap();
+        execute(&application, "epoch").await;
+        let job = repo
+            .get_remote_upload_job("owner", &admission.job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut legacy = job.input.processing_options;
+        legacy["extraction"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cache_version");
+        let source_id = graphrag_db::parse_record_id(&admission.source_id, Some("source")).unwrap();
+        db.query("UPDATE $source SET metadata.remote_upload.processing_options = $legacy; UPDATE $job SET remote_input.processing_options = $legacy")
+            .bind(("source", source_id.clone()))
+            .bind(("job", graphrag_db::parse_record_id(&admission.job_id, Some("processing_job")).unwrap()))
+            .bind(("legacy", legacy.clone())).await.unwrap().check().unwrap();
+        let before = application
+            .get_uploaded_source(&admission.source_id)
+            .await
+            .unwrap();
+        assert!(before.ingestion_policy_current);
+        assert_eq!(before.processing_policy_current, !extract);
+        assert_eq!(before.extraction_policy_current, extract.then_some(false));
+        let chunks = repo.get_source_chunks(&source_id).await.unwrap();
+        let mut entity = graphrag_core::Entity::new("Atlas", graphrag_core::EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(chunks[0].id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let mut query = db
+            .query("SELECT * FROM mentions ORDER BY id")
+            .await
+            .unwrap();
+        let mentions: Vec<serde_json::Value> = query.take(0).unwrap();
+        embedding_calls.store(0, Ordering::Relaxed);
+        extraction_calls.store(0, Ordering::Relaxed);
+        input.request_id = "reviewed-prompt-registration".into();
+        input.preserve_unchanged = true;
+        input.expected_source_revision = Some(before.revision.clone());
+        let registered = application
+            .upload_source(caller("owner"), input.clone())
+            .await
+            .unwrap();
+        execute(&application, "epoch").await;
+        let registered_status = application
+            .get_remote_job(caller("owner"), &registered.job_id)
+            .await
+            .unwrap();
+        assert_eq!(registered_status.status, "completed");
+        assert_eq!(
+            registered_status.result.as_ref().unwrap()["action"],
+            "unchanged"
+        );
+        let after = application
+            .get_uploaded_source(&admission.source_id)
+            .await
+            .unwrap();
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(after.successful_generation, before.successful_generation);
+        assert_eq!(
+            after.processing_policy_sha256,
+            before.processing_policy_sha256
+        );
+        assert_eq!(after.processing_policy_current, !extract);
+        assert_eq!(
+            repo.get_source_chunks(&source_id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|n| n.id.clone())
+                .collect::<Vec<_>>(),
+            chunks.iter().map(|n| n.id.clone()).collect::<Vec<_>>()
+        );
+        let mut query = db
+            .query("SELECT * FROM mentions ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(query.take::<Vec<serde_json::Value>>(0).unwrap(), mentions);
+        assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+        let (incompatible, calls, extraction) = endpoint_app(
+            &repo,
+            "http://new-embedding.invalid",
+            "http://extraction.invalid",
+        );
+        input.request_id = "reject-embedding-drift".into();
+        input.expected_source_revision = Some(after.revision.clone());
+        let rejected = incompatible
+            .upload_source(caller("owner"), input.clone())
+            .await
+            .unwrap();
+        let execution = incompatible
+            .claim_remote_job("epoch", "worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(incompatible
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await
+            .is_err());
+        assert_eq!(
+            incompatible
+                .get_remote_job(caller("owner"), &rejected.job_id)
+                .await
+                .unwrap()
+                .status,
+            "failed"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(extraction.load(Ordering::Relaxed), 0);
+        input.request_id = "changed-original-policy".into();
+        input.preserve_unchanged = false;
+        input.content.push_str("\nChanged indexed original.");
+        let changed = application
+            .upload_source(caller("owner"), input)
+            .await
+            .unwrap();
+        let execution = application
+            .claim_remote_job("epoch", "worker")
+            .await
+            .unwrap()
+            .unwrap();
+        let result = application
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await;
+        if extract {
+            assert!(result.is_err());
+            assert_eq!(
+                application
+                    .get_uploaded_source(&admission.source_id)
+                    .await
+                    .unwrap(),
+                after
+            );
+            assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+            assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+        } else {
+            result.unwrap();
+            let current = application
+                .get_uploaded_source(&admission.source_id)
+                .await
+                .unwrap();
+            assert!(current.processing_policy_current);
+            assert_eq!(
+                current.processing_policy_sha256,
+                before.processing_policy_sha256
+            );
+            assert_eq!(
+                application
+                    .get_remote_job(caller("owner"), &changed.job_id)
+                    .await
+                    .unwrap()
+                    .status,
+                "completed"
+            );
+            assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn disabled_extraction_job_resumes_after_unused_extractor_change() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let (original, _, _) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://original-extraction.invalid",
+    );
+    let admission = original
+        .upload_source(caller("owner"), request("disabled-extraction-job"))
+        .await
+        .unwrap();
+    original
+        .cancel_remote_job(caller("owner"), &admission.job_id)
+        .await
+        .unwrap();
+    let (changed, _, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://changed-extraction.invalid",
+    );
+    changed
+        .resume_remote_job(caller("owner"), &admission.job_id)
+        .await
+        .unwrap();
+    execute(&changed, "epoch").await;
+    assert_eq!(
+        changed
+            .get_remote_job(caller("owner"), &admission.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
 }

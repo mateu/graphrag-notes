@@ -349,6 +349,35 @@ impl RemoteApplicationOperations for EmbeddedApplication {
     async fn get_uploaded_source(&self, id: &str) -> ApplicationResult<UploadedSource> {
         crate::remote_jobs::source(self, id).await
     }
+    async fn lookup_uploaded_source(
+        &self,
+        caller: CallerIdentity,
+        key: &str,
+    ) -> ApplicationResult<UploadedSource> {
+        if key.trim().is_empty()
+            || key.trim() != key
+            || key.chars().count() > 256
+            || key.len() > 512
+            || key.chars().any(char::is_control)
+        {
+            return Err(ApplicationError::Validation(
+                "Use a bounded document_key".into(),
+            ));
+        }
+        crate::remote_jobs::source(
+            self,
+            &graphrag_db::repository::uploaded_source_id(&caller.instance_id, key),
+        )
+        .await
+    }
+    async fn delete_uploaded_source(
+        &self,
+        caller: CallerIdentity,
+        request: DeleteUploadedSourceRequest,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        self.remote_delete_uploaded_source_impl(caller, request)
+            .await
+    }
     async fn get_remote_job(
         &self,
         caller: CallerIdentity,

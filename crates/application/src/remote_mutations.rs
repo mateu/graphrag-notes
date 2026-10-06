@@ -145,6 +145,67 @@ fn outcome(
 }
 
 impl EmbeddedApplication {
+    pub(crate) async fn remote_delete_uploaded_source_impl(
+        &self,
+        caller: CallerIdentity,
+        request: DeleteUploadedSourceRequest,
+    ) -> ApplicationResult<RemoteMutationResponse> {
+        validate_reference(&request.id, &request.revision, "source")?;
+        if !request.confirmed
+            || request.collection_id.is_empty()
+            || request.collection_id.len() > 64
+            || !request
+                .collection_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        {
+            return Err(ApplicationError::Validation(
+                "Review the registered collection and source revision, then set confirmed=true."
+                    .into(),
+            ));
+        }
+        let mut input = input(&caller, &request.request_id, "delete_source", &request)?;
+        if let Some(receipt) = self.repo.find_remote_mutation_receipt(&input).await? {
+            return response(request.request_id, receipt);
+        }
+        let guard = self.repo.uploaded_source_mutation_guard().await;
+        if let Some(receipt) = self.repo.find_remote_mutation_receipt(&input).await? {
+            return response(request.request_id, receipt);
+        }
+        let view = crate::remote_jobs::source(self, &request.id).await?;
+        revision(&view.revision, &request.revision)?;
+        if view.instance_id != caller.instance_id
+            || view.provenance["metadata"]["collection_id"] != request.collection_id
+            || view.status != "ready"
+            || view.generation != view.successful_generation
+        {
+            return Err(ApplicationError::Validation("Only a ready source owned by this authenticated instance and registered collection may be retired.".into()));
+        }
+        let source = self
+            .repo
+            .get_source(&request.id)
+            .await?
+            .ok_or_else(|| ApplicationError::NotFound("Uploaded source missing".into()))?;
+        outcome(
+            &mut input,
+            &request.id,
+            &request.revision,
+            "deleted",
+            None,
+            None,
+        )?;
+        let receipt = self
+            .repo
+            .apply_remote_mutation(
+                &guard,
+                input,
+                RemoteMutationEffect::DeleteSource {
+                    expected: Box::new(source),
+                },
+            )
+            .await?;
+        response(request.request_id, receipt)
+    }
     pub(crate) async fn remote_note_snapshot_impl(
         &self,
         reference: RecordRef,

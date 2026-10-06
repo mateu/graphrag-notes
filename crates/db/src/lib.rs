@@ -11,13 +11,14 @@ pub mod schema;
 
 pub use error::{DbError, Result};
 pub use repository::{
-    parse_portable_record_id, parse_record_id, InferenceCacheEntry, InspectedConversation,
-    InspectedMessage, InspectionProvenance, MutationGuard, MutationNoteSnapshot, ProcessingJob,
-    ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, RecordInspection,
-    RemoteCaptureInput, RemoteCaptureReceipt, RemoteJobAdmission, RemoteJobLease,
-    RemoteMutationEffect, RemoteMutationInput, RemoteUploadInput, RemoteUploadJob,
-    RemoteUploadJobStatus, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
-    MAX_INSPECTION_NEIGHBORS, MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
+    parse_portable_record_id, parse_record_id, uploaded_processing_compatible,
+    uploaded_source_revision, InferenceCacheEntry, InspectedConversation, InspectedMessage,
+    InspectionProvenance, MutationGuard, MutationNoteSnapshot, ProcessingJob, ProcessingJobStatus,
+    ProcessingJobType, ProcessingJobUpdate, RecordInspection, RemoteCaptureInput,
+    RemoteCaptureReceipt, RemoteJobAdmission, RemoteJobLease, RemoteMutationEffect,
+    RemoteMutationInput, RemoteUploadInput, RemoteUploadJob, RemoteUploadJobStatus, Repository,
+    SourceDeleteSummary, SourceImportAction, SourceImportPlan, MAX_INSPECTION_NEIGHBORS,
+    MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
 };
 
 use std::ops::Deref;

@@ -38,6 +38,7 @@ fn options(app: &EmbeddedApplication) -> Value {
     // credentials, and these snapshots travel in portable archives.
     snapshot["embedding"]["endpoint_identity"] = json!(endpoint_identity(&embedding.endpoint));
     snapshot["extraction"]["endpoint_identity"] = json!(endpoint_identity(&extraction.endpoint));
+    snapshot["extraction"]["cache_version"] = json!(graphrag_agents::extraction_cache_version());
     if let Some(dimension) = embedding.known_dimension {
         snapshot["embedding"]["dimension"] = json!(dimension.to_string());
     }
@@ -52,7 +53,12 @@ fn endpoint_identity(endpoint: &str) -> String {
 }
 
 fn compatible(app: &EmbeddedApplication, job: &RemoteUploadJob) -> ApplicationResult<()> {
-    if job.input.processing_options != options(app) {
+    if !graphrag_db::uploaded_processing_compatible(
+        &job.input.processing_options,
+        &options(app),
+        job.input.extract_entities,
+        job.input.preserve_unchanged,
+    ) {
         return Err(ApplicationError::Compatibility("Uploaded job configuration changed or lacks provider identity; restore its server endpoint/model/chunk settings before resuming, or submit a new upload request".into()));
     }
     Ok(())
@@ -97,6 +103,7 @@ pub(crate) fn view(job: RemoteUploadJobStatus) -> ApplicationResult<RemoteJobSta
             | "provider_unavailable"
             | "compatibility"
             | "service_unreachable"
+            | "source_retired"
             | "internal" => code,
             _ => "internal".into(),
         }),
@@ -137,21 +144,49 @@ pub(crate) async fn upload(
     {
         return Err(ApplicationError::Validation("document_key must be nonempty, at most 256 characters/512 UTF-8 bytes, without controls or surrounding whitespace; content cannot contain NUL".into()));
     }
-    let fingerprint = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&(
-                REMOTE_UPLOAD_PAYLOAD_VERSION,
-                "uploaded_markdown",
-                &request.document_key,
-                &request.content,
-                &request.title,
-                &request.provenance,
-                request.extract_entities
-            ))
-            .map_err(|e| ApplicationError::Internal(e.to_string()))?
-        )
-    );
+    if request.create_only
+        && (request.preserve_unchanged || request.expected_source_revision.is_some())
+    {
+        return Err(ApplicationError::Validation(
+            "create_only cannot accompany preserve_unchanged or expected_source_revision".into(),
+        ));
+    }
+    if request
+        .expected_source_revision
+        .as_ref()
+        .is_some_and(|revision| {
+            revision.len() != 64
+                || !revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    {
+        return Err(ApplicationError::Validation(
+            "expected_source_revision must be lowercase SHA-256".into(),
+        ));
+    }
+    // Keep legacy unguarded fingerprint bytes immutable for durable replay.
+    let mut fingerprint_input = serde_json::to_vec(&(
+        REMOTE_UPLOAD_PAYLOAD_VERSION,
+        "uploaded_markdown",
+        &request.document_key,
+        &request.content,
+        &request.title,
+        &request.provenance,
+        request.extract_entities,
+    ))
+    .map_err(|e| ApplicationError::Internal(e.to_string()))?;
+    if request.preserve_unchanged {
+        fingerprint_input.extend_from_slice(b"\0preserve_unchanged");
+    }
+    if request.create_only {
+        fingerprint_input.extend_from_slice(b"\0create_only");
+    }
+    if let Some(revision) = &request.expected_source_revision {
+        fingerprint_input.extend_from_slice(b"\0expected_source_revision\0");
+        fingerprint_input.extend_from_slice(revision.as_bytes());
+    }
+    let fingerprint = format!("{:x}", Sha256::digest(&fingerprint_input));
     let admission = if let Some(admission) = app
         .repo
         .find_remote_upload_admission(&caller.instance_id, &request.request_id, &fingerprint)
@@ -176,6 +211,34 @@ pub(crate) async fn upload(
                 "Uploaded Markdown exceeds 200 chunks under server settings".into(),
             ));
         }
+        let mut processing_options = options(app);
+        // Retain the original snapshot for supplied-source metadata registration
+        // and unused extraction settings. Durable generation guards revalidate
+        // source ownership/revision/input before publishing any change.
+        if request.preserve_unchanged
+            || (!request.extract_entities && request.expected_source_revision.is_some())
+        {
+            let id = graphrag_db::repository::uploaded_source_id(
+                &caller.instance_id,
+                &request.document_key,
+            );
+            if let Some(source) = app.repo.get_source(&id).await? {
+                let origin = &source.metadata["remote_upload"];
+                let prior = &origin["processing_options"];
+                if origin["instance_id"] == caller.instance_id
+                    && origin["document_key"] == request.document_key
+                    && origin["extract_entities"] == request.extract_entities
+                    && graphrag_db::uploaded_processing_compatible(
+                        prior,
+                        &processing_options,
+                        request.extract_entities,
+                        request.preserve_unchanged,
+                    )
+                {
+                    processing_options = prior.clone();
+                }
+            }
+        }
         app.repo
             .admit_remote_upload(RemoteUploadInput {
                 authenticated_instance_id: caller.instance_id,
@@ -187,7 +250,10 @@ pub(crate) async fn upload(
                 source_provenance: serde_json::to_value(request.provenance)
                     .map_err(|e| ApplicationError::Internal(e.to_string()))?,
                 extract_entities: request.extract_entities,
-                processing_options: options(app),
+                preserve_unchanged: request.preserve_unchanged,
+                create_only: request.create_only,
+                expected_source_revision: request.expected_source_revision,
+                processing_options,
             })
             .await?
     };
@@ -261,23 +327,7 @@ pub(crate) async fn source(
     // Normalized unchanged refreshes retain backing text for existing byte
     // spans. The public source contract returns the exact latest supplied input.
     let content = origin_job.input.markdown;
-    let revision = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&(
-                id,
-                &source.title,
-                &source.content,
-                &content,
-                &source.content_hash,
-                source.generation,
-                source.successful_generation,
-                &source.status,
-                origin
-            ))
-            .map_err(|e| ApplicationError::Internal(e.to_string()))?
-        )
-    );
+    let revision = graphrag_db::uploaded_source_revision(&source, &content)?;
     Ok(UploadedSource {
         id: record_id_to_string(
             source
@@ -291,6 +341,10 @@ pub(crate) async fn source(
         content_hash: source.content_hash.clone(),
         generation: source.generation,
         successful_generation: source.successful_generation,
+        retired: source.metadata["remote_upload_retired"] == true
+            && source.successful_generation == 0
+            && source.content_hash.is_none()
+            && source.status == graphrag_core::SourceIngestionStatus::Ready,
         status: serde_json::to_value(source.status)
             .map_err(|e| ApplicationError::Internal(e.to_string()))?
             .as_str()
@@ -299,6 +353,29 @@ pub(crate) async fn source(
         instance_id: origin["instance_id"].as_str().unwrap_or_default().into(),
         document_key: origin["document_key"].as_str().unwrap_or_default().into(),
         provenance: origin["source"].clone(),
+        extract_entities: origin_job.input.extract_entities,
+        processing_policy_sha256: format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&origin_job.input.processing_options)
+                    .map_err(|e| ApplicationError::Internal(e.to_string()))?
+            )
+        ),
+        processing_policy_current: graphrag_db::uploaded_processing_compatible(
+            &origin_job.input.processing_options,
+            &options(app),
+            origin_job.input.extract_entities,
+            false,
+        ),
+        ingestion_policy_current: graphrag_db::uploaded_processing_compatible(
+            &origin_job.input.processing_options,
+            &options(app),
+            false,
+            false,
+        ),
+        extraction_policy_current: origin_job.input.extract_entities.then(|| {
+            origin_job.input.processing_options["extraction"] == options(app)["extraction"]
+        }),
         revision,
     })
 }
@@ -356,6 +433,22 @@ pub(crate) async fn resume(
     id: &str,
 ) -> ApplicationResult<RemoteJobStatus> {
     job_id(id)?;
+    // Retirement is definitive even when its saved input is damaged or current
+    // provider configuration differs. Read the bounded status before decoding
+    // execution input or producing compatibility/repair guidance.
+    let preflight = app.repo.remote_upload_resume_preflight_guard().await;
+    let status = app
+        .repo
+        .get_remote_upload_job_status(&caller.instance_id, id)
+        .await?
+        .ok_or_else(|| {
+            ApplicationError::NotFound("This instance has no uploaded job with that ID".into())
+        })?;
+    if status.phase == "retired" {
+        return Err(ApplicationError::RevisionConflict(
+            "This upload was retired with its source and cannot resume. Use a new upload request only to deliberately recreate the source.".into(),
+        ));
+    }
     let job = app
         .repo
         .get_remote_upload_job(&caller.instance_id, id)
@@ -364,6 +457,7 @@ pub(crate) async fn resume(
             ApplicationError::NotFound("This instance has no uploaded job with that ID".into())
         })?;
     compatible(app, &job)?;
+    drop(preflight);
     view(
         app.repo
             .resume_remote_upload_job(&caller.instance_id, id)

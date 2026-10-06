@@ -25,6 +25,14 @@ pub struct RemoteUploadInput {
     pub title: Option<String>,
     pub source_provenance: serde_json::Value,
     pub extract_entities: bool,
+    #[serde(default)]
+    pub preserve_unchanged: bool,
+    /// Create only if this source is still absent when the worker begins.
+    #[serde(default)]
+    pub create_only: bool,
+    /// Revision of the existing source inspected before this upload.
+    #[serde(default)]
+    pub expected_source_revision: Option<String>,
     pub processing_options: serde_json::Value,
 }
 
@@ -215,6 +223,85 @@ fn digest(domain: &str, parts: &[&str]) -> String {
     let bytes = serde_json::to_vec(&(domain, parts)).expect("string tuples serialize");
     format!("{:x}", Sha256::digest(bytes))
 }
+/// Compare applied upload settings; metadata-only registration never invokes
+/// extraction, and disabled extraction has no effect on generated vectors.
+pub fn uploaded_processing_compatible(
+    saved: &serde_json::Value,
+    current: &serde_json::Value,
+    extract_entities: bool,
+    preserve_unchanged: bool,
+) -> bool {
+    let known = |options: &serde_json::Value| {
+        options.is_object()
+            && options["runtime"].as_str().is_some_and(|v| !v.is_empty())
+            && ["provider", "model", "cache_identity", "endpoint_identity"]
+                .iter()
+                .all(|field| {
+                    options["embedding"][field]
+                        .as_str()
+                        .is_some_and(|v| !v.is_empty())
+                })
+            && (!extract_entities
+                || ["provider", "model", "cache_identity", "endpoint_identity"]
+                    .iter()
+                    .all(|field| {
+                        options["extraction"][field]
+                            .as_str()
+                            .is_some_and(|v| !v.is_empty())
+                    }))
+    };
+    if !known(saved) || !known(current) {
+        return false;
+    }
+    let mut saved = saved.clone();
+    let mut current = current.clone();
+    if !extract_entities || preserve_unchanged {
+        saved.as_object_mut().unwrap().remove("extraction");
+        current.as_object_mut().unwrap().remove("extraction");
+    }
+    saved == current
+}
+
+/// Provider-free source revision shared by inspection and generation fencing.
+pub fn uploaded_source_revision(source: &Source, original_markdown: &str) -> Result<String> {
+    let id = source
+        .id
+        .as_ref()
+        .ok_or_else(|| DbError::InvalidRemoteRequest("source identity missing".into()))?;
+    let origin = source
+        .metadata
+        .get("remote_upload_pending")
+        .or_else(|| source.metadata.get("remote_upload"))
+        .ok_or_else(|| DbError::InvalidRemoteRequest("uploaded source origin missing".into()))?;
+    let mut snapshot = serde_json::to_vec(&(
+        record_id_to_string(id),
+        &source.title,
+        &source.content,
+        original_markdown,
+        &source.content_hash,
+        source.generation,
+        source.successful_generation,
+        &source.status,
+        origin,
+    ))
+    .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?;
+    // Preserve historical unretired revision bytes; bind the new explicit
+    // tombstone when present so old inspected drafts cannot bypass retirement.
+    if source.metadata["remote_upload_retired"] == true {
+        snapshot.extend_from_slice(b"\0retired");
+    }
+    Ok(format!("{:x}", Sha256::digest(snapshot)))
+}
+
+pub fn uploaded_source_id(instance: &str, document_key: &str) -> String {
+    format!(
+        "source:{}",
+        digest(
+            "graphrag-remote-upload-source-v1",
+            &[instance, document_key]
+        )
+    )
+}
 fn job_id(value: &str) -> Result<RecordId> {
     let key = value
         .strip_prefix("processing_job:")
@@ -233,6 +320,11 @@ fn job_id(value: &str) -> Result<RecordId> {
 fn validate_input(input: &RemoteUploadInput) -> Result<()> {
     identity(&input.authenticated_instance_id)?;
     identity(&input.request_id)?;
+    if input.create_only && (input.preserve_unchanged || input.expected_source_revision.is_some()) {
+        return Err(DbError::InvalidRemoteRequest(
+            "create_only cannot accompany preserve_unchanged or expected_source_revision".into(),
+        ));
+    }
     if input.document_key.trim().is_empty()
         || input.document_key.trim() != input.document_key
         || input.document_key.chars().count() > 256
@@ -241,6 +333,20 @@ fn validate_input(input: &RemoteUploadInput) -> Result<()> {
     {
         return Err(DbError::InvalidRemoteRequest(
             "document key exceeds its bounds or contains controls or surrounding whitespace".into(),
+        ));
+    }
+    if input
+        .expected_source_revision
+        .as_ref()
+        .is_some_and(|revision| {
+            revision.len() != 64
+                || !revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    {
+        return Err(DbError::InvalidRemoteRequest(
+            "expected source revision must be lowercase SHA-256".into(),
         ));
     }
     if input.payload_fingerprint.len() != 64
@@ -334,6 +440,11 @@ fn claim_blocker_sql(instance: &str, uri: &str, id: &str, order: &str, created: 
 }
 
 impl Repository {
+    /// Keep resume status/decode/compatibility reads before one retirement
+    /// boundary. Drop this guard before entering the locked resume transition.
+    pub async fn remote_upload_resume_preflight_guard(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.remote_job_transition_lock.clone().lock_owned().await
+    }
     async fn remote_job_row(&self, instance: &str, id: &RecordId) -> Result<Option<JobRow>> {
         Ok(self.db.query("SELECT * FROM processing_job WHERE id = $id AND job_type = 'remote_upload' AND remote_instance_id = $instance LIMIT 1")
             .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.take(0)?)
@@ -509,6 +620,9 @@ impl Repository {
         let row = self.remote_job_row(instance, &id).await?.ok_or_else(|| {
             DbError::NotFound("remote upload job".into(), record_id_to_string(&id))
         })?;
+        if row.remote_phase == "retired" {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(&id)));
+        }
         if !matches!(row.status.as_str(), "failed" | "cancelled") {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(&id)));
         }
@@ -540,7 +654,7 @@ impl Repository {
         let Some(row) = self.remote_job_row(instance, id).await? else {
             return Ok(None);
         };
-        if row.status != "queued" || row.remote_cancel_requested {
+        if row.status != "queued" || row.remote_cancel_requested || row.remote_phase == "retired" {
             return Ok(None);
         }
         // Decode and validate durable payload before changing ownership. Keep
@@ -682,6 +796,9 @@ impl Repository {
     }
     async fn ensure_remote_source_current(&self, job: &RemoteUploadJob) -> Result<()> {
         let expected_job = record_id_to_string(job.job.id.as_ref().expect("persisted ID"));
+        if job.phase == "retired" {
+            return Err(DbError::RemoteJobSourceConflict(expected_job));
+        }
         if job.source_generation.is_none() {
             // An older unprepared request cannot supersede a newer request
             // that already acquired this logical document. Keep the sequence
@@ -745,8 +862,17 @@ impl Repository {
         );
         let source_id = RecordId::new("source", source_key);
         let prior = self.get_source(&job.source_uri).await?;
+        // Revalidate a client's negative lookup under the generation lock. An
+        // earlier queued upload may have published since that lookup.
+        if input.create_only && prior.is_some() {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
         let hash = graphrag_core::normalized_content_hash(&input.markdown);
         let mut prior_completed = false;
+        let mut prior_exact_input_matches = false;
+        let mut prior_revision_matches = input.expected_source_revision.is_none();
         if let Some(source) = &prior {
             let origin = source
                 .metadata
@@ -769,10 +895,37 @@ impl Repository {
                         )));
                     }
                     prior_completed = other.job.status == "completed";
+                    if let Some(expected) = &input.expected_source_revision {
+                        prior_revision_matches =
+                            uploaded_source_revision(source, &other.input.markdown)? == *expected
+                                && uploaded_processing_compatible(
+                                    &other.input.processing_options,
+                                    &input.processing_options,
+                                    input.extract_entities,
+                                    input.preserve_unchanged,
+                                );
+                    }
+                    let mut prior_provenance = other.input.source_provenance.clone();
+                    let mut desired_provenance = input.source_provenance.clone();
+                    for provenance in [&mut prior_provenance, &mut desired_provenance] {
+                        if let Some(metadata) = provenance["metadata"].as_object_mut() {
+                            metadata.remove("collection_id");
+                        }
+                    }
+                    prior_exact_input_matches = other.input.markdown == input.markdown
+                        && prior_provenance == desired_provenance;
                 }
             }
         }
+        if !prior_revision_matches {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
         let unchanged = prior_completed
+            && prior
+                .as_ref()
+                .is_some_and(|source| source.metadata["remote_upload_retired"] != true)
             && prior.as_ref().is_some_and(|source| {
                 source.status == SourceIngestionStatus::Ready
                     && source.content_hash.as_deref() == Some(hash.as_str())
@@ -782,6 +935,11 @@ impl Repository {
                     && source.metadata["remote_upload"]["extract_entities"]
                         == input.extract_entities
             });
+        if input.preserve_unchanged && (!unchanged || !prior_exact_input_matches) {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
         let generation = prior.as_ref().map_or(1, |source| {
             if unchanged {
                 source.successful_generation
@@ -813,6 +971,9 @@ impl Repository {
         let mut metadata = prior
             .as_ref()
             .map_or_else(|| serde_json::json!({}), |source| source.metadata.clone());
+        if let Some(metadata) = metadata.as_object_mut() {
+            metadata.remove("remote_upload_retired");
+        }
         let origin = serde_json::json!({"instance_id":job.instance_id,"document_key":input.document_key,"request_id":job.request_id,"source":input.source_provenance,"job_id":record_id_to_string(&lease.job_id),"processing_options":input.processing_options,"extract_entities":input.extract_entities});
         if unchanged {
             metadata["remote_upload"] = origin;
