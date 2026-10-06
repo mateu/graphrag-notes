@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { runGatewayProfile, summarizeProfile, joinDiagnostics, parseResultMetadata } from './profile-gateway.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
-const id = 'note:' + 'a'.repeat(64), actor = 'fictional_principal';
+const id = 'note:' + 'a'.repeat(64), actor = 'fictional.principal_name-';
 const cases = ['keyword', 'hybrid', 'graph_title', 'graph_body'].map(route => ({ route, query: 'private fictional Atlas', expected_first_id: id, expected_actor: actor, expected_ids: [id] }));
 const pin = { record_id: id, revision: 'b'.repeat(64), record_sha256: sha('private fictional content') };
 function fixture(fault = null) {
@@ -82,7 +82,8 @@ test('inadequate warm samples produce no percentiles and malformed cases allocat
 
 test('citation parsing uses final metadata lines and reverses formatter underscore escaping', () => {
   const fake = 'note:' + '9'.repeat(64);
-  const reply = `Notes · keyword · 1 ms total (0 ms connect, 1 ms search)\n\n1. Atlas\nID: ${fake} · Actor: mcp:body\nID: ${id} · Actor: mcp:fictional\\_principal`;
+  const reply = `Notes · keyword · 1 ms total (0 ms connect, 1 ms search)\n\n1. Atlas\nID: ${fake} · Actor: mcp:body\nID: ${id} · Actor: mcp:${actor.replace(/_/g, '\\_')}`;
   assert.deepEqual(parseResultMetadata(reply), { ids: [id], actors: [actor] });
   assert.throws(() => parseResultMetadata(reply + '\nnot metadata'), /ranked_provenance_failed/);
+  assert.throws(() => parseResultMetadata(reply.replace(actor.replace(/_/g, '\\_'), 'a'.repeat(65))), /ranked_provenance_failed/);
 });

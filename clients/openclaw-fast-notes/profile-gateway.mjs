@@ -18,7 +18,7 @@ export function parseResultMetadata(reply) {
   const records = blocks.map(block => {
     // The formatter emits this as each result block's final line. Corpus text
     // can contain citation-looking strings without becoming metadata evidence.
-    const match = block.match(/\nID: (note:[a-f0-9]{64}) · Actor: mcp:((?:[a-zA-Z0-9_-]|\\_)+)$/);
+    const match = block.match(/\nID: (note:[a-f0-9]{64}) · Actor: mcp:((?:[a-zA-Z0-9_.-]|\\_){1,64})$/);
     check(match, 'ranked_provenance_failed');
     return { id: match[1], actor: match[2].replace(/\\_/g, '_') };
   });
@@ -41,7 +41,7 @@ function pinned(value, expected) {
 function validateCases(cases, pin) {
   check(Array.isArray(cases) && cases.length === 4 && cases.every((item, i) => item?.route === ROUTES[i] &&
     typeof item.query === 'string' && item.query.length > 0 && Array.from(item.query).length <= 1024 &&
-    /^note:[a-f0-9]{64}$/.test(item.expected_first_id) && /^[a-zA-Z0-9_-]{1,96}$/.test(item.expected_actor) &&
+    /^note:[a-f0-9]{64}$/.test(item.expected_first_id) && /^[a-zA-Z0-9_.-]{1,64}$/.test(item.expected_actor) &&
     (!item.expected_ids || (Array.isArray(item.expected_ids) && item.expected_ids.length >= 1 && item.expected_ids.length <= 5 &&
       item.expected_ids[0] === item.expected_first_id && new Set(item.expected_ids).size === item.expected_ids.length &&
       item.expected_ids.every(id => /^note:[a-f0-9]{64}$/.test(id))))), 'invalid_cases');
