@@ -64,6 +64,41 @@ failed pairs and zero judged-positive reciprocal-rank regressions in its 60
 answerable comparisons. This narrow timing workload does not replace #92's
 larger relevance suite or establish graph quality improvement.
 
+## Final graph candidate after the typed pilot
+
+The optimized #93 candidate (compiled inputs `3dc616a09ce3`) was measured
+separately after reprocessing eight selected notes. The same frozen corpus now
+has 482 entities and 582 mentions; note bodies, vectors, source generations and
+all 458 historical mentions remain intact. **672 further samples passed with
+zero failures**, with twenty warmed observations per category/policy/load.
+This run has RPC timing only, without the #95 same-RPC phase instrumentation.
+Concurrent refresh/build activity continued on the same host.
+
+| Warm policy | One lane p50 / p95 ms | Four lanes p50 / p95 ms |
+| --- | ---: | ---: |
+| keyword/off | 3.1 / 255.7 | 4.3 / 352.5 |
+| hybrid/off | 462.4 / 717.4 | 582.3 / 911.6 |
+| hybrid/auto | 623.3 / 1,067.0 | 860.9 / 1,365.3 |
+| hybrid/on | 633.0 / 1,108.3 | 860.5 / 1,363.7 |
+
+Hybrid/off meets the pooled one-second target; graph exceeds it. Paired
+RPC graph-minus-hybrid p95 is **356.5–361.7 ms** at one lane and
+**473.6–485.9 ms** at four, above the 250 ms target. Each group has 80 pairs,
+zero failed pairs and no regression in 60 judged-positive RR comparisons.
+The broad graph category reaches 1,198.7 ms p95 at one lane and 1,417.5 ms
+at four; narrow graph categories stay below one second. Broad keyword still
+misses its 250 ms target. These are observed operating limits, not relaxed
+budgets.
+
+The [full relevance comparison](graph-relevance-93.json) shows the graph
+candidate removes four old calibration ranking regressions and matches
+hybrid/off's judged RR/recall in this limited suite. The typed pilot adds
+validated evidence without further ranking gains. Larger fictional dense
+fixtures demonstrate bounded candidate selection, but the new query-relevant
+seed preparation has a practical cost. Profile and reduce that work before
+expanding extraction. Differences from the earlier build/run do not isolate
+backend phases or establish a causal speedup/slowdown under changing load.
+
 ## Normal clawd OpenClaw interface
 
 A fresh dedicated webchat session made **86 event-verified direct commands**:
@@ -107,16 +142,20 @@ search latency. Normal daily configuration was preserved.
 
 ## Prioritized next work
 
-1. Improve exact vector retrieval using measured storage/scan/allocation costs,
+1. Profile the final graph seed preparation and reuse bounded retrieval evidence
+   where possible. Preserve high-degree useful-seed coverage, scoped current
+   aliases, visibility, accepted-only traversal and #92 judgments. Verify
+   actual same-request phases before attributing its RPC overhead.
+2. Improve exact vector retrieval using measured storage/scan/allocation costs,
    preserving exact cosine results, filtering, ordering and revision/provenance.
    Use paired #92 judgments and #95 traces; do not introduce ANN or increase
    concurrency without evidence.
-2. Investigate broad full-text scoring/candidate hydration, which accounts for
+3. Investigate broad full-text scoring/candidate hydration, which accounts for
    the keyword tail and adds roughly 300 ms to broad hybrid searches. Preserve
    the candidate bounds and stable ranking contract.
-3. Profile normal gateway dispatch and connection reuse with event/handler
+4. Profile normal gateway dispatch and connection reuse with event/handler
    observations; UI p95 can exceed one second even when search is under it.
-4. Keep a small, explicit model warmup option and honest first-use guidance;
+5. Keep a small, explicit model warmup option and honest first-use guidance;
    do not force it at service startup or change model defaults based on this run.
 
 Hardware-dependent thresholds remain opt-in. Normal CI validates protocol,

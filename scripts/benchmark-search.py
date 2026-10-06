@@ -313,22 +313,22 @@ def main(argv=None):
         token = os.environ.get(args.credential_env, "")
         evaluation.require(token and not any(ch.isspace() for ch in token), "missing credential")
         endpoint(args.endpoint)
-        evaluation.validate_destinations(args.output, args.summary)
-        deadline = time.monotonic() + args.deadline_seconds
-        samples = run(suite, lambda: McpClient(args.endpoint, token, args.timeout, deadline), args.rounds, concurrency)
-        if args.backend_log:
-            evaluation.require(args.backend_log.stat().st_size <= 64 * 1024 * 1024, "trace exceeds bound")
-            phases = parse_phases(args.backend_log.read_text())
-            for row in samples:
-                row["backend_phases"] = phases.get(row.get("rpc_id_sha256"), {})
-        report = {"schema_version": 1, "metadata": suite["metadata"], "samples": samples,
-                  "suite_sha256": suite_sha256, "runner_sha256": RUNNER_SHA256,
-                  "evaluation_runner_sha256": evaluation.RUNNER_SHA256}
-        evaluation.write_new(args.output, report)
-        evaluation.write_new(args.summary, summary(report))
-        failed = sum(r["status"] != "ok" for r in samples)
-        print(json.dumps({"samples": len(samples), "failed": failed}))
-        return 1 if failed else 0
+        with evaluation.reserve_reports(args.output, args.summary) as write_report:
+            deadline = time.monotonic() + args.deadline_seconds
+            samples = run(suite, lambda: McpClient(args.endpoint, token, args.timeout, deadline), args.rounds, concurrency)
+            if args.backend_log:
+                evaluation.require(args.backend_log.stat().st_size <= 64 * 1024 * 1024, "trace exceeds bound")
+                phases = parse_phases(args.backend_log.read_text())
+                for row in samples:
+                    row["backend_phases"] = phases.get(row.get("rpc_id_sha256"), {})
+            report = {"schema_version": 1, "metadata": suite["metadata"], "samples": samples,
+                      "suite_sha256": suite_sha256, "runner_sha256": RUNNER_SHA256,
+                      "evaluation_runner_sha256": evaluation.RUNNER_SHA256}
+            write_report(args.output, report)
+            write_report(args.summary, summary(report))
+            failed = sum(r["status"] != "ok" for r in samples)
+            print(json.dumps({"samples": len(samples), "failed": failed}))
+            return 1 if failed else 0
     except (BenchmarkError, evaluation.EvaluationError, OSError, ValueError, TypeError):
         print("Benchmark setup failed; check private permissions, schema, endpoint and bounds.", file=sys.stderr)
         return 2

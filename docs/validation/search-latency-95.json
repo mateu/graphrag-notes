@@ -6,8 +6,7 @@
     "entities": 365,
     "mentions": 458,
     "accepted_inter_note_edges": 0,
-    "schema_version": 18,
-    "archive_manifest_sha256": "623afebd1cde34dfc1c70e46d60409f4d6802aa9cd32eb5b5d12eda9b575a83c"
+    "schema_version": 18
   },
   "backend_build": {
     "profile": "release",
@@ -4211,5 +4210,1164 @@
       "search_notes": 21,
       "get_record": 21
     }
+  },
+  "final_graph_candidate": {
+    "compiled_inputs_commit": "3dc616a09ce37465dd96a3298ddf3e405ab62a54",
+    "binary_sha256": "ddc33f9b5c15bc40affe392b7691267945785ed34cfb2b20baa6a05d08d561cf",
+    "profile": "release",
+    "schema_version": 19,
+    "snapshot_counts": {
+      "notes": 9751,
+      "entities": 482,
+      "mentions": 582,
+      "accepted_inter_note_edges": 0
+    },
+    "pilot_notes": 8,
+    "sample_count": 672,
+    "failed": 0,
+    "same_rpc_backend_tracing": false,
+    "load": "Concurrent private refresh/build activity on the same 18-CPU 48-GiB host; not an idle controlled comparison",
+    "observations": {
+      "schema_version": 1,
+      "suite_sha256": "7377b6c87810008828cbad9b2294b494c89ca4e506e1a02b7602475013137705",
+      "groups": [
+        {
+          "concurrency": 1,
+          "policy": "keyword-off",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 1.7513339989818633,
+            "max_ms": 277.26391598116606
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 277.26391598116606,
+                "max_ms": 277.26391598116606
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 2.918332989793271,
+                "max_ms": 2.918332989793271
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1.7513339989818633,
+                "max_ms": 1.7513339989818633
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 8.850166050251573,
+                "max_ms": 8.850166050251573
+              }
+            }
+          },
+          "target_ms": 250,
+          "within_target": null
+        },
+        {
+          "concurrency": 1,
+          "policy": "keyword-off",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 3.1447919900529087,
+            "p95_ms": 255.71491598384455,
+            "min_ms": 1.5985410427674651,
+            "max_ms": 290.99595797015354
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 230.20337501657195,
+                "p95_ms": 274.65979201951995,
+                "min_ms": 208.95666698925197,
+                "max_ms": 290.99595797015354
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 2.1465209720190614,
+                "p95_ms": 3.578791976906359,
+                "min_ms": 1.910791965201497,
+                "max_ms": 8.66241700714454
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1.7271249962504953,
+                "p95_ms": 2.528916986193508,
+                "min_ms": 1.5985410427674651,
+                "max_ms": 2.5412089889869094
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 3.457667015027255,
+                "p95_ms": 5.2657920168712735,
+                "min_ms": 2.911332994699478,
+                "max_ms": 5.273666989523917
+              }
+            }
+          },
+          "target_ms": 250,
+          "within_target": false
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-off",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 332.15616596862674,
+            "max_ms": 1505.9585840208456
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1505.9585840208456,
+                "max_ms": 1505.9585840208456
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 421.1191250360571,
+                "max_ms": 421.1191250360571
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 332.15616596862674,
+                "max_ms": 332.15616596862674
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 538.652999966871,
+                "max_ms": 538.652999966871
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": null
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-off",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 462.4278749979567,
+            "p95_ms": 717.3972909804434,
+            "min_ms": 338.45595800084993,
+            "max_ms": 938.5164580307901
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 689.7091454884503,
+                "p95_ms": 842.1737909666263,
+                "min_ms": 649.4131250074133,
+                "max_ms": 938.5164580307901
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 457.9196250124369,
+                "p95_ms": 513.1449999753386,
+                "min_ms": 431.3637079903856,
+                "max_ms": 518.289708008524
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 354.4416039949283,
+                "p95_ms": 398.8664170028642,
+                "min_ms": 338.45595800084993,
+                "max_ms": 432.4827079544775
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 462.4278749979567,
+                "p95_ms": 530.3037089761347,
+                "min_ms": 428.9864170132205,
+                "max_ms": 533.7977919843979
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": true
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-auto",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 496.1697499966249,
+            "max_ms": 960.1862499839626
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 960.1862499839626,
+                "max_ms": 960.1862499839626
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 613.0287910345942,
+                "max_ms": 613.0287910345942
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 496.1697499966249,
+                "max_ms": 496.1697499966249
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 632.5775000150315,
+                "max_ms": 632.5775000150315
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": null
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-auto",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 623.3208125049714,
+            "p95_ms": 1067.0432499609888,
+            "min_ms": 501.576374983415,
+            "max_ms": 1305.9923329856247
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1019.671541522257,
+                "p95_ms": 1198.7107919994742,
+                "min_ms": 952.6031669811346,
+                "max_ms": 1305.9923329856247
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 628.5303125041537,
+                "p95_ms": 721.6287499759346,
+                "min_ms": 595.781915995758,
+                "max_ms": 728.388375020586
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 520.9215210052207,
+                "p95_ms": 609.9390420131385,
+                "min_ms": 501.576374983415,
+                "max_ms": 628.487584006507
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 621.1561874952167,
+                "p95_ms": 697.1994999912567,
+                "min_ms": 596.0084170219488,
+                "max_ms": 735.8594999532215
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": false
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-on",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 501.3451669947244,
+            "max_ms": 1008.5020420374349
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1008.5020420374349,
+                "max_ms": 1008.5020420374349
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 601.4832080109045,
+                "max_ms": 601.4832080109045
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 501.3451669947244,
+                "max_ms": 501.3451669947244
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 610.2325840038247,
+                "max_ms": 610.2325840038247
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": null
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-on",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 633.0359579878859,
+            "p95_ms": 1108.280458021909,
+            "min_ms": 506.50662498082966,
+            "max_ms": 1208.2439169753343
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1019.270354474429,
+                "p95_ms": 1187.51991703175,
+                "min_ms": 942.1229580184445,
+                "max_ms": 1208.2439169753343
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 631.4375834772363,
+                "p95_ms": 732.1764170192182,
+                "min_ms": 600.8922079927288,
+                "max_ms": 739.624791953247
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 520.8044374885503,
+                "p95_ms": 641.8377920053899,
+                "min_ms": 506.50662498082966,
+                "max_ms": 644.5328330155462
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 629.8129789938685,
+                "p95_ms": 710.5296250083484,
+                "min_ms": 589.3823329824954,
+                "max_ms": 733.0303749768063
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": false
+        },
+        {
+          "concurrency": 4,
+          "policy": "keyword-off",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 3.4232919570058584,
+            "max_ms": 332.3352920124307
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 332.3352920124307,
+                "max_ms": 332.3352920124307
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 3.998541971668601,
+                "max_ms": 3.998541971668601
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 3.4232919570058584,
+                "max_ms": 3.4232919570058584
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 7.2243340546265244,
+                "max_ms": 7.2243340546265244
+              }
+            }
+          },
+          "target_ms": 250,
+          "within_target": null
+        },
+        {
+          "concurrency": 4,
+          "policy": "keyword-off",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 4.320020496379584,
+            "p95_ms": 352.52695804229006,
+            "min_ms": 2.3232909734360874,
+            "max_ms": 372.1106249722652
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 337.2534794907551,
+                "p95_ms": 361.57104204175994,
+                "min_ms": 308.99395898450166,
+                "max_ms": 372.1106249722652
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 3.543104510754347,
+                "p95_ms": 3.8655419484712183,
+                "min_ms": 3.0834589852020144,
+                "max_ms": 3.900500014424324
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 3.0733125167898834,
+                "p95_ms": 3.556207986548543,
+                "min_ms": 2.3232909734360874,
+                "max_ms": 3.5904159885831177
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 5.900457996176556,
+                "p95_ms": 12.921207991894335,
+                "min_ms": 4.739540978334844,
+                "max_ms": 12.965875037480146
+              }
+            }
+          },
+          "target_ms": 250,
+          "within_target": false
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-off",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 520.0139170046896,
+            "max_ms": 1000.109207991045
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1000.109207991045,
+                "max_ms": 1000.109207991045
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 649.0268749766983,
+                "max_ms": 649.0268749766983
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 520.0139170046896,
+                "max_ms": 520.0139170046896
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 697.8854580083862,
+                "max_ms": 697.8854580083862
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": null
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-off",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 582.3258960153908,
+            "p95_ms": 911.6324579808861,
+            "min_ms": 441.65345799410716,
+            "max_ms": 963.7281670002267
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 874.4498955202289,
+                "p95_ms": 948.4492499614134,
+                "min_ms": 816.421291034203,
+                "max_ms": 963.7281670002267
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 576.5755000174977,
+                "p95_ms": 640.5860839877278,
+                "min_ms": 541.1930839763954,
+                "max_ms": 657.6065419940278
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 458.8591250067111,
+                "p95_ms": 510.0034999777563,
+                "min_ms": 441.65345799410716,
+                "max_ms": 516.8414589716122
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 590.5868955305777,
+                "p95_ms": 641.8490419746377,
+                "min_ms": 550.8744579856284,
+                "max_ms": 657.2034999844618
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": true
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-auto",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 840.6948749907315,
+            "max_ms": 1500.2874999772757
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1500.2874999772757,
+                "max_ms": 1500.2874999772757
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 987.1130840037949,
+                "max_ms": 987.1130840037949
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 840.6948749907315,
+                "max_ms": 840.6948749907315
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1007.1703339926898,
+                "max_ms": 1007.1703339926898
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": null
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-auto",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 860.8544370217714,
+            "p95_ms": 1365.2960829786025,
+            "min_ms": 671.8934589880519,
+            "max_ms": 1465.248042019084
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1328.7601039628498,
+                "p95_ms": 1417.5387080176733,
+                "min_ms": 1185.0535000558011,
+                "max_ms": 1465.248042019084
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 863.9071460056584,
+                "p95_ms": 937.0573749765754,
+                "min_ms": 793.5784169822,
+                "max_ms": 980.1472090184689
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 746.9984580238815,
+                "p95_ms": 805.8919159811921,
+                "min_ms": 671.8934589880519,
+                "max_ms": 809.1341669787653
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 858.1865000305697,
+                "p95_ms": 894.4040419883095,
+                "min_ms": 779.3273329734802,
+                "max_ms": 945.2541670179926
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": false
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-on",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 842.3712499788962,
+            "max_ms": 1503.6499169655144
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1503.6499169655144,
+                "max_ms": 1503.6499169655144
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 974.2851249757223,
+                "max_ms": 974.2851249757223
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 842.3712499788962,
+                "max_ms": 842.3712499788962
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1005.9983750106767,
+                "max_ms": 1005.9983750106767
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": null
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-on",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 860.4614374926314,
+            "p95_ms": 1363.7152079609223,
+            "min_ms": 676.1304590036161,
+            "max_ms": 1454.8420829814859
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1321.3733334850986,
+                "p95_ms": 1405.6317079812288,
+                "min_ms": 1193.374790949747,
+                "max_ms": 1454.8420829814859
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 849.8527290066704,
+                "p95_ms": 929.4367909897119,
+                "min_ms": 796.845042030327,
+                "max_ms": 956.9034170126542
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 758.4831455023959,
+                "p95_ms": 814.0812499914318,
+                "min_ms": 676.1304590036161,
+                "max_ms": 825.1475830329582
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 863.3931249787565,
+                "p95_ms": 918.1236670119688,
+                "min_ms": 789.652582956478,
+                "max_ms": 924.5590419741347
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": false
+        }
+      ],
+      "limits": [
+        "Stateless HTTP client timings exclude MCP initialization and guarded readback.",
+        "First observations are not proof of unloaded model/cold OS cache.",
+        "Percentiles require at least 20 successful samples; failures remain counted.",
+        "Phase timings use the same hashed RPC identity; nested phases are not additive.",
+        "Concurrent lanes include guarded readback between searches; this is bounded client load.",
+        "Conversational model time and direct OpenClaw dispatch require separate observations."
+      ],
+      "graph_pairs": [
+        {
+          "concurrency": 1,
+          "policy": "hybrid-auto",
+          "paired_search_rpc_delta": {
+            "samples": 80,
+            "p50_ms": 178.90962553792633,
+            "p95_ms": 356.5370010328479,
+            "min_ms": 121.21824896894395,
+            "max_ms": 410.6620829552412
+          },
+          "scheduled_pairs": 80,
+          "failed_pairs": 0,
+          "target_delta_ms": 250,
+          "within_target": false,
+          "judged_positive_rr_comparisons": 60,
+          "judged_positive_rr_regressions": 0
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-on",
+          "paired_search_rpc_delta": {
+            "samples": 80,
+            "p50_ms": 178.58335404889658,
+            "p95_ms": 361.6966680274345,
+            "min_ms": 120.01983297523111,
+            "max_ms": 411.70574905117974
+          },
+          "scheduled_pairs": 80,
+          "failed_pairs": 0,
+          "target_delta_ms": 250,
+          "within_target": false,
+          "judged_positive_rr_comparisons": 60,
+          "judged_positive_rr_regressions": 0
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-auto",
+          "paired_search_rpc_delta": {
+            "samples": 80,
+            "p50_ms": 286.7806664726231,
+            "p95_ms": 485.9421669389121,
+            "min_ms": 185.77495805220678,
+            "max_ms": 588.3028339594603
+          },
+          "scheduled_pairs": 80,
+          "failed_pairs": 0,
+          "target_delta_ms": 250,
+          "within_target": false,
+          "judged_positive_rr_comparisons": 60,
+          "judged_positive_rr_regressions": 0
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-on",
+          "paired_search_rpc_delta": {
+            "samples": 80,
+            "p50_ms": 293.1428755109664,
+            "p95_ms": 473.5728340456262,
+            "min_ms": 169.07291603274643,
+            "max_ms": 589.2104169470258
+          },
+          "scheduled_pairs": 80,
+          "failed_pairs": 0,
+          "target_delta_ms": 250,
+          "within_target": false,
+          "judged_positive_rr_comparisons": 60,
+          "judged_positive_rr_regressions": 0
+        }
+      ]
+    },
+    "relevance_evidence": "graph-relevance-93.json",
+    "interpretation": "Hybrid/off stays within the pooled1s target; graph p95 and paired graph RPC delta exceed targets. Narrow keyword routes remain fast; broad keyword tail misses250ms. Cross-run changes do not isolate a causal phase. Keep extraction bounded and graph explicitly controlled; profile final seed preparation before further rollout."
   }
 }
