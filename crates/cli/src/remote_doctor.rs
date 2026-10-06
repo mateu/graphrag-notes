@@ -39,6 +39,8 @@ struct RefreshCounts {
 #[serde(deny_unknown_fields)]
 struct RefreshRetry {
     action: Option<String>,
+    #[serde(default)]
+    plan_sha256: Option<String>,
 }
 /// This is client-local evidence; a successful refresh does not establish current server freshness.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -115,7 +117,15 @@ fn load_refresh(path: &Path, server: &str, instance: &str) -> Option<RefreshEvid
             .retry
             .action
             .as_deref()
-            .is_some_and(|value| !matches!(value, "resume" | "refresh"))
+            .is_some_and(|value| !matches!(value, "resume" | "refresh" | "reconcile"))
+        || evidence.retry.plan_sha256.as_deref().is_some_and(|value| {
+            value.len() != 64
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        || (evidence.retry.action.as_deref() == Some("reconcile")
+            && evidence.retry.plan_sha256.is_none())
         || [&evidence.last_attempt_at, &evidence.last_success_at]
             .into_iter()
             .flatten()
@@ -354,6 +364,9 @@ pub(crate) async fn run(
                     evidence.last_attempt_at.as_deref().unwrap_or("unknown"),
                     evidence.last_success_at.as_deref().unwrap_or("unknown")
                 );
+                if let Some(plan) = &evidence.retry.plan_sha256 {
+                    println!("  Pending cleanup retry: review the saved plan, then use the refresh adapter with --reconcile --yes --plan-sha256 {plan}.");
+                }
             }
             println!("Read-only: no provider probes, inference, corpus mutation, backup, or second database owner.");
         }

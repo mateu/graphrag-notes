@@ -31,6 +31,8 @@ next operation or expiry. Status itself never refreshes that observation.
 Jobs require the existing `jobs` capability. Status returns counts for a bounded
 recent sample of at most ten jobs belonging to the authenticated principal;
 it does not return other principals' jobs, source paths, job inputs, or results.
+Failed/interrupted work in that sample is `partial` with explicit inspect/repair/resume
+guidance; an unrecognized state is `unknown`.
 Missing permission is `forbidden`, not a storage failure. Backup evidence stays
 `unknown` until there is a trusted recorded backup/restore evidence contract.
 Ask the service owner to inspect their latest backup and restore verification.
@@ -64,7 +66,9 @@ unreadable source documents also counted by the adapter.
 Its version-one contract contains `collection_id`, `endpoint_sha256`,
 `instance_id`, `status`, nullable RFC3339 `last_attempt_at`/`last_success_at`,
 `counts` (`created`, `changed`, `unchanged`, `failed`, `missing`), `pending_parts`,
-nullable static `error_code`, and `retry.action` (`resume` or `refresh`). It
+nullable static `error_code`, and `retry.action` (`resume`, `refresh`, or `reconcile`).
+Pending reconciliation also carries an optional `retry.plan_sha256` containing
+the reviewed plan's 64-character lowercase SHA-256; cleanup remains explicit. It
 contains no corpus text, database paths, request IDs, or bearer values.
 
 ## Explicit keyword recovery

@@ -63,6 +63,14 @@ pub(crate) async fn report(
                 "Bounded recent job sample for this principal only.",
                 None,
             );
+            if jobs.counts.contains_key("failed") || jobs.counts.contains_key("interrupted") {
+                jobs.readiness = Readiness::new(ReadinessState::Partial, "The recent owned-job sample includes failed or interrupted work.", Some("Inspect your owned jobs, repair the reported cause, then explicitly resume the selected recoverable job."));
+            } else if jobs.counts.contains_key("unknown") {
+                jobs.readiness = Readiness::unknown(
+                    "The recent owned-job sample includes an unrecognized state.",
+                    "Inspect your owned jobs and check service/client versions with the owner.",
+                );
+            }
         }
     }
     ServiceReadiness {

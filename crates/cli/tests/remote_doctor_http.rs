@@ -163,6 +163,45 @@ async fn remote_walkthrough_distinguishes_unknown_stopped_auth_transport_and_par
     let report: Value = serde_json::from_slice(&partial.stdout).unwrap();
     assert_eq!(report["application"]["sources"]["state"], "partial");
     assert_eq!(report["client_refresh_evidence"]["counts"]["failed"], 1);
+    evidence["retry"] = json!({"action":"reconcile", "plan_sha256":"c".repeat(64)});
+    std::fs::write(&status, serde_json::to_vec(&evidence).unwrap()).unwrap();
+    let cleanup = command(&endpoint, TOKEN)
+        .args([
+            "doctor",
+            "--format",
+            "json",
+            "--refresh-status-file",
+            status.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    let report: Value = serde_json::from_slice(&cleanup.stdout).unwrap();
+    assert_eq!(
+        report["client_refresh_evidence"]["retry"]["action"],
+        "reconcile"
+    );
+    assert_eq!(
+        report["client_refresh_evidence"]["retry"]["plan_sha256"],
+        "c".repeat(64)
+    );
+    evidence["retry"]["plan_sha256"] = json!("/private/not-a-digest");
+    std::fs::write(&status, serde_json::to_vec(&evidence).unwrap()).unwrap();
+    let malformed = command(&endpoint, TOKEN)
+        .args([
+            "doctor",
+            "--format",
+            "json",
+            "--refresh-status-file",
+            status.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    let report: Value = serde_json::from_slice(&malformed.stdout).unwrap();
+    assert!(report["client_refresh_evidence"].is_null());
+    assert!(!String::from_utf8_lossy(&malformed.stdout).contains("/private/not-a-digest"));
+    evidence["retry"] = json!({"action":"resume"});
     evidence["instance_id"] = json!("another-principal");
     std::fs::write(&status, serde_json::to_vec(&evidence).unwrap()).unwrap();
     let wrong = command(&endpoint, TOKEN)

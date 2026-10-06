@@ -73,7 +73,12 @@ async fn readiness_reports_independent_evidence_without_reads_writes_or_job_perm
     );
     let owned = fixture.tool(TOKEN_READ, "service_status", json!({})).await;
     assert_eq!(data(&owned)["jobs"]["sampled"], 1);
-    assert_eq!(data(&owned)["jobs"]["counts"]["running"], 1);
+    assert_eq!(data(&owned)["jobs"]["counts"]["failed"], 1);
+    assert_eq!(data(&owned)["jobs"]["readiness"]["state"], "partial");
+    assert!(data(&owned)["jobs"]["readiness"]["next_action"]
+        .as_str()
+        .unwrap()
+        .contains("explicitly resume"));
     let encoded = owned.to_string();
     assert!(!encoded.contains("other-private-principal"));
     assert!(!encoded.contains("private-checkpoint"));
@@ -182,7 +187,7 @@ impl RemoteApplicationOperations for TestApplication {
             id: "processing_job:private".into(),
             job_type: "upload".into(),
             instance_id,
-            status: "running".into(),
+            status: "failed".into(),
             phase: "private-phase".into(),
             cancellation_requested: false,
             source_id: "source:private".into(),
