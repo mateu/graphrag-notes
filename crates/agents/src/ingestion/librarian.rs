@@ -15,7 +15,7 @@ use graphrag_db::{
     ProcessingJobStatus, ProcessingJobType, ProcessingJobUpdate, Repository, SourceDeleteSummary,
     SourceImportAction,
 };
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -707,7 +707,11 @@ impl LibrarianAgent {
                     self.runtime.extract_max_chars,
                 ))
                 .await?;
-            extracted_entities_to_domain(extraction.entities)
+            extracted_entities_to_domain(
+                extraction.entities,
+                &format!("capture:{}", uuid::Uuid::new_v4()),
+                None,
+            )
         };
         let title = title.or_else(|| {
             content
@@ -815,7 +819,7 @@ impl LibrarianAgent {
                     self.runtime.extract_max_chars,
                 ))
                 .await?;
-            extracted_entities_to_domain(extraction.entities)
+            extracted_entities_for_note(extraction.entities, existing)
         };
 
         let mut replacement = existing.clone();
@@ -892,7 +896,11 @@ impl LibrarianAgent {
                     self.runtime.extract_max_chars,
                 ))
                 .await?;
-            extracted_entities_to_domain(extraction.entities)
+            extracted_entities_to_domain(
+                extraction.entities,
+                &format!("detach:{}", uuid::Uuid::new_v4()),
+                None,
+            )
         };
 
         let mut detached = Note::new(content)
@@ -1597,7 +1605,7 @@ impl LibrarianAgent {
     pub async fn prepare_note_entities(&self, note: &Note) -> Result<Vec<Entity>> {
         let text = truncate_for_extraction(&note.content, self.runtime.extract_max_chars);
         let extraction = self.extractor.extract(&text).await?;
-        Ok(extracted_entities_to_domain(extraction.entities))
+        Ok(extracted_entities_for_note(extraction.entities, note))
     }
 
     /// Extract entities for notes missing entity links
@@ -3155,33 +3163,136 @@ impl LibrarianAgent {
     }
 }
 
+/// Scope describes evidence, not an inferred real-world identity. Person/project
+/// homonyms remain separate even inside a source; other types may share only
+/// within that explicit source. Stable chunk locations survive refreshes.
+fn extracted_entities_for_note(
+    entities: Vec<crate::inference::ExtractedEntity>,
+    note: &Note,
+) -> Vec<Entity> {
+    let source_scope = note.source_id.as_ref().map(record_id_to_string);
+    let note_scope = match (source_scope.as_deref(), note.chunk_location_key.as_deref()) {
+        (Some(source), Some(location)) => format!("{source}:chunk:{location}"),
+        _ => note
+            .id
+            .as_ref()
+            .map(record_id_to_string)
+            .unwrap_or_else(|| {
+                format!(
+                    "unpersisted:{}:{}",
+                    note.created_at,
+                    normalized_content_hash(&note.content)
+                )
+            }),
+    };
+    extracted_entities_to_domain(entities, &note_scope, source_scope.as_deref())
+}
+
 fn extracted_entities_to_domain(
     extracted_entities: Vec<crate::inference::ExtractedEntity>,
+    note_scope: &str,
+    source_scope: Option<&str>,
 ) -> Vec<Entity> {
-    extracted_entities
-        .into_iter()
-        .map(|extracted| {
-            let entity_type = match extracted
-                .entity_type
-                .as_deref()
-                .unwrap_or("concept")
-                .to_lowercase()
-                .as_str()
-            {
-                "person" | "per" => EntityType::Person,
-                "organization" | "org" => EntityType::Organization,
-                "location" | "loc" | "gpe" => EntityType::Location,
-                "date" | "time" => EntityType::Date,
-                _ => EntityType::Concept,
-            };
-            let mut entity = Entity::new(&extracted.name, entity_type);
-            // The persisted entity schema requires an object (or NONE) for
-            // metadata. Extraction supplies no metadata, so use an empty
-            // object instead of `Entity::new`'s JSON null default.
-            entity.metadata = serde_json::json!({});
-            entity
-        })
-        .collect()
+    let mut entities = BTreeMap::<String, Entity>::new();
+    for extracted in extracted_entities {
+        if !valid_entity_label(&extracted.name) {
+            continue;
+        }
+        let entity_type = match extracted
+            .entity_type
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_lowercase)
+            .as_deref()
+        {
+            Some("person" | "per") => EntityType::Person,
+            Some("organization" | "organisation" | "org") => EntityType::Organization,
+            Some("concept") | None => EntityType::Concept,
+            Some("project") => EntityType::Project,
+            Some("technology" | "tech" | "tool") => EntityType::Technology,
+            Some("location" | "loc" | "gpe") => EntityType::Location,
+            Some("date" | "time") => EntityType::Date,
+            _ => EntityType::Other,
+        };
+        let scope = if matches!(entity_type, EntityType::Person | EntityType::Project) {
+            note_scope
+        } else {
+            source_scope.unwrap_or(note_scope)
+        };
+        let mut entity = Entity::new(&extracted.name, entity_type.clone());
+        let identity = serde_json::json!([scope, entity_type, entity.canonical_name]).to_string();
+        let key = format!("extracted-v1:{}", normalized_content_hash(&identity));
+        entity.identity_key = Some(key.clone());
+        let mut aliases = BTreeMap::<String, String>::new();
+        for alias in extracted.aliases {
+            if valid_entity_label(&alias) {
+                let normalized = Entity::canonicalize(&alias);
+                if normalized != entity.canonical_name {
+                    let display = alias.trim().to_string();
+                    aliases
+                        .entry(normalized)
+                        .and_modify(|prior| {
+                            if display < *prior {
+                                *prior = display.clone();
+                            }
+                        })
+                        .or_insert(display);
+                }
+            }
+        }
+        let originals = aliases.values().take(8).cloned().collect::<Vec<_>>();
+        let normalized = aliases.keys().take(8).cloned().collect::<Vec<_>>();
+        entity.metadata = serde_json::json!({
+            "aliases": normalized,
+            "extraction": { "version": 1, "scope": scope,
+                "mention_spellings": [extracted.name], "alias_spellings": originals,
+                "reported_types": [extracted.entity_type] }
+        });
+        if let Some(prior) = entities.get_mut(&key) {
+            // Deterministic duplicate collapse preserves every original spelling.
+            for field in [
+                "aliases",
+                "extraction/mention_spellings",
+                "extraction/alias_spellings",
+                "extraction/reported_types",
+            ] {
+                let pointer = format!("/{field}");
+                let mut values = prior
+                    .metadata
+                    .pointer(&pointer)
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                values.extend(
+                    entity
+                        .metadata
+                        .pointer(&pointer)
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                values.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+                values.dedup();
+                if field == "aliases" || field == "extraction/alias_spellings" {
+                    values.truncate(8);
+                }
+                *prior
+                    .metadata
+                    .pointer_mut(&pointer)
+                    .expect("owned extraction metadata field") = serde_json::Value::Array(values);
+            }
+            if entity.name < prior.name {
+                prior.name = entity.name;
+            }
+        } else {
+            entities.insert(key, entity);
+        }
+    }
+    entities.into_values().collect()
+}
+
+fn valid_entity_label(label: &str) -> bool {
+    !label.trim().is_empty() && label.chars().count() <= 80 && !label.chars().any(char::is_control)
 }
 
 fn file_uri_to_path(uri: &str) -> Result<PathBuf> {
@@ -4120,6 +4231,175 @@ mod tests {
         assert!(!resumed_explicit.cancelled);
     }
 
+    #[test]
+    fn extraction_types_aliases_and_ambiguous_names_keep_evidence_scopes() {
+        let extracted = |name: &str, kind: Option<&str>, aliases: Vec<&str>| ExtractedEntity {
+            name: name.into(),
+            entity_type: kind.map(str::to_string),
+            aliases: aliases.into_iter().map(str::to_string).collect(),
+        };
+        let input = vec![
+            extracted(
+                "  Atlas ",
+                Some(" Project "),
+                vec!["LAUNCH", " launch ", "", "bad\nname", "Atlas"],
+            ),
+            extracted("Atlas", Some("project"), vec!["Launch program"]),
+            extracted("Atlas", Some("Person"), vec!["Captain Atlas"]),
+            extracted("Rust", Some("Technology"), vec!["Rust language"]),
+            extracted("Unknown", Some("unsupported-provider-type"), vec![]),
+            extracted("Legacy", None, vec![]),
+        ];
+        let entities =
+            super::extracted_entities_to_domain(input.clone(), "note:a", Some("source:one"));
+        assert_eq!(entities.len(), 5);
+        let project = entities
+            .iter()
+            .find(|entity| entity.entity_type == EntityType::Project)
+            .unwrap();
+        assert_eq!(project.canonical_name, "atlas");
+        assert_eq!(
+            project.metadata["aliases"],
+            serde_json::json!(["launch", "launch program"])
+        );
+        assert_eq!(
+            project.metadata["extraction"]["mention_spellings"],
+            serde_json::json!(["  Atlas ", "Atlas"])
+        );
+        assert!(entities
+            .iter()
+            .any(|entity| entity.name == "Unknown" && entity.entity_type == EntityType::Other));
+        assert!(entities
+            .iter()
+            .any(|entity| entity.name == "Legacy" && entity.entity_type == EntityType::Concept));
+        let other_note =
+            super::extracted_entities_to_domain(input.clone(), "note:b", Some("source:one"));
+        let other_source = super::extracted_entities_to_domain(input, "note:c", Some("source:two"));
+        for entity in &entities {
+            let other = other_note
+                .iter()
+                .find(|other| {
+                    other.canonical_name == entity.canonical_name
+                        && other.entity_type == entity.entity_type
+                })
+                .unwrap();
+            assert_eq!(
+                entity.identity_key == other.identity_key,
+                !matches!(entity.entity_type, EntityType::Person | EntityType::Project)
+            );
+            let foreign = other_source
+                .iter()
+                .find(|other| {
+                    other.canonical_name == entity.canonical_name
+                        && other.entity_type == entity.entity_type
+                })
+                .unwrap();
+            assert_ne!(entity.identity_key, foreign.identity_key);
+        }
+        let mut reversed = vec![
+            extracted("Atlas", Some("project"), vec!["Launch program"]),
+            extracted("  Atlas ", Some("Project"), vec![" launch ", "LAUNCH"]),
+        ];
+        let forward =
+            super::extracted_entities_to_domain(reversed.clone(), "note:a", Some("source:one"));
+        reversed.reverse();
+        let backward = super::extracted_entities_to_domain(reversed, "note:a", Some("source:one"));
+        assert_eq!(forward[0].identity_key, backward[0].identity_key);
+        assert_eq!(forward[0].metadata, backward[0].metadata);
+    }
+
+    #[tokio::test]
+    async fn explicit_typed_pilot_reprocessing_is_idempotent_and_keeps_unrelated_mentions() {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let note = repo
+            .create_note(Note::new("Atlas launch uses Rust"))
+            .await
+            .unwrap();
+        let unrelated = repo
+            .create_note(Note::new("Different Atlas person"))
+            .await
+            .unwrap();
+        let mut legacy = Entity::new("Atlas", EntityType::Concept);
+        legacy.metadata = serde_json::json!({});
+        let legacy = repo.upsert_entity(legacy).await.unwrap();
+        for item in [&note, &unrelated] {
+            repo.link_note_to_entity(item.id.as_ref().unwrap(), legacy.id.as_ref().unwrap())
+                .await
+                .unwrap();
+        }
+        let extractor = FixtureEntityExtractor::default().with_default(EntityExtraction {
+            entities: vec![
+                ExtractedEntity {
+                    name: "Atlas".into(),
+                    entity_type: Some("Project".into()),
+                    aliases: vec!["Launch Atlas".into()],
+                },
+                ExtractedEntity {
+                    name: "Rust".into(),
+                    entity_type: Some("Technology".into()),
+                    aliases: vec!["Rust language".into()],
+                },
+            ],
+            relationships: vec![],
+        });
+        let agent = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(extractor),
+        );
+        let id = record_id_to_string(note.id.as_ref().unwrap());
+        agent
+            .extract_entities_for_note_ids_result(std::slice::from_ref(&id), true)
+            .await
+            .unwrap();
+        let first = repo.get_entities_for_note(&id).await.unwrap();
+        assert_eq!(first.len(), 2);
+        assert!(first
+            .iter()
+            .any(|entity| entity.entity_type == EntityType::Project));
+        assert!(first
+            .iter()
+            .any(|entity| entity.entity_type == EntityType::Technology));
+        agent
+            .extract_entities_for_note_ids_result(std::slice::from_ref(&id), true)
+            .await
+            .unwrap();
+        let replay = repo.get_entities_for_note(&id).await.unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .map(|entity| entity.id.as_ref().map(record_id_to_string))
+                .collect::<std::collections::HashSet<_>>(),
+            replay
+                .iter()
+                .map(|entity| entity.id.as_ref().map(record_id_to_string))
+                .collect()
+        );
+        assert_eq!(
+            repo.get_entities_for_note(&record_id_to_string(unrelated.id.as_ref().unwrap()))
+                .await
+                .unwrap()[0]
+                .id,
+            legacy.id
+        );
+        assert_eq!(
+            repo.graph_note_edges(
+                &[note.id.unwrap()],
+                &["supports".into(), "related_to".into()],
+                8,
+                true,
+                true,
+                0.0,
+                None,
+                None
+            )
+            .await
+            .unwrap()
+            .len(),
+            0
+        );
+    }
+
     #[tokio::test]
     async fn force_clear_replaces_mentions_only_after_successful_extraction() {
         let repo = Repository::new(init_memory().await.unwrap());
@@ -4137,6 +4417,7 @@ mod tests {
                 entities: vec![ExtractedEntity {
                     name: "Fresh extracted entity".into(),
                     entity_type: Some("concept".into()),
+                    aliases: Vec::new(),
                 }],
                 relationships: Vec::new(),
             },
@@ -4688,6 +4969,7 @@ mod tests {
                 entities: vec![ExtractedEntity {
                     name: "Replacement Entity".into(),
                     entity_type: Some("concept".into()),
+                    aliases: Vec::new(),
                 }],
                 relationships: Vec::new(),
             },
@@ -5522,6 +5804,7 @@ mod tests {
                 entities: vec![ExtractedEntity {
                     name: "New Entity".into(),
                     entity_type: Some("project".into()),
+                    aliases: Vec::new(),
                 }],
                 relationships: Vec::new(),
             },
@@ -5565,6 +5848,7 @@ mod tests {
                     entities: vec![ExtractedEntity {
                         name: "Old Entity".into(),
                         entity_type: Some("project".into()),
+                        aliases: Vec::new(),
                     }],
                     relationships: Vec::new(),
                 },

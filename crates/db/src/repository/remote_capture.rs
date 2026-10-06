@@ -189,7 +189,7 @@ impl Repository {
         });
         let entity_names = entities
             .iter()
-            .map(|entity| entity.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
         let entities_sql = super::notes::replacement_entities_transaction();
         // Validate the full stored note before recording its response. A schema

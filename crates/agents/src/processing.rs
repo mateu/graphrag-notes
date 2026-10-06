@@ -21,7 +21,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 const EMBEDDING_CACHE_VERSION: &str = "embedding-v1";
-const EXTRACTION_CACHE_VERSION: &str = "entity-extraction-v1";
+const EXTRACTION_CACHE_VERSION: &str = "entity-extraction-v2-types-aliases";
 
 /// Identity of the extraction prompt/schema applied by the processing adapter.
 pub fn extraction_cache_version() -> &'static str {

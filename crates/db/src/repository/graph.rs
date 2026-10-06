@@ -969,14 +969,16 @@ impl Repository {
     // ENTITY OPERATIONS
     // ==========================================
 
-    /// Create or get existing entity by canonical name
+    /// Create or get an entity by explicit scope or the legacy canonical key.
     #[instrument(skip(self))]
     pub async fn upsert_entity(&self, entity: Entity) -> Result<Entity> {
+        let identity_key = entity.effective_identity_key();
         let Entity {
             id: _,
             entity_type,
             name,
             canonical_name,
+            identity_key: _,
             embedding,
             metadata,
             created_at: _,
@@ -984,14 +986,18 @@ impl Repository {
 
         let result: Option<Entity> = self.db
             .query(r#"
-                INSERT INTO entity (entity_type, name, canonical_name, embedding, metadata, created_at)
-                VALUES ($entity_type, $name, $canonical_name, $embedding, $metadata, time::now())
+                INSERT INTO entity (entity_type, name, canonical_name, identity_key, embedding, metadata, created_at)
+                VALUES ($entity_type, $name, $canonical_name, $identity_key, $embedding, $metadata, time::now())
                 ON DUPLICATE KEY UPDATE 
                     name = $name,
                     embedding = $embedding,
                     metadata = object::extend(
                         object::extend(metadata ?? {}, $metadata ?? {}),
                         {
+                            extraction: IF $metadata.extraction = NONE THEN metadata.extraction ELSE object::extend($metadata.extraction, {
+                                mention_spellings: array::distinct(array::concat(metadata.extraction.mention_spellings ?? [], $metadata.extraction.mention_spellings ?? [])),
+                                alias_spellings: array::distinct(array::concat(metadata.extraction.alias_spellings ?? [], $metadata.extraction.alias_spellings ?? []))
+                            }) END,
                             aliases: array::distinct(array::concat(
                                 metadata.aliases ?? [],
                                 $metadata.aliases ?? []
@@ -1002,6 +1008,7 @@ impl Repository {
             .bind(("entity_type", entity_type.clone()))
             .bind(("name", name.clone()))
             .bind(("canonical_name", canonical_name.clone()))
+            .bind(("identity_key", identity_key.clone()))
             .bind(("embedding", embedding.clone()))
             .bind(("metadata", metadata.clone()))
             .await?
@@ -1011,11 +1018,11 @@ impl Repository {
             return Ok(entity);
         }
 
-        // If SurrealDB doesn't return the id on upsert, look it up by canonical name
+        // A label can legitimately identify several scoped rows.
         let fetched: Option<Entity> = self
             .db
-            .query("SELECT * FROM entity WHERE canonical_name = $canonical_name LIMIT 1")
-            .bind(("canonical_name", canonical_name))
+            .query("SELECT * FROM entity WHERE identity_key = $identity_key LIMIT 1")
+            .bind(("identity_key", identity_key))
             .await?
             .take(0)?;
 
@@ -1497,6 +1504,77 @@ impl Repository {
         for index in 0..entity_ids.len() {
             let mut entity_seeds: Vec<GraphEntityNoteSeed> = response.take(index)?;
             seeds.append(&mut entity_seeds);
+        }
+        Ok(seeds)
+    }
+
+    /// Intersect query-ranked candidates with indexed entity mentions before
+    /// the legacy ID page. Only bounded direct IDs are inspected; no note
+    /// corpus scan or inference call is needed. Eligibility is checked again
+    /// on endpoints, including current source generation.
+    pub async fn graph_notes_for_entities_ranked(
+        &self,
+        entity_ids: &[RecordId],
+        ranked_note_ids: &[RecordId],
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+    ) -> Result<Vec<GraphEntityNoteSeed>> {
+        if ranked_note_ids.is_empty() {
+            return self
+                .graph_notes_for_entities(entity_ids, limit, since, source_uri)
+                .await;
+        }
+        if entity_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let ranked_note_ids = ranked_note_ids
+            .iter()
+            .take(200)
+            .cloned()
+            .collect::<Vec<_>>();
+        let limit = i64::try_from(limit).map_err(|_| {
+            DbError::QueryFailed("graph note limit exceeds database integer range".into())
+        })?;
+        let eligible = graph_endpoint_eligible_sql("in");
+        let mut sql = String::new();
+        for index in 0..entity_ids.len() {
+            sql.push_str(&format!(
+                "SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_{index} AND in IN $ranked_notes AND {eligible} ORDER BY in ASC LIMIT $ranked_limit;\
+                 SELECT in AS note_id, out AS entity_id FROM mentions WHERE out = $entity_{index} AND in NOT IN $ranked_notes AND {eligible} ORDER BY in ASC LIMIT $limit;"
+            ));
+        }
+        let ranks = ranked_note_ids
+            .iter()
+            .enumerate()
+            .map(|(rank, id)| (record_id_to_string(id), rank))
+            .collect::<HashMap<_, _>>();
+        let mut query = self
+            .db
+            .query(sql)
+            .bind(("ranked_limit", ranked_note_ids.len() as i64))
+            .bind(("ranked_notes", ranked_note_ids))
+            .bind(("limit", limit))
+            .bind(("since", since.map(|value| value.to_rfc3339())))
+            .bind(("source_uri", source_uri));
+        for (index, id) in entity_ids.iter().enumerate() {
+            query = query.bind((format!("entity_{index}"), id.clone()));
+        }
+        let mut response = query.await?.check()?;
+        let mut seeds = Vec::new();
+        for index in 0..entity_ids.len() {
+            let mut preferred: Vec<GraphEntityNoteSeed> = response.take(index * 2)?;
+            let fallback: Vec<GraphEntityNoteSeed> = response.take(index * 2 + 1)?;
+            preferred.sort_by(|a, b| {
+                ranks[&record_id_to_string(&a.note_id)]
+                    .cmp(&ranks[&record_id_to_string(&b.note_id)])
+                    .then_with(|| {
+                        record_id_to_string(&a.note_id).cmp(&record_id_to_string(&b.note_id))
+                    })
+            });
+            preferred.extend(fallback);
+            preferred.truncate(limit as usize);
+            seeds.extend(preferred);
         }
         Ok(seeds)
     }

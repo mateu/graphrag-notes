@@ -1214,7 +1214,7 @@ impl Repository {
         self.ensure_remote_source_current(&job).await?;
         let entity_names = entities
             .iter()
-            .map(|entity| entity.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
         let mut response = self.db.query(format!("BEGIN TRANSACTION; {} LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation AND source_generation = source_id.successful_generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; {} DELETE mentions WHERE in = $note; FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $note, out = $entity_id; }}; UPDATE $job SET remote_phase = 'extracting', completed_count += 1, checkpoint = $checkpoint; COMMIT TRANSACTION;", guard_sql(), super::notes::replacement_entities_transaction()))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))

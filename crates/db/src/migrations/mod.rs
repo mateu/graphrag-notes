@@ -22,6 +22,7 @@ mod v015_chat_metadata;
 mod v016_remote_capture_receipts;
 mod v017_remote_mutation_receipts;
 mod v018_remote_upload_jobs;
+mod v019_entity_identity;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -34,7 +35,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 18;
+pub const LATEST_SCHEMA_VERSION: u32 = 19;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -68,6 +69,7 @@ const MIGRATIONS: &[Migration] = &[
     v016_remote_capture_receipts::MIGRATION,
     v017_remote_mutation_receipts::MIGRATION,
     v018_remote_upload_jobs::MIGRATION,
+    v019_entity_identity::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -452,6 +454,62 @@ mod tests {
         assert_eq!(migrations[1].name, "embedding_metadata");
         assert_eq!(migrations[2].name, "source_lifecycle");
         assert_eq!(migrations[3].name, "edge_proposals");
+    }
+
+    #[tokio::test]
+    async fn v019_preserves_legacy_ids_and_old_backup_identity_without_conflating_scopes() {
+        use graphrag_core::{Entity, EntityType};
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..18]).await.unwrap();
+        db.query("CREATE entity:legacy CONTENT {name: 'Atlas', canonical_name: 'atlas', entity_type: 'concept', metadata: {aliases: ['Old Atlas']}}; CREATE note:legacy CONTENT {content: 'Atlas original evidence'}; CREATE mentions:legacy SET in = note:legacy, out = entity:legacy;").await.unwrap().check().unwrap();
+        apply_all(&db).await.unwrap();
+        let repo = Repository::new(db.clone());
+        let legacy = repo
+            .get_entities_for_note("note:legacy")
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(legacy.id, Some(RecordId::new("entity", "legacy")));
+        assert_eq!(legacy.entity_type, EntityType::Concept);
+        assert_eq!(legacy.identity_key.as_deref(), Some("legacy:atlas"));
+        let mut manual = Entity::new("Atlas", EntityType::Project);
+        manual.metadata = serde_json::json!({});
+        assert_eq!(repo.upsert_entity(manual).await.unwrap().id, legacy.id);
+        for scope in ["fictional-source-a", "fictional-source-b"] {
+            let mut scoped = Entity::new("Atlas", EntityType::Project);
+            scoped.identity_key = Some(scope.into());
+            scoped.metadata = serde_json::json!({"aliases": ["Atlas launch"]});
+            assert_ne!(repo.upsert_entity(scoped).await.unwrap().id, legacy.id);
+        }
+        let all = repo.portable_records_page("entity", 0, 20).await.unwrap();
+        assert_eq!(all.len(), 3);
+        let restored_db = crate::init_memory().await.unwrap();
+        let restored = Repository::new(restored_db.clone());
+        for mut record in all {
+            if record["id"] == "entity:legacy" {
+                // A pre-v019 archive omits this field. Restore keeps its ID
+                // and uses the migration field's backwards-compatible value.
+                record.as_object_mut().unwrap().remove("identity_key");
+            }
+            restored
+                .restore_portable_record("entity", record)
+                .await
+                .unwrap();
+        }
+        let entities: Vec<Entity> = restored_db
+            .query("SELECT * FROM entity ORDER BY identity_key")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(entities.len(), 3);
+        assert!(entities.iter().any(|entity| entity.id == legacy.id
+            && entity.identity_key.as_deref() == Some("legacy:atlas")));
+        apply_all(&db).await.unwrap();
+        assert_eq!(
+            repo.get_entities_for_note("legacy").await.unwrap()[0].id,
+            legacy.id
+        );
     }
 
     #[test]

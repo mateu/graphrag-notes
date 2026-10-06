@@ -70,27 +70,30 @@ fn editor_source_id(expected: &Note) -> Result<RecordId> {
 }
 
 /// Keep the entity upsert semantics aligned with `Repository::upsert_entity`:
-/// canonical names identify rows, existing type/creation time survive, and
+/// explicit identities identify rows, existing type/creation time survive, and
 /// metadata aliases merge distinctly. Running these writes after the snapshot
 /// guard and inside the note transaction prevents failed edits from changing
 /// shared entities or leaving unused rows behind. Resolve IDs after all
-/// upserts so repeated canonical names create only one mention.
+/// upserts so repeated identities create only one mention.
 pub(super) fn replacement_entities_transaction() -> &'static str {
     "FOR $entity IN $replacement_entities { \
-        INSERT INTO entity (entity_type, name, canonical_name, embedding, metadata, created_at) \
-        VALUES ($entity.entity_type, $entity.name, $entity.canonical_name, \
+        INSERT INTO entity (entity_type, name, canonical_name, identity_key, embedding, metadata, created_at) \
+        VALUES ($entity.entity_type, $entity.name, $entity.canonical_name, $entity.identity_key ?? string::concat('legacy:', $entity.canonical_name), \
                 $entity.embedding ?? [], $entity.metadata, time::now()) \
         ON DUPLICATE KEY UPDATE \
             name = $entity.name, embedding = $entity.embedding ?? [], \
             metadata = object::extend( \
                 object::extend(metadata ?? {}, $entity.metadata ?? {}), \
-                { aliases: array::distinct(array::concat( \
+                { extraction: IF $entity.metadata.extraction = NONE THEN metadata.extraction ELSE object::extend($entity.metadata.extraction, { \
+                    mention_spellings: array::distinct(array::concat(metadata.extraction.mention_spellings ?? [], $entity.metadata.extraction.mention_spellings ?? [])), \
+                    alias_spellings: array::distinct(array::concat(metadata.extraction.alias_spellings ?? [], $entity.metadata.extraction.alias_spellings ?? [])) \
+                }) END, aliases: array::distinct(array::concat( \
                     metadata.aliases ?? [], $entity.metadata.aliases ?? [] \
                 )) } \
             ); \
      }; \
      LET $entity_ids = (SELECT VALUE id FROM entity \
-                       WHERE canonical_name IN $replacement_entity_names); "
+                       WHERE identity_key IN $replacement_entity_names); "
 }
 
 fn check_note_mutation_errors(
@@ -246,7 +249,7 @@ impl Repository {
         let replacement_entities = replacement_entities_transaction();
         let entity_names: Vec<String> = entities
             .iter()
-            .map(|entity| entity.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect();
         let note_id = RecordId::new("note", Uuid::new_v4().to_string());
         let mut response = self
@@ -473,7 +476,7 @@ impl Repository {
         let replacement_entities = replacement_entities_transaction();
         let entity_names: Vec<String> = entities
             .iter()
-            .map(|entity| entity.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect();
         let search_content = search_content_for_note_update(&existing, &note);
 
