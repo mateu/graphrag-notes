@@ -119,6 +119,12 @@ this separate action is confirmed. The importer needs an explicit `delete`
 grant for cleanup, in addition to `read,upload,jobs`; ordinary refresh does not
 require deletion permissions.
 
+The host service must include `service_status` from #94. Before any upload or
+cleanup, the adapter verifies the authenticated caller matches the registered
+importer principal. Inspecting source provenance alone cannot establish which
+principal a supplied credential will use for a new upload. Older services fail
+closed with `service_status_required`; update the service before applying a plan.
+
 ```sh
 python3 scripts/refresh-openclaw-memory.py \
   --state-dir "$HOME/.graphrag/openclaw-memory-refresh" --reconcile --format json

@@ -25,6 +25,7 @@ class FakeService:
         self.fail_key = None
         self.fail_code = 'provider_unavailable'
         self.wrong_owner = self.bad_source = False
+        self.authenticated_instance = 'fixture-importer'
         self.manual_notes = ['synthetic unrelated manual note']
 
     def remaining(self):
@@ -35,6 +36,9 @@ class FakeService:
 
     def call(self, name, value):
         self.calls.append((name, json.loads(json.dumps(value))))
+        if name == 'service_status':
+            return {'schema_version': 1, 'read_only': True, 'inference_probed': False,
+                    'instance_id': self.authenticated_instance}
         if name == 'upload_source':
             request = value['request_id']
             if request in self.receipts:
@@ -388,6 +392,23 @@ class RefreshTests(unittest.TestCase):
         with self.assertRaises(OSError), m.collection_lock(state_dir):
             pass
         self.assertEqual(external.read_text(), '{"private":"unrelated"}')
+
+    def test_wrong_authenticated_credential_fails_before_any_upload(self):
+        self.client.authenticated_instance = 'foreign-reader'
+        args = ['--database', str(self.database), '--workspace', str(self.workspace),
+                '--state-dir', str(self.root / 'wrong-caller'), '--instance-id', 'fixture-importer', '--format', 'json']
+        with patch.object(m, 'Client', return_value=self.client), \
+                patch.dict(os.environ, {'GRAPHRAG_TOKEN': 'synthetic-private-token'}), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(m.main(args), 1)
+        self.assertEqual(json.loads(output.getvalue())['error_code'], 'authenticated_instance_mismatch')
+        self.assertEqual(self.client.receipts, {})
+        self.assertFalse(any(name == 'upload_source' for name, _ in self.client.calls))
+
+    def test_older_service_without_authenticated_status_fails_closed(self):
+        with patch.object(self.client, 'call', side_effect=m.ImportFailure('invalid_input')):
+            with self.assertRaisesRegex(m.ImportFailure, 'service_status_required'):
+                m.verify_principal(self.client, 'fixture-importer')
 
 
 if __name__ == '__main__':

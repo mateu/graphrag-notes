@@ -440,6 +440,25 @@ def source_matches(client, task, entry, principal):
     entry['source_verified']['revision'] = source['revision']
 
 
+def verify_principal(client, principal):
+    """Check authenticated caller before admission, not only source ownership.
+
+    Read permission may expose another owner's sources. Source inspection alone
+    therefore cannot prove that a new upload will use the registered principal.
+    """
+    try:
+        report = retry_call(client, 'service_status', {})
+    except ImportFailure as error:
+        if error.code in ('invalid_input', 'validation', 'not_found'):
+            raise ImportFailure('service_status_required') from None
+        raise
+    if (report.get('schema_version') != 1 or report.get('read_only') is not True
+            or report.get('inference_probed') is not False):
+        raise ImportFailure('incompatible_service_status')
+    if report.get('instance_id') != principal:
+        raise ImportFailure('authenticated_instance_mismatch')
+
+
 def run_refresh(client, state, save, args):
     tasks = state['pending']['tasks']
     principal = state['config']['instance_id']
@@ -473,7 +492,7 @@ def run_refresh(client, state, save, args):
                 save()
                 if job['status'] == 'completed':
                     verify_completed(client, task, entry, job, principal)
-                    state['documents'][key] = {'payload_hash': task['payload_hash'], 'entry': entry,
+                    state['documents'][key] = {'payload_hash': task['payload_hash'], 'entry': json.loads(json.dumps(entry)),
                                                'document_key': key, 'provenance': task['payload']['provenance']}
                     checked.add(key)
                     task['verified_this_attempt'] = True
@@ -717,6 +736,7 @@ def main(argv=None):
                 raise ImportFailure('credential_unavailable')
             client = Client(state['config']['server'], token, started + args.deadline_seconds)
             client.initialize()
+            verify_principal(client, state['config']['instance_id'])
             if args.reconcile:
                 if args.yes:
                     reconcile(client, state, args.plan_sha256, save)
