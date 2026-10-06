@@ -257,11 +257,13 @@ export function createNotesCommand(config = {}, overrides = {}) {
   const pool = new ReadConnectionPool({ loadSdk: overrides.loadSdk ?? loadSdk,
     fetch: overrides.fetch ?? globalThis.fetch, now: clock });
   const fresh = createFreshNotesCommand(config, overrides);
+  // Reserve the mode before an asynchronous retirement/acquire handoff.
+  let pooledCalls = 0, freshCalls = 0;
   return {
     name: 'notes', description: 'Search shared notes directly without an agent model', acceptsArgs: true, requireAuth: true,
     close: () => Promise.all([pool.close(), fresh.close()]), start: () => { pool.start(); fresh.start(); },
     handler: async ctx => {
-      const current = ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config;
+      const current = { ...(ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config) };
       if (ctx.isAuthorizedSender !== true) return { text: 'This command requires authorization.', continueAgent: false };
       let parsed;
       try { parsed = parseNotesArguments(ctx.args ?? '', current); }
@@ -272,26 +274,37 @@ export function createNotesCommand(config = {}, overrides = {}) {
       const started = clock();
       if (pool.closed) return failure('unavailable', clock() - started, current.timeoutMs ?? 5000, graph);
       if (current.reuseConnections === false || overrides.allowReuse === false || env.GRAPHRAG_NOTES_DISABLE_REUSE === '1') {
-        await pool.retireAll();
-        if (pool.closed) return failure('unavailable', clock() - started, current.timeoutMs ?? 5000, graph);
-        if (pool.closing.size > 0) return failure('busy', clock() - started, current.timeoutMs ?? 5000, graph);
-        return fresh.handler(ctx);
+        if (pooledCalls > 0) return failure('busy', clock() - started, current.timeoutMs ?? 5000, graph);
+        freshCalls++;
+        try {
+          await pool.retireAll();
+          if (pool.closed) return failure('unavailable', clock() - started, current.timeoutMs ?? 5000, graph);
+          if (pool.entries.size + pool.closing.size > 0) return failure('busy', clock() - started, current.timeoutMs ?? 5000, graph);
+          return await fresh.handler(ctx);
+        } finally { freshCalls--; }
       }
-      if (fresh.pendingCount() > 0) return failure('busy', clock() - started, current.timeoutMs ?? 5000, graph);
+      if (freshCalls > 0 || fresh.pendingCount() > 0) return failure('busy', clock() - started, current.timeoutMs ?? 5000, graph);
       const timeoutMs = graph !== 'off' ? (current.graphTimeoutMs ?? 60000) : (current.timeoutMs ?? 5000);
       if (!Number.isInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > (graph !== 'off' ? 120000 : 30000)) return failure('configuration', clock() - started, timeoutMs, graph);
       const abort = new AbortController(); const timer = setTimeout(() => abort.abort(new NotesError('timeout')), timeoutMs);
       let lease, connectMs = 0, searchMs = 0, outcome = 'unavailable', httpRequests = 0;
+      pooledCalls++;
       try {
         const selected = connection(current, ctx, env);
         lease = await pool.acquire(selected, current, abort.signal, timeoutMs);
-        const latest = connection(current, ctx, env);
-        if (latest.endpoint.href !== selected.endpoint.href || latest.token !== selected.token) {
-          lease.retire(); throw new NotesError('reconfigured');
-        }
+        const assertCurrent = () => {
+          try {
+            if (ctx.isAuthorizedSender !== true) throw new NotesError('forbidden');
+            const latestConfig = ctx.config?.plugins?.entries?.['graphrag-fast-notes']?.config ?? config;
+            const latest = connection(latestConfig, ctx, env);
+            const context = value => JSON.stringify([value.serverName ?? 'graphrag', value.tokenEnv ?? DEFAULT_TOKEN_ENV, value.sdkAnchor ?? null]);
+            if (latest.endpoint.href !== selected.endpoint.href || latest.token !== selected.token || context(latestConfig) !== context(current)) throw new NotesError('reconfigured');
+          } catch (error) { lease.retire(); throw error; }
+        };
+        assertCurrent();
         const connected = clock(); connectMs = connected - started;
         const cancelled = new Promise((_, reject) => abort.signal.addEventListener('abort', () => reject(new NotesError('timeout')), { once: true }));
-        const work = lease.call({ name: 'search_notes', arguments: { query, mode, graph, scope: 'notes', limit: 5 } }, { signal: abort.signal, timeout: timeoutMs });
+        const work = lease.call({ name: 'search_notes', arguments: { query, mode, graph, scope: 'notes', limit: 5 } }, { signal: abort.signal, timeout: timeoutMs }, assertCurrent);
         const { result, httpRequests: count } = await Promise.race([work, cancelled]);
         abort.signal.throwIfAborted();
         const finished = clock(); searchMs = finished - connected; httpRequests = count;
@@ -302,7 +315,7 @@ export function createNotesCommand(config = {}, overrides = {}) {
         if (['timeout', 'unauthorized', 'forbidden', 'unavailable', 'response'].includes(outcome)) lease?.retire();
         return failure(outcome, clock() - started, timeoutMs, graph);
       } finally {
-        clearTimeout(timer); lease?.release();
+        clearTimeout(timer); lease?.release(); pooledCalls--;
         reportTiming(overrides, ctx, { mode, graph, outcome, reused: lease?.reused ?? false,
           connect_ms: connectMs, search_ms: searchMs, handler_ms: clock() - started, search_http_requests: lease?.httpRequests() ?? httpRequests,
           handler_start_epoch_ms: performance.timeOrigin + started, handler_finish_epoch_ms: performance.timeOrigin + clock() });

@@ -29,6 +29,7 @@ function fixture(config = {}, options = {}) {
     }
     async callTool(request, _schema, opts) {
       events.push(['call', request]);
+      options.beforeTool?.();
       await this.transport.init.fetch(this.transport.url, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: request }), headers: { Authorization: 'wrong' } });
       const signal = events.filter(e => e[0] === 'fetch').at(-1)[3];
       if (state.pending) await Promise.race([hold.promise, new Promise((_, reject) => Promise.resolve().then(() => {
@@ -264,6 +265,56 @@ test('fresh/reused configuration churn cannot bypass unfinished cleanup reservat
     else assert.match((await pending).text, /^Notes ·/);
     const next = context(); next.config.plugins = { entries: { 'graphrag-fast-notes': { config: { reuseConnections: initialFresh, poolMaxEntries: 1 } } } };
     assert.match((await f.command.handler(next)).text, /busy/);
+    assert.equal(f.count('connect'), 1);
+    await f.command.close();
+  }
+});
+
+
+test('simultaneous fresh/reused admissions share one resource bound across async handoffs', async () => {
+  for (const freshFirst of [true, false]) {
+    const f = fixture({ timeoutMs: 5000 }); f.state.suspendConnect = true;
+    const contexts = [true, false].map(fresh => {
+      const ctx = context(); ctx.config.plugins = { entries: { 'graphrag-fast-notes': { config: { reuseConnections: !fresh, poolMaxEntries: 1 } } } }; return ctx;
+    });
+    const order = freshFirst ? contexts : contexts.toReversed();
+    const pending = order.map(ctx => f.command.handler(ctx));
+    await tick(); assert.equal(f.count('connect'), 1); assert.equal(f.count('call'), 0);
+    f.connectHold.resolve(); const results = await Promise.all(pending);
+    assert.equal(results.filter(reply => reply.text.startsWith('Notes ·')).length, 1);
+    assert.equal(results.filter(reply => /busy/.test(reply.text)).length, 1);
+    assert.equal(f.count('connect'), 1); assert.equal(f.count('call'), 1);
+    await f.command.close();
+  }
+});
+
+
+test('pooled reads fence replaced plugin context or withdrawn sender authorization before dispatch', async () => {
+  for (const change of ['endpoint', 'sdkAnchor', 'sender']) {
+    const f = fixture(); f.state.suspendConnect = true; f.env.GRAPHRAG_NOTES_TOKEN = 'fictional-one';
+    const ctx = context(); ctx.config.plugins = { entries: { 'graphrag-fast-notes': { config: {} } } };
+    const pending = f.command.handler(ctx); await tick();
+    if (change === 'sender') ctx.isAuthorizedSender = false;
+    else ctx.config.plugins.entries['graphrag-fast-notes'].config = change === 'endpoint' ? { endpoint: 'http://127.0.0.1:9012/mcp' } : { sdkAnchor: '/fictional/changed-sdk' };
+    f.connectHold.resolve(); const reply = await pending;
+    assert.match(reply.text, change === 'sender' ? /read access/ : /changed/);
+    assert.equal(f.count('call'), 0); assert.equal(f.count('connect'), 1);
+    await f.command.close();
+  }
+});
+
+
+test('pooled HTTP dispatch rechecks the individual caller after asynchronous SDK tool preparation', async () => {
+  for (const change of ['endpoint', 'sender']) {
+    const ctx = context(); ctx.config.plugins = { entries: { 'graphrag-fast-notes': { config: {} } } };
+    const f = fixture({}, { beforeTool: () => {
+      if (change === 'sender') ctx.isAuthorizedSender = false;
+      else ctx.config.plugins.entries['graphrag-fast-notes'].config = { endpoint: 'http://127.0.0.1:9012/mcp' };
+    } });
+    f.env.GRAPHRAG_NOTES_TOKEN = 'fictional-one';
+    const reply = await f.command.handler(ctx);
+    assert.match(reply.text, change === 'sender' ? /read access/ : /changed/);
+    assert.equal(f.count('call'), 1); assert.equal(f.count('fetch'), 1);
     assert.equal(f.count('connect'), 1);
     await f.command.close();
   }

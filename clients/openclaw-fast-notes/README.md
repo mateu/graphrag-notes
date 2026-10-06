@@ -39,7 +39,8 @@ credential to its server, token environment and SDK context. Digests and the raw
 credential comparison remain in process memory; no credential or credential
 fingerprint is written to diagnostics. Every HTTP request sends the selected
 Bearer again, and the service authorizes every tool call. The credential is
-rechecked after asynchronous initialization before a search can be sent.
+rechecked against the caller's current configuration and authorization after
+asynchronous initialization and before each search HTTP dispatch.
 
 Defaults are four total connections (including closing or still initializing
 connections), four active searches per connection, 30 seconds idle and five

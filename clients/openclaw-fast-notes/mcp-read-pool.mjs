@@ -121,9 +121,10 @@ export class ReadConnectionPool {
       const call = { signal, requests: 0, sent: false, invoked: false };
       return { reused, release, retire: () => this.retire(entry), failure: () => entry.failure,
         httpRequests: () => call.requests,
-        call: (args, options) => entry.calls.run(call, async () => {
+        call: (args, options, assertCurrent = () => {}) => entry.calls.run(call, async () => {
           if (args.name !== 'search_notes' || call.invoked) throw new PoolError('response');
-          call.invoked = true;
+          call.invoked = true; call.assertCurrent = assertCurrent;
+          assertCurrent();
           const current = entry.calls.getStore();
           const result = await entry.client.callTool(args, undefined, options);
           return { result, httpRequests: current.requests };
@@ -154,6 +155,7 @@ export class ReadConnectionPool {
         fetch: async (input, init = {}) => {
           const current = entry.calls.getStore();
           if (current) {
+            current.assertCurrent();
             // SDK reconnection options govern streams. Independently fence a
             // duplicate tool POST so SDK changes cannot silently replay a call.
             if (init.method === 'POST') {
