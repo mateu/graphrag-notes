@@ -100,12 +100,25 @@ pub(super) fn graph_entity_mentions_local_sql(query: &str) -> String {
     // The scalar subquery binds $parent only after its plan was built. The
     // pinned engine deliberately excludes that row-scoped parameter from
     // index analysis. A block evaluates LET against the current entity row
-    // and plans RETURN afterward, exposing the same native ID as a literal
-    // for the existing (out, in) association index. Keep the SELECT itself,
-    // including its residual filters, order and limit, unchanged.
+    // and plans its last ordinary expression afterward, exposing the same
+    // native ID for the existing (out, in) association index. Avoid RETURN:
+    // it propagates control flow past the enclosing alias union expression.
+    // A metadata-only prefix probe keeps the old query for unsafe alias
+    // shapes (including its error shielding/TopK behavior), and for complex
+    // relation IDs whose primary/index encodings can visit equal-in ties in
+    // a different order. The fast path keeps ORDER BY and LIMIT unchanged.
+    let aliases = "metadata.aliases ?? []";
+    let safe_aliases = format!(
+        "type::is_array({aliases}) AND array::len({aliases}) <= 8 \
+         AND array::all({aliases}, |$alias| type::is_string($alias))"
+    );
+    let simple_id = "type::is_number(record::id(id)) OR type::is_string(record::id(id)) OR type::is_uuid(record::id(id))";
+    let local = query.replace("out = $parent.id", "out = $graph_entity_id");
     format!(
-        "{{ LET $graph_entity_id = id; RETURN ({}); }}",
-        query.replace("out = $parent.id", "out = $graph_entity_id")
+        "{{ LET $graph_entity_id = id; \
+         IF array::len((SELECT VALUE id FROM mentions WHERE out = $graph_entity_id \
+             AND NOT (({simple_id}) AND ({safe_aliases})) LIMIT 1)) = 0 \
+         THEN ({local}) ELSE ({query}) END; }}"
     )
 }
 
@@ -1718,17 +1731,17 @@ impl Repository {
             .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
             .unwrap_or_default();
         let (select_direct, mention_condition, direct_order) = if scope.is_some() {
-            let eligible_mentions = mentions_subquery(&format!(
-                "SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1"
-            ));
             // The direct-rank page is unordered and mentions are non-unique.
             // Keep its original scan: an association index could change the
             // capped subset when duplicate mentions outnumber ranked notes.
+            // Preserve the existence scan's original error/iteration order.
             (
                 format!(
                     ", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"
                 ),
-                format!("AND array::len(({eligible_mentions})) > 0"),
+                format!(
+                    "AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"
+                ),
                 "graph_direct_rank ASC, ",
             )
         } else {

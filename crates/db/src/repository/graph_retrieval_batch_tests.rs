@@ -1307,6 +1307,124 @@ struct NestedGraphEntityPlan {
 }
 
 #[tokio::test]
+async fn graph_alias_local_binding_preserves_malformed_errors_beyond_the_alias_page() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "late-alias-errors", "fixture://late-alias-errors").await;
+    let entity = alias_entity(&repo, "late-alias-errors", "Compiler", true).await;
+    for index in 0..350 {
+        let endpoint = note(
+            &repo,
+            RecordId::new("note", format!("late-alias-valid-{index:03}")),
+            Some(owner.clone()),
+            Some(1),
+            timestamp(),
+        )
+        .await;
+        repo.db
+            .query("CREATE $id SET in = $note, out = $entity, metadata = $metadata")
+            .bind((
+                "id",
+                RecordId::new("mentions", format!("100-valid-{index:03}")),
+            ))
+            .bind(("note", endpoint))
+            .bind(("entity", entity.clone()))
+            .bind(("metadata", serde_json::json!({"aliases": ["Needle Token"]})))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+    let late_endpoint = note(
+        &repo,
+        RecordId::new("note", "zz-late-alias-malformed"),
+        Some(owner),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    // The bad endpoint always sorts beyond 200 matching aliases. Put its
+    // relation ID both first and last in the table scan: the first case
+    // cannot be hidden behind an already-populated table TopK threshold.
+    // The second also checks that forcing an indexed sort does not introduce
+    // a new error if the pinned table scan can skip a late noncompetitive row.
+    for bad_key in ["000-bad", "999-bad"] {
+        let bad_id = RecordId::new("mentions", bad_key);
+        for metadata in [
+            serde_json::json!({"aliases": "Needle Token"}),
+            serde_json::json!({"aliases": {"value": "Needle Token"}}),
+            serde_json::json!({"aliases": [42, "Needle Token"]}),
+        ] {
+            for generation in [1i64, 2] {
+                repo.db
+                    .query("UPDATE $note SET source_generation = $generation; CREATE $id SET in = $note, out = $entity, metadata = $metadata")
+                    .bind(("id", bad_id.clone()))
+                    .bind(("note", late_endpoint.clone()))
+                    .bind(("generation", generation))
+                    .bind(("entity", entity.clone()))
+                    .bind(("metadata", metadata.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let original = repo
+                    .find_graph_entities_original_alias_order(
+                        "Needle Token",
+                        10,
+                        Some(&[]),
+                        None,
+                        None,
+                    )
+                    .await;
+                if bad_key == "000-bad" && generation == 1 {
+                    assert!(original.is_err(), "early eligible malformed row must error");
+                }
+                if generation == 2 {
+                    assert!(
+                        original.is_ok(),
+                        "hidden generation must shield malformed row"
+                    );
+                }
+                let parent = repo
+                    .find_graph_entities_parent_alias_order(
+                        "Needle Token",
+                        10,
+                        Some(&[]),
+                        None,
+                        None,
+                    )
+                    .await;
+                let candidate = repo
+                    .find_graph_entities_for_search("Needle Token", 10, &[], None, None)
+                    .await;
+                for actual in [parent, candidate] {
+                    match (&original, actual) {
+                        (Ok(expected), Ok(actual)) => assert_eq!(
+                            serde_json::to_value(expected).unwrap(),
+                            serde_json::to_value(actual).unwrap()
+                        ),
+                        (Err(expected), Err(actual)) => assert_eq!(
+                            expected.to_string(),
+                            actual.to_string(),
+                            "late alias metadata={metadata}, relation={bad_key}, generation={generation}"
+                        ),
+                        (expected, actual) => panic!(
+                            "changed late error/page behavior metadata={metadata}, relation={bad_key}, generation={generation}: expected={expected:?}, actual={actual:?}"
+                        ),
+                    }
+                }
+                repo.db
+                    .query("DELETE $id")
+                    .bind(("id", bad_id.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_rank_cap() {
     let repo = Repository::new(init_memory().await.unwrap());
     let owner = source(&repo, "local-duplicates", "fixture://local-duplicates").await;
@@ -1401,6 +1519,224 @@ async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_ra
 }
 
 #[tokio::test]
+async fn graph_alias_local_binding_preserves_complex_relation_id_ties_at_the_page_cap() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "relation-key-ties", "fixture://relation-key-ties").await;
+    let entity = alias_entity(&repo, "relation-key-ties", "Compiler", true).await;
+    let endpoint = note(
+        &repo,
+        RecordId::new("note", "relation-key-ties"),
+        Some(owner),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    let mut integer_object = Object::new();
+    integer_object.insert("kind", 1i64);
+    integer_object.insert("ordinal", 1i64);
+    let mut float_object = Object::new();
+    float_object.insert("kind", 1.0f64);
+    float_object.insert("ordinal", 0i64);
+    let integer_array = vec![
+        surrealdb::types::Value::from(1i64),
+        surrealdb::types::Value::from(1i64),
+    ];
+    let float_array = vec![
+        surrealdb::types::Value::from(1.0f64),
+        surrealdb::types::Value::from(0i64),
+    ];
+    for (integer_key, float_key) in [
+        (
+            RecordIdKey::Array(integer_array.into()),
+            RecordIdKey::Array(float_array.into()),
+        ),
+        (
+            RecordIdKey::Object(integer_object),
+            RecordIdKey::Object(float_object),
+        ),
+    ] {
+        repo.db
+            .query("DELETE mentions")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        // Simple relation IDs fill 199 equal-in positions. The primary key
+        // encodes nested NumberKind while the association key omits it; the
+        // two complex IDs can therefore enter the 200th tie in a different
+        // order. Their distinct matching alias evidence exposes any change.
+        for index in 0..199 {
+            repo.db
+                .query("CREATE $id SET in = $note, out = $entity, metadata = $metadata")
+                .bind((
+                    "id",
+                    RecordId::new("mentions", format!("00-simple-{index:03}")),
+                ))
+                .bind(("note", endpoint.clone()))
+                .bind(("entity", entity.clone()))
+                .bind(("metadata", serde_json::json!({"aliases": ["Needle Token"]})))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        for (key, alias) in [
+            (integer_key, "Boundary Integer"),
+            (float_key, "Boundary Float"),
+        ] {
+            repo.db
+                .query("CREATE $id SET in = $note, out = $entity, metadata = $metadata")
+                .bind(("id", RecordId::new("mentions", key)))
+                .bind(("note", endpoint.clone()))
+                .bind(("entity", entity.clone()))
+                .bind((
+                    "metadata",
+                    serde_json::json!({"aliases": ["Needle Token", alias]}),
+                ))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        for scope in [None, Some(std::slice::from_ref(&endpoint))] {
+            assert_alias_query_matches_original(
+                &repo,
+                "Needle Token Boundary Integer Boundary Float",
+                10,
+                scope,
+                None,
+                None,
+            )
+            .await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn graph_alias_local_binding_plan_falls_back_for_unsafe_mention_shapes() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "local-fallback", "fixture://local-fallback").await;
+    let entity = alias_entity(&repo, "local-fallback", "Compiler", true).await;
+    let visible = note(
+        &repo,
+        RecordId::new("note", "local-fallback-visible"),
+        Some(owner.clone()),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    let hidden = note(
+        &repo,
+        RecordId::new("note", "local-fallback-hidden"),
+        Some(owner),
+        Some(2),
+        timestamp(),
+    )
+    .await;
+    alias_mention(
+        &repo,
+        &visible,
+        &entity,
+        serde_json::json!({"aliases": ["Needle Token"]}),
+    )
+    .await;
+    let eligible = graph_endpoint_eligible_sql("in");
+    let predicate = graph::graph_alias_eligible_sql(&eligible, "$alias = $query");
+    let select = format!("SELECT VALUE array::filter(metadata.aliases ?? [], |$alias| $alias = $query) FROM mentions WHERE out = $parent.id AND {predicate} ORDER BY in ASC LIMIT 200");
+    let explained = graph::graph_entity_mentions_local_sql(&format!("{select} EXPLAIN FULL"));
+    let sql = format!("SELECT id, ({explained}) AS plan FROM entity WHERE id = $entity");
+    let mut response = repo
+        .db
+        .query(sql.clone())
+        .bind(("entity", entity.clone()))
+        .bind(("query", "Needle Token"))
+        .bind(("since", Option::<String>::None))
+        .bind(("source_uri", Option::<String>::None))
+        .await
+        .unwrap();
+    let plan: Vec<NestedGraphEntityPlan> = response.take(0).unwrap();
+    assert_eq!(plan.len(), 1);
+    assert!(serde_json::to_string(&plan[0].plan)
+        .unwrap()
+        .contains("\"index\":\"idx_mentions_entity_note\""));
+    let mut complex = Object::new();
+    complex.insert("kind", 1.0f64);
+    complex.insert("ordinal", 0i64);
+    for (key, endpoint, aliases) in [
+        (
+            RecordIdKey::String("local-fallback-nine".into()),
+            &visible,
+            serde_json::json!(vec!["Needle Token"; 9]),
+        ),
+        (
+            RecordIdKey::String("local-fallback-scalar".into()),
+            &hidden,
+            serde_json::json!("Needle Token"),
+        ),
+        (
+            RecordIdKey::String("local-fallback-mixed".into()),
+            &hidden,
+            serde_json::json!([42, "Needle Token"]),
+        ),
+        (
+            RecordIdKey::Object(complex),
+            &visible,
+            serde_json::json!(["Needle Token"]),
+        ),
+        (
+            RecordIdKey::Array(vec![1i64, 2i64].into()),
+            &visible,
+            serde_json::json!(["Needle Token"]),
+        ),
+    ] {
+        let id = RecordId::new("mentions", key);
+        repo.db
+            .query("CREATE $id SET in = $note, out = $entity, metadata = $metadata")
+            .bind(("id", id.clone()))
+            .bind(("note", endpoint.clone()))
+            .bind(("entity", entity.clone()))
+            .bind(("metadata", serde_json::json!({"aliases": aliases})))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        // This EXPLAIN runs inside the actual entity projection and selects
+        // the legacy branch at runtime; its result must not be the index plan
+        // of the separate safe-shape probe or of the unselected fast branch.
+        let mut response = repo
+            .db
+            .query(sql.clone())
+            .bind(("entity", entity.clone()))
+            .bind(("query", "Needle Token"))
+            .bind(("since", Option::<String>::None))
+            .bind(("source_uri", Option::<String>::None))
+            .await
+            .unwrap();
+        let plan: Vec<NestedGraphEntityPlan> = response.take(0).unwrap();
+        assert_eq!(plan.len(), 1);
+        assert!(!serde_json::to_string(&plan[0].plan)
+            .unwrap()
+            .contains("\"index\":\"idx_mentions_entity_note\""));
+        assert_alias_query_matches_original(
+            &repo,
+            "Needle Token",
+            10,
+            Some(std::slice::from_ref(&visible)),
+            None,
+            None,
+        )
+        .await;
+        repo.db
+            .query("DELETE $id")
+            .bind(("id", id))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_native_ids() {
     let repo = Repository::new(init_memory().await.unwrap());
     let owner = source(&repo, "local-plan", "fixture://local-plan").await;
@@ -1462,7 +1798,7 @@ async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_nativ
     let wrong_entity = RecordId::new("entity", "fictional-not-the-current-entity");
     let captured: Vec<CapturedGraphEntityId> = repo
         .db
-        .query("SELECT id, ({ LET $graph_entity_id = id; RETURN $graph_entity_id; }) AS captured_id FROM entity ORDER BY id ASC")
+        .query("SELECT id, ({ LET $graph_entity_id = id; $graph_entity_id; }) AS captured_id FROM entity ORDER BY id ASC")
         .bind(("parent", serde_json::json!({"id": wrong_entity.clone()})))
         .bind(("graph_entity_id", wrong_entity.clone()))
         .await
@@ -1481,7 +1817,6 @@ async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_nativ
         format!(
             "SELECT VALUE array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) FROM mentions WHERE out = $parent.id AND {alias_eligible} ORDER BY in ASC LIMIT 200"
         ),
-        format!("SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1"),
     ];
     let mut reported = Vec::new();
     for select in queries {
@@ -1524,10 +1859,17 @@ async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_nativ
             for row in &nested_plans {
                 assert!(entity_ids.contains(&row.id));
                 let plan = serde_json::to_string(&row.plan).unwrap();
+                // The pinned streaming analyzer accepts literal simple keys
+                // but cannot plan object/array record-ID equality. Those
+                // native keys must retain exact results through its fallback.
+                let simple_key = matches!(
+                    &row.id.key,
+                    RecordIdKey::Number(_) | RecordIdKey::String(_) | RecordIdKey::Uuid(_)
+                );
                 assert_eq!(
                     plan.contains("\"index\":\"idx_mentions_entity_note\""),
-                    local,
-                    "only the actual local-ID nested query exposes the out-prefix: {plan}"
+                    local && simple_key,
+                    "local simple IDs expose the out-prefix; complex IDs keep fallback: {plan}"
                 );
             }
             outputs.push(rows);
