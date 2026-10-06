@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { gzipSync } from 'node:zlib';
-import { createNotesCommand } from './index.mjs';
+import { createNotesCommand, loadSdk } from './index.mjs';
 
 async function fixture(config = {}) {
   const calls = [], revoked = new Set();
@@ -109,6 +109,7 @@ test('real SDK tunnel loss and expired session do not resubmit; explicit next co
 });
 
 test('real SDK stalled HTTP body is aborted within deadline and cannot replay a capture', async () => {
+  await loadSdk();
   const f = await fixture({ timeoutMs: 250 });
   try {
     await f.command.handler(f.ctx()); f.state.stall = true;
@@ -188,6 +189,7 @@ test('compressed encoded overhead is accepted while decoded oversize is refused 
 });
 
 test('fresh SDK partial JSON response is cancelled at the deadline without another tool submission', async () => {
+  await loadSdk();
   const f = await fixture({ reuseConnections: false, timeoutMs: 250 });
   try {
     // Warm the SDK loader without changing the command's connection policy.
