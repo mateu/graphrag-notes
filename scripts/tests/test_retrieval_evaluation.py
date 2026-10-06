@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -32,6 +33,29 @@ def inspect(value):
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
+    def test_report_hashes_the_inputs_loaded_before_retrieval(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            root.chmod(0o700)
+            suite, fixture, output = (root / value for value in ("suite.json", "fixture.json", "report.json"))
+            original = json.dumps({"schema_version": 1, "metadata": {}, "cases": [case()]}).encode()
+            suite.write_bytes(original)
+            fixture.write_text(json.dumps({"rankings": {}, "inspections": {}}))
+            def replace_files(loaded, search, inspect):
+                self.assertEqual(loaded["cases"][0]["name"], "fictional-atlas")
+                suite.write_text("replaced suite")
+                return {"metadata": {}, "cases": []}
+            fake_runner = root / "runner.py"
+            fake_runner.write_text("replacement code")
+            with mock.patch.object(evaluation, "evaluate", side_effect=replace_files), \
+                    mock.patch.object(evaluation, "__file__", str(fake_runner)), mock.patch("sys.stdout"):
+                code = evaluation.main(["--suite", str(suite), "--recorded", str(fixture), "--output", str(output)])
+            report = json.loads(output.read_text())
+            self.assertEqual(code, 0)
+            self.assertEqual(report["suite_sha256"], hashlib.sha256(original).hexdigest())
+            self.assertEqual(report["runner_sha256"], evaluation.RUNNER_SHA256)
+            self.assertNotEqual(report["runner_sha256"], hashlib.sha256(fake_runner.read_bytes()).hexdigest())
+
     def test_unknown_hits_do_not_become_irrelevant_or_judged_precision(self):
         result = evaluation.metrics(case(), [record(), record("note:unknown")])
         self.assertEqual(result["unjudged_hits"], 1)

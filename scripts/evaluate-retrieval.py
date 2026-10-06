@@ -17,6 +17,8 @@ import subprocess
 import sys
 import time
 
+RUNNER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
 POLICIES = {"keyword-off": ("keyword", "off"), "hybrid-off": ("hybrid", "off"),
             "hybrid-auto": ("hybrid", "auto"), "hybrid-on": ("hybrid", "on")}
 CATEGORIES = {"title", "direct", "paraphrase", "entity", "relationship", "filters", "negative"}
@@ -52,8 +54,8 @@ def write_new(path, value):
         os.fsync(stream.fileno())
 
 
-def load_suite(path):
-    suite = json.loads(Path(path).read_text(encoding="utf-8"))
+def load_suite(path, *, captured_bytes=None):
+    suite = json.loads(Path(path).read_bytes() if captured_bytes is None else captured_bytes)
     require(isinstance(suite, dict) and suite.get("schema_version") == 1,
             "unsupported retrieval suite version")
     require(isinstance(suite.get("metadata"), dict), "suite metadata missing")
@@ -296,7 +298,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         os.umask(0o077)
-        suite = load_suite(args.suite)
+        suite_bytes = args.suite.read_bytes()
+        suite_sha256 = hashlib.sha256(suite_bytes).hexdigest()
+        suite = load_suite(args.suite, captured_bytes=suite_bytes)
         require(args.timeout > 0 and math.isfinite(args.timeout), "invalid timeout")
         require(not args.output.exists() and (args.summary is None or not args.summary.exists()),
                 "output already exists; use new report paths")
@@ -321,8 +325,8 @@ def main(argv=None):
             client = RemoteCli(args.binary, args.endpoint, args.credential_env, args.timeout)
             search, inspect = client.search, client.inspect
         report = evaluate(suite, search, inspect)
-        report["suite_sha256"] = hashlib.sha256(args.suite.read_bytes()).hexdigest()
-        report["runner_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        report["suite_sha256"] = suite_sha256
+        report["runner_sha256"] = RUNNER_SHA256
         write_new(args.output, report)
         if args.summary:
             write_new(args.summary, aggregate(report))
