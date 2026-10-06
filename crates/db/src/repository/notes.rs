@@ -71,7 +71,9 @@ fn editor_source_id(expected: &Note) -> Result<RecordId> {
 
 /// Keep the entity upsert semantics aligned with `Repository::upsert_entity`:
 /// explicit identities identify rows, existing type/creation time survive, and
-/// metadata aliases merge distinctly. Running these writes after the snapshot
+/// legacy metadata aliases merge distinctly, while extracted metadata reflects
+/// the current result. Per-mention evidence owns aliases used by graph search.
+/// Running these writes after the snapshot
 /// guard and inside the note transaction prevents failed edits from changing
 /// shared entities or leaving unused rows behind. Resolve IDs after all
 /// upserts so repeated identities create only one mention.
@@ -82,7 +84,10 @@ pub(super) fn replacement_entities_transaction() -> &'static str {
                 $entity.embedding ?? [], $entity.metadata, time::now()) \
         ON DUPLICATE KEY UPDATE \
             name = $entity.name, embedding = $entity.embedding ?? [], \
-            metadata = object::extend( \
+            metadata = IF string::starts_with($entity.identity_key ?? '', 'extracted-v1:') THEN \
+                object::extend(object::extend(metadata ?? {}, $entity.metadata ?? {}), \
+                    { aliases: array::slice($entity.metadata.aliases ?? [], 0, 8) }) \
+            ELSE object::extend( \
                 object::extend(metadata ?? {}, $entity.metadata ?? {}), \
                 { extraction: IF $entity.metadata.extraction = NONE THEN metadata.extraction ELSE object::extend($entity.metadata.extraction, { \
                     mention_spellings: array::distinct(array::concat(metadata.extraction.mention_spellings ?? [], $entity.metadata.extraction.mention_spellings ?? [])), \
@@ -91,10 +96,29 @@ pub(super) fn replacement_entities_transaction() -> &'static str {
                 }) END, aliases: array::distinct(array::concat( \
                     metadata.aliases ?? [], $entity.metadata.aliases ?? [] \
                 )) } \
-            ); \
+            ) END; \
      }; \
      LET $entity_ids = (SELECT VALUE id FROM entity \
                        WHERE identity_key IN $replacement_entity_names); "
+}
+
+/// Store the current extraction evidence on its owning mention. Shared source
+/// entities may have different valid aliases in different chunks; replacing or
+/// deleting one chunk must not preserve its aliases or erase another's.
+pub(super) fn replacement_mentions_transaction(note_variable: &str) -> String {
+    format!(
+        "FOR $entity_id IN $entity_ids {{ \
+            LET $evidence = array::filter($replacement_entities, |$entity| \
+                ($entity.identity_key ?? string::concat('legacy:', $entity.canonical_name)) = $entity_id.identity_key)[0].metadata; \
+            LET $current_evidence = IF $evidence = NONE THEN NONE ELSE object::extend($evidence, \
+                    {{ aliases: array::slice($evidence.aliases ?? [], 0, 8) }}) END; \
+            IF array::len((SELECT VALUE id FROM mentions WHERE in = {note_variable} AND out = $entity_id LIMIT 1)) = 0 {{ \
+                CREATE mentions SET in = {note_variable}, out = $entity_id, metadata = $current_evidence; \
+            }} ELSE {{ \
+                UPDATE mentions SET metadata = $current_evidence WHERE in = {note_variable} AND out = $entity_id; \
+            }}; \
+         }}; "
+    )
 }
 
 fn check_note_mutation_errors(
@@ -248,6 +272,7 @@ impl Repository {
             .unwrap_or_default();
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let replacement_entities = replacement_entities_transaction();
+        let replacement_mentions = replacement_mentions_transaction("$id");
         let entity_names: Vec<String> = entities
             .iter()
             .map(Entity::effective_identity_key)
@@ -280,7 +305,7 @@ impl Repository {
                     content_hash = $content_hash, \
                     search_content = IF $search_content = NONE THEN $content ELSE $search_content END, tags = $tags, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at; \
-                 FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
+                 {replacement_mentions}\
                  COMMIT TRANSACTION;"
             ))
             .bind(("editor_source", editor_source))
@@ -483,6 +508,7 @@ impl Repository {
             (existing, String::new(), None)
         };
         let replacement_entities = replacement_entities_transaction();
+        let replacement_mentions = replacement_mentions_transaction("$id");
         let entity_names: Vec<String> = entities
             .iter()
             .map(Entity::effective_identity_key)
@@ -507,7 +533,7 @@ impl Repository {
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at RETURN AFTER; \
                  DELETE mentions WHERE in = $id; \
-                 FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $id, out = $entity_id; }}; \
+                 {replacement_mentions}\
                  COMMIT TRANSACTION;"
             ))
             .bind(("editor_source", editor_source))

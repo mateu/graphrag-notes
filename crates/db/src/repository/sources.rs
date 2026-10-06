@@ -43,14 +43,24 @@ impl Repository {
         // than extracted content, so it follows every safely reconciled chunk.
         for (old_id, new_id) in &successors {
             if exact_content_successors.contains(old_id) {
-                let entity_ids: Vec<RecordId> = self
+                #[derive(Deserialize, SurrealValue)]
+                struct MentionEvidence {
+                    out: RecordId,
+                    metadata: Option<serde_json::Value>,
+                }
+                let mentions: Vec<MentionEvidence> = self
                     .db
-                    .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+                    .query("SELECT out, metadata FROM mentions WHERE in = $note_id")
                     .bind(("note_id", old_id.clone()))
                     .await?
                     .take(0)?;
-                for entity_id in entity_ids {
-                    self.link_note_to_entity_locked(new_id, &entity_id).await?;
+                for mention in mentions {
+                    self.link_note_to_entity_with_metadata_locked(
+                        new_id,
+                        &mention.out,
+                        mention.metadata,
+                    )
+                    .await?;
                 }
             }
 

@@ -291,7 +291,8 @@ impl Repository {
                 if let Some(new_entities) = replacement_entities {
                     entities = new_entities;
                     sql.push_str(super::notes::replacement_entities_transaction());
-                    sql.push_str("DELETE mentions WHERE in=$target; FOR $entity_id IN $entity_ids { CREATE mentions SET in=$target,out=$entity_id; }; ");
+                    sql.push_str("DELETE mentions WHERE in=$target; ");
+                    sql.push_str(&super::notes::replacement_mentions_transaction("$target"));
                 }
                 sql.push_str("UPDATE $target SET content=$replacement.content,title=$replacement.title,tags=$replacement.tags,embedding=$replacement_embedding,search_content=$replacement.search_content,updated_at=$replacement.updated_at; ");
                 expected_note = Some(*expected);
