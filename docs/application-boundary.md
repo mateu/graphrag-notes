@@ -14,6 +14,8 @@ authentication. [Shared MCP setup](shared-mcp.md),
 [remote diagnostics](remote-diagnostics.md) describe these existing contracts.
 The published rc.2 binary predates the shared service; the rc.3 release bundles
 these clients and operating guides with matching source provenance.
+Actual publication and deployment evidence is tracked in the
+[release acceptance record](https://github.com/mateu/graphrag-notes/issues/97#issuecomment-6009885555).
 
 ## Ownership and adapters
 

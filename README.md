@@ -91,6 +91,8 @@ jobs. [The rc.3 reliability candidate](docs/releases/0.1.0-rc.3.md) adds
 matching clients and operating guides in a versioned bundle. Published rc.2
 predates the shared-service commands; follow the rc.3 guide for publication and
 upgrade status. The remaining native Linux/Intel acceptance is tracked in #66.
+The [live rc.3 acceptance record](https://github.com/mateu/graphrag-notes/issues/97#issuecomment-6009885555)
+tracks publication, installation and deployment gates as they are completed.
 
 
 ## Architecture
