@@ -33,6 +33,32 @@ def inspect(value):
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
+    def test_null_optional_eval_fields_match_absent_fields_end_to_end(self):
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "suite.json"
+            item = case()
+            item["eval"].update(scope=None, limit=None, k=None, since_days=None, source_uri=None,
+                relevance=[{"id": "note:a", "grade": None}])
+            path.write_text(json.dumps({"schema_version": 1, "metadata": {}, "cases": [item]}))
+            suite = evaluation.load_suite(path)
+            report = evaluation.evaluate(suite, lambda item, policy: [record()], inspect)
+            self.assertTrue(all(row["status"] == "ok" and row["metrics"]["k"] == 5 and
+                row["metrics"]["recall_of_judged_positives"] == 1 for row in report["cases"]))
+            client = evaluation.RemoteCli("fixture", "http://127.0.0.1:1/mcp", "FIXTURE_TOKEN", 2)
+            with mock.patch.object(client, "call", return_value={"records": []}) as call:
+                client.search(item, "hybrid-off")
+            args = call.call_args.args[0]
+            self.assertEqual(args[args.index("--scope") + 1], "notes")
+            self.assertEqual(args[args.index("--limit") + 1], "5")
+            item["eval"]["limit"] = 2
+            self.assertEqual(evaluation.metrics(item, [record()])["k"], 2)
+
+    def test_null_grade_defaults_to_one_but_zero_is_kept_and_bool_is_refused(self):
+        self.assertEqual(evaluation.judgments({"relevance": [{"id": "note:a", "grade": None}]}), {"note:a": 1})
+        self.assertEqual(evaluation.judgments({"relevance": [{"id": "note:a", "grade": 0}]}), {"note:a": 0})
+        with self.assertRaises(evaluation.EvaluationError):
+            evaluation.judgments({"relevance": [{"id": "note:a", "grade": False}]})
+
     def test_omitted_k_uses_retrieval_limit_above_and_below_five(self):
         with tempfile.TemporaryDirectory() as name:
             path = Path(name) / "suite.json"

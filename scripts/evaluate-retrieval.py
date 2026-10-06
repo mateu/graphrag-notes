@@ -76,6 +76,11 @@ def strict_json(raw):
     return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
 
 
+def optional_default(value, key, default):
+    item = value.get(key)
+    return default if item is None else item
+
+
 def load_suite(path, *, captured_bytes=None):
     suite = strict_json(Path(path).read_bytes() if captured_bytes is None else captured_bytes)
     require(isinstance(suite, dict) and type(suite.get("schema_version")) is int and suite["schema_version"] == 1,
@@ -100,9 +105,9 @@ def load_suite(path, *, captured_bytes=None):
         require(set(case) <= {"schema_version", "query", "scope", "limit", "k", "since_days",
                               "source_uri", "relevance", "expected_ids"}, "unsupported eval field")
         require(isinstance(case.get("query"), str) and case["query"].strip(), "query missing")
-        require(case.get("scope", "notes") in {"notes", "messages", "all"}, "invalid scope")
-        limit = case.get("limit", 5)
-        k = case.get("k", limit)
+        require(optional_default(case, "scope", "notes") in {"notes", "messages", "all"}, "invalid scope")
+        limit = optional_default(case, "limit", 5)
+        k = optional_default(case, "k", limit)
         require(type(k) is int and type(limit) is int and 1 <= k <= limit <= 200, "invalid result bounds")
         require(case.get("since_days") is None or (type(case["since_days"]) is int and
                 0 <= case["since_days"] <= 365000), "invalid recency filter")
@@ -125,7 +130,7 @@ def judgments(case):
     explicit = {}
     for item in case.get("relevance", []):
         require(isinstance(item, dict) and set(item) <= {"id", "grade"}, "invalid relevance entry")
-        identifier, grade = item.get("id"), item.get("grade", 1)
+        identifier, grade = item.get("id"), optional_default(item, "grade", 1)
         identifier = normalized_id(identifier)
         require(type(grade) is int and 0 <= grade <= 63, "invalid relevance grade")
         require(identifier not in explicit or explicit[identifier] == grade, "conflicting relevance judgments")
@@ -141,7 +146,7 @@ def normalized_id(value):
 
 def metrics(item, records):
     case = item["eval"]
-    k = case.get("k", case.get("limit", 5))
+    k = optional_default(case, "k", optional_default(case, "limit", 5))
     grades = judgments(case) if item["answerability"] != "unjudged" else {}
     ranked = records[:k]
     ids = [normalized_id(record["id"]) for record in ranked]
@@ -206,8 +211,8 @@ class RemoteCli:
 
     def search(self, item, policy):
         case, (mode, graph) = item["eval"], POLICIES[policy]
-        args = ["search", "--mode", mode, "--graph", graph, "--scope", case.get("scope", "notes"),
-                "--limit", str(case.get("limit", 5))]
+        args = ["search", "--mode", mode, "--graph", graph, "--scope", optional_default(case, "scope", "notes"),
+                "--limit", str(optional_default(case, "limit", 5))]
         for key in ("since_days", "source_uri"):
             if case.get(key) is not None:
                 args += ["--" + key.replace("_", "-") + "=" + str(case[key])]
@@ -253,7 +258,7 @@ def evaluate(suite, search, inspect):
             try:
                 records = search(item, policy)
                 elapsed = (time.monotonic() - started) * 1000
-                validate_records(records, item["eval"].get("limit", 5))
+                validate_records(records, optional_default(item["eval"], "limit", 5))
                 readbacks = [verify_readback(record, inspect(record)) for record in records]
                 scored = metrics(item, records)
                 scored["duplicate_full_content_count"] = len(readbacks) - len({r["content_sha256"] for r in readbacks})
