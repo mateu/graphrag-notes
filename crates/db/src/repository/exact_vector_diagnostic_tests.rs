@@ -315,6 +315,7 @@ struct VectorOnlyRow {
     embedding: Option<Vec<f64>>,
     note_id: Option<RecordId>,
     embedding_cbor: Option<surrealdb::types::Bytes>,
+    embedding_fallback: Option<Vec<f64>>,
 }
 
 #[derive(Clone)]
@@ -447,7 +448,7 @@ fn page_query(after: bool, cbor: bool) -> String {
     format!(
         "SELECT {} FROM {} WHERE {} ORDER BY id ASC LIMIT $page",
         if cbor {
-            "id, note_id, embedding_cbor"
+            "id, note_id, embedding_cbor, embedding_fallback"
         } else {
             "id, embedding"
         },
@@ -534,10 +535,14 @@ async fn paged_exact_vectors_checkpoint(
         for row in rows {
             after = Some(row.id.clone());
             let vector = if cbor {
-                let Some(bytes) = row.embedding_cbor else {
-                    continue;
-                };
-                ciborium::from_reader::<Vec<f64>, _>(bytes.as_ref()).unwrap()
+                if let Some(fallback) = row.embedding_fallback {
+                    fallback
+                } else {
+                    let Some(bytes) = row.embedding_cbor else {
+                        continue;
+                    };
+                    ciborium::from_reader::<Vec<f64>, _>(bytes.as_ref()).unwrap()
+                }
             } else {
                 let Some(vector) = row.embedding else {
                     continue;
@@ -810,7 +815,46 @@ async fn exact_vector_paged_semantics_diagnostic() {
         decoded.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
         precise.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
     );
-    for embedding in [&positive, &vec![0.0; 1024], &vec![1.0, 0.0], &vec![]] {
+    for (name, exceptional) in [
+        ("positive_nan", f64::NAN),
+        ("negative_nan", -f64::NAN),
+        ("payload_nan", f64::from_bits(0x7ff8_0000_0000_0123)),
+        ("positive_inf", f64::INFINITY),
+        ("negative_inf", f64::NEG_INFINITY),
+    ] {
+        let mut vector = precise.clone();
+        vector[0] = exceptional;
+        db.query("CREATE $id SET content='fictional nonfinite legacy vector',embedding=$embedding; LET $stored=$id.embedding; LET $finite=math::min($stored)>math::NEG_INFINITY AND math::max($stored)<math::INFINITY; CREATE $shadow SET note_id=$id,created_at=$id.created_at,embedding_cbor=IF $finite THEN encoding::cbor::encode($stored) ELSE NONE END,embedding_fallback=IF $finite THEN NONE ELSE $stored END;")
+            .bind(("id",RecordId::new("note",name)))
+            .bind(("shadow",RecordId::new("exact_vector_cbor_probe",name)))
+            .bind(("embedding",vector.clone())).await.unwrap().check().unwrap();
+        let fallback: Vec<Vec<f64>> = db
+            .query("SELECT VALUE embedding_fallback FROM $shadow")
+            .bind(("shadow", RecordId::new("exact_vector_cbor_probe", name)))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(
+            fallback[0].iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            vector.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+    let mut positive_nan_query = positive.clone();
+    positive_nan_query[0] = f32::NAN;
+    let mut negative_nan_query = positive.clone();
+    negative_nan_query[0] = -f32::NAN;
+    let mut infinite_query = positive.clone();
+    infinite_query[0] = f32::INFINITY;
+    for embedding in [
+        &positive,
+        &vec![0.0; 1024],
+        &vec![1.0, 0.0],
+        &vec![],
+        &positive_nan_query,
+        &negative_nan_query,
+        &infinite_query,
+    ] {
         for (since, source) in [
             (None, None),
             (Some("2030-01-02T00:00:00Z".to_string()), None),
@@ -1008,53 +1052,76 @@ async fn exact_vector_skinny_storage_diagnostic() {
                     source_uri.clone(),
                 )
                 .await;
-                for (name, sql) in [
+                let variants = [
                     ("baseline", old_query(limit)),
                     ("skinny", skinny_query(limit)),
                     ("cbor_paged", skinny_query(limit)),
-                ] {
-                    let mut samples = Vec::new();
-                    let mut phase_samples = Vec::new();
-                    let mut exact = true;
-                    let mut bits_exact = true;
-                    for _ in 0..21 {
-                        let start = std::time::Instant::now();
-                        let rows = if name == "cbor_paged" {
-                            let (rows, phases) = paged_exact_vectors_traced(
-                                &db,
-                                &query_embedding,
-                                limit,
-                                256,
-                                true,
-                                since.clone(),
-                                source_uri.clone(),
-                            )
-                            .await;
-                            phase_samples.push(phases);
-                            rows
-                        } else {
-                            query(
-                                &db,
-                                sql.clone(),
-                                &query_embedding,
-                                limit,
-                                since.clone(),
-                                source_uri.clone(),
-                            )
-                            .await
-                        };
-                        samples.push(start.elapsed().as_secs_f64() * 1000.0);
-                        exact &= serde_json::to_value(&rows).unwrap()
-                            == serde_json::to_value(&baseline).unwrap();
-                        bits_exact &= rows
+                ];
+                let order = std::env::var("GRAPHRAG_VECTOR_PROBE_ORDER")
+                    .unwrap_or_else(|_| "legacy_first".into());
+                let schedule: Vec<usize> = match order.as_str() {
+                    "legacy_first" => [0, 1, 2]
+                        .into_iter()
+                        .flat_map(|v| std::iter::repeat_n(v, 21))
+                        .collect(),
+                    "cbor_first" => [2, 0, 1]
+                        .into_iter()
+                        .flat_map(|v| std::iter::repeat_n(v, 21))
+                        .collect(),
+                    "alternating" => (0..21)
+                        .flat_map(|round| (0..3).map(move |v| (round + v) % 3))
+                        .collect(),
+                    _ => panic!("unsupported private diagnostic schedule"),
+                };
+                let mut samples: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
+                let mut sequences: [Vec<usize>; 3] = std::array::from_fn(|_| Vec::new());
+                let mut phase_samples: [Vec<VectorPhases>; 3] = std::array::from_fn(|_| Vec::new());
+                let category_start = std::time::Instant::now();
+                for (sequence, variant) in schedule.into_iter().enumerate() {
+                    let (name, sql) = &variants[variant];
+                    let start = std::time::Instant::now();
+                    let rows = if *name == "cbor_paged" {
+                        let (rows, phases) = paged_exact_vectors_traced(
+                            &db,
+                            &query_embedding,
+                            limit,
+                            256,
+                            true,
+                            since.clone(),
+                            source_uri.clone(),
+                        )
+                        .await;
+                        phase_samples[variant].push(phases);
+                        rows
+                    } else {
+                        query(
+                            &db,
+                            sql.clone(),
+                            &query_embedding,
+                            limit,
+                            since.clone(),
+                            source_uri.clone(),
+                        )
+                        .await
+                    };
+                    samples[variant].push(start.elapsed().as_secs_f64() * 1000.0);
+                    sequences[variant].push(sequence);
+                    assert_eq!(
+                        serde_json::to_value(&rows).unwrap(),
+                        serde_json::to_value(&baseline).unwrap()
+                    );
+                    assert_eq!(
+                        rows.iter()
+                            .map(|row| row.vec_distance.map(f32::to_bits))
+                            .collect::<Vec<_>>(),
+                        baseline
                             .iter()
                             .map(|row| row.vec_distance.map(f32::to_bits))
                             .collect::<Vec<_>>()
-                            == baseline
-                                .iter()
-                                .map(|row| row.vec_distance.map(f32::to_bits))
-                                .collect::<Vec<_>>();
-                    }
+                    );
+                }
+                let category_elapsed_ms = category_start.elapsed().as_secs_f64() * 1000.0;
+                for (variant, (name, sql)) in variants.into_iter().enumerate() {
                     let explain = if name == "cbor_paged" {
                         page_query(false, true)
                     } else {
@@ -1073,11 +1140,12 @@ async fn exact_vector_skinny_storage_diagnostic() {
                         .unwrap();
                     runs.push(
                         serde_json::json!({"variant":name,"filter":filter,"rows":baseline.len(),
-                    "backend":backend,"phase_samples":phase_samples,
+                    "backend":backend,"order":order,"variant_sequence":sequences[variant],
+                    "category_elapsed_ms":category_elapsed_ms,"phase_samples":phase_samples[variant],
                     "body_payload_bytes":if count>160 {None} else {Some(repeats*"payload ".len())},
                     "mixed_body_sizes":count>160,
-                    "limit":limit,"full_rows_exact":exact,"distance_bits_exact":bits_exact,
-                    "first_ms":samples[0],"warm_ms":samples[1..],"plan":plan}),
+                    "limit":limit,"full_rows_exact":true,"distance_bits_exact":true,
+                    "first_ms":samples[variant][0],"warm_ms":samples[variant][1..],"plan":plan}),
                     );
                 }
             }
@@ -1225,4 +1293,42 @@ async fn exact_vector_snapshot_preserves_generation_and_payload_during_promotion
     assert!(committed
         .iter()
         .all(|row| !snapshot.iter().any(|old| old.id == row.id)));
+}
+
+#[tokio::test]
+#[ignore = "opt-in SDK begin/cancel sham; no retrieval latency claim"]
+async fn exact_vector_snapshot_route_lifecycle_diagnostic() {
+    let (db, backend) = diagnostic_database("snapshot-route-sham").await;
+    let mut runs = Vec::new();
+    for query in [false, true] {
+        let mut samples = Vec::new();
+        for _ in 0..128 {
+            let start = std::time::Instant::now();
+            let snapshot = VectorSnapshot::begin(&db).await;
+            let begin_ms = start.elapsed().as_secs_f64() * 1000.0;
+            let query_start = std::time::Instant::now();
+            if query {
+                snapshot
+                    .transaction()
+                    .query("RETURN NONE")
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
+            let query_ms = query_start.elapsed().as_secs_f64() * 1000.0;
+            let cancel_start = std::time::Instant::now();
+            snapshot.cancel().await;
+            samples.push(
+                serde_json::json!({"begin_ms":begin_ms,"noop_query_ms":query_ms,
+                "cancel_ms":cancel_start.elapsed().as_secs_f64()*1000.0,
+                "total_ms":start.elapsed().as_secs_f64()*1000.0}),
+            );
+        }
+        runs.push(serde_json::json!({"empty_query":query,"samples":samples}));
+    }
+    println!(
+        "{}",
+        serde_json::json!({"fictional":true,"provider_calls":0,"backend":backend,"sham":true,"runs":runs})
+    );
 }
