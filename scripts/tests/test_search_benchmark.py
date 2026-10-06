@@ -39,15 +39,22 @@ class Client:
 class SearchBenchmarkTests(unittest.TestCase):
     def test_every_warm_policy_uses_all_four_persistent_lanes_without_mixed_batches(self):
         seen, active = {}, {}
+        peaks = {}
+        first_wave = {policy: threading.Barrier(4) for policy in benchmark.evaluation.POLICIES}
         lock = threading.Lock()
         original = benchmark.sample
         def observed(client, item, policy, phase, number, concurrency, connect_ms):
+            first = False
             with lock:
                 self.assertTrue(all(value == policy for value in active.values()))
                 active[id(client)] = policy
                 if phase == "warmed":
+                    first = id(client) not in seen.setdefault(policy, set())
                     seen.setdefault(policy, set()).add(id(client))
+                    peaks[policy] = max(peaks.get(policy, 0), len(active))
             try:
+                if first:
+                    first_wave[policy].wait(timeout=2)
                 time.sleep(0.001)
                 return original(client, item, policy, phase, number, concurrency, connect_ms)
             finally:
@@ -57,6 +64,7 @@ class SearchBenchmarkTests(unittest.TestCase):
             rows = benchmark.run({"cases": [case()]}, Client, 8, [4])
         self.assertEqual(len(rows), 36)
         self.assertTrue(all(len(lanes) == 4 for lanes in seen.values()))
+        self.assertTrue(all(peak == 4 for peak in peaks.values()))
         self.assertEqual(len(set.union(*seen.values())), 4)
 
     def test_nullable_eval_options_use_resolved_mcp_arguments_and_metrics(self):
