@@ -437,6 +437,8 @@ struct VectorPhases {
     cancel_ms: f64,
     pages: usize,
     scanned: usize,
+    peak_page_rows: usize,
+    peak_projected_embedding_bytes: usize,
 }
 
 impl PartialEq for ExactVectorCandidate {
@@ -539,7 +541,12 @@ async fn paged_exact_vectors_checkpoint(
     source: Option<String>,
     mut checkpoint: Option<FirstPageCheckpoint>,
 ) -> (Vec<SearchResult>, VectorPhases) {
-    assert!(page > 0, "private diagnostic page must be positive");
+    assert!(
+        (1..=512).contains(&page),
+        "private diagnostic page must be bounded"
+    );
+    let enforce_fictional_payload_cap =
+        std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some();
     let mut phases = VectorPhases::default();
     let start = std::time::Instant::now();
     let snapshot = VectorSnapshot::begin(db).await;
@@ -566,6 +573,30 @@ async fn paged_exact_vectors_checkpoint(
         phases.pages += 1;
         let count = rows.len();
         phases.scanned += count;
+        assert!(count <= page, "SQL page row cap");
+        phases.peak_page_rows = phases.peak_page_rows.max(count);
+        let projected_embedding_bytes: usize = rows
+            .iter()
+            .map(|row| {
+                row.embedding_cbor
+                    .as_ref()
+                    .map_or(0, |bytes| bytes.as_ref().len())
+                    + row.embedding.as_ref().map_or(0, |vector| vector.len() * 8)
+                    + row
+                        .embedding_fallback
+                        .as_ref()
+                        .map_or(0, |vector| vector.len() * 8)
+            })
+            .sum();
+        phases.peak_projected_embedding_bytes = phases
+            .peak_projected_embedding_bytes
+            .max(projected_embedding_bytes);
+        if enforce_fictional_payload_cap {
+            assert!(
+                projected_embedding_bytes <= page * 8192,
+                "fictional 1024-d vector payload cap"
+            );
+        }
         if let Some((ready, resume)) = checkpoint.take() {
             ready.send(()).unwrap();
             resume.await.unwrap();
@@ -938,10 +969,14 @@ async fn exact_vector_paged_semantics_diagnostic() {
                 for (page, cbor) in [
                     (1, false),
                     (3, false),
+                    (128, false),
                     (256, false),
+                    (512, false),
                     (1, true),
                     (3, true),
+                    (128, true),
                     (256, true),
+                    (512, true),
                 ] {
                     let new = paged_exact_vectors(
                         &db,
@@ -1042,6 +1077,12 @@ async fn exact_vector_skinny_storage_diagnostic() {
             .check()
             .unwrap();
         let single_sql = std::env::var_os("GRAPHRAG_VECTOR_PROBE_SINGLE_SQL").is_some();
+        let page_matrix = std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some();
+        assert!(
+            !(single_sql && page_matrix),
+            "diagnostic modes are mutually exclusive"
+        );
+        let native_sql_stats_requested = single_sql || page_matrix;
         let mut sources = Vec::new();
         for index in 0..4 {
             let mut source =
@@ -1080,6 +1121,10 @@ async fn exact_vector_skinny_storage_diagnostic() {
             } else {
                 embedding[1] = n as f32 / count as f32;
             }
+            if page_matrix && n < 72 {
+                // A dense equal-distance pool crosses both result limits.
+                embedding.clone_from(&query_embedding);
+            }
             let row_repeats = if count > 160 {
                 match n % 3 {
                     0 => 0,
@@ -1102,18 +1147,44 @@ async fn exact_vector_skinny_storage_diagnostic() {
                 note.source_id = Some(sources[n % 4].clone());
                 note.source_generation = Some(if n % 17 == 0 { 3 } else { 2 });
             }
-            let saved: Option<Note> = db
-                .create(("note", format!("fixture-{n:04}")))
-                .content(note)
-                .await
-                .unwrap();
+            let id = if page_matrix {
+                use surrealdb::types::{Object, RecordIdKey};
+                match n % 4 {
+                    0 => RecordId::new("note", n as i64),
+                    1 => RecordId::new("note", format!("fixture-{n:04}")),
+                    2 => RecordId::new(
+                        "note",
+                        RecordIdKey::Uuid(uuid::Uuid::from_u128(n as u128 + 1).into()),
+                    ),
+                    _ => {
+                        let mut key = Object::new();
+                        key.insert("label", "fictional");
+                        key.insert("ordinal", n as i64);
+                        RecordId::new("note", RecordIdKey::Object(key))
+                    }
+                }
+            } else {
+                RecordId::new("note", format!("fixture-{n:04}"))
+            };
+            let saved: Option<Note> = db.create(id).content(note).await.unwrap();
             let note = saved.unwrap();
-            db.query("CREATE $id SET note_id=$note, embedding=$embedding, created_at=$created, source_id=$source, source_generation=$generation; CREATE $cbor_id SET note_id=$note, embedding_cbor=encoding::cbor::encode($embedding), created_at=$created, source_id=$source, source_generation=$generation")
+            let materialize = if page_matrix {
+                "CREATE $cbor_id SET note_id=$note, embedding_cbor=encoding::cbor::encode($embedding), created_at=$created, source_id=$source, source_generation=$generation"
+            } else {
+                "CREATE $id SET note_id=$note, embedding=$embedding, created_at=$created, source_id=$source, source_generation=$generation; CREATE $cbor_id SET note_id=$note, embedding_cbor=encoding::cbor::encode($embedding), created_at=$created, source_id=$source, source_generation=$generation"
+            };
+            db.query(materialize)
                 .bind((
                     "id",
                     RecordId::new("exact_vector_probe", note.id.as_ref().unwrap().key.clone()),
                 ))
-                .bind(("cbor_id",RecordId::new("exact_vector_cbor_probe",note.id.as_ref().unwrap().key.clone())))
+                .bind((
+                    "cbor_id",
+                    RecordId::new(
+                        "exact_vector_cbor_probe",
+                        note.id.as_ref().unwrap().key.clone(),
+                    ),
+                ))
                 .bind(("note", note.id.unwrap()))
                 .bind(("embedding", embedding))
                 .bind(("created", note.created_at))
@@ -1146,26 +1217,41 @@ async fn exact_vector_skinny_storage_diagnostic() {
                     source_uri.clone(),
                 )
                 .await;
-                let mut variants = vec![
-                    ("baseline", old_query(limit)),
-                    ("skinny", skinny_query(limit)),
-                    ("cbor_paged", skinny_query(limit)),
-                ];
+                let mut variants = if page_matrix {
+                    vec![
+                        ("baseline", old_query(limit)),
+                        ("cbor_paged_128", skinny_query(limit)),
+                        ("cbor_paged_256", skinny_query(limit)),
+                        ("cbor_paged_512", skinny_query(limit)),
+                    ]
+                } else {
+                    vec![
+                        ("baseline", old_query(limit)),
+                        ("skinny", skinny_query(limit)),
+                        ("cbor_paged", skinny_query(limit)),
+                    ]
+                };
                 if single_sql {
                     variants.push(("cbor_single_sql", cbor_single_sql_query(limit)));
                 }
                 let variant_count = variants.len();
+                let observations_per_variant =
+                    if std::env::var_os("GRAPHRAG_VECTOR_PROBE_CORRECTNESS_ONLY").is_some() {
+                        1
+                    } else {
+                        21
+                    };
                 let order = std::env::var("GRAPHRAG_VECTOR_PROBE_ORDER")
                     .unwrap_or_else(|_| "legacy_first".into());
                 let schedule: Vec<usize> = match order.as_str() {
                     "legacy_first" => (0..variant_count)
-                        .flat_map(|v| std::iter::repeat_n(v, 21))
+                        .flat_map(|v| std::iter::repeat_n(v, observations_per_variant))
                         .collect(),
                     "cbor_first" => std::iter::once(variant_count - 1)
                         .chain(0..variant_count - 1)
-                        .flat_map(|v| std::iter::repeat_n(v, 21))
+                        .flat_map(|v| std::iter::repeat_n(v, observations_per_variant))
                         .collect(),
-                    "alternating" => (0..21)
+                    "alternating" => (0..observations_per_variant)
                         .flat_map(|round| {
                             (0..variant_count).map(move |v| (round + v) % variant_count)
                         })
@@ -1183,12 +1269,13 @@ async fn exact_vector_skinny_storage_diagnostic() {
                 for (sequence, variant) in schedule.into_iter().enumerate() {
                     let (name, sql) = &variants[variant];
                     let start = std::time::Instant::now();
-                    let rows = if *name == "cbor_paged" {
+                    let page = diagnostic_variant_page(name);
+                    let rows = if let Some(page) = page {
                         let (rows, phases) = paged_exact_vectors_traced(
                             &db,
                             &query_embedding,
                             limit,
-                            256,
+                            page,
                             true,
                             since.clone(),
                             source_uri.clone(),
@@ -1196,7 +1283,7 @@ async fn exact_vector_skinny_storage_diagnostic() {
                         .await;
                         phase_samples[variant].push(phases);
                         rows
-                    } else if single_sql {
+                    } else if native_sql_stats_requested {
                         let (rows, phases) = query_with_native_stats(
                             &db,
                             sql.clone(),
@@ -1237,14 +1324,15 @@ async fn exact_vector_skinny_storage_diagnostic() {
                 }
                 let category_elapsed_ms = category_start.elapsed().as_secs_f64() * 1000.0;
                 for (variant, (name, sql)) in variants.into_iter().enumerate() {
-                    let explain = if name == "cbor_paged" {
+                    let page = diagnostic_variant_page(name);
+                    let explain = if page.is_some() {
                         page_query(false, true)
                     } else {
                         sql
                     };
                     let plan: Vec<serde_json::Value> = db
                         .query(format!("{explain} EXPLAIN FULL"))
-                        .bind(("page", 256))
+                        .bind(("page", page.unwrap_or(256)))
                         .bind(("embedding", query_embedding.clone()))
                         .bind(("limit", limit))
                         .bind(("since", since.clone()))
@@ -1258,7 +1346,8 @@ async fn exact_vector_skinny_storage_diagnostic() {
                     "backend":backend,"order":order,"variant_sequence":sequences[variant],
                     "category_elapsed_ms":category_elapsed_ms,"phase_samples":phase_samples[variant],
                     "native_sql_phase_samples":sql_samples[variant],
-                    "native_sql_stats_requested":single_sql && name != "cbor_paged",
+                    "native_sql_stats_requested":native_sql_stats_requested && page.is_none(),
+                    "paged_rows_per_query":page,
                     "body_payload_bytes":if count>160 {None} else {Some(repeats*"payload ".len())},
                     "mixed_body_sizes":count>160,
                     "limit":limit,"full_rows_exact":true,"distance_bits_exact":true,
@@ -1273,9 +1362,25 @@ async fn exact_vector_skinny_storage_diagnostic() {
         serde_json::json!({"fictional_records_per_population":count,"populations":bodies.len(),"dense_vectors":dense,
         "dimension":1024,"provider_calls":0,"engine":"surrealdb-core 3.2.4",
         "first_sample_kind":"first measured after unmeasured legacy reference query",
-        "native_sql_stats_requested":std::env::var_os("GRAPHRAG_VECTOR_PROBE_SINGLE_SQL").is_some(),
+        "native_sql_stats_requested":std::env::var_os("GRAPHRAG_VECTOR_PROBE_SINGLE_SQL").is_some()
+            || std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some(),
+        "page_matrix":std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some(),
+        "observations_per_variant":if std::env::var_os("GRAPHRAG_VECTOR_PROBE_CORRECTNESS_ONLY").is_some() {1} else {21},
+        "native_key_mix":std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some(),
+        "dense_tie_rows":if std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some() {count.min(72)} else {0},
+        "projected_embedding_payload_cap_bytes_per_row":if std::env::var_os("GRAPHRAG_VECTOR_PROBE_PAGE_MATRIX").is_some() {Some(8192)} else {None},
+        "projected_embedding_payload_cap_qualification":"Fictional finite float32-origin 1024-d vectors; excludes metadata and SDK/engine allocations",
         "runs":runs})
     );
+}
+
+fn diagnostic_variant_page(name: &str) -> Option<usize> {
+    match name {
+        "cbor_paged_128" => Some(128),
+        "cbor_paged" | "cbor_paged_256" => Some(256),
+        "cbor_paged_512" => Some(512),
+        _ => None,
+    }
 }
 
 #[tokio::test]
