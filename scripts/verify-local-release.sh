@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise the unchanged installer with real local assets and doubled transport.
+# Exercise the installer with real local assets and doubled HTTPS transport.
 # No network, Cargo, configuration/database writes, GUI, or inference calls.
 set -euo pipefail
 if [ "$#" -ne 3 ]; then
@@ -44,7 +44,7 @@ done
 case "$url" in
     "https://github.com/mateu/graphrag-notes/releases/download/$GRN_RELEASE_TAG/"*)
         name="${url##*/}"
-        case "$name" in SHA256SUMS|graphrag-notes-*.tar.gz) ;; *) exit 22 ;; esac
+        case "$name" in SHA256SUMS|BUILDINFO.json|BUILDINFO-*.json|BUILDINFO.identity|BUILDINFO-*.identity|graphrag-notes-*.tar.gz) ;; *) exit 22 ;; esac
         [ -f "$GRN_RELEASE_DIST/$name" ] && [ ! -L "$GRN_RELEASE_DIST/$name" ] || exit 22
         printf '%s\n' "$url" >> "$GRN_RELEASE_REQUESTS"
         cp "$GRN_RELEASE_DIST/$name" "$output" ;;
@@ -52,6 +52,14 @@ case "$url" in
 esac
 TOOL
 chmod +x "$temp_dir/tools/curl"
+# Installation must remain usable without a Python runtime. Measurement below
+# uses an absolute interpreter separately from the installer's PATH.
+cat > "$temp_dir/tools/python3" <<'TOOL'
+#!/bin/sh
+printf 'Installer unexpectedly invoked Python\n' >&2
+exit 99
+TOOL
+chmod +x "$temp_dir/tools/python3"
 installer() {
     HOME="$temp_dir/home" PATH="$temp_dir/tools:/usr/bin:/bin:/usr/sbin:/sbin" \
         bash "$project_dir/scripts/install.sh" --version "$release_version" "$@"
@@ -66,16 +74,21 @@ install_elapsed="$("$measurement_python" -c 'import sys,time; print(round((time.
 tar -xzf "$release_dist/$asset" -C "$temp_dir/unpacked"
 cmp "$temp_dir/unpacked/graphrag" "$temp_dir/home/.local/bin/graphrag"
 cmp "$temp_dir/unpacked/samples/first-notes.md" "$temp_dir/home/.local/share/graphrag-notes/samples/first-notes.md"
+if [ -d "$temp_dir/unpacked/release" ]; then
+    diff -r "$temp_dir/unpacked/release" "$temp_dir/home/.local/share/graphrag-notes/releases/v$release_version" >/dev/null
+fi
 [ -x "$temp_dir/home/.local/bin/graphrag" ]
 HOME="$temp_dir/home" "$temp_dir/home/.local/bin/graphrag" --version | grep -Fx "graphrag $release_version" >/dev/null
 if installer > "$temp_dir/refusal.log" 2>&1; then printf 'Expected existing-binary refusal\n' >&2; exit 1; fi
 grep -F 'already exists' "$temp_dir/refusal.log" >/dev/null
 printf 'operator edited sample\n' > "$temp_dir/home/.local/share/graphrag-notes/samples/first-notes.md"
+printf 'operator edited configuration\n' > "$temp_dir/home/.local/share/graphrag-notes/config.toml"
 if ! installer --force > "$temp_dir/reinstall.log" 2>&1; then
     cat "$temp_dir/reinstall.log" >&2
     exit 1
 fi
 grep -Fx 'operator edited sample' "$temp_dir/home/.local/share/graphrag-notes/samples/first-notes.md" >/dev/null
+grep -Fx 'operator edited configuration' "$temp_dir/home/.local/share/graphrag-notes/config.toml" >/dev/null
 cmp "$temp_dir/unpacked/graphrag" "$temp_dir/home/.local/bin/graphrag"
 if command -v shasum >/dev/null 2>&1; then
     digest() { shasum -a 256 "$1" | awk '{print $1}'; }
@@ -114,9 +127,9 @@ source_commit="$(metadata_value source_commit)"
   "elapsed_seconds": $install_elapsed,
   "fresh_install_invocations": 1,
   "installer_invocations": 3,
-  "checks": ["fresh system-tools install", "exact version", "payload hash equality", "existing-binary refusal", "explicit force reinstall", "edited-sample preservation"]
+  "checks": ["fresh native-tools install without Python", "exact version", "payload hash equality", "existing-binary refusal", "explicit force reinstall", "edited-sample/config preservation", "matching versioned client/document bundle"]
 }
 JSON
 )
-printf 'PASS: real local assets installed with system tools, refused overwrite, and preserved edited sample\n'
-printf 'Transport was doubled locally; published rc.2 download remains untested.\n'
+printf 'PASS: real local assets installed, refused overwrite, and preserved edited sample/config\n'
+printf 'Transport was doubled locally; published HTTPS installation remains untested.\n'

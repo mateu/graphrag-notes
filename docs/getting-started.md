@@ -271,19 +271,26 @@ by the Docker stack.
 
 ## Upgrade an existing installation
 
-Before changing binaries, use the working installation to create and verify
+For the published rc.2 installation, follow the commands below. The
+[rc.3 release guide](releases/0.1.0-rc.3.md) records shared-service candidate
+availability, matching installed clients, and publication/upgrade validation.
+Once rc.3 is published, select its version explicitly in the same installer flow.
+
+Before changing binaries, stop the service/workspace that owns the corpus,
+quiesce remote clients, retain pending job/request recovery state, and use the working installation to create and verify
 a portable backup at a new path:
 
 ```bash
-graphrag backup create ./before-rc2 --include-embeddings
-graphrag backup verify ./before-rc2
+graphrag backup create ./before-upgrade --include-embeddings
+graphrag backup verify ./before-upgrade
 ```
 
 Keep your usual `--config` and `--db-path` flags when needed. Including vectors
 requires recorded embedding identity; otherwise omit `--include-embeddings`
 and plan to reindex before hybrid retrieval after restore. The new binary
 applies additive schema migrations when it opens the existing database.
-`rc.1` supports schema 14 and refuses a corpus upgraded to schema 15. Returning
+`rc.1` supports schema 14, rc.2 supports schema 15, and the rc.3 source
+candidate includes schema 19. An older binary cannot open the upgraded corpus. Returning
 to an older binary requires a compatible pre-upgrade archive restored into a
 fresh database. Do not lower schema metadata or remove fields with SQL.
 
@@ -316,6 +323,13 @@ reconfiguration; keep original Markdown files separately. Follow the
 [operating runbooks](operations.md) for restore and embedding reindexing.
 The validation harness compares separate fresh databases for the old and new
 binaries; it never opens an upgraded corpus with the old binary.
+
+rc.3 clients/docs install below `DATA_DIR/releases/v0.1.0-rc.3`, preserving
+configuration and edited starter notes. Installation requires curl, tar and SHA
+tools; optional Python clients require Python 3.11+ to run. Keep capture journals,
+refresh collection state, tokens and private relevance cases outside that public
+version bundle. An existing modified version bundle is refused; inspect an
+interrupted installer before removing its per-version installation lock.
 
 ## If setup stops
 

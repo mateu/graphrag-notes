@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -29,9 +30,92 @@ TARGETS = {
 RELEASE_GATES = (
     "workspace_tests", "clippy", "offline_workflow", "native_live_workflow", "local_asset_install"
 )
+# Public, repository-owned clients and operator docs only. Runtime state,
+# judgments, private reports, credentials and corpus data are never enumerated.
+RELEASE_PAYLOADS = (
+    "README.md",
+    ".env.example",
+    "config.toml",
+    "scripts/provision-mcp-credentials.py",
+    "scripts/validate-native-mcp.py",
+    "scripts/validate-daily-workflow.py",
+    "samples/daily-workflow/atlas.md",
+    "samples/daily-workflow/dock.md",
+    "samples/daily-workflow/meeting.md",
+    "scripts/openclaw_memory_refresh.py",
+    "scripts/refresh-openclaw-memory.py",
+    "scripts/mcp-capture-journal.py",
+    "scripts/evaluate-retrieval.py",
+    "scripts/benchmark-search.py",
+    "scripts/native-mcp/envelope.py",
+    "scripts/native-mcp/extended.py",
+    "scripts/native-mcp/hermes-runtime.py",
+    "scripts/native-mcp/openclaw-runtime.mjs",
+    "docs/application-boundary.md",
+    "docs/capture-context.md",
+    "docs/capture-journal.md",
+    "docs/capture-validation.md",
+    "docs/ci-quality-gates.md",
+    "docs/cli-contract.md",
+    "docs/connection-review-validation.md",
+    "docs/connection-review.md",
+    "docs/daily-workflow-validation.md",
+    "docs/daily-workflow.md",
+    "docs/entity-quality.md",
+    "docs/folder-sync-validation.md",
+    "docs/folder-sync.md",
+    "docs/getting-started.md",
+    "docs/graph-search-performance.md",
+    "docs/keyword-search.md",
+    "docs/keyword-validation.md",
+    "docs/navigation-validation.md",
+    "docs/openclaw-conversational.md",
+    "docs/openclaw-memory-refresh.md",
+    "docs/operations.md",
+    "docs/releases/0.1.0-rc.2.md",
+    "docs/releases/0.1.0-rc.3.md",
+    "docs/releases/README.md",
+    "docs/remote-diagnostics.md",
+    "docs/remote-upload-jobs.md",
+    "docs/remote-upload-validation.md",
+    "docs/retrieval-evaluation.md",
+    "docs/validation/retrieval-92-baseline.md",
+    "docs/validation/retrieval-92-baseline.json",
+    "docs/retrieval-ranking.md",
+    "docs/search-benchmark.md",
+    "docs/setup-validation.md",
+    "docs/shared-mcp-mutations.md",
+    "docs/shared-mcp-validation.md",
+    "docs/shared-mcp-walkthrough.md",
+    "docs/shared-mcp.md",
+    "docs/terminal-workspace-validation.md",
+    "docs/terminal-workspace.md",
+    "docs/validation/graph-relevance-93.md",
+    "docs/validation/graph-relevance-93.json",
+    "docs/validation/mcp-native-clients-76.json",
+    "docs/validation/mcp-native-clients-76.md",
+    "docs/validation/mcp-native-clients-77.json",
+    "docs/validation/mcp-native-clients-77.md",
+    "docs/validation/mcp-native-clients-final-candidate.json",
+    "docs/validation/mcp-native-clients-final-candidate.md",
+    "docs/validation/mcp-native-clients-integrated-checkpoint.json",
+    "docs/validation/mcp-native-clients-integrated-checkpoint.md",
+    "docs/validation/mcp-native-clients-pre-codex-review.json",
+    "docs/validation/mcp-native-clients-pre-codex-review.md",
+    "docs/validation/mcp-native-clients.json",
+    "docs/validation/mcp-two-host-walkthrough.json",
+    "docs/validation/mcp-two-host-walkthrough.md",
+    "docs/validation/openclaw-conversational-83.json",
+    "docs/validation/openclaw-conversational-83.md",
+    "docs/validation/openclaw-openai-oauth-83.json",
+    "docs/validation/search-latency-95.json",
+    "docs/validation/search-latency-95.md",
+)
+
 HELP_CHECKS = {
-    (): ("capture", "folders", "sync", "inspect", "open", "augment", "garden", "workspace", "backup", "jobs"),
-    ("search",): ("--mode", "keyword", "--scope", "--explain"),
+    (): ("capture", "folders", "sync", "inspect", "open", "augment", "garden", "workspace", "backup", "jobs", "serve", "doctor", "--server", "--credential-env"),
+    ("search",): ("--mode", "keyword", "--scope", "--explain", "--graph"),
+    ("doctor",): ("--refresh-status-file",),
     ("inspect",): ("--revision", "--neighbors"),
     ("open",): ("--opener", "--revision"),
     ("capture",): ("--editor", "--title"),
@@ -67,6 +151,17 @@ def sha256(path: Path) -> str:
 def regular_file(path: Path, label: str) -> Path:
     require(path.is_file() and not path.is_symlink(), f"{label} must be a regular, non-symlink file: {path}")
     return path
+
+
+def committed_payload(repo: Path, relative: str, commit: str, label: str) -> bytes:
+    """Freeze the verified Git blob rather than reopen a mutable worktree file."""
+    payload = regular_file(repo / relative, label)
+    object_id = run(["git", "rev-parse", f"{commit}:{relative}"], repo)
+    require(run(["git", "hash-object", str(payload)], repo) == object_id,
+            f"{label} differs from the final committed source")
+    result = subprocess.run(["git", "cat-file", "blob", object_id], cwd=repo, capture_output=True)
+    require(result.returncode == 0, f"cannot read the verified {label} Git blob")
+    return result.stdout
 
 
 def json_file(path: Path) -> dict:
@@ -125,7 +220,7 @@ def validate_source(repo: Path, tag: str, expected_commit: str, clean: bool = Tr
                 f"existing tag {tag} points to another commit; never move a release tag")
     require(not require_tag or bool(existing), f"release tag {tag} must already exist")
     return {
-        "commit": head, "tree": run(["git", "rev-parse", "HEAD^{tree}"], repo),
+        "commit": head, "tree": run(["git", "rev-parse", f"{head}^{{tree}}"], repo),
         "compile_inputs_sha256": input_identity(repo, head), "version": version,
         "tag": tag, "workspace_packages": packages, "rust_toolchain": toolchain,
         "source_date_epoch": int(run(["git", "show", "-s", "--format=%ct", head], repo)),
@@ -278,28 +373,63 @@ def validation_checks(path: Path | None, require_gates: bool, context: dict | No
     return checks
 
 
-def deterministic_archive(path: Path, binary: Path, sample: Path, epoch: int) -> None:
+def deterministic_archive(path: Path, binary: Path, sample: Path | bytes, epoch: int,
+                          payloads: dict[str, Path | bytes] | None = None) -> None:
+    entries = [(binary, "graphrag", 0o755), (sample, "samples/first-notes.md", 0o644)]
+    entries += [(value, name, 0o644) for name, value in sorted((payloads or {}).items())]
+    write_archive(path, entries, epoch)
+
+
+def write_archive(path: Path, entries: list, epoch: int) -> None:
     with path.open("xb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=epoch) as compressed:
         with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-            for source, name, mode in [(binary, "graphrag", 0o755), (sample, "samples/first-notes.md", 0o644)]:
+            for source, name, mode in entries:
                 info = tarfile.TarInfo(name)
-                info.size = source.stat().st_size
+                info.size = len(source) if isinstance(source, bytes) else source.stat().st_size
                 info.mode, info.mtime = mode, epoch
                 info.uid = info.gid = 0
-                with source.open("rb") as contents:
+                with io.BytesIO(source) if isinstance(source, bytes) else source.open("rb") as contents:
                     archive.addfile(info, contents)
 
 
-def inspect_archive(path: Path, expected_binary: str, expected_sample: str) -> None:
+def inspect_archive(path: Path, expected_binary: str | None, expected_sample: str | None,
+                    expected_payloads: dict[str, str] | None = None,
+                    expected_identity: dict[str, str] | None = None) -> None:
     with tarfile.open(path, "r:gz") as archive:
         members = archive.getmembers()
-        require([member.name for member in members] == ["graphrag", "samples/first-notes.md"],
+        if expected_payloads is not None:
+            require(set(expected_payloads) == {"release/" + name for name in RELEASE_PAYLOADS} |
+                    {"release/PAYLOADS.json", "release/PAYLOADS.sha256", "release/VERSION", "release/SOURCE-COMMIT"}
+                    and all(re.fullmatch(r"[0-9a-f]{64}", value) for value in expected_payloads.values()),
+                    "release client/document payloads violate the fixed allowlist")
+        expected = {"graphrag": expected_binary, "samples/first-notes.md": expected_sample} if expected_binary is not None else {}
+        expected.update(expected_payloads or {})
+        expected_names = (["graphrag", "samples/first-notes.md"] if expected_binary is not None else []) + sorted(expected_payloads or {})
+        require([member.name for member in members] == expected_names,
                 "archive contents violate the installer allowlist")
-        for member, expected, mode in zip(members, [expected_binary, expected_sample], [0o755, 0o644]):
+        for member in members:
+            mode = 0o755 if member.name == "graphrag" else 0o644
             require(member.isfile() and member.mode == mode, "archive members must be regular files with fixed permissions")
             contents = archive.extractfile(member)
-            require(contents is not None and hashlib.file_digest(contents, "sha256").hexdigest() == expected,
+            require(contents is not None and hashlib.file_digest(contents, "sha256").hexdigest() == expected[member.name],
                     "archive contents differ from the validated binary/sample")
+        if expected_payloads is not None:
+            version = archive.extractfile("release/VERSION").read().decode("ascii").removesuffix("\n")
+            commit = archive.extractfile("release/SOURCE-COMMIT").read().decode("ascii").removesuffix("\n")
+            require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?", version)
+                    and re.fullmatch(r"[0-9a-f]{40}", commit), "bundle version/source identity is invalid")
+            require(expected_identity is None or expected_identity == {"version": version, "source_commit": commit},
+                    "bundle identity differs from BUILDINFO")
+            manifest = json.load(archive.extractfile("release/PAYLOADS.json"))
+            require(manifest == {"schema_version": 1, "version": version, "tag": "v" + version,
+                                 "source_commit": commit, "python_minimum": "3.11",
+                                 "files": {p: h for p, h in expected_payloads.items()
+                                           if p not in {"release/PAYLOADS.json", "release/PAYLOADS.sha256"}}},
+                    "bundle manifest differs from BUILDINFO payloads")
+            flat = "".join(f"{digest}  {name}\n" for name, digest in sorted(expected_payloads.items())
+                           if name != "release/PAYLOADS.sha256").encode()
+            require(archive.extractfile("release/PAYLOADS.sha256").read() == flat,
+                    "flat payload checksums differ from BUILDINFO")
 
 
 def publish_directory(output: Path, staged: Path) -> None:
@@ -308,6 +438,23 @@ def publish_directory(output: Path, staged: Path) -> None:
     for path in sorted(staged.iterdir()):
         os.link(path, output / path.name)  # No-clobber publication on the same filesystem.
 
+
+
+def release_identity(record: dict, metadata_sha256: str, clients: bool = False) -> bytes:
+    """Flat, bounded provenance contract for the Python-free installer.
+
+    The JSON bytes are bound by digest; packager/assembler derive and validate
+    these authoritative installer fields from the same semantic JSON record.
+    """
+    fields = {"schema_version": "1", "version": record["version"], "tag": record["tag"],
+              "source_commit": record["source_commit"], "target": "clients" if clients else record["target"],
+              "archive": record["archive"], "archive_sha256": record["archive_sha256"],
+              "metadata_sha256": metadata_sha256, "python_minimum": "3.11"}
+    if not clients:
+        fields.update(binary_sha256=record["binary_sha256"], sample_sha256=record["sample_sha256"])
+    require(all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._-]+", value)
+                for value in fields.values()), "unsafe release identity scalar")
+    return "".join(f"{key}={value}\n" for key, value in sorted(fields.items())).encode("ascii")
 
 def package(args) -> dict:
     repo, output = args.repo.resolve(), args.output.absolute()
@@ -343,14 +490,41 @@ def package(args) -> dict:
     native = {**{name: native[name] for name in historical}, **intrinsic}
     smoke = smoke_binary(binary, source["version"])
     require(record["binary_smoke"] == smoke, "build record smoke results differ from the actual binary")
-    sample = regular_file(repo / "samples/first-notes.md", "starter sample")
+    sample = committed_payload(repo, "samples/first-notes.md", source["commit"], "starter sample")
+    payloads = {}
+    for relative in RELEASE_PAYLOADS:
+        payloads["release/" + relative] = committed_payload(repo, relative, source["commit"], "release client/document")
+    payloads["release/VERSION"] = (source["version"] + "\n").encode()
+    payloads["release/SOURCE-COMMIT"] = (source["commit"] + "\n").encode()
+    payload_hashes = {name: hashlib.sha256(path).hexdigest() if isinstance(path, bytes) else sha256(path)
+                      for name, path in payloads.items()}
+    manifest = (json.dumps({"schema_version": 1, "version": source["version"],
+                          "tag": args.tag, "source_commit": source["commit"],
+                          "python_minimum": "3.11", "files": payload_hashes},
+                         sort_keys=True, indent=2) + "\n").encode()
+    payloads["release/PAYLOADS.json"] = manifest
+    payload_hashes["release/PAYLOADS.json"] = hashlib.sha256(manifest).hexdigest()
+    flat_manifest = "".join(f"{digest}  {name}\n" for name, digest in sorted(payload_hashes.items())).encode()
+    payloads["release/PAYLOADS.sha256"] = flat_manifest
+    payload_hashes["release/PAYLOADS.sha256"] = hashlib.sha256(flat_manifest).hexdigest()
     asset = f"graphrag-notes-{args.tag}-{target}.tar.gz"
-    binary_hash, sample_hash = record["binary_sha256"], sha256(sample)
+    binary_hash, sample_hash = record["binary_sha256"], hashlib.sha256(sample).hexdigest()
     with tempfile.TemporaryDirectory(prefix=".graphrag-package-", dir=output.parent) as temp:
         staged = Path(temp)
-        deterministic_archive(staged / asset, binary, sample, source["source_date_epoch"])
-        inspect_archive(staged / asset, binary_hash, sample_hash)
+        deterministic_archive(staged / asset, binary, sample, source["source_date_epoch"], payloads)
+        inspect_archive(staged / asset, binary_hash, sample_hash, payload_hashes,
+                        {"version": source["version"], "source_commit": source["commit"]})
         archive_hash = sha256(staged / asset)
+        client_asset = f"graphrag-notes-{args.tag}-clients.tar.gz"
+        write_archive(staged / client_asset, [(value, name, 0o644) for name, value in sorted(payloads.items())], source["source_date_epoch"])
+        inspect_archive(staged / client_asset, None, None, payload_hashes,
+                        {"version": source["version"], "source_commit": source["commit"]})
+        client_hash = sha256(staged / client_asset)
+        client_info = {"schema_version": 1, "version": source["version"], "tag": args.tag,
+                       "source_commit": source["commit"], "archive": client_asset,
+                       "archive_sha256": client_hash, "payload_sha256": payload_hashes, "python_minimum": "3.11"}
+        (staged / "CLIENTINFO.json").write_text(json.dumps(client_info, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (staged / "CLIENTINFO.identity").write_bytes(release_identity(client_info, sha256(staged / "CLIENTINFO.json"), True))
         checks = validation_checks(args.validation_file, args.require_gates, {
             "source_commit": source["commit"], "build_source_commit": built["commit"],
             "version": source["version"], "binary_sha256": binary_hash, "archive_sha256": archive_hash,
@@ -361,16 +535,21 @@ def package(args) -> dict:
                 "build_source_commit": built["commit"], "build_source_tree": built["tree"],
                 "workspace_packages": source["workspace_packages"], "source_date_epoch": source["source_date_epoch"],
                 **native, "binary_sha256": binary_hash, "sample_sha256": sample_hash,
+                "payload_sha256": payload_hashes, "client_python_minimum": "3.11",
+                "client_archive": client_asset, "client_archive_sha256": client_hash,
                 "archive": asset, "archive_sha256": archive_hash,
                 "validation": {**checks, "binary_version_and_help": smoke, "archive_integrity": {"status": "passed"}}}
         write_json(staged / "BUILDINFO.json", info)
+        (staged / "BUILDINFO.identity").write_bytes(release_identity(info, sha256(staged / "BUILDINFO.json")))
         (staged / "SHA256SUMS").write_text(
-            "".join(f"{sha256(staged / name)}  {name}\n" for name in sorted([asset, "BUILDINFO.json"])), encoding="utf-8")
+            "".join(f"{sha256(staged / name)}  {name}\n" for name in sorted([asset, "BUILDINFO.json", "BUILDINFO.identity", client_asset, "CLIENTINFO.json", "CLIENTINFO.identity"])), encoding="utf-8")
         publish_directory(output, staged)
     return info
 
 
 def assemble(args) -> dict:
+    require(re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", args.tag) is not None,
+            "assembly tag must be a versioned release tag")
     output = args.output.absolute()
     require(output.parent.is_dir(), "assembly output parent must exist")
     expected = set(args.targets)
@@ -378,7 +557,8 @@ def assemble(args) -> dict:
     records = [json_file(path) for path in sorted(args.input.glob("*/BUILDINFO.json"))]
     require(len(records) == len(expected) and {record["target"] for record in records} == expected,
             "assembly is missing targets or contains duplicate/unexpected targets")
-    require(all(record["tag"] == args.tag for record in records), "assembled artifacts have inconsistent tags")
+    require(all(record["tag"] == args.tag and record["version"] == args.tag[1:] for record in records),
+            "assembled artifacts have inconsistent versions/tags")
     require(len({(record["source_commit"], record["source_tree"], record["compile_inputs_sha256"]) for record in records}) == 1,
             "assembled artifacts have inconsistent source provenance")
     with tempfile.TemporaryDirectory(prefix=".graphrag-assemble-", dir=output.parent) as temp:
@@ -394,11 +574,44 @@ def assemble(args) -> dict:
                 match = re.fullmatch(r"([0-9a-f]{64})  ([^/]+)", line)
                 require(match is not None and match[2] not in entries, "invalid or duplicate per-target checksum entry")
                 entries[match[2]] = match[1]
-            require(set(entries) == {"BUILDINFO.json", asset}, "per-target checksum manifest must identify archive and metadata")
+            client_asset = record.get("client_archive")
+            expected_entries = {"BUILDINFO.json", asset} | ({client_asset, "CLIENTINFO.json", "CLIENTINFO.identity", "BUILDINFO.identity"} if client_asset else set())
+            require(set(entries) == expected_entries, "per-target checksum manifest must identify archive and metadata")
             require(entries["BUILDINFO.json"] == sha256(path), "assembly metadata checksum differs from manifest")
             require(entries[asset] == record["archive_sha256"], "assembly manifest and metadata disagree on archive hash")
             require(sha256(archive) == record["archive_sha256"], "assembly archive checksum differs from BUILDINFO")
-            inspect_archive(archive, record["binary_sha256"], record["sample_sha256"])
+            inspect_archive(archive, record["binary_sha256"], record["sample_sha256"], record.get("payload_sha256"),
+                            {"version": record["version"], "source_commit": record["source_commit"]})
+            if client_asset:
+                native_identity = regular_file(path.parent / "BUILDINFO.identity", "native identity")
+                require(entries["BUILDINFO.identity"] == sha256(native_identity)
+                        and native_identity.read_bytes() == release_identity(record, sha256(path)),
+                        "native identity differs from semantic metadata")
+                shutil.copyfile(native_identity, staged / f"BUILDINFO-{record['target']}.identity")
+                require(sha256(staged / f"BUILDINFO-{record['target']}.identity") == entries["BUILDINFO.identity"],
+                        "native identity changed during assembly copy")
+                require(client_asset == f"graphrag-notes-{args.tag}-clients.tar.gz", "unsafe client archive filename")
+                clients = regular_file(path.parent / client_asset, "client archive")
+                client_metadata = regular_file(path.parent / "CLIENTINFO.json", "client metadata")
+                require(entries[client_asset] == record["client_archive_sha256"] == sha256(clients)
+                        and entries["CLIENTINFO.json"] == sha256(client_metadata), "client artifact checksum differs from manifest")
+                require(json_file(client_metadata) == {
+                    "schema_version": 1, "version": record["version"], "tag": args.tag,
+                    "source_commit": record["source_commit"], "archive": client_asset,
+                    "archive_sha256": record["client_archive_sha256"], "payload_sha256": record["payload_sha256"],
+                    "python_minimum": "3.11"}, "client metadata differs from native bundle")
+                client_identity = regular_file(path.parent / "CLIENTINFO.identity", "client identity")
+                require(entries["CLIENTINFO.identity"] == sha256(client_identity)
+                        and client_identity.read_bytes() == release_identity(json_file(client_metadata), sha256(client_metadata), True),
+                        "client identity differs from semantic metadata")
+                inspect_archive(clients, None, None, record["payload_sha256"],
+                                {"version": record["version"], "source_commit": record["source_commit"]})
+                for source_file, name in [(clients, client_asset), (client_metadata, "CLIENTINFO.json"), (client_identity, "CLIENTINFO.identity")]:
+                    if (staged / name).exists():
+                        require(sha256(staged / name) == entries[name], "matrix client bundles are inconsistent")
+                    else:
+                        shutil.copyfile(source_file, staged / name)
+                    require(sha256(staged / name) == entries[name], "client artifact changed during assembly copy")
             shutil.copyfile(archive, staged / asset)
             shutil.copyfile(path, staged / f"BUILDINFO-{record['target']}.json")
             require(sha256(staged / asset) == entries[asset]
