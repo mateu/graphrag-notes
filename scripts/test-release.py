@@ -892,5 +892,124 @@ for path in sys.argv[2:]:
         self.assertIn("archive checksum does not match", failure.stderr)
 
 
+class WorkflowInvocationTests(unittest.TestCase):
+    """Run the actual workflow shell with fake Cargo/packaging interfaces."""
+
+    @staticmethod
+    def workflow_run(name):
+        path = SCRIPT.parent.parent / ".github/workflows/release.yml"
+        lines = path.read_text().splitlines()
+        start = lines.index(f"      - name: {name}")
+        while lines[start] != "        run: |":
+            start += 1
+        block = []
+        for line in lines[start + 1:]:
+            if line and not line.startswith("          "):
+                break
+            block.append(line[10:] if line else "")
+        return "\n".join(block) + "\n"
+
+    def select_policy(self, root, version):
+        (root / "Cargo.toml").write_text(f'[workspace.package]\nversion="{version}"\n')
+        output = root / "outputs"
+        env = {**os.environ, "GITHUB_OUTPUT": str(output)}
+        result = subprocess.run(["bash", "-e", "-c", self.workflow_run("Select the checked-out release interface")],
+                                cwd=root, env=env, capture_output=True, text=True)
+        return result, output.read_text().strip().split("=", 1)[1] if output.exists() else None
+
+    def invocation_fixture(self, root, version, target):
+        result, policy = self.select_policy(root, version)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tools = root / "fake-tools"
+        tools.mkdir()
+        log = root / "calls.jsonl"
+        runner = root / "runner"
+        runner.mkdir()
+        # The checked-out historical Cargo/package interfaces reject new flags.
+        # These probes execute no actual Cargo, binary, installation or native tool.
+        probe = r'''import json, os, pathlib, sys
+kind = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+modern = os.environ["EXPECTED_MODERN"] == "true"
+arm = os.environ["BUILD_TARGET"] == "aarch64-apple-darwin"
+with pathlib.Path(os.environ["CALL_LOG"]).open("a") as stream:
+    stream.write(json.dumps({"command": kind, "args": args}) + "\n")
+assert all(args), "empty argument"
+if kind == "cargo":
+    assert ("--features" in args) == (modern and arm), "allocator unavailable or missing"
+    if "--features" in args:
+        assert args[args.index("--features") + 1] == "allocator"
+    print(json.dumps({"reason": "build-finished", "success": True}))
+else:
+    assert args[:2] in (["scripts/package-release.py", "record-build"], ["scripts/package-release.py", "package"])
+    assert ("--cargo-messages" in args) == modern, "cargo-messages unavailable or missing"
+    if modern:
+        log = pathlib.Path(args[args.index("--cargo-messages") + 1])
+        assert log == pathlib.Path(os.environ["RUNNER_TEMP"]) / ("cargo-" + os.environ["BUILD_TARGET"] + ".jsonl")
+        assert log.is_file()
+'''
+        for command in ("cargo", "python3"):
+            script = tools / command
+            script.write_text(f"#!{sys.executable}\n" + probe)
+            script.chmod(0o755)
+        return {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                "BUILD_TARGET": target, "BUILD_FEATURES": "allocator" if target == "aarch64-apple-darwin" else "",
+                "COMPILER_FEATURE_PROOF": policy, "EXPECTED_MODERN": "true" if version != "0.1.0-rc.4" else "false",
+                "CALL_LOG": str(log), "RUNNER_TEMP": str(runner), "RELEASE_TAG": "v" + version,
+                "RELEASE_COMMIT": "a" * 40}, log
+
+    def test_checked_out_policy_matches_release_contract(self):
+        cases = [(f"0.1.0-rc.{n}", n >= 5) for n in range(1, 7)]
+        cases += [("0.1.0-rc.12", True), ("0.1.0", True), ("0.2.0-rc.1", True), ("0.0.9", False)]
+        for version, expected in cases:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temp:
+                result, policy = self.select_policy(Path(temp), version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(policy, str(expected).lower())
+                self.assertEqual(release.requires_feature_proof(version), expected)
+        with tempfile.TemporaryDirectory() as temp:
+            result, policy = self.select_policy(Path(temp), "invalid")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIsNone(policy)
+
+    def test_historical_and_current_real_workflow_invocations(self):
+        steps = ["Build locked CLI", "Seal exact native binary and check version, help, and runtime dependencies",
+                 "Package binary with starter notes"]
+        for version in ("0.1.0-rc.4", "0.1.0-rc.5"):
+            for target in release.TARGETS:
+                with self.subTest(version=version, target=target), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    env, log = self.invocation_fixture(root, version, target)
+                    for name in steps:
+                        result = subprocess.run(["bash", "-e", "-c", self.workflow_run(name)], cwd=root,
+                                                env=env, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(len(calls), 3)
+                    self.assertEqual([item["command"] for item in calls], ["cargo", "python3", "python3"])
+
+    def test_historical_arm_ungated_feature_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            env, _ = self.invocation_fixture(root, "0.1.0-rc.4", "aarch64-apple-darwin")
+            env["COMPILER_FEATURE_PROOF"] = "true"
+            result = subprocess.run(["bash", "-e", "-c", self.workflow_run("Build locked CLI")], cwd=root,
+                                    env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("allocator unavailable or missing", result.stderr)
+
+    def test_historical_packaging_ungated_messages_are_rejected(self):
+        for name in ("Seal exact native binary and check version, help, and runtime dependencies",
+                     "Package binary with starter notes"):
+            with self.subTest(step=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                env, _ = self.invocation_fixture(root, "0.1.0-rc.4", "x86_64-unknown-linux-gnu")
+                env["COMPILER_FEATURE_PROOF"] = "true"
+                result = subprocess.run(["bash", "-e", "-c", self.workflow_run(name)], cwd=root,
+                                        env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cargo-messages unavailable or missing", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
