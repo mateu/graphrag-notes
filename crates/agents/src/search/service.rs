@@ -19,6 +19,10 @@ use std::time::Instant;
 use surrealdb::types::RecordId;
 use tracing::{debug, info, instrument};
 
+#[cfg(test)]
+#[path = "graph_preparation_tests.rs"]
+mod preparation_tests;
+
 /// Per-invocation graph policy. `auto` runs only when a bounded local graph
 /// candidate exists; `on` uses the same safe bounds but makes the request
 /// explicit; `off` reproduces the pre-graph ranking path.
@@ -575,19 +579,30 @@ impl SearchAgent {
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
         let embedding = self.embed_query(query).await?;
         let mut scoped_results = Vec::new();
+        let graph_enabled = !matches!(graph_mode, GraphMode::Off)
+            && self.graph.enabled
+            && matches!(scope, SearchScope::Notes | SearchScope::All);
+        let lexical_limit = if graph_enabled {
+            self.graph_lexical_limit()
+        } else {
+            0
+        };
+        let mut lexical_candidates = Vec::new();
 
         if matches!(scope, SearchScope::Notes | SearchScope::All) {
-            let notes = self
+            let (notes, lexical) = self
                 .repo
-                .hybrid_search_notes_with_fusion(
+                .hybrid_search_notes_with_fusion_and_lexical_candidates(
                     query,
                     embedding.clone(),
                     limit,
                     since,
                     source_uri.clone(),
                     &self.fusion,
+                    lexical_limit,
                 )
                 .await?;
+            lexical_candidates = lexical;
             scoped_results.extend(
                 notes
                     .into_iter()
@@ -634,14 +649,12 @@ impl SearchAgent {
         }
 
         let mut summary = GraphRetrievalSummary::default();
-        if !matches!(graph_mode, GraphMode::Off)
-            && self.graph.enabled
-            && matches!(scope, SearchScope::Notes | SearchScope::All)
-        {
+        if graph_enabled {
             let graph = self
-                .graph_candidates(
+                .graph_candidates_with_lexical(
                     query,
                     &scoped_results,
+                    lexical_candidates,
                     since,
                     source_uri.clone(),
                     matches!(graph_mode, GraphMode::Auto),
@@ -827,10 +840,43 @@ impl SearchAgent {
         )
     }
 
+    fn graph_lexical_limit(&self) -> usize {
+        self.graph
+            .max_seed_notes
+            .saturating_mul(self.graph.max_seed_entities)
+            .clamp(1, 200)
+    }
+
+    // Independent pre-reuse preparation path for differential regressions.
+    #[cfg(test)]
     async fn graph_candidates(
         &self,
         query: &str,
         baseline: &[ScopedSearchResult],
+        since: Option<chrono::DateTime<Utc>>,
+        source_uri: Option<String>,
+        require_entity_seed: bool,
+    ) -> Result<GraphSearchResults> {
+        let lexical = self
+            .repo
+            .fulltext_search_notes(query, self.graph_lexical_limit(), since, source_uri.clone())
+            .await?;
+        self.graph_candidates_with_lexical(
+            query,
+            baseline,
+            lexical,
+            since,
+            source_uri,
+            require_entity_seed,
+        )
+        .await
+    }
+
+    async fn graph_candidates_with_lexical(
+        &self,
+        query: &str,
+        baseline: &[ScopedSearchResult],
+        lexical_candidates: Vec<SearchResult>,
         since: Option<chrono::DateTime<Utc>>,
         source_uri: Option<String>,
         require_entity_seed: bool,
@@ -847,20 +893,9 @@ impl SearchAgent {
             .take(200)
             .map(|hit| (hit.id.clone(), hit.clone()))
             .collect::<HashMap<_, _>>();
-        // A seed can be useful even when it fell just below the requested
-        // hybrid result count. Use the existing indexed lexical channel to
-        // supplement a bounded candidate list, without another embedding call
-        // or changing graph-off retrieval.
-        let lexical_limit = self
-            .graph
-            .max_seed_notes
-            .saturating_mul(self.graph.max_seed_entities)
-            .clamp(1, 200);
-        for result in self
-            .repo
-            .fulltext_search_notes(query, lexical_limit, since, source_uri.clone())
-            .await?
-        {
+        // The retained lexical prefix still recovers seeds outside requested
+        // hybrid top-k; its bound and ordering match the former second query.
+        for result in lexical_candidates {
             let exact_title_match = result.exact_title_match;
             let mut hit = self.from_note_result(result);
             hit.fusion.exact_title_match = exact_title_match;

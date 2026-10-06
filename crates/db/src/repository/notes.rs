@@ -881,7 +881,30 @@ impl Repository {
         source_uri: Option<String>,
         fusion: &FusionConfig,
     ) -> Result<Vec<SearchResult>> {
+        self.hybrid_search_notes_with_fusion_and_lexical_candidates(
+            query_text, embedding, limit, since, source_uri, fusion, 0,
+        )
+        .await
+        .map(|(results, _)| results)
+    }
+
+    /// Retain a bounded lexical prefix for graph seeds without repeating the
+    /// full-text query. The fusion channel keeps its original candidate limit,
+    /// even when the separately bounded graph prefix is larger.
+    #[instrument(skip(self, embedding, fusion))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn hybrid_search_notes_with_fusion_and_lexical_candidates(
+        &self,
+        query_text: &str,
+        embedding: Vec<f32>,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        fusion: &FusionConfig,
+        lexical_limit: usize,
+    ) -> Result<(Vec<SearchResult>, Vec<SearchResult>)> {
         let candidate_limit = fusion.candidate_limit(limit);
+        let lexical_limit = lexical_limit.min(200);
 
         let started = std::time::Instant::now();
         let vec_results = self
@@ -900,8 +923,13 @@ impl Repository {
         );
 
         let started = std::time::Instant::now();
-        let fts_results = self
-            .fulltext_search_notes(query_text, candidate_limit, since, source_uri)
+        let mut fts_results = self
+            .fulltext_search_notes(
+                query_text,
+                candidate_limit.max(lexical_limit),
+                since,
+                source_uri,
+            )
             .await?;
         tracing::debug!(
             phase = "note_fulltext",
@@ -910,6 +938,8 @@ impl Repository {
             "Retrieval phase completed"
         );
 
+        let lexical_candidates = fts_results.iter().take(lexical_limit).cloned().collect();
+        fts_results.truncate(candidate_limit);
         let mut results = fusion::fuse(vec_results, fts_results, fusion, |existing, incoming| {
             if existing.title.is_none() {
                 existing.title = incoming.title;
@@ -928,7 +958,7 @@ impl Repository {
         if results.len() > limit {
             results.truncate(limit);
         }
-        Ok(results)
+        Ok((results, lexical_candidates))
     }
 
     #[instrument(skip(self, embedding))]

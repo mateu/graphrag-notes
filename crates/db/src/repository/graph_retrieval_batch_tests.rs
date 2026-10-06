@@ -1,6 +1,7 @@
 //! Differential regressions for bounded graph queries. All records are
 //! fictional; legacy SQL remains an independent visibility/ordering oracle.
 
+use super::graph::graph_endpoint_eligible_sql;
 use super::*;
 use crate::init_memory;
 use chrono::TimeZone;
@@ -654,5 +655,82 @@ fn graph_batch_work_does_not_add_full_corpus_eligibility_queries_as_frontier_gro
         let mentions = graph::graph_mention_batch_sql(frontier_size);
         assert!(!mentions.contains("FROM note"));
         assert_eq!(mentions.matches("LIMIT $limit;").count(), frontier_size);
+    }
+}
+
+/// Negative optimization result: inspect whether adding a single-column
+/// access path changes the actual plan for scoped out-only mention lookups.
+/// The pinned engine already uses the existing (out, in) association index.
+#[tokio::test]
+#[ignore = "opt-in fictional query-plan experiment, not a hardware CI gate"]
+async fn out_only_mention_plan_diagnostic() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let current = source(&repo, "index-current", "fixture://index-current").await;
+    let entity_id = RecordId::new("entity", "index-atlas");
+    repo.db.query("CREATE $id CONTENT {name:'Atlas',canonical_name:'atlas',entity_type:'project',metadata:{}}")
+        .bind(("id", entity_id.clone())).await.unwrap().check().unwrap();
+    for index in 0..260 {
+        let id = RecordId::new("note", format!("index-{index:03}"));
+        note(
+            &repo,
+            id.clone(),
+            Some(current.clone()),
+            Some(if index % 9 == 0 { 2 } else { 1 }),
+            timestamp(),
+        )
+        .await;
+        mention(&repo, &id, &entity_id).await;
+    }
+    let eligible = graph_endpoint_eligible_sql("in");
+    let sql = format!("SELECT in AS note_id, out AS entity_id, ({}) AS aliases FROM mentions WHERE out = $entity AND {eligible} ORDER BY in ASC LIMIT 200", "array::slice(IF string::starts_with(out.identity_key ?? '', 'extracted-v1:') THEN metadata.aliases ?? [] ELSE out.metadata.aliases ?? [] END, 0, 8)");
+    async fn rows(repo: &Repository, sql: &str, entity_id: &RecordId) -> Vec<GraphEntityNoteSeed> {
+        repo.db
+            .query(sql)
+            .bind(("entity", entity_id.clone()))
+            .bind(("since", Option::<String>::None))
+            .bind(("source_uri", Option::<String>::None))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap()
+    }
+    async fn plan(repo: &Repository, sql: &str, entity_id: &RecordId) -> String {
+        let values: Vec<serde_json::Value> = repo
+            .db
+            .query(format!("{sql} EXPLAIN FULL"))
+            .bind(("entity", entity_id.clone()))
+            .bind(("since", Option::<String>::None))
+            .bind(("source_uri", Option::<String>::None))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        serde_json::to_string(&values).unwrap()
+    }
+    let before = rows(&repo, &sql, &entity_id).await;
+    let before_plan = plan(&repo, &sql, &entity_id).await;
+    repo.db
+        .query("DEFINE INDEX idx_mentions_entity ON mentions FIELDS out")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let after = rows(&repo, &sql, &entity_id).await;
+    let after_plan = plan(&repo, &sql, &entity_id).await;
+    assert_eq!(
+        serde_json::to_value(&before).unwrap(),
+        serde_json::to_value(&after).unwrap()
+    );
+    assert_eq!(after.len(), 200);
+    assert!(
+        before_plan.contains("\"index\":\"idx_mentions_entity_note\""),
+        "baseline must use the existing compound index: {before_plan}"
+    );
+    assert!(
+        after_plan.contains("\"index\":\"idx_mentions_entity_note\""),
+        "redundant index must not be assumed to improve the plan: {after_plan}"
+    );
+    if std::env::var_os("GRAPHRAG_GRAPH_PLAN_REPORT").is_some() {
+        println!("before-plan={before_plan}\nafter-plan={after_plan}");
     }
 }
