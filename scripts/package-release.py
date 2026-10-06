@@ -541,6 +541,8 @@ def package(args) -> dict:
 
 
 def assemble(args) -> dict:
+    require(re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", args.tag) is not None,
+            "assembly tag must be a versioned release tag")
     output = args.output.absolute()
     require(output.parent.is_dir(), "assembly output parent must exist")
     expected = set(args.targets)
@@ -548,7 +550,8 @@ def assemble(args) -> dict:
     records = [json_file(path) for path in sorted(args.input.glob("*/BUILDINFO.json"))]
     require(len(records) == len(expected) and {record["target"] for record in records} == expected,
             "assembly is missing targets or contains duplicate/unexpected targets")
-    require(all(record["tag"] == args.tag for record in records), "assembled artifacts have inconsistent tags")
+    require(all(record["tag"] == args.tag and record["version"] == args.tag[1:] for record in records),
+            "assembled artifacts have inconsistent versions/tags")
     require(len({(record["source_commit"], record["source_tree"], record["compile_inputs_sha256"]) for record in records}) == 1,
             "assembled artifacts have inconsistent source provenance")
     with tempfile.TemporaryDirectory(prefix=".graphrag-assemble-", dir=output.parent) as temp:

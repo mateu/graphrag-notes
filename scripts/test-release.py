@@ -360,6 +360,18 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "missing targets"):
             release.assemble(args)
         args.targets = [self.target]
+        valid_tag = args.tag
+        args.tag = "../unsafe"
+        with self.assertRaisesRegex(release.ReleaseError, "versioned release tag"):
+            release.assemble(args)
+        args.tag = valid_tag
+        info_path = self.root / "native/BUILDINFO.json"
+        original = info_path.read_text()
+        value = json.loads(original); value['version'] = '9.9.9'
+        info_path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(release.ReleaseError, "versions/tags"):
+            release.assemble(args)
+        info_path.write_text(original)
         assembled = release.assemble(args)
         self.assertEqual(assembled["targets"], args.targets)
         self.assertTrue((args.output / f"BUILDINFO-{self.target}.json").is_file())
