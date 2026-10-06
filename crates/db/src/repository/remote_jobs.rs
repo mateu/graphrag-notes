@@ -149,6 +149,13 @@ struct RecoveryFence {
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
+struct AdmissionRow {
+    remote_payload_fingerprint: String,
+    remote_input: serde_json::Value,
+    remote_admission: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, SurrealValue)]
 struct QueuedJobIdentity {
     id: RecordId,
     remote_instance_id: String,
@@ -436,7 +443,7 @@ fn validate_input(input: &RemoteUploadInput) -> Result<()> {
     Ok(())
 }
 fn guard_sql() -> String {
-    format!("LET $owned = (UPDATE $job SET updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker AND remote_cancel_requested = false RETURN AFTER); IF array::len($owned) != 1 {{ THROW '{FENCE}'; }}; ")
+    format!("LET $owned = (UPDATE $job SET updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker AND remote_cancel_requested = false RETURN VALUE id); IF array::len($owned) != 1 {{ THROW '{FENCE}'; }}; ")
 }
 fn check_write(errors: HashMap<usize, surrealdb::Error>, lease: &RemoteJobLease) -> Result<()> {
     if errors.is_empty() {
@@ -505,8 +512,12 @@ impl Repository {
         Ok(self.db.query("SELECT * FROM processing_job WHERE id = $id AND job_type = 'remote_upload' AND remote_instance_id = $instance LIMIT 1")
             .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.take(0)?)
     }
-    async fn remote_request_row(&self, instance: &str, request: &str) -> Result<Option<JobRow>> {
-        Ok(self.db.query("SELECT * FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_request_id = $request LIMIT 1")
+    async fn remote_request_row(
+        &self,
+        instance: &str,
+        request: &str,
+    ) -> Result<Option<AdmissionRow>> {
+        Ok(self.db.query("SELECT remote_payload_fingerprint, remote_input, remote_admission FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_request_id = $request LIMIT 1")
             .bind(("instance", instance.to_string())).bind(("request", request.to_string())).await?.take(0)?)
     }
     pub async fn find_remote_upload_admission(
@@ -856,7 +867,7 @@ impl Repository {
                         // a worker fence. Retain input/checkpoint for repair and
                         // explicit resume; never hide storage faults. Reselect
                         // within the bound to expose this document's next head.
-                        self.db.query("UPDATE $id SET status = 'failed', last_error = 'validation', finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false")
+                        self.db.query("UPDATE $id SET status = 'failed', last_error = 'validation', finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'queued' AND remote_cancel_requested = false RETURN NONE")
                             .bind(("id", row.id)).bind(("instance", row.remote_instance_id)).await?.check()?;
                     }
                     Err(error) => return Err(error),
@@ -1467,7 +1478,7 @@ impl Repository {
     pub async fn reconcile_interrupted_remote_uploads(&self, current_epoch: &str) -> Result<usize> {
         identity(current_epoch)?;
         let _gate = self.remote_job_transition_lock.lock().await;
-        let rows: Vec<JobRow> = self.db.query("UPDATE processing_job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE 'failed' END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE 'interrupted' END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'running' AND (remote_service_epoch = NONE OR remote_service_epoch != $epoch) RETURN AFTER")
+        let rows: Vec<RecordId> = self.db.query("UPDATE processing_job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE 'failed' END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE 'interrupted' END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'running' AND (remote_service_epoch = NONE OR remote_service_epoch != $epoch) RETURN VALUE id")
             .bind(("epoch", current_epoch.to_string())).await?.take(0)?;
         Ok(rows.len())
     }

@@ -1924,3 +1924,88 @@ async fn status_query_redacts_private_checkpoints_and_saved_input_before_materia
     let saved: Vec<serde_json::Value> = db.query("SELECT remote_result FROM processing_job WHERE remote_request_id = 'private-checkpoint'").await.unwrap().take(0).unwrap();
     assert_eq!(saved[0]["remote_result"], private);
 }
+
+#[tokio::test]
+async fn restart_counts_identities_and_admission_replay_preserves_private_checkpoint() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let private = serde_json::json!({"policy_migration_stage":{"version":1,"batches":[],"padding":"x".repeat(256*1024)}});
+    let mut ids = Vec::new();
+    for (request, instance, epoch, cancel, status) in [
+        ("old", "owner", "old-epoch", false, "running"),
+        ("cancel", "other-owner", "old-epoch", true, "running"),
+        ("current", "owner", "current-epoch", false, "running"),
+        ("finished", "owner", "old-epoch", false, "completed"),
+    ] {
+        let payload = input(instance, request, "Fictional exact saved input");
+        let admitted = repo.admit_remote_upload(payload.clone()).await.unwrap();
+        let id = admitted.result["job_id"].as_str().unwrap().to_string();
+        db.query("UPDATE $id SET status = $status, remote_service_epoch = $epoch, remote_worker_token = 'fixture-worker', remote_cancel_requested = $cancel, completed_count = 1, checkpoint = 'fictional-checkpoint', remote_result = $result RETURN NONE")
+            .bind(("id", job_id(&id).unwrap())).bind(("status", status)).bind(("epoch", epoch)).bind(("cancel", cancel)).bind(("result", private.clone()))
+            .await.unwrap().check().unwrap();
+        let replay = repo.admit_remote_upload(payload.clone()).await.unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.result, admitted.result);
+        let receipt = repo
+            .find_remote_upload_admission(instance, request, &payload.payload_fingerprint)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(receipt.replayed);
+        assert_eq!(receipt.result, admitted.result);
+        assert!(matches!(
+            repo.find_remote_upload_admission(instance, request, &"f".repeat(64))
+                .await,
+            Err(DbError::RemoteRequestConflict { .. })
+        ));
+        ids.push((id, instance, status, epoch, cancel));
+    }
+    assert_eq!(
+        repo.reconcile_interrupted_remote_uploads("current-epoch")
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        repo.reconcile_interrupted_remote_uploads("current-epoch")
+            .await
+            .unwrap(),
+        0
+    );
+    for (id, instance, status, epoch, cancel) in ids {
+        let row: serde_json::Value = db.query("SELECT remote_result, completed_count, checkpoint, remote_service_epoch, remote_worker_token, status, last_error FROM $id").bind(("id", job_id(&id).unwrap())).await.unwrap().take::<Option<serde_json::Value>>(0).unwrap().unwrap();
+        assert_eq!(row["remote_result"], private);
+        assert_eq!(row["completed_count"], 1);
+        assert_eq!(row["checkpoint"], "fictional-checkpoint");
+        let interrupted = status == "running" && epoch != "current-epoch";
+        assert_eq!(
+            row["status"],
+            if interrupted {
+                if cancel {
+                    "cancelled"
+                } else {
+                    "failed"
+                }
+            } else {
+                status
+            }
+        );
+        if interrupted {
+            assert!(row["remote_service_epoch"].is_null());
+            assert!(row["remote_worker_token"].is_null());
+            assert_eq!(
+                row["last_error"],
+                if cancel { "cancelled" } else { "interrupted" }
+            );
+        } else {
+            assert_eq!(row["remote_service_epoch"], epoch);
+        }
+        assert!(repo
+            .get_remote_upload_job_status(instance, &id)
+            .await
+            .unwrap()
+            .unwrap()
+            .result
+            .is_none());
+    }
+}
