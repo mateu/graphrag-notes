@@ -79,14 +79,19 @@ backups, and reindexing. [Daily workflow validation](docs/daily-workflow-validat
 describes automated measurements and live smoke testing; older feature
 validation records retain their original evidence. Native Linux and Intel macOS
 release acceptance follows in [#66](https://github.com/mateu/graphrag-notes/issues/66).
-Current source adds an optional [shared MCP service](docs/shared-mcp.md) for
-OpenClaw, Hermes and the remote CLI, with per-instance authorization and durable
-capture retries, [uploaded Markdown and durable jobs](docs/remote-upload-jobs.md).
-The remote CLI also offers [authenticated diagnostics](docs/remote-diagnostics.md)
-through the owning service, without opening client storage or running inference.
-Published rc.2 predates these commands. The remaining remote editing and
-two-computer deployment work is tracked under
-[#56](https://github.com/mateu/graphrag-notes/issues/56).
+Current source provides the [shared MCP service](docs/shared-mcp.md) for
+OpenClaw, Hermes and the remote CLI, with independent capabilities,
+[guarded mutations](docs/shared-mcp-mutations.md), uploaded Markdown and durable
+jobs. [The rc.3 reliability candidate](docs/releases/0.1.0-rc.3.md) adds
+[incremental indexed-memory refresh](docs/openclaw-memory-refresh.md),
+[remote diagnostics](docs/remote-diagnostics.md), a
+[private capture recovery journal](docs/capture-journal.md),
+[relevance evaluation](docs/retrieval-evaluation.md) and
+[search timing measurements](docs/search-benchmark.md). Its archive includes
+matching clients and operating guides in a versioned bundle. Published rc.2
+predates the shared-service commands; follow the rc.3 guide for publication and
+upgrade status. The remaining native Linux/Intel acceptance is tracked in #66.
+
 
 ## Architecture
 

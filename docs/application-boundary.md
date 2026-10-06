@@ -1,17 +1,19 @@
 # Shared application operations
 
-This design defines the local operation boundary required by terminal workspace
-issue #63 and the future remote service in #56. The terminal and the ordinary
-CLI use the same retrieval, ingestion, inspection, and proposal policy. Issue
-#63 implements an embedded backend; it does not introduce an HTTP server, MCP
-transport, remote credentials, or remote CLI configuration.
+The terminal, CLI and authenticated MCP service share retrieval, ingestion,
+inspection and proposal policy through `graphrag-application`. An embedded
+workspace owns its local database; `graphrag serve` owns the shared corpus and
+remote clients use HTTP without opening it themselves.
 
-Current source also implements the first #56 slice in `graphrag-service`:
-authenticated Streamable HTTP search/inspection/context and retry-safe capture.
-`RemoteApplicationOperations` extends the shared local interface with bounded
-context and durable capture contracts; [shared MCP setup](shared-mcp.md) documents
-its ownership, wire envelope and client recipes. Remote editing, proposal
-decisions and jobs remain follow-up work.
+`RemoteApplicationOperations` extends the typed local interface with bounded
+context, durable capture, revision-guarded editing/deletion, proposal decisions,
+uploaded Markdown and durable jobs. Each operation has an independent
+server-enforced capability; trusted instance/actor identity comes from
+authentication. [Shared MCP setup](shared-mcp.md),
+[mutations](shared-mcp-mutations.md), [uploaded jobs](remote-upload-jobs.md) and
+[remote diagnostics](remote-diagnostics.md) describe these existing contracts.
+The published rc.2 binary predates the shared service; the rc.3 release bundles
+these clients and operating guides with matching source provenance.
 
 ## Ownership and adapters
 
@@ -36,7 +38,7 @@ retrying. It must not kill the owner or wait indefinitely. Memory-backed
 sessions remain useful for tests and ephemeral browsing; recoverable captures
 still require a persistent corpus.
 
-The optional service becomes the sole database owner. A remote adapter invokes
+The optional service is the sole database owner. A remote adapter invokes
 the same operations without opening a client-side RocksDB store or requiring
 client-side inference. Service authentication, authorization, request identity,
 and transport negotiation belong to the MCP adapter rather than the local
@@ -90,7 +92,7 @@ and linked conversation information where applicable.
 Guarded content edits and detach retain the existing full opening-note
 snapshot check inside the atomic write transaction. An inspection fingerprint
 is an observational read guard; it is not a substitute for that mutation
-snapshot. Editing through the future service must supply an expected revision
+snapshot. Editing through the service must supply an expected revision
 and use a repository-backed conflict check.
 
 Proposal cards retain proposal metadata plus both endpoint revisions. The
