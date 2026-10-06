@@ -87,7 +87,7 @@ status evidence. Remote doctor reports partial source readiness with owner
 reprocessing guidance, even when the indexed original/vector refresh completed.
 Changed or retired graph parts with that older policy fail with
 `retained_extraction_policy_requires_owner_reprocessing` pending a separate,
-reviewed owner upload-policy migration. Ordinary `extract-entities --force-note`
+reviewed owner upload-policy migration. Ordinary `extract-entities --force --note-id <ID>`
 enriches notes but does not rewrite the originating upload job's policy snapshot
 or clear this fence. This adapter does not implement that policy migration;
 do not edit its saved state to bypass the old applied-policy evidence.
