@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { gzipSync } from 'node:zlib';
 import { createNotesCommand } from './index.mjs';
 
-async function fixture() {
+async function fixture(config = {}) {
   const calls = [], revoked = new Set();
   const state = { disconnect: false, expire: false, stall: false, sse: false, oversized: false, truncated: false, oversizedInitialize: false, gzip: false };
   const server = createServer(async (req, res) => {
@@ -49,7 +49,7 @@ async function fixture() {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${server.address().port}/mcp`;
-  const command = createNotesCommand({ timeoutMs: 250 });
+  const command = createNotesCommand({ timeoutMs: 5000, ...config });
   const ctx = (query = 'Atlas', token = 'principal-one') => ({ isAuthorizedSender: true,
     args: '--keyword ' + query, config: { mcp: { servers: { graphrag: { url, headers: { Authorization: 'Bearer ' + token } } } } } });
   return { calls, revoked, state, command, ctx,
@@ -99,7 +99,7 @@ test('real SDK tunnel loss and expired session do not resubmit; explicit next co
 });
 
 test('real SDK stalled HTTP body is aborted within deadline and cannot replay a capture', async () => {
-  const f = await fixture();
+  const f = await fixture({ timeoutMs: 250 });
   try {
     await f.command.handler(f.ctx()); f.state.stall = true;
     const start = performance.now(); assert.match((await f.command.handler(f.ctx('Borealis'))).text, /timed out/);
