@@ -1,17 +1,126 @@
 # Graph relevance validation (#93)
 
-The numerical observations below belong to the frozen `3dc616a` checkpoint.
-Subsequent review fixes add durable source extraction lineage and restrict alias
-seed scoring to the owning mention. Their fictional regressions cover earlier
-chunk insertions/removals, zero-mention successors, portable restore, remote
-upload extraction and an alias owner beyond the first ID page. Final candidate
-corpus and performance acceptance must use a fresh schema-18 restore because
-the unmerged schema-19 migration now includes the optional lineage field.
-Historical checkpoint archives and hashes remain paired with their original artifact.
+The final compiled source is `99321df2daa85fdd2333e1c762d84abef3ec39e7`,
+with release binary SHA-256
+`542c4b2ff0195a321df916497b385016253b7fa3b5f3ba381cbc0263239e98c6`.
+The [sanitized aggregate](graph-relevance-93.json) records the frozen-suite hash,
+paired quality counters, pilot integrity and final service observations.
+Documentation-only commits after this source do not relabel or rebuild the binary.
 
-The provider-free fictional fixture compared patched-main retrieval (`287d8ea4`) with checkpoint source `3dc616a09ce37465dd96a3298ddf3e405ab62a54` at 256 and 2,048 notes, using matching standalone-agent feature settings. Each of twelve cases ran graph off/auto/on with three warmed observations per policy. The fixture asserts bounds, uniqueness, current source visibility, source/time filters, deterministic ranked evidence, and accepted-only paths.
+## Final frozen corpus and selected pilot
 
-These are debug-build warmed medians on one Apple Silicon host under concurrent development work. They exclude external model calls and remote transport. Three observations do not establish p95 values or a latency guarantee; independent phase probes are not additive traces.
+The agent-curated suite has 50 cases: 34 calibration, 16 reserved holdout,
+46 answerable and four reviewed no-answer cases. The frozen baseline's 200
+policy cases had zero failures. Final candidate before-pilot and after-pilot
+runs on a fresh schema-18 restore each completed 200 policy cases with zero
+retrieval/readback failures. The unmerged schema-19 migration includes the
+optional durable extraction scope; earlier provisional schema-19 copies remain
+paired with their earlier artifact instead of bypassing the checksum fence.
+
+Relative to the earlier graph implementation, hybrid/auto and hybrid/on each
+improved reciprocal rank of judged positives in four calibration cases and
+recall of judged positives in three, with zero known worsening. Each graph
+policy changed 23 calibration and nine held-out rankings; held-out judged
+reciprocal-rank and recall metrics stayed unchanged. Direct keyword/off and
+hybrid/off remained unchanged. Candidate graph modes matched hybrid/off on
+these limited metrics: calibration reciprocal rank 0.71354 and recall 0.67813;
+held-out reciprocal rank and recall both 0.85714. This supports removal of
+observed graph regressions without an observed advantage over hybrid/off.
+
+The explicitly selected eight-note pilot added 117 entities and 124 mentions:
+37 Technology, 16 Organization, 14 Project, 32 Concept, three Other, four
+Person and 11 Location. Alias validation and the eight-alias bounds passed.
+All 458 historical mentions were preserved. Full note content, embeddings,
+sources, generations and the 810 existing portable remote upload jobs remained
+unchanged. Exactly eight selected notes received the intended durable
+`extraction_scope` field. The corpus had zero accepted note edges before and
+after the pilot.
+
+Repeat extraction preserved entity IDs, entity metadata and logical mention
+endpoints/metadata. Atomic forced replacement recreates physical mention row
+IDs; idempotency refers to stable identities and logical evidence. Both local
+extraction jobs completed all eight items with zero failed items. Local jobs
+are excluded from portable archives, which export remote upload jobs. The
+pilot changed no suite rankings, judged reciprocal ranks or judged recall,
+so it demonstrates bounded reproducibility without further measured ranking
+benefit. Broad extraction needs additional measured value.
+
+Unseen hits remain unjudged, and reciprocal rank/recall describe known judged
+positives rather than complete population relevance. Most hybrid cases are
+not fully judged, so aggregate precision and NDCG are not used as population
+claims. Hybrid no-answer cases still return results; no abstention claim is
+made. The suite was curated by Codex agents; human review was not observed.
+The graph author reviewed provisional curation before this assignment, but
+neither the final frozen cases nor the pilot selection was examined during
+graph implementation. This is a reserved regression set, not a statistically
+blind population estimate.
+
+## Final optimized service observations
+
+The final post-pilot release artifact completed 672 scheduled search cases
+with applicable guarded readbacks and zero failed cases. One-client and
+four-client runs used sequential homogeneous policy batches, with four first
+observations and 80 warmed samples per policy/load group. Timings measure
+search RPC only; MCP initialization, guarded readback and conversational model
+time are excluded. First observations do not establish cold model/OS-cache
+behavior. No same-RPC backend phase observations were available in this frozen
+source, so these observations support no causal phase attribution.
+
+| Concurrent clients | Keyword/off warmed p95 (ms) | Hybrid/off (ms) | Hybrid/auto (ms) | Hybrid/on (ms) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 234.7 | 686.9 | 1032.3 | 1078.7 |
+| 4 | 361.8 | 971.6 | 1471.3 | 1459.5 |
+
+| Concurrent clients | Auto paired RPC-delta p95 (ms) | On paired RPC-delta p95 (ms) |
+| ---: | ---: | ---: |
+| 1 | 349.7 | 402.6 |
+| 4 | 520.1 | 509.2 |
+
+Each graph/load group had 80 paired observations and 60 judged-positive
+reciprocal-rank comparisons, with zero judged regressions. Paired differences
+are between matching graph/off searches in separate policy batches; they are
+not isolated graph-stage timings. All four delta groups exceed the 250 ms
+expansion budget. Concurrent local optimized and full-workspace compilation
+changed host load during these sequential batches. The results support the
+observed RPC distributions on this isolated snapshot and leave bounded graph
+seed optimization as follow-up; they do not establish an unloaded-host or
+cross-host latency guarantee. This change preserves graph policies and saved
+client defaults; use explicit graph off when selecting the measured base
+retrieval path.
+
+## Fictional regression coverage
+
+The full all-feature workspace run passed 765 tests with zero failures and
+five existing ignored tests. Current-source format and all-target/all-feature
+Clippy passed. Independent Codex source audit and the three new exact compiled
+regressions passed; GitHub Codex review was green at the compiled source.
+The only change after the full test run was a test-only conversion from typed
+record-ID set keys to immutable canonical strings, followed by a focused rerun.
+
+Fictional fixtures cover high-degree seeds, useful seeds below the requested
+hybrid limit, exact direct-title retention, visibility/source/time bounds,
+accepted-only paths, scoped homonyms, type/alias compatibility, cancellation
+and resume. Source lineage survives earlier insertions/removals, validated
+legacy adoption, zero-mention generations, forced reprocessing and portable
+restore. An actual remote-upload fixture refreshes twice before enabling its
+first extraction. A one-note seed cap finds the alias owner beyond the first
+ID page and cannot lend its alias support to an unrelated shared-entity chunk.
+Repeated edits, atomic rollback, source successors and deletion retain only
+current mention evidence; manual/detached provenance stays independently scoped.
+
+## Historical 3dc616a fictional timing checkpoint
+
+These earlier observations compared patched-main retrieval (`287d8ea4`) with
+checkpoint source `3dc616a09ce37465dd96a3298ddf3e405ab62a54` at 256 and
+2,048 notes, using matching standalone-agent feature settings. Twelve fictional
+cases ran graph off/auto/on with three warmed observations per policy. They
+predate the durable lineage and mention-specific seed fixes. Earlier artifacts
+and private acceptance archives remain paired with that source.
+
+These are debug-build warmed medians on one Apple Silicon host under concurrent
+development work, excluding external model calls and remote transport. Three
+observations establish neither p95 values nor a production latency guarantee;
+independent phase probes are not additive traces.
 
 | Notes | Mentions | Case | Before auto (ms) | After auto (ms) | After off (ms) |
 | ---: | ---: | --- | ---: | ---: | ---: |
@@ -28,59 +137,9 @@ These are debug-build warmed medians on one Apple Silicon host under concurrent 
 | 2048 | 12 | E-sparse-mentions-accepted-edges | 752.89 | 711.52 | 644.22 |
 | 2048 | 2048 | F-dense-mentions-accepted-edges-source-age | 1644.33 | 1051.18 | 648.01 |
 
-Dense 2,048-mention graph cases improved in these observations; some smaller cases added work. Larger debug-build graph overhead still exceeds the initial 250 ms expansion target, so these results support boundedness and relevance work rather than a production latency claim. Release-profile service-phase acceptance remains a separate measurement.
-
-Fictional relevance regressions explicitly cover a useful entity seed beyond the first ID page, a seed outside the requested hybrid candidates recovered by the bounded indexed lexical supplement, actual accepted-edge explanations, exact direct-title retention, homonymous scoped entities, alias compatibility, schema upgrade/old portable restoration, forced pilot idempotence, cancellation/resume, and unchanged unrelated mentions. Repeated remote edits also retract stale aliases without identity growth; shared-source chunk reprocessing, exact successors, filters and deletion retain only current mention alias evidence.
-
-The frozen private calibration/holdout and a small explicitly selected typed/alias pilot were evaluated independently as described below. Their raw queries, judgments, note text, IDs, and source paths remain private. Broad extraction remains outside this issue.
-
-
-## Frozen corpus and selected pilot acceptance
-
-The [sanitized aggregate](graph-relevance-93.json) records the exact compiled
-source, binary and frozen-suite hashes, policy/split counters, and pilot
-integrity checks. The frozen suite has 50 cases: 34 calibration, 16 reserved
-holdout, 46 answerable and four reviewed no-answer cases. Baseline, candidate
-before pilot, and candidate after pilot each completed 200 policy cases with
-zero retrieval/readback failures.
-
-Relative to the earlier graph implementation, hybrid/auto and hybrid/on each
-improved reciprocal rank of judged positives in four calibration cases and
-recall of judged positives in three, with no observed worsening of those
-metrics. Each graph policy changed nine held-out rankings, while judged reciprocal-rank
-and recall metrics stayed unchanged. Direct keyword/off and hybrid/off
-remained unchanged. Candidate graph modes matched hybrid/off on these
-limited judged metrics: calibration reciprocal rank 0.71354 and recall
-0.67813; held-out reciprocal rank and recall both 0.85714. This demonstrates
-removal of observed graph regressions, without an observed advantage over
-hybrid/off in this suite.
-
-The explicitly selected eight-note pilot on an isolated restored corpus added
-117 entities and 124 mentions:
-37 Technology, 16 Organization, 14 Project, 32 Concept, three Other, four
-Person and 11 Location. Alias validation and the eight-alias bounds passed.
-All 458 historical mentions were preserved; note payloads, sources,
-generations, embeddings and existing portable remote upload jobs were
-unchanged. The corpus had zero accepted note edges before and after.
-Local extraction jobs were legitimately created/completed and are excluded
-from portable archives, which export only remote upload jobs.
-
-The first extraction took 63.25 seconds; the repeated selection took 149 ms
-under the configured cache. Entity IDs and logical mention endpoints/metadata
-were identical on repeat. Atomic forced replacement recreates physical mention
-row IDs, so idempotency refers to logical evidence rather than literal row IDs.
-Verified private backups were retained before extraction, after extraction and
-after repeat. The pilot changed no rankings, judged reciprocal ranks or judged
-recall in the frozen suite. It validates typed, bounded, reproducible evidence;
-broad extraction needs additional measured retrieval value.
-
-The suite is delegated-agent curated, with no observed human judgment review.
-The graph author reviewed provisional corpus curation before this assignment;
-the final frozen cases and pilot selection were not examined during graph
-implementation. The holdout is therefore a reserved regression set, not a
-statistically blind population estimate. Judgments identify partial known
-positives, and unseen hits remain unjudged: overall precision/NDCG is withheld
-where not fully judged. Hybrid policies still returned hits for the reviewed
-no-answer cases; keyword/off remained empty. These limits prevent claims of
-universal relevance gains or reliable hybrid abstention. Optimized service-phase
-latency acceptance is tracked separately by #95.
+The historical dense 2,048-mention cases improved while some smaller cases
+added work; their debug graph overhead still exceeded the 250 ms target.
+The final optimized acceptance above is the current source's service evidence.
+Earlier pilot timing (63.25 seconds initially and 149 ms on cached repeat)
+belongs to this historical checkpoint and is not a timing claim for the final
+lineage implementation.

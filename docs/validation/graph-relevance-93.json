@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "compiled_source": "3dc616a09ce37465dd96a3298ddf3e405ab62a54",
-  "binary_sha256": "ddc33f9b5c15bc40affe392b7691267945785ed34cfb2b20baa6a05d08d561cf",
+  "compiled_source": "99321df2daa85fdd2333e1c762d84abef3ec39e7",
+  "binary_sha256": "542c4b2ff0195a321df916497b385016253b7fa3b5f3ba381cbc0263239e98c6",
   "frozen_baseline_suite_sha256": "2a8576ac4a4360c03f874e38c61b56d0850bb2099b052f5334bfcf2bda02e615",
   "case_count": 50,
   "calibration_cases": 34,
@@ -12,31 +12,34 @@
   "author_exposure": "graph author saw provisional curation before assignment; final frozen cases and pilot selection were not examined during graph implementation",
   "comparison_limits": "partial known-positive judgments; unseen hits unjudged; holdout is a reserved regression set rather than a statistically blind population estimate",
   "pilot": {
-    "schema_version": 1,
-    "compiled_source": "3dc616a09ce37465dd96a3298ddf3e405ab62a54",
-    "binary_sha256": "ddc33f9b5c15bc40affe392b7691267945785ed34cfb2b20baa6a05d08d561cf",
     "selected_notes": 8,
     "new_entities": 117,
     "new_mentions": 124,
     "type_counts": {
+      "location": 11,
       "technology": 37,
-      "organization": 16,
       "project": 14,
+      "organization": 16,
       "concept": 32,
-      "other": 3,
       "person": 4,
-      "location": 11
+      "other": 3
     },
     "unchanged_note_payloads_sources_generations_embeddings": true,
+    "durable_extraction_anchor_fields_changed": {
+      "extraction_scope": 8
+    },
     "historical_mentions_preserved": 458,
     "repeat_entity_ids_stable": true,
     "repeat_logical_mentions_and_metadata_stable": true,
-    "force_recreates_mention_row_ids": true,
     "aliases_valid_bounded": true,
-    "changed_fields": {},
     "accepted_edges_before_after": 0,
-    "notes_with_new_mentions": 8,
     "existing_portable_remote_upload_jobs_unchanged": true,
+    "local_entity_extraction_jobs": 2,
+    "local_extraction_jobs_completed_items": [
+      8,
+      8
+    ],
+    "local_extraction_jobs_failed_items": 0,
     "local_extraction_jobs_not_exported_in_portable_archive": true
   },
   "evaluation_runs": {
@@ -56,24 +59,6 @@
   "paired_changes": {
     "baseline_before": [
       {
-        "policy": "keyword-off",
-        "split": "calibration",
-        "cases": 34,
-        "rr_judged_cases": 32,
-        "rr_unchanged": 32,
-        "recall_judged_cases": 32,
-        "recall_unchanged": 32
-      },
-      {
-        "policy": "hybrid-off",
-        "split": "calibration",
-        "cases": 34,
-        "rr_judged_cases": 32,
-        "rr_unchanged": 32,
-        "recall_judged_cases": 32,
-        "recall_unchanged": 32
-      },
-      {
         "policy": "hybrid-auto",
         "split": "calibration",
         "cases": 34,
@@ -84,6 +69,36 @@
         "recall_improved": 3,
         "recall_unchanged": 29,
         "rr_improved": 4
+      },
+      {
+        "policy": "hybrid-auto",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 9,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 0,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 0,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
       },
       {
         "policy": "hybrid-on",
@@ -98,38 +113,30 @@
         "rr_improved": 4
       },
       {
-        "policy": "keyword-off",
-        "split": "holdout",
-        "cases": 16,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
-        "policy": "hybrid-off",
-        "split": "holdout",
-        "cases": 16,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
-        "policy": "hybrid-auto",
-        "split": "holdout",
-        "cases": 16,
-        "rankings_changed": 9,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
         "policy": "hybrid-on",
         "split": "holdout",
         "cases": 16,
         "rankings_changed": 9,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "keyword-off",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 0,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "keyword-off",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 0,
         "rr_judged_cases": 14,
         "rr_unchanged": 14,
         "recall_judged_cases": 14,
@@ -138,18 +145,10 @@
     ],
     "before_after": [
       {
-        "policy": "keyword-off",
+        "policy": "hybrid-auto",
         "split": "calibration",
         "cases": 34,
-        "rr_judged_cases": 32,
-        "rr_unchanged": 32,
-        "recall_judged_cases": 32,
-        "recall_unchanged": 32
-      },
-      {
-        "policy": "hybrid-off",
-        "split": "calibration",
-        "cases": 34,
+        "rankings_changed": 0,
         "rr_judged_cases": 32,
         "rr_unchanged": 32,
         "recall_judged_cases": 32,
@@ -157,8 +156,39 @@
       },
       {
         "policy": "hybrid-auto",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 0,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-off",
         "split": "calibration",
         "cases": 34,
+        "rankings_changed": 0,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 0,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-on",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 0,
         "rr_judged_cases": 32,
         "rr_unchanged": 32,
         "recall_judged_cases": 32,
@@ -166,8 +196,19 @@
       },
       {
         "policy": "hybrid-on",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 0,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "keyword-off",
         "split": "calibration",
         "cases": 34,
+        "rankings_changed": 0,
         "rr_judged_cases": 32,
         "rr_unchanged": 32,
         "recall_judged_cases": 32,
@@ -177,33 +218,7 @@
         "policy": "keyword-off",
         "split": "holdout",
         "cases": 16,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
-        "policy": "hybrid-off",
-        "split": "holdout",
-        "cases": 16,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
-        "policy": "hybrid-auto",
-        "split": "holdout",
-        "cases": 16,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
-        "policy": "hybrid-on",
-        "split": "holdout",
-        "cases": 16,
+        "rankings_changed": 0,
         "rr_judged_cases": 14,
         "rr_unchanged": 14,
         "recall_judged_cases": 14,
@@ -212,24 +227,6 @@
     ],
     "baseline_after": [
       {
-        "policy": "keyword-off",
-        "split": "calibration",
-        "cases": 34,
-        "rr_judged_cases": 32,
-        "rr_unchanged": 32,
-        "recall_judged_cases": 32,
-        "recall_unchanged": 32
-      },
-      {
-        "policy": "hybrid-off",
-        "split": "calibration",
-        "cases": 34,
-        "rr_judged_cases": 32,
-        "rr_unchanged": 32,
-        "recall_judged_cases": 32,
-        "recall_unchanged": 32
-      },
-      {
         "policy": "hybrid-auto",
         "split": "calibration",
         "cases": 34,
@@ -240,6 +237,36 @@
         "recall_improved": 3,
         "recall_unchanged": 29,
         "rr_improved": 4
+      },
+      {
+        "policy": "hybrid-auto",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 9,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 0,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "hybrid-off",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 0,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
       },
       {
         "policy": "hybrid-on",
@@ -254,38 +281,30 @@
         "rr_improved": 4
       },
       {
-        "policy": "keyword-off",
-        "split": "holdout",
-        "cases": 16,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
-        "policy": "hybrid-off",
-        "split": "holdout",
-        "cases": 16,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
-        "policy": "hybrid-auto",
-        "split": "holdout",
-        "cases": 16,
-        "rankings_changed": 9,
-        "rr_judged_cases": 14,
-        "rr_unchanged": 14,
-        "recall_judged_cases": 14,
-        "recall_unchanged": 14
-      },
-      {
         "policy": "hybrid-on",
         "split": "holdout",
         "cases": 16,
         "rankings_changed": 9,
+        "rr_judged_cases": 14,
+        "rr_unchanged": 14,
+        "recall_judged_cases": 14,
+        "recall_unchanged": 14
+      },
+      {
+        "policy": "keyword-off",
+        "split": "calibration",
+        "cases": 34,
+        "rankings_changed": 0,
+        "rr_judged_cases": 32,
+        "rr_unchanged": 32,
+        "recall_judged_cases": 32,
+        "recall_unchanged": 32
+      },
+      {
+        "policy": "keyword-off",
+        "split": "holdout",
+        "cases": 16,
+        "rankings_changed": 0,
         "rr_judged_cases": 14,
         "rr_unchanged": 14,
         "recall_judged_cases": 14,
@@ -1721,5 +1740,1153 @@
       }
     }
   ],
-  "interpretation": "candidate removes four calibration graph reciprocal-rank regressions relative to old graph; pilot itself adds typed evidence without changing judged RR or recall; no observed advantage over hybrid/off on this limited suite"
+  "interpretation": "Partial known-positive comparisons; evaluate paired counts rather than infer population relevance or graph superiority.",
+  "final_latency_acceptance": {
+    "scheduled_searches_and_pinned_readbacks": 672,
+    "failed": 0,
+    "load_schedule": "homogeneous_policy_batches",
+    "same_rpc_backend_phases_observed": false,
+    "measurement_limits": "RPC-only isolated snapshot, sequential policy batches, changing background host load; no causal phase claim.",
+    "summary": {
+      "schema_version": 1,
+      "suite_sha256": "e54b6f5123c593e0332f3fb7b1e9ddf517b25baf245eaf23303763dd36483fad",
+      "groups": [
+        {
+          "concurrency": 1,
+          "policy": "keyword-off",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 1.762458006851375,
+            "max_ms": 325.1871670363471
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 325.1871670363471,
+                "max_ms": 325.1871670363471
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 3.330666047986597,
+                "max_ms": 3.330666047986597
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1.762458006851375,
+                "max_ms": 1.762458006851375
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 12.85820797784254,
+                "max_ms": 12.85820797784254
+              }
+            }
+          },
+          "target_ms": null,
+          "within_target": null
+        },
+        {
+          "concurrency": 1,
+          "policy": "keyword-off",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 2.5347709888592362,
+            "p95_ms": 234.72491704160348,
+            "min_ms": 1.4519160031341016,
+            "max_ms": 245.18733302829787
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 230.06691699265502,
+                "p95_ms": 241.27591698197648,
+                "min_ms": 209.19562497874722,
+                "max_ms": 245.18733302829787
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1.9451249681878835,
+                "p95_ms": 2.0813750452362,
+                "min_ms": 1.7965830047614872,
+                "max_ms": 2.1383329876698554
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1.60220853285864,
+                "p95_ms": 1.7631669761613011,
+                "min_ms": 1.4519160031341016,
+                "max_ms": 1.8499160069040954
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 3.303124976810068,
+                "p95_ms": 3.620582981966436,
+                "min_ms": 2.931208990048617,
+                "max_ms": 7.306583982426673
+              }
+            }
+          },
+          "target_ms": 250,
+          "within_target": true
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-off",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 361.51241697371006,
+            "max_ms": 1511.5339159965515
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1511.5339159965515,
+                "max_ms": 1511.5339159965515
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 434.02979196980596,
+                "max_ms": 434.02979196980596
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 361.51241697371006,
+                "max_ms": 361.51241697371006
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 505.660250026267,
+                "max_ms": 505.660250026267
+              }
+            }
+          },
+          "target_ms": null,
+          "within_target": null
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-off",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 455.6596044858452,
+            "p95_ms": 686.8675000150688,
+            "min_ms": 341.6635409812443,
+            "max_ms": 726.7602079664357
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 676.7138750001322,
+                "p95_ms": 711.3194579724222,
+                "min_ms": 645.4663749900647,
+                "max_ms": 726.7602079664357
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 452.1276869927533,
+                "p95_ms": 468.5827500070445,
+                "min_ms": 431.6814999911003,
+                "max_ms": 476.05575004126877
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 348.89991651289165,
+                "p95_ms": 368.40058298548684,
+                "min_ms": 341.6635409812443,
+                "max_ms": 368.55595896486193
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 457.0569795323536,
+                "p95_ms": 463.80075003253296,
+                "min_ms": 440.47612498980016,
+                "max_ms": 468.70674996171147
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": true
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-auto",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 504.15191700449213,
+            "max_ms": 1005.7458750088699
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1005.7458750088699,
+                "max_ms": 1005.7458750088699
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 622.6447920198552,
+                "max_ms": 622.6447920198552
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 504.15191700449213,
+                "max_ms": 504.15191700449213
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 622.1142080030404,
+                "max_ms": 622.1142080030404
+              }
+            }
+          },
+          "target_ms": null,
+          "within_target": null
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-auto",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 622.3418959998526,
+            "p95_ms": 1032.3316249996424,
+            "min_ms": 497.138749982696,
+            "max_ms": 1050.9433329571038
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1001.9209784804843,
+                "p95_ms": 1049.5837080525234,
+                "min_ms": 958.2447919528931,
+                "max_ms": 1050.9433329571038
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 628.4421245218255,
+                "p95_ms": 653.8688750006258,
+                "min_ms": 593.1021249853075,
+                "max_ms": 667.4528750008903
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 518.8584795396309,
+                "p95_ms": 533.74966600677,
+                "min_ms": 497.138749982696,
+                "max_ms": 539.7489999886602
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 615.6715414836071,
+                "p95_ms": 635.8332500094548,
+                "min_ms": 593.9106249716133,
+                "max_ms": 643.5247500194237
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": false
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-on",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 505.43595798080787,
+            "max_ms": 986.8029999779537
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 986.8029999779537,
+                "max_ms": 986.8029999779537
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 608.0664590117522,
+                "max_ms": 608.0664590117522
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 505.43595798080787,
+                "max_ms": 505.43595798080787
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 633.2776250201277,
+                "max_ms": 633.2776250201277
+              }
+            }
+          },
+          "target_ms": null,
+          "within_target": null
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-on",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 643.7205410038587,
+            "p95_ms": 1078.7073749816045,
+            "min_ms": 523.5020410036668,
+            "max_ms": 1133.9278750238009
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1039.6561665111221,
+                "p95_ms": 1114.3354589585215,
+                "min_ms": 1000.8169169886969,
+                "max_ms": 1133.9278750238009
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 644.9973955168389,
+                "p95_ms": 673.1864169705659,
+                "min_ms": 621.3741669780575,
+                "max_ms": 689.6487910416909
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 548.1546459777746,
+                "p95_ms": 563.6720830225386,
+                "min_ms": 523.5020410036668,
+                "max_ms": 568.7842500046827
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 642.7995830017608,
+                "p95_ms": 660.9284169971943,
+                "min_ms": 603.9804170140997,
+                "max_ms": 701.7735000117682
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": false
+        },
+        {
+          "concurrency": 4,
+          "policy": "keyword-off",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 3.564292041119188,
+            "max_ms": 248.89487499604002
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 248.89487499604002,
+                "max_ms": 248.89487499604002
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 4.225082986522466,
+                "max_ms": 4.225082986522466
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 3.564292041119188,
+                "max_ms": 3.564292041119188
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 6.169707980006933,
+                "max_ms": 6.169707980006933
+              }
+            }
+          },
+          "target_ms": null,
+          "within_target": null
+        },
+        {
+          "concurrency": 4,
+          "policy": "keyword-off",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 4.48822948965244,
+            "p95_ms": 361.77575000328943,
+            "min_ms": 2.485874982085079,
+            "max_ms": 371.7834580456838
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 347.8099585045129,
+                "p95_ms": 366.40483303926885,
+                "min_ms": 321.49200001731515,
+                "max_ms": 371.7834580456838
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 3.832167014479637,
+                "p95_ms": 4.476709000300616,
+                "min_ms": 2.485874982085079,
+                "max_ms": 4.579208965878934
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 3.280583507148549,
+                "p95_ms": 3.727500035893172,
+                "min_ms": 2.779125003144145,
+                "max_ms": 4.403707978781313
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 5.632833490381017,
+                "p95_ms": 6.3892079633660614,
+                "min_ms": 3.981583984568715,
+                "max_ms": 6.792959000449628
+              }
+            }
+          },
+          "target_ms": 250,
+          "within_target": false
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-off",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 488.50029200548306,
+            "max_ms": 904.5667499885894
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 904.5667499885894,
+                "max_ms": 904.5667499885894
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 604.0578330284916,
+                "max_ms": 604.0578330284916
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 488.50029200548306,
+                "max_ms": 488.50029200548306
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 644.1233340301551,
+                "max_ms": 644.1233340301551
+              }
+            }
+          },
+          "target_ms": null,
+          "within_target": null
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-off",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 634.7143124730792,
+            "p95_ms": 971.6141249518842,
+            "min_ms": 490.3630419867113,
+            "max_ms": 995.7775000366382
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 963.2746249844786,
+                "p95_ms": 984.5985420397483,
+                "min_ms": 890.2817079797387,
+                "max_ms": 995.7775000366382
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 636.2363750231452,
+                "p95_ms": 651.5714579727501,
+                "min_ms": 614.9936249712482,
+                "max_ms": 664.4789999700151
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 505.9493749868125,
+                "p95_ms": 520.8235000027344,
+                "min_ms": 490.3630419867113,
+                "max_ms": 526.2960419640876
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 631.3527709862683,
+                "p95_ms": 651.662916992791,
+                "min_ms": 597.5398749578744,
+                "max_ms": 653.6847919924185
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": true
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-auto",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 818.303250009194,
+            "max_ms": 1264.528000028804
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1264.528000028804,
+                "max_ms": 1264.528000028804
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 992.5665840273723,
+                "max_ms": 992.5665840273723
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 818.303250009194,
+                "max_ms": 818.303250009194
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 974.7827500104904,
+                "max_ms": 974.7827500104904
+              }
+            }
+          },
+          "target_ms": null,
+          "within_target": null
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-auto",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 902.965540997684,
+            "p95_ms": 1471.3307910133153,
+            "min_ms": 725.8087909431197,
+            "max_ms": 1595.1154159847647
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1447.94245850062,
+                "p95_ms": 1527.032500016503,
+                "min_ms": 1385.5901249917224,
+                "max_ms": 1595.1154159847647
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 916.2811875285115,
+                "p95_ms": 946.2752089602873,
+                "min_ms": 850.3829999826849,
+                "max_ms": 971.9750419608317
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 786.9756045110989,
+                "p95_ms": 830.3591249859892,
+                "min_ms": 725.8087909431197,
+                "max_ms": 831.726250005886
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 891.2578540039249,
+                "p95_ms": 935.167999996338,
+                "min_ms": 807.3503330233507,
+                "max_ms": 980.69758299971
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": false
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-on",
+          "phase": "first_observed",
+          "scheduled": 4,
+          "successful": 4,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 761.5816670004278,
+            "max_ms": 1350.9705840260722
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 1350.9705840260722,
+                "max_ms": 1350.9705840260722
+              }
+            },
+            "entity": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 928.6402500001714,
+                "max_ms": 928.6402500001714
+              }
+            },
+            "filters": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 761.5816670004278,
+                "max_ms": 761.5816670004278
+              }
+            },
+            "title": {
+              "scheduled": 1,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 1,
+                "p50_ms": null,
+                "p95_ms": null,
+                "min_ms": 905.297374993097,
+                "max_ms": 905.297374993097
+              }
+            }
+          },
+          "target_ms": null,
+          "within_target": null
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-on",
+          "phase": "warmed",
+          "scheduled": 80,
+          "successful": 80,
+          "failed": 0,
+          "failure_categories": {},
+          "search_rpc": {
+            "samples": 80,
+            "p50_ms": 892.607333487831,
+            "p95_ms": 1459.496334020514,
+            "min_ms": 733.2290830090642,
+            "max_ms": 1513.7614579871297
+          },
+          "same_rpc_backend_observations": 0,
+          "backend_phases": {},
+          "categories": {
+            "direct": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 1445.79616599367,
+                "p95_ms": 1488.6639589676633,
+                "min_ms": 1362.111167050898,
+                "max_ms": 1513.7614579871297
+              }
+            },
+            "entity": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 906.9364999886602,
+                "p95_ms": 963.534458016511,
+                "min_ms": 866.9616249972023,
+                "max_ms": 975.703457952477
+              }
+            },
+            "filters": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 763.781020505121,
+                "p95_ms": 808.7153749656864,
+                "min_ms": 733.2290830090642,
+                "max_ms": 815.223417012021
+              }
+            },
+            "title": {
+              "scheduled": 20,
+              "failed": 0,
+              "search_rpc": {
+                "samples": 20,
+                "p50_ms": 878.163604036672,
+                "p95_ms": 896.7993330443278,
+                "min_ms": 842.7566669997759,
+                "max_ms": 941.038875025697
+              }
+            }
+          },
+          "target_ms": 1000,
+          "within_target": false
+        }
+      ],
+      "load_schedule": "homogeneous_policy_batches",
+      "limits": [
+        "Stateless HTTP client timings exclude MCP initialization and guarded readback.",
+        "First observations are not proof of unloaded model/cold OS cache.",
+        "Percentiles require at least 20 successful samples; failures remain counted.",
+        "Phase timings use the same hashed RPC identity; nested phases are not additive.",
+        "Concurrent lanes include guarded readback between searches; this is bounded client load.",
+        "Conversational model time and direct OpenClaw dispatch require separate observations."
+      ],
+      "graph_pairs": [
+        {
+          "concurrency": 1,
+          "policy": "hybrid-auto",
+          "paired_search_rpc_delta": {
+            "samples": 80,
+            "p50_ms": 179.11389548680745,
+            "p95_ms": 349.7490409645252,
+            "min_ms": 125.20387500990182,
+            "max_ms": 374.3906249292195
+          },
+          "scheduled_pairs": 80,
+          "failed_pairs": 0,
+          "target_delta_ms": 250,
+          "within_target": false,
+          "judged_positive_rr_comparisons": 60,
+          "judged_positive_rr_regressions": 0
+        },
+        {
+          "concurrency": 1,
+          "policy": "hybrid-on",
+          "paired_search_rpc_delta": {
+            "samples": 80,
+            "p50_ms": 200.44452050933614,
+            "p95_ms": 402.6044170022942,
+            "min_ms": 155.91258299537003,
+            "max_ms": 463.96233391715214
+          },
+          "scheduled_pairs": 80,
+          "failed_pairs": 0,
+          "target_delta_ms": 250,
+          "within_target": false,
+          "judged_positive_rr_comparisons": 60,
+          "judged_positive_rr_regressions": 0
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-auto",
+          "paired_search_rpc_delta": {
+            "samples": 80,
+            "p50_ms": 284.87935446901247,
+            "p95_ms": 520.0748749775812,
+            "min_ms": 194.2597920424305,
+            "max_ms": 627.0227080094628
+          },
+          "scheduled_pairs": 80,
+          "failed_pairs": 0,
+          "target_delta_ms": 250,
+          "within_target": false,
+          "judged_positive_rr_comparisons": 60,
+          "judged_positive_rr_regressions": 0
+        },
+        {
+          "concurrency": 4,
+          "policy": "hybrid-on",
+          "paired_search_rpc_delta": {
+            "samples": 80,
+            "p50_ms": 271.71306250966154,
+            "p95_ms": 509.16795793455094,
+            "min_ms": 207.3773330776021,
+            "max_ms": 561.535916000139
+          },
+          "scheduled_pairs": 80,
+          "failed_pairs": 0,
+          "target_delta_ms": 250,
+          "within_target": false,
+          "judged_positive_rr_comparisons": 60,
+          "judged_positive_rr_regressions": 0
+        }
+      ]
+    }
+  }
 }
