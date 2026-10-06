@@ -54,6 +54,16 @@ def write_new(path, value):
         os.fsync(stream.fileno())
 
 
+def validate_destinations(output, summary):
+    require(summary is None or Path(output).resolve() != Path(summary).resolve(),
+            "private report and sanitized summary destinations must differ")
+    require(not Path(output).exists() and (summary is None or not Path(summary).exists()),
+            "output already exists; use new report paths")
+    private_directory(Path(output).parent)
+    if summary is not None:
+        private_directory(Path(summary).parent)
+
+
 def strict_json(raw):
     def pairs(items):
         value = {}
@@ -91,7 +101,8 @@ def load_suite(path, *, captured_bytes=None):
                               "source_uri", "relevance", "expected_ids"}, "unsupported eval field")
         require(isinstance(case.get("query"), str) and case["query"].strip(), "query missing")
         require(case.get("scope", "notes") in {"notes", "messages", "all"}, "invalid scope")
-        k, limit = case.get("k", 5), case.get("limit", 5)
+        limit = case.get("limit", 5)
+        k = case.get("k", limit)
         require(type(k) is int and type(limit) is int and 1 <= k <= limit <= 200, "invalid result bounds")
         require(case.get("since_days") is None or (type(case["since_days"]) is int and
                 0 <= case["since_days"] <= 365000), "invalid recency filter")
@@ -129,7 +140,8 @@ def normalized_id(value):
 
 
 def metrics(item, records):
-    case, k = item["eval"], item["eval"].get("k", 5)
+    case = item["eval"]
+    k = case.get("k", case.get("limit", 5))
     grades = judgments(case) if item["answerability"] != "unjudged" else {}
     ranked = records[:k]
     ids = [normalized_id(record["id"]) for record in ranked]
@@ -214,12 +226,13 @@ def validate_records(records, limit):
     require(isinstance(records, list) and len(records) <= limit, "search result limit exceeded")
     ids = set()
     for record in records:
-        require(isinstance(record, dict) and isinstance(record.get("id"), str) and
-                record["id"] and record["id"] not in ids, "invalid or duplicate record ID")
+        require(isinstance(record, dict), "invalid record")
+        identifier = normalized_id(record.get("id"))
+        require(identifier not in ids, "invalid or duplicate record ID")
         require(isinstance(record.get("revision"), str) and record["revision"], "missing result revision")
         require(isinstance(record.get("provenance"), dict), "missing result provenance")
         require(isinstance(record.get("content"), str), "invalid result content")
-        ids.add(record["id"])
+        ids.add(identifier)
 
 
 def verify_readback(record, inspected):
@@ -314,8 +327,7 @@ def main(argv=None):
         suite_sha256 = hashlib.sha256(suite_bytes).hexdigest()
         suite = load_suite(args.suite, captured_bytes=suite_bytes)
         require(args.timeout > 0 and math.isfinite(args.timeout), "invalid timeout")
-        require(not args.output.exists() and (args.summary is None or not args.summary.exists()),
-                "output already exists; use new report paths")
+        validate_destinations(args.output, args.summary)
         if args.recorded:
             require(args.binary is None and args.endpoint is None, "recorded and live modes conflict")
             fixture = strict_json(args.recorded.read_text())

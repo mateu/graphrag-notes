@@ -33,6 +33,40 @@ def inspect(value):
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
+    def test_omitted_k_uses_retrieval_limit_above_and_below_five(self):
+        with tempfile.TemporaryDirectory() as name:
+            path = Path(name) / "suite.json"
+            for limit in (2, 20):
+                item = case()
+                item["eval"].pop("k")
+                item["eval"]["limit"] = limit
+                path.write_text(json.dumps({"schema_version": 1, "metadata": {}, "cases": [item]}))
+                loaded = evaluation.load_suite(path)
+                self.assertEqual(evaluation.metrics(loaded["cases"][0], [record()])["k"], limit)
+
+    def test_normalized_duplicate_after_top_k_fails_full_comparison(self):
+        item = case()
+        item["eval"].update(k=1, limit=2)
+        report = evaluation.evaluate({"metadata": {}, "cases": [item]},
+            lambda item, policy: [record("note:a"), record(" NOTE:A ")], inspect)
+        self.assertTrue(all(row["status"] == "failed" for row in report["cases"]))
+
+    def test_same_raw_and_summary_location_is_rejected_before_any_write(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            root.chmod(0o700)
+            alias = root / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            suite = root / "suite.json"
+            suite.write_text(json.dumps({"schema_version": 1, "metadata": {}, "cases": [case()]}))
+            for summary in (root / "result.json", alias / "result.json"):
+                with mock.patch.object(evaluation, "evaluate") as run, mock.patch("sys.stderr"):
+                    code = evaluation.main(["--suite", str(suite), "--recorded", str(root / "absent.json"),
+                        "--output", str(root / "result.json"), "--summary", str(summary)])
+                self.assertEqual(code, 2)
+                self.assertFalse((root / "result.json").exists())
+                run.assert_not_called()
+
     def test_report_hashes_the_inputs_loaded_before_retrieval(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
