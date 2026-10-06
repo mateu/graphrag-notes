@@ -461,6 +461,18 @@ struct VectorPageTrace {
     projected_embedding_bytes: usize,
 }
 
+fn write_vector_attempt_line(
+    writer: &mut impl std::io::Write,
+    event: &serde_json::Value,
+) -> std::io::Result<()> {
+    writeln!(writer, "{event}")?;
+    writer.flush()
+}
+
+fn emit_vector_attempt(event: serde_json::Value) {
+    write_vector_attempt_line(&mut std::io::stdout().lock(), &event).unwrap();
+}
+
 impl PartialEq for ExactVectorCandidate {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other).is_eq()
@@ -1417,8 +1429,19 @@ async fn exact_vector_skinny_storage_diagnostic_inner(runtime: &str) {
                 let category_start = std::time::Instant::now();
                 for (sequence, variant) in schedule.into_iter().enumerate() {
                     let (name, sql) = &variants[variant];
+                    let sample_index = samples[variant].len();
                     if let Some(clock) = diagnostic_clock {
-                        call_offsets[variant].push(clock.elapsed().as_secs_f64() * 1000.0);
+                        let call_offset_ms = clock.elapsed().as_secs_f64() * 1000.0;
+                        call_offsets[variant].push(call_offset_ms);
+                        emit_vector_attempt(serde_json::json!({
+                            "vector_probe_attempt_event":"started", "schema_version":1,
+                            "backend":backend,
+                            "tokio_runtime":runtime, "tokio_worker_threads":worker_threads,
+                            "population_body_repeats":repeats, "filter":filter,
+                            "limit":limit, "variant":name, "order":order,
+                            "sequence":sequence, "sample_index":sample_index,
+                            "call_offset_ms":call_offset_ms
+                        }));
                     }
                     let start = std::time::Instant::now();
                     let page = diagnostic_variant_page(name);
@@ -1458,21 +1481,52 @@ async fn exact_vector_skinny_storage_diagnostic_inner(runtime: &str) {
                         )
                         .await
                     };
-                    samples[variant].push(start.elapsed().as_secs_f64() * 1000.0);
+                    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    samples[variant].push(elapsed_ms);
                     sequences[variant].push(sequence);
-                    assert_eq!(
-                        serde_json::to_value(&rows).unwrap(),
-                        serde_json::to_value(&baseline).unwrap()
-                    );
-                    assert_eq!(
-                        rows.iter()
-                            .map(|row| row.vec_distance.map(f32::to_bits))
-                            .collect::<Vec<_>>(),
-                        baseline
+                    if let Some(clock) = diagnostic_clock {
+                        let full_rows_exact = serde_json::to_value(&rows).unwrap()
+                            == serde_json::to_value(&baseline).unwrap();
+                        let distance_bits_exact = rows
                             .iter()
                             .map(|row| row.vec_distance.map(f32::to_bits))
-                            .collect::<Vec<_>>()
-                    );
+                            .eq(baseline
+                                .iter()
+                                .map(|row| row.vec_distance.map(f32::to_bits)));
+                        emit_vector_attempt(serde_json::json!({
+                            "vector_probe_attempt_event":"completed", "schema_version":1,
+                            "backend":backend,
+                            "tokio_runtime":runtime, "tokio_worker_threads":worker_threads,
+                            "population_body_repeats":repeats, "filter":filter,
+                            "limit":limit, "variant":name, "order":order,
+                            "sequence":sequence, "sample_index":sample_index,
+                            "completed_offset_ms":clock.elapsed().as_secs_f64()*1000.0,
+                            "elapsed_ms":elapsed_ms, "rows":rows.len(),
+                            "full_rows_exact":full_rows_exact,
+                            "distance_bits_exact":distance_bits_exact,
+                            "page_phases":if page.is_some() {phase_samples[variant].last()} else {None},
+                            "native_sql_phases":if page.is_none() && native_sql_stats_requested {sql_samples[variant].last()} else {None}
+                        }));
+                        assert!(full_rows_exact, "completed attempt has different full rows");
+                        assert!(
+                            distance_bits_exact,
+                            "completed attempt has different distance bits"
+                        );
+                    } else {
+                        assert_eq!(
+                            serde_json::to_value(&rows).unwrap(),
+                            serde_json::to_value(&baseline).unwrap()
+                        );
+                        assert_eq!(
+                            rows.iter()
+                                .map(|row| row.vec_distance.map(f32::to_bits))
+                                .collect::<Vec<_>>(),
+                            baseline
+                                .iter()
+                                .map(|row| row.vec_distance.map(f32::to_bits))
+                                .collect::<Vec<_>>()
+                        );
+                    }
                 }
                 let category_elapsed_ms = category_start.elapsed().as_secs_f64() * 1000.0;
                 for (variant, (name, sql)) in variants.into_iter().enumerate() {
@@ -1540,6 +1594,53 @@ fn diagnostic_variant_page(name: &str) -> Option<usize> {
         "cbor_paged_512" => Some(512),
         _ => None,
     }
+}
+
+#[test]
+fn vector_attempt_ledger_flushes_started_and_failed_completion() {
+    #[derive(Default)]
+    struct Ledger {
+        pending: Vec<u8>,
+        flushed: Vec<u8>,
+    }
+    impl std::io::Write for Ledger {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.pending.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flushed.append(&mut self.pending);
+            Ok(())
+        }
+    }
+    let mut ledger = Ledger::default();
+    write_vector_attempt_line(
+        &mut ledger,
+        &serde_json::json!({"vector_probe_attempt_event":"started", "sequence":7}),
+    )
+    .unwrap();
+    let retained_start = ledger.flushed.clone();
+    assert!(ledger.pending.is_empty());
+    assert_eq!(
+        retained_start.iter().filter(|byte| **byte == b'\n').count(),
+        1
+    );
+    write_vector_attempt_line(
+        &mut ledger,
+        &serde_json::json!({"vector_probe_attempt_event":"completed", "sequence":7,
+            "full_rows_exact":false, "distance_bits_exact":false}),
+    )
+    .unwrap();
+    assert!(ledger.pending.is_empty());
+    assert!(ledger.flushed.starts_with(&retained_start));
+    let events = String::from_utf8(ledger.flushed)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["full_rows_exact"], false);
+    assert_eq!(events[1]["distance_bits_exact"], false);
 }
 
 #[tokio::test]
