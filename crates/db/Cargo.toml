@@ -23,4 +23,5 @@ sha2.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+ciborium = "0.2.2"
 tempfile.workspace = true
