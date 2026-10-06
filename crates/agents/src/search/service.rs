@@ -835,12 +835,73 @@ impl SearchAgent {
         source_uri: Option<String>,
         require_entity_seed: bool,
     ) -> Result<GraphSearchResults> {
-        let ranked_note_ids = baseline
+        let candidate_started = Instant::now();
+        let direct_ranks = baseline
+            .iter()
+            .enumerate()
+            .map(|(rank, hit)| (hit.id.as_str(), rank))
+            .collect::<HashMap<_, _>>();
+        let mut direct_candidates = baseline
             .iter()
             .filter(|hit| hit.hit_type == SearchHitType::Note)
             .take(200)
+            .map(|hit| (hit.id.clone(), hit.clone()))
+            .collect::<HashMap<_, _>>();
+        // A seed can be useful even when it fell just below the requested
+        // hybrid result count. Use the existing indexed lexical channel to
+        // supplement a bounded candidate list, without another embedding call
+        // or changing graph-off retrieval.
+        let lexical_limit = self
+            .graph
+            .max_seed_notes
+            .saturating_mul(self.graph.max_seed_entities)
+            .clamp(1, 200);
+        for result in self
+            .repo
+            .fulltext_search_notes(query, lexical_limit, since, source_uri.clone())
+            .await?
+        {
+            let exact_title_match = result.exact_title_match;
+            let mut hit = self.from_note_result(result);
+            hit.fusion.exact_title_match = exact_title_match;
+            direct_candidates.entry(hit.id.clone()).or_insert(hit);
+        }
+        let direct_strengths = direct_candidates
+            .values()
+            .map(|hit| {
+                (
+                    hit.id.as_str(),
+                    graph_seed_query_strength(query, hit.title.as_deref(), &hit.content, &[]),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut ranked_candidates = direct_candidates.values().collect::<Vec<_>>();
+        ranked_candidates.sort_by(|a, b| {
+            b.fusion
+                .exact_title_match
+                .cmp(&a.fusion.exact_title_match)
+                .then_with(|| {
+                    direct_strengths[b.id.as_str()].total_cmp(&direct_strengths[a.id.as_str()])
+                })
+                .then_with(|| {
+                    direct_ranks
+                        .get(a.id.as_str())
+                        .unwrap_or(&usize::MAX)
+                        .cmp(direct_ranks.get(b.id.as_str()).unwrap_or(&usize::MAX))
+                })
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let ranked_note_ids = ranked_candidates
+            .into_iter()
+            .take(200)
             .map(|hit| RecordId::new("note", hit.id.strip_prefix("note:").unwrap_or(&hit.id)))
             .collect::<Vec<_>>();
+        debug!(
+            phase = "graph_query_candidates",
+            elapsed_ms = candidate_started.elapsed().as_secs_f64() * 1000.0,
+            count = ranked_note_ids.len(),
+            "Retrieval phase completed"
+        );
         let normalized_query = Entity::canonicalize(query);
         let started = Instant::now();
         let entities = self
@@ -898,16 +959,34 @@ impl SearchAgent {
             .map(|seed| seed.note_id.clone())
             .collect::<Vec<_>>();
         let seed_evidence_started = Instant::now();
-        let records = self
+        let fallback_ids = candidate_ids
+            .iter()
+            .filter(|id| !direct_candidates.contains_key(&record_id_to_string(id)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut records = self
             .repo
-            .graph_notes_by_ids(&candidate_ids, since, source_uri.clone())
-            .await?;
+            .graph_notes_by_ids(&fallback_ids, since, source_uri.clone())
+            .await?
+            .into_iter()
+            .map(|record| self.from_note_result(record))
+            .collect::<Vec<_>>();
+        let candidate_keys = candidate_ids
+            .iter()
+            .map(record_id_to_string)
+            .collect::<HashSet<_>>();
+        records.extend(
+            direct_candidates
+                .values()
+                .filter(|hit| candidate_keys.contains(&hit.id))
+                .cloned(),
+        );
         let mut seed_strengths = HashMap::<String, f32>::new();
         for record in records {
-            let id = record_id_to_string(&record.id);
+            let id = record.id.clone();
             let matching_labels = entity_seed_ids
                 .iter()
-                .filter(|seed| seed.note_id == record.id)
+                .filter(|seed| record_id_to_string(&seed.note_id) == id)
                 .filter_map(|seed| entities.iter().find(|entity| entity.id == seed.entity_id))
                 .flat_map(|entity| {
                     std::iter::once(entity.name.as_str()).chain(
@@ -937,11 +1016,6 @@ impl SearchAgent {
             count = seed_strengths.len(),
             "Retrieval phase completed"
         );
-        let direct_ranks = baseline
-            .iter()
-            .enumerate()
-            .map(|(rank, hit)| (hit.id.as_str(), rank))
-            .collect::<HashMap<_, _>>();
         entity_seed_ids.sort_by(|a, b| {
             let a_id = record_id_to_string(&a.note_id);
             let b_id = record_id_to_string(&b.note_id);
@@ -3179,6 +3253,65 @@ mod tests {
                 .iter()
                 .map(|hit| (&hit.id, &hit.graph))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn lexical_supplement_recovers_a_seed_outside_the_requested_hybrid_candidates() {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let mut entity = Entity::new("Atlas", EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        let mut baseline = Vec::new();
+        for index in 0..20 {
+            let id = RecordId::new("note", format!("noise_{index:03}"));
+            db.query("CREATE $id CONTENT {content:'General background status'}")
+                .bind(("id", id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            repo.link_note_to_entity(&id, entity.id.as_ref().unwrap())
+                .await
+                .unwrap();
+            if index < 2 {
+                baseline.push(make_hit(
+                    &record_id_to_string(&id),
+                    0.01,
+                    "General background status",
+                ));
+            }
+        }
+        let useful = RecordId::new("note", "zz_useful");
+        db.query("CREATE $id CONTENT {content:'Atlas retry policy permits three attempts'}")
+            .bind(("id", useful.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        repo.link_note_to_entity(&useful, entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let search = SearchAgent::new(repo, Arc::new(DeterministicEmbedder::default()))
+            .with_graph_config(GraphRetrievalConfig {
+                max_seed_entities: 1,
+                max_seed_notes: 1,
+                max_hops: 0,
+                ..Default::default()
+            });
+        assert!(baseline
+            .iter()
+            .all(|hit| hit.id != record_id_to_string(&useful)));
+        let graph = search
+            .graph_candidates("Atlas retry policy", &baseline, None, None, true)
+            .await
+            .unwrap();
+        assert_eq!(graph.hits.len(), 1);
+        assert_eq!(graph.hits[0].id, record_id_to_string(&useful));
+        assert_eq!(
+            graph.hits[0].graph.as_ref().unwrap().query_entities,
+            vec!["Atlas"]
         );
     }
 

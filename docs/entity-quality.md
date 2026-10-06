@@ -36,9 +36,10 @@ older globally deduplicated entities.
 Graph matching keeps whole-query/contained-phrase/prefix tiers and stable ties.
 For retrieval it requires a visible, source/time-eligible mention and prefers
 entities attached to the bounded direct search candidates. Orphaned legacy
-entities cannot crowd out useful scoped matches. Seed selection intersects up
-to 200 direct-ranked note IDs with indexed mentions before the bounded
-ID-ordered fallback page. Each entity keeps its configured seed page, and the
+entities cannot crowd out useful scoped matches. An indexed provider-free full-text supplement recovers lexical candidates
+just below the requested hybrid result count. Seed selection intersects up to
+200 candidates, ranked by supported query terms and exact titles, with indexed
+mentions before the bounded ID-ordered fallback page. Each entity keeps its configured seed page, and the
 unique seed cap still reserves coverage across matched entities.
 
 Before selecting seed notes, graph strength uses the fraction of meaningful
