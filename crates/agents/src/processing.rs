@@ -21,7 +21,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 const EMBEDDING_CACHE_VERSION: &str = "embedding-v1";
-const EXTRACTION_CACHE_VERSION: &str = "entity-extraction-v1";
+const EXTRACTION_CACHE_VERSION: &str = "entity-extraction-v2-types-aliases";
 
 /// Provider-wide limits for one class of local inference operation.
 #[derive(Debug, Clone, PartialEq, Eq)]

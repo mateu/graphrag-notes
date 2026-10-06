@@ -323,7 +323,7 @@ impl Repository {
         let query=format!("BEGIN TRANSACTION; {effects} CREATE $receipt SET instance_id=$instance,request_id=$request,operation=$operation,target=$target,payload_fingerprint=$fingerprint,payload=$payload,result=$result,created_at=time::now(),updated_at=time::now(); COMMIT TRANSACTION;");
         let entity_names = entities
             .iter()
-            .map(|e| e.canonical_name.clone())
+            .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
         let expected_status = expected_proposal.as_ref().map(|p| p.status.to_string());
         let expected_edge_type = expected_proposal.as_ref().map(|p| p.edge_type.to_string());
