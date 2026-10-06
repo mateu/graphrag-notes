@@ -34,6 +34,20 @@ pub struct UploadSourceRequest {
     #[serde(default)]
     #[schemars(length(min = 64, max = 64))]
     pub expected_source_revision: Option<String>,
+    /// Explicit reviewed migration of one retained extraction-policy snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_migration: Option<SourcePolicyMigration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePolicyMigration {
+    #[schemars(length(min = 64, max = 64))]
+    pub original_policy_sha256: String,
+    #[schemars(length(min = 64, max = 64))]
+    pub target_policy_sha256: String,
+    #[schemars(length(min = 64, max = 64))]
+    pub plan_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -103,8 +117,13 @@ pub struct UploadedSource {
     pub document_key: String,
     pub provenance: serde_json::Value,
     pub extract_entities: bool,
-    /// Opaque processing snapshot identity, without provider URLs/settings.
+    /// Latest attempted upload snapshot identity, without provider URLs/settings.
+    /// A pending attempt is not the prior successful generation's applied policy.
     pub processing_policy_sha256: String,
+    /// Currently configured target snapshot; this read never invokes providers.
+    pub configured_processing_policy_sha256: String,
+    /// Exact latest upload request, including a pending attempt whose receipt was lost.
+    pub latest_upload_request_id: String,
     pub processing_policy_current: bool,
     /// Embedding and chunk/runtime settings match; no inference is probed.
     pub ingestion_policy_current: bool,

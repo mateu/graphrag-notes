@@ -50,14 +50,16 @@ def private_directory(path, create=False):
         raise ImportFailure('unsafe_directory')
 
 
-def read_private(path):
+def read_private(path, maximum=None):
     private_directory(path.parent)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     with os.fdopen(fd, 'rb') as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_mode & 0o077 or before.st_nlink != 1:
             raise ImportFailure('unsafe_file')
-        value = stream.read()
+        value = stream.read() if maximum is None else stream.read(maximum + 1)
+        if maximum is not None and len(value) > maximum:
+            raise ImportFailure("private_file_too_large")
         after = os.fstat(stream.fileno())
         if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise ImportFailure('changed_file')
@@ -682,8 +684,8 @@ def run_refresh(client, state, save, args):
                     task['verified_this_attempt'] = True
                     entry.pop('error_code', None)
                     save()
-                elif job['status'] in ('failed', 'interrupted'):
-                    recoverable = job['status'] == 'interrupted' or job.get('error_code') in (
+                elif job['status'] in ('failed', 'interrupted') or (job['status'] == 'cancelled' and state['pending'].get('kind') == 'policy_migration'):
+                    recoverable = job['status'] in ('interrupted', 'cancelled') or job.get('error_code') in (
                         'provider_unavailable', 'service_unreachable', 'internal', 'worker_interrupted', 'interrupted')
                     if not recoverable or not args.resume_jobs or entry.get('resume_attempts', 0) >= args.max_resumes:
                         raise ImportFailure('job_requires_explicit_resume' if recoverable else 'job_failed_nonretryable')
@@ -723,6 +725,167 @@ def run_refresh(client, state, save, args):
     state.pop('pending')
     state.update(status='complete', last_success_at=now(), error_code=None)
     save()
+
+
+def migration_registry_hash(state):
+    return sha(canonical({'config': state['config'], 'documents': state['documents'],
+                          'source_policies': state.get('source_policies', {}),
+                          'retired_sources': state.get('retired_sources', {})}))
+
+
+def digest_string(value):
+    return isinstance(value, str) and bool(re.fullmatch(r'[0-9a-f]{64}', value))
+
+
+def migration_source(client, state, key, task, expected=None):
+    source = retry_call(client, 'get_source', {'document_key': key})
+    registered = state['documents'].get(key)
+    payload = task['payload']
+    if (not registered or not valid_id(source.get('id'), 'source')
+            or source.get('id') != registered['entry']['admission']['source_id']
+            or source.get('uri') != registered['entry']['admission']['source_uri']
+            or source.get('instance_id') != state['config']['instance_id']
+            or source.get('document_key') != key or source.get('retired') is True
+            or source.get('status') != 'ready'
+            or source.get('generation') != source.get('successful_generation')
+            or source.get('generation') != registered['entry']['source_verified']['generation']
+            or source.get('revision') != registered['entry']['source_verified']['revision']
+            or not digest_string(source.get('revision'))):
+        raise ImportFailure('migration_source_changed')
+    old = state.get('source_policies', {}).get(key, {})
+    target = source.get('configured_processing_policy_sha256')
+    if (old.get('extract_entities') is not True or old.get('retained_extraction_drift') is not True
+            or source.get('extract_entities') is not True or source.get('ingestion_policy_current') is not True
+            or source.get('extraction_policy_current') is not False or source.get('processing_policy_current') is not False
+            or source.get('processing_policy_sha256') != old.get('processing_policy_sha256')
+            or not digest_string(old.get('processing_policy_sha256'))
+            or not digest_string(target) or target == old['processing_policy_sha256']):
+        raise ImportFailure('migration_retained_policy_or_service_required')
+    if source.get('provenance') != registered.get('provenance'):
+        raise ImportFailure('migration_origin_changed')
+    prior = json.loads(json.dumps(source['provenance']))
+    desired = json.loads(json.dumps(payload['provenance']))
+    for origin in (prior, desired):
+        if not isinstance(origin, dict) or not isinstance(origin.get('metadata'), dict):
+            raise ImportFailure('migration_origin_changed')
+        for version in ('original_sha256', 'parts'):
+            origin['metadata'].pop(version, None)
+    if prior != desired or payload['extract_entities'] is not True:
+        raise ImportFailure('migration_origin_changed')
+    inspected = {'source_id': source['id'], 'source_uri': source['uri'], 'revision': source['revision'],
+                 'generation': source['generation'], 'original_policy_sha256': old['processing_policy_sha256'],
+                 'target_policy_sha256': target, 'content_changed': (source.get('content') != payload['content']
+                    or source.get('title') != payload['title'] or source.get('provenance') != payload['provenance'])}
+    if expected is not None and inspected != expected:
+        raise ImportFailure('migration_review_changed')
+    return inspected
+
+
+def migration_preview(client, state, documents, selection):
+    if state.get('pending') or state.get('reconciliation'):
+        raise ImportFailure('pending_attempt_requires_resume')
+    if (not isinstance(selection, list) or not 1 <= len(selection) <= 8
+            or len(set(selection)) != len(selection) or any(not isinstance(key, str) for key in selection)):
+        raise ImportFailure('migration_selection_must_have_one_to_eight_registered_parts')
+    tasks = payloads(documents, state['config'], 'migration-preview', state.get('source_policies'))
+    targets = []
+    for key in sorted(selection):
+        if key not in tasks or key not in state['documents']:
+            raise ImportFailure('migration_selected_original_unavailable')
+        task = tasks[key]
+        inspected = migration_source(client, state, key, task)
+        # The private plan contains exact indexed bytes, never credentials.
+        targets.append({'document_key': key, 'payload': {name: value for name, value in task['payload'].items() if name != 'request_id'},
+                        'payload_hash': task['payload_hash'], 'inspected': inspected})
+    plan = {'schema_version': 1, 'operation': 'policy_migration', 'registry_sha256': migration_registry_hash(state),
+            'config_sha256': sha(canonical(state['config'])), 'targets': targets}
+    plan['plan_sha256'] = sha(canonical(plan))
+    return plan
+
+
+def validate_migration_plan(state, plan, reviewed):
+    if (not isinstance(plan, dict) or plan.get('schema_version') != 1 or plan.get('operation') != 'policy_migration'
+            or not digest_string(reviewed) or plan.get('plan_sha256') != reviewed
+            or sha(canonical({key: value for key, value in plan.items() if key != 'plan_sha256'})) != reviewed
+            or plan.get('config_sha256') != sha(canonical(state['config']))
+            or not isinstance(plan.get('targets'), list) or not 1 <= len(plan['targets']) <= 8):
+        raise ImportFailure('migration_plan_mismatch')
+    keys = [target.get('document_key') for target in plan['targets']]
+    if any(not isinstance(key, str) for key in keys) or len(set(keys)) != len(keys):
+        raise ImportFailure('migration_plan_mismatch')
+    for target in plan['targets']:
+        if (target.get('payload', {}).get('document_key') != target['document_key']
+                or target['payload'].get('extract_entities') is not True
+                or sha(canonical(target['payload'])) != target.get('payload_hash')):
+            raise ImportFailure('migration_plan_mismatch')
+
+
+def migration_apply(client, state, documents, plan, reviewed, save):
+    validate_migration_plan(state, plan, reviewed)
+    if state.get('pending') or state.get('reconciliation') or plan['registry_sha256'] != migration_registry_hash(state):
+        raise ImportFailure('migration_registry_changed')
+    current = payloads(documents, state['config'], 'migration-apply', state.get('source_policies'))
+    # All selected original bytes, source revisions and target policies are
+    # checked before the first job. The worker independently fences them again.
+    for target in plan['targets']:
+        key = target['document_key']
+        if key not in current or current[key]['payload_hash'] != target['payload_hash']:
+            raise ImportFailure('migration_indexed_input_changed')
+        migration_source(client, state, key, current[key], target['inspected'])
+    tasks = {}
+    for target in plan['targets']:
+        key, inspected = target['document_key'], target['inspected']
+        payload = json.loads(json.dumps(target['payload']))
+        payload['expected_source_revision'] = inspected['revision']
+        payload['policy_migration'] = {'original_policy_sha256': inspected['original_policy_sha256'],
+                                       'target_policy_sha256': inspected['target_policy_sha256'], 'plan_sha256': reviewed}
+        payload['request_id'] = 'ocmem-migrate-' + sha(canonical([reviewed, key, payload]))
+        tasks[key] = {'payload': payload, 'payload_hash': target['payload_hash'], 'action': 'changed',
+                      'expected_policy': {'extract_entities': True, 'processing_policy_sha256': inspected['target_policy_sha256'],
+                                          'retained_extraction_drift': False}, 'entry': {}, 'verified_this_attempt': False}
+    state.update(status='running', last_attempt_at=now(), error_code=None,
+                 counts={'created': 0, 'changed': len(tasks), 'unchanged': 0, 'missing': len(state.get('missing_keys', [])), 'failed': 0},
+                 service_actions=dict.fromkeys(('created', 'updated', 'unchanged'), 0),
+                 pending={'kind': 'policy_migration', 'plan': plan, 'tasks': tasks, 'policy_review_complete': True,
+                          'desired_keys': state.get('desired_keys', sorted(state['documents'])),
+                          'missing_keys': state.get('missing_keys', []), 'attempt': reviewed})
+    save()
+
+
+def migration_resume_preflight(client, state):
+    pending = state['pending']
+    plan = pending['plan']
+    validate_migration_plan(state, plan, plan.get('plan_sha256'))
+    if set(pending['tasks']) != {target['document_key'] for target in plan['targets']}:
+        raise ImportFailure('migration_plan_mismatch')
+    for target in plan['targets']:
+        key = target['document_key']
+        task = pending['tasks'][key]
+        expected_payload = dict(target['payload'], expected_source_revision=target['inspected']['revision'],
+                                policy_migration={'original_policy_sha256': target['inspected']['original_policy_sha256'],
+                                                  'target_policy_sha256': target['inspected']['target_policy_sha256'], 'plan_sha256': plan['plan_sha256']})
+        expected_payload['request_id'] = 'ocmem-migrate-' + sha(canonical([plan['plan_sha256'], key, expected_payload]))
+        expected_policy = {'extract_entities': True, 'processing_policy_sha256': target['inspected']['target_policy_sha256'], 'retained_extraction_drift': False}
+        if (task.get('expected_policy') != expected_policy or task['payload'] != expected_payload or task['payload_hash'] != target['payload_hash'] or task['payload'].get('policy_migration') != {
+                'original_policy_sha256': target['inspected']['original_policy_sha256'],
+                'target_policy_sha256': target['inspected']['target_policy_sha256'], 'plan_sha256': plan['plan_sha256']}):
+            raise ImportFailure('migration_plan_mismatch')
+        source = retry_call(client, 'get_source', {'document_key': key})
+        if (source.get('id') != target['inspected']['source_id'] or source.get('uri') != target['inspected']['source_uri']
+                or source.get('instance_id') != state['config']['instance_id'] or source.get('document_key') != key
+                or source.get('configured_processing_policy_sha256') != target['inspected']['target_policy_sha256']):
+            raise ImportFailure('migration_target_changed')
+        if not task['entry'].get('admission'):
+            if source.get('latest_upload_request_id') == task['payload']['request_id']:
+                # A committed admission can already own a pending/failed/ready
+                # generation before its acknowledgement reaches this client.
+                # Recover only this exact durable request, never a new draft.
+                if (source.get('content') != task['payload']['content'] or source.get('title') != task['payload']['title']
+                        or source.get('provenance') != task['payload']['provenance'] or source.get('retired') is True
+                        or source.get('processing_policy_sha256') != target['inspected']['target_policy_sha256']):
+                    raise ImportFailure('migration_pending_identity_changed')
+            else:
+                migration_source(client, state, key, task, target['inspected'])
 
 
 def reconciliation_preview(client, state):
@@ -826,8 +989,10 @@ def parser():
     parser.add_argument('--deadline-seconds', type=int, default=14400)
     parser.add_argument('--job-timeout-seconds', type=int, default=1200)
     parser.add_argument('--reconcile', action='store_true', help='Preview missing originals/obsolete parts against server revisions.')
-    parser.add_argument('--yes', action='store_true', help='Explicitly apply the reviewed --plan-sha256 cleanup.')
-    parser.add_argument('--plan-sha256', help='Exact hash printed by --reconcile preview.')
+    parser.add_argument('--migrate-policy', action='store_true', help='Explicitly preview/apply one to eight retained graph-policy parts; never selects a collection automatically.')
+    parser.add_argument('--selection-file', type=Path, help='Private JSON list of registered document keys for migration preview.')
+    parser.add_argument('--yes', action='store_true', help='Explicitly apply the reviewed cleanup or migration --plan-sha256.')
+    parser.add_argument('--plan-sha256', help='Exact hash printed by --reconcile or --migrate-policy preview.')
     parser.add_argument('--format', choices=('human', 'json'), default='human')
     return parser
 
@@ -847,7 +1012,7 @@ def emit(value, format):
     if value.get('last_success_at'):
         print('Last successful refresh: ' + value['last_success_at'])
     if value.get('plan_sha256'):
-        print('Review cleanup count: ' + str(value['missing_parts']))
+        print(('Review migration count: ' + str(value['selected_parts'])) if 'selected_parts' in value else ('Review cleanup count: ' + str(value['missing_parts'])))
         print('Plan SHA256: ' + value['plan_sha256'])
     if value.get('error_code'):
         print('Reason: ' + value['error_code'])
@@ -863,8 +1028,10 @@ def main(argv=None):
     save = None
     started = time.monotonic()
     try:
-        if (sum((args.status, args.resume, args.reconcile)) > 1 or (args.dry_run and (args.resume or args.reconcile))
-                or args.yes != bool(args.plan_sha256) or (args.yes and not args.reconcile)
+        if (sum((args.status, args.resume, args.reconcile, args.migrate_policy)) > 1 or (args.dry_run and (args.resume or args.reconcile or args.migrate_policy))
+                or args.yes != bool(args.plan_sha256) or (args.yes and not (args.reconcile or args.migrate_policy))
+                or (args.selection_file is not None and (not args.migrate_policy or args.yes))
+                or (args.migrate_policy and not args.yes and args.selection_file is None)
                 or not 4096 <= args.part_bytes <= 57344 or not 1 <= args.max_inflight <= 8
                 or not 0.1 <= args.poll_seconds <= 30 or not 1 <= args.max_resumes <= 5
                 or not 1 <= args.deadline_seconds <= 86400 or not 1 <= args.job_timeout_seconds <= 86400
@@ -908,12 +1075,12 @@ def main(argv=None):
             def persist():
                 atomic_json(state_path, state)
                 atomic_json(args.state_dir / 'freshness.json', evidence(state))
-            save = persist
+            save = None if args.migrate_policy and not args.yes else persist
             if args.resume:
                 if not state.get('pending'):
                     raise ImportFailure('no_pending_attempt')
                 state.update(status='running', error_code=None)
-            elif not args.reconcile:
+            elif not args.reconcile and not args.migrate_policy:
                 if not args.database or not args.workspace:
                     raise ImportFailure('database_and_workspace_required')
                 state['last_attempt_at'] = now()
@@ -923,14 +1090,36 @@ def main(argv=None):
                     save()
                     emit(report(state), args.format)
                     return 1
-            save()  # Persist exact inputs before any network/model request.
+            if save:
+                save()  # Persist exact inputs before any network/model request.
             token = os.environ.get(args.credential_env, '')
             if not token or any(ch.isspace() for ch in token):
                 raise ImportFailure('credential_unavailable')
             client = Client(state['config']['server'], token, started + args.deadline_seconds)
             client.initialize()
             verify_principal(client, state['config']['instance_id'])
-            if args.reconcile:
+            if args.migrate_policy:
+                if not args.database or not args.workspace:
+                    raise ImportFailure('database_and_workspace_required')
+                documents, failures, _ = snapshot(args.database, args.workspace)
+                if failures:
+                    raise ImportFailure('snapshot_incomplete')
+                preview_path = args.state_dir / 'policy-migration-preview.json'
+                if args.yes:
+                    plan = json.loads(read_private(preview_path, 2 * 1024 * 1024))
+                    migration_apply(client, state, documents, plan, args.plan_sha256, save)
+                    run_refresh(client, state, save, args)
+                    emit(report(state), args.format)
+                else:
+                    raw_selection = read_private(args.selection_file, 8192)
+                    if len(raw_selection) > 8192:
+                        raise ImportFailure('migration_selection_too_large')
+                    plan = migration_preview(client, state, documents, json.loads(raw_selection))
+                    atomic_json(preview_path, plan)
+                    emit({'status': 'policy_migration_preview', 'selected_parts': len(plan['targets']),
+                          'changed_original_parts': sum(t['inspected']['content_changed'] for t in plan['targets']),
+                          'plan_sha256': plan['plan_sha256'], 'provider_calls': 0}, args.format)
+            elif args.reconcile:
                 if args.yes:
                     reconcile(client, state, args.plan_sha256, save)
                     emit(dict(evidence(state), status='reconciliation_complete'), args.format)
@@ -942,6 +1131,8 @@ def main(argv=None):
                           'obsolete_parts': sum(t['reason'] == 'obsolete_part' for t in plan['targets']),
                           'plan_sha256': plan['plan_sha256']}, args.format)
             else:
+                if state['pending'].get('kind') == 'policy_migration':
+                    migration_resume_preflight(client, state)
                 review_existing_policies(client, state, save, args)
                 run_refresh(client, state, save, args)
                 emit(report(state), args.format)
@@ -957,6 +1148,8 @@ def main(argv=None):
             except Exception:
                 code = 'state_write_failed'
         value = evidence(state) if state else {'status': 'failed'}
+        if save is None:
+            value['status'] = 'paused' if code == 'paused' else 'failed'
         value['error_code'] = code
         emit(value, args.format)
         return 130 if code == 'paused' else 1

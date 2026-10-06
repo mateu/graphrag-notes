@@ -89,8 +89,8 @@ Changed or retired graph parts with that older policy fail with
 `retained_extraction_policy_requires_owner_reprocessing` pending a separate,
 reviewed owner upload-policy migration. Ordinary `extract-entities --force --note-id <ID>`
 enriches notes but does not rewrite the originating upload job's policy snapshot
-or clear this fence. This adapter does not implement that policy migration;
-do not edit its saved state to bypass the old applied-policy evidence.
+or clear this fence. Use the explicit retained-policy migration below; do not
+edit saved state to bypass the old applied-policy evidence.
 Registered unchanged graph parts can be retained with the same explicit
 `--adopt-existing-policy` choice without any upload or job. Use matching client
 and service builds; source inspection lacking the applied-policy fields fails
@@ -139,8 +139,9 @@ python3 scripts/refresh-openclaw-memory.py \
 
 After repairing a provider failure, add `--resume-jobs`. Resume attempts are
 persisted and bounded (one by default, up to five with `--max-resumes`). Validation,
-ownership, compatibility, and cancelled-job failures are not automatically
-resumed. Preserve state and inspect the owned job; do not discard uncertain
+ownership and compatibility failures are not automatically resumed. Cancelled
+ordinary refresh jobs are refused; the explicit migration workflow below can
+resume its own cancelled job only with `--resume-jobs`. Preserve state and inspect the owned job; do not discard uncertain
 admissions or start a newer snapshot over a pending attempt. The run deadline is
 four hours; each observed active job is bounded to 20 minutes. A process lock
 prevents two refreshes from using the same state directory concurrently.
@@ -159,6 +160,103 @@ parts; a partial status does not claim all proposed changes were committed.
 Remote `doctor --refresh-status-file .../freshness.json` consumes this local
 evidence with endpoint/principal matching; it is client evidence rather than a
 live server freshness guarantee.
+
+## Explicit retained extraction-policy migration
+
+Use matching service/client builds containing #110. `get_source` exposes the
+provider-free `configured_processing_policy_sha256` separately from the applied
+upload policy. An older service without that field fails closed. The importer
+uses its existing `read,upload,jobs` permissions; migration requires no delete
+grant and changes no provider, model, default, or OpenClaw configuration.
+
+Start with an explicit subset of at most **eight registered retained graph
+parts**. Write their document keys as a JSON array in a private mode-0600 file
+inside a mode-0700 directory. Obtain keys from the private registry, not search
+result note IDs. Do not publish the selection, preview, registry, or credentials.
+The selection excludes default-false and unregistered sources. Use the existing
+registered state directory and its registered tunnel endpoint from the private
+operator runbook for every command below; creating a new collection is not a
+migration. Set `REGISTERED_STATE_DIR` and `REGISTERED_MCP_URL` to those non-secret
+values before running the example.
+
+```sh
+python3 scripts/refresh-openclaw-memory.py \
+  --database "$HOME/.openclaw/agents/main/agent/openclaw-agent.sqlite" \
+  --workspace "$HOME/.openclaw/workspace" \
+  --state-dir "$REGISTERED_STATE_DIR" \
+  --collection-id clawd-main-memory --source-host clawd --source-agent main \
+  --instance-id shiva-importer --server "$REGISTERED_MCP_URL" \
+  --migrate-policy --selection-file "$HOME/.graphrag/migration/selected.json" \
+  --format json
+```
+
+Preview authenticates and reads only the selected registered sources. It takes
+the same consistent read-only SQLite inventory and verifies exact indexed
+Markdown bytes. The output gives selected/changed-original counts and a plan
+SHA256; no providers are invoked and no jobs are admitted. The private
+`policy-migration-preview.json` pins exact content, trusted source owner, source
+revision/generation, original provenance, old/target policy digests, and registry
+identity. Review that plan and the corpus owner's configured embedding/chunk and
+extraction provider/model/prompt/cache settings. Policy digests identify those
+settings without disclosing provider URLs or credentials. If indexed content
+changed, the plan identifies the combined original/policy change explicitly.
+Embedding/chunk incompatibility or unknown applied ingestion settings requires a
+separate reviewed ingestion change and is refused here.
+
+Before a real migration, rehearse the exact selection and plan on a freshly
+restored private corpus with vectors and a private copy of collection state.
+Run the same bounded retrieval sample before and after; preserve its baseline.
+Confirm the owner configuration and all plan identities before applying to the
+live corpus. Apply the reviewed digest with the same database/workspace and
+collection arguments, replacing the selection flag with:
+
+```sh
+--migrate-policy --yes --plan-sha256 REVIEWED_SHA256 --format json
+```
+
+All selected inputs, owner/provenance/revisions, registry identity and target
+policies are rechecked before the first admission. Each durable upload carries
+explicit old/target/plan digests and the source revision. The worker checks those
+fences before inference; resume and promotion also refuse target-policy drift.
+Historical admissions and receipt fingerprints remain unchanged. An ordinary
+refresh or note-only `extract-entities --force --note-id <ID>` cannot authorize
+migration.
+
+Each selected part stages its new chunks and bounded entity batches privately
+(at most 200 chunks, 128 entities per chunk, and 16 MiB prepared graph data).
+Its last successful generation, entities and mentions stay searchable while
+extraction is incomplete or failed. Source inspection reports the attempted
+pending generation separately from the successful generation. Fully prepared
+entities/mentions and source visibility promote in one transaction, preserving
+validated successor identity scopes and live manual relationships. Detached
+manual notes survive. Multiple selected parts have separate atomic promotions;
+a partial collection can have completed new parts alongside retained old ones.
+
+A lost acknowledgement, provider failure, cancellation or process restart keeps
+exact request identities and prepared checkpoints. Preserve the private state.
+After repairing the cause, recover the existing attempt with `--resume`; add
+`--resume-jobs` to explicitly resume failed or cancelled migration jobs. The
+durable phases
+`migration_admitted`, `migration_preparing`, `migration_staged`,
+`migration_extracting`, and `migration_promoted` remain distinct through
+post-promotion cleanup. Schema20 also records a versioned migration contract:
+rc.3 and older services refuse that database/archive before claiming work,
+because their unknown-phase failure handling cannot preserve private batches.
+Upgrade to the matching migration-capable service/client before applying. To
+roll back the binary, restore a pre-schema20 corpus backup and its matching
+collection state; an in-place binary downgrade is refused. Resume
+attempts remain bounded by `--max-resumes` and never replay completed extraction
+batches. Configuration drift requires restoring the reviewed target settings;
+there is no override that changes a saved job's immutable intent.
+
+The registry adopts the target policy only after completed-job and exact source
+readback verification. Its retained-policy count clears only for those verified
+parts; failed and unselected parts retain their old evidence. Afterwards an
+identical normal refresh has zero uploads/jobs/inference, and a later indexed
+edit uses the ordinary guarded target-policy refresh. To roll back a completed
+migration, restore a compatible private corpus archive and its corresponding
+collection state together; do not alter historical admissions or forge policy
+hashes in the registry. No broad sweep or scheduler is enabled.
 
 ## Explicit reconciliation
 

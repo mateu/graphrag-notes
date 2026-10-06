@@ -23,6 +23,7 @@ mod v016_remote_capture_receipts;
 mod v017_remote_mutation_receipts;
 mod v018_remote_upload_jobs;
 mod v019_entity_identity;
+mod v020_source_policy_migration;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -35,7 +36,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 19;
+pub const LATEST_SCHEMA_VERSION: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -70,6 +71,7 @@ const MIGRATIONS: &[Migration] = &[
     v017_remote_mutation_receipts::MIGRATION,
     v018_remote_upload_jobs::MIGRATION,
     v019_entity_identity::MIGRATION,
+    v020_source_policy_migration::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -533,6 +535,33 @@ mod tests {
             applied_migrations(&db).await.unwrap().len(),
             LATEST_SCHEMA_VERSION as usize
         );
+    }
+
+    #[tokio::test]
+    async fn prior_schema_registry_rejects_policy_checkpoint_before_any_worker_write() {
+        let db = crate::init_memory().await.unwrap();
+        db.query("CREATE processing_job:migration SET job_type = 'remote_upload', status = 'queued', total_count = 1, completed_count = 1, failed_count = 0, remote_phase = 'migration_extracting', remote_migration_contract_version = 1, remote_result = {policy_migration_stage: {version: 1, batches: [{fixture: 'exact private checkpoint'}]}};")
+            .await.unwrap().check().unwrap();
+        let before: Vec<serde_json::Value> = db
+            .query("SELECT * FROM processing_job:migration")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        // Run the exact migration prefix understood by rc.3. It must refuse
+        // schema20 before job claims or unknown-phase failure settlement can
+        // overwrite any prepared bytes.
+        let error = apply_migrations(&db, &MIGRATIONS[..19]).await.unwrap_err();
+        assert!(error.to_string().contains("20"));
+        let after: Vec<serde_json::Value> = db
+            .query("SELECT * FROM processing_job:migration")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(after, before);
+        assert_eq!(after[0]["status"], "queued");
+        assert!(after[0]["remote_result"]["policy_migration_stage"].is_object());
     }
 
     #[tokio::test]

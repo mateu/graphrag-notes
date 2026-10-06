@@ -23,6 +23,7 @@ fn input(instance: &str, request: &str, body: &str) -> RemoteUploadInput {
         preserve_unchanged: false,
         create_only: false,
         expected_source_revision: None,
+        policy_migration: None,
         processing_options: serde_json::json!({"runtime":{"target_chunk_chars":1000},"provider":"fixture","model":"fixture","cache_identity":"fixture"}),
     }
 }

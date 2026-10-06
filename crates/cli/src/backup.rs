@@ -945,6 +945,7 @@ mod tests {
             preserve_unchanged: false,
             create_only: false,
             expected_source_revision: None,
+            policy_migration: None,
         };
         let app = application(&repo);
         let admission = app
@@ -1053,6 +1054,7 @@ mod tests {
             preserve_unchanged: false,
             create_only: false,
             expected_source_revision: None,
+            policy_migration: None,
             processing_options: serde_json::json!({"provider":"fixture","chunk_size":200}),
         };
         let admitted = repo.admit_remote_upload(input.clone()).await.unwrap();
@@ -1247,6 +1249,7 @@ mod tests {
             preserve_unchanged: false,
             create_only: false,
             expected_source_revision: None,
+            policy_migration: None,
         };
         let active_app = application(500);
         let admission = active_app
@@ -1391,6 +1394,215 @@ mod tests {
                 },
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn near_bound_private_migration_checkpoint_round_trips_and_promotes_without_reextraction()
+    {
+        use graphrag_db::{
+            ProcessingJobStatus, ProcessingJobUpdate, RemoteJobLease, RemoteUploadInput,
+        };
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let old_options = serde_json::json!({
+            "runtime":"fictional bounded chunks",
+            "embedding":{"provider":"fixture","model":"fixture","cache_identity":"fixture","endpoint_identity":"fixture"},
+            "extraction":{"provider":"fixture","model":"fixture","cache_identity":"legacy","endpoint_identity":"fixture"}
+        });
+        let original = RemoteUploadInput {
+            authenticated_instance_id: "fixture-owner".into(),
+            request_id: "original".into(),
+            payload_fingerprint: "a".repeat(64),
+            document_key: "selected".into(),
+            markdown: "Fictional Atlas migration checkpoint".into(),
+            title: None,
+            source_provenance: serde_json::json!({"uri":"file:///fictional/atlas.md","metadata":{"collection_id":"fictional-memory"}}),
+            extract_entities: true,
+            preserve_unchanged: false,
+            create_only: false,
+            expected_source_revision: None,
+            policy_migration: None,
+            processing_options: old_options.clone(),
+        };
+        let admission = repo.admit_remote_upload(original.clone()).await.unwrap();
+        let job = repo
+            .claim_remote_upload_job(
+                "fixture-owner",
+                admission.result["job_id"].as_str().unwrap(),
+                "old-epoch",
+                "worker",
+            )
+            .await
+            .unwrap();
+        let lease = RemoteJobLease {
+            job_id: job.job.id.unwrap(),
+            instance_id: "fixture-owner".into(),
+            service_epoch: "old-epoch".into(),
+            worker_token: "worker".into(),
+        };
+        let source = repo.begin_remote_upload_generation(&lease).await.unwrap();
+        let staged = repo
+            .stage_remote_upload_notes(&lease, vec![Note::new(original.markdown.clone())])
+            .await
+            .unwrap();
+        let old_note = graphrag_db::parse_record_id(&staged.job.item_ids[0], Some("note")).unwrap();
+        repo.reconcile_remote_upload(&lease, &[]).await.unwrap();
+        repo.checkpoint_remote_upload_job(&lease, "extracting", ProcessingJobUpdate::default())
+            .await
+            .unwrap();
+        repo.persist_remote_upload_entities(&lease, 0, vec![])
+            .await
+            .unwrap();
+        repo.finish_remote_upload_job(&lease, ProcessingJobStatus::Completed, None, None)
+            .await
+            .unwrap();
+        let source = repo
+            .get_source(&record_id_to_string(source.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut next = original.clone();
+        next.request_id = "migration".into();
+        next.payload_fingerprint = "b".repeat(64);
+        next.expected_source_revision =
+            Some(graphrag_db::uploaded_source_revision(&source, &original.markdown).unwrap());
+        next.processing_options["extraction"]["cache_identity"] = serde_json::json!("current");
+        next.policy_migration = Some(serde_json::json!({
+            "original_policy_sha256":graphrag_db::uploaded_processing_policy_sha256(&old_options).unwrap(),
+            "target_policy_sha256":graphrag_db::uploaded_processing_policy_sha256(&next.processing_options).unwrap(),
+            "plan_sha256":"c".repeat(64)
+        }));
+        let admitted = repo.admit_remote_upload(next.clone()).await.unwrap();
+        let job_id = admitted.result["job_id"].as_str().unwrap();
+        let job = repo
+            .claim_remote_upload_job("fixture-owner", job_id, "current-epoch", "worker")
+            .await
+            .unwrap();
+        assert_eq!(job.phase, "migration_admitted");
+        let lease = RemoteJobLease {
+            job_id: job.job.id.unwrap(),
+            instance_id: "fixture-owner".into(),
+            service_epoch: "current-epoch".into(),
+            worker_token: "worker".into(),
+        };
+        repo.begin_remote_upload_generation(&lease).await.unwrap();
+        assert_eq!(
+            repo.owned_remote_upload_job(&lease).await.unwrap().phase,
+            "migration_preparing"
+        );
+        let staged = repo
+            .stage_remote_upload_notes(&lease, vec![Note::new(next.markdown.clone())])
+            .await
+            .unwrap();
+        assert_eq!(staged.phase, "migration_staged");
+        let new_note = graphrag_db::parse_record_id(&staged.job.item_ids[0], Some("note")).unwrap();
+        let successors = [(old_note.clone(), new_note.clone(), true)];
+        repo.prepare_policy_migration_extraction(&lease, &successors)
+            .await
+            .unwrap();
+        let scope = repo
+            .note_extraction_scope(
+                &repo
+                    .get_note(&record_id_to_string(&old_note))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let mut entity = Entity::new("Atlas", EntityType::Project);
+        let identity =
+            serde_json::json!([scope, entity.entity_type, entity.canonical_name]).to_string();
+        entity.identity_key = Some(format!(
+            "extracted-v1:{}",
+            graphrag_core::normalized_content_hash(&identity)
+        ));
+        entity.embedding = vec![0.25; 1024];
+        // Exercise the real private-checkpoint bound, including a vector nested
+        // in opaque remote_result. No separate backup record ceiling may reject
+        // an otherwise-valid checkpoint or strip its resumable bytes.
+        entity.metadata = serde_json::json!({"extraction":{"scope":scope,"fixture_padding":"x".repeat(16*1024*1024-16384)}});
+        let checkpoint = repo
+            .checkpoint_policy_migration_entities(&lease, 0, vec![entity])
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        let bytes = serde_json::to_vec(&checkpoint).unwrap().len();
+        assert!((15 * 1024 * 1024..16 * 1024 * 1024).contains(&bytes));
+        repo.recover_remote_upload_job(&lease, "worker_interrupted")
+            .await
+            .unwrap();
+        let archive = temp.path().join("large-private-checkpoint");
+        let summary = create_backup(&repo, &archive, false).await.unwrap();
+        assert!(fs::metadata(archive.join(RECORDS_FILE)).unwrap().len() > 15 * 1024 * 1024);
+        assert_eq!(verify_backup(&archive).unwrap(), summary);
+        let target = temp.path().join("restored-large-checkpoint");
+        restore_backup(&archive, &target, false).await.unwrap();
+        let restored = Repository::new(init_persistent(&target).await.unwrap());
+        let replay = restored.admit_remote_upload(next).await.unwrap();
+        assert!(replay.replayed);
+        assert_eq!(replay.result, admitted.result);
+        let saved = restored
+            .get_remote_upload_job("fixture-owner", job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.phase, "migration_extracting");
+        assert_eq!(saved.job.completed_count, 1);
+        assert_eq!(saved.result.as_ref(), Some(&checkpoint));
+        assert!(saved.service_epoch.is_none() && saved.worker_token.is_none());
+        restored
+            .resume_remote_upload_job("fixture-owner", job_id)
+            .await
+            .unwrap();
+        let claimed = restored
+            .claim_remote_upload_job("fixture-owner", job_id, "restored-epoch", "worker")
+            .await
+            .unwrap();
+        let lease = RemoteJobLease {
+            job_id: claimed.job.id.unwrap(),
+            instance_id: "fixture-owner".into(),
+            service_epoch: "restored-epoch".into(),
+            worker_token: "worker".into(),
+        };
+        // All graph batches were already durable; promotion uses only those
+        // exact bytes and does not require a model/provider on the restored host.
+        restored
+            .promote_policy_migration(&lease, &successors)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored
+                .owned_remote_upload_job(&lease)
+                .await
+                .unwrap()
+                .phase,
+            "migration_promoted"
+        );
+        restored.reconcile_remote_upload(&lease, &[]).await.unwrap();
+        restored
+            .finish_remote_upload_job(
+                &lease,
+                ProcessingJobStatus::Completed,
+                None,
+                Some(serde_json::json!({"action":"updated"})),
+            )
+            .await
+            .unwrap();
+        let visible = restored
+            .get_source_chunks(source.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, Some(new_note));
+        let entities = restored
+            .get_entities_for_note(&record_id_to_string(visible[0].id.as_ref().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].embedding, vec![0.25; 1024]);
     }
 
     #[tokio::test]
