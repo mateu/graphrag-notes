@@ -1,0 +1,433 @@
+{
+  "checkpoint_compatibility": {
+    "private_staged_checkpoint_portable_restore_resume_tested": true,
+    "published_rc3_refused_schema20_private_database": true,
+    "rollback_requires_matching_corpus_and_collection_state_restore": true,
+    "schema_version_fence": 20
+  },
+  "context": {
+    "configuration_and_env_unchanged": true,
+    "doctor_embedding_dimension_probes_per_role": 2,
+    "doctor_extraction_generation_probes": 0,
+    "owned_evaluators_and_services_stopped": true,
+    "provider_model_metadata_before_after_both_roles_equal": true,
+    "schema_verified_before_after_both_roles": true,
+    "unselected_registry_parts_preserved": true
+  },
+  "migration": {
+    "automatic_recovery_attempts": 0,
+    "preservation": {
+      "chat_provenance_relations_preserved": 0,
+      "existing_entities_retained": 374,
+      "new_entities": 386,
+      "relations_preserved": 1,
+      "selected_chunk_lineages": 40,
+      "selected_mentions_after": 426,
+      "selected_mentions_before": 438,
+      "unchanged_relation_table_counts": {
+        "contradicts": {
+          "total": 0,
+          "unselected": 0
+        },
+        "derived_from": {
+          "total": 0,
+          "unselected": 0
+        },
+        "note_from_conversation": {
+          "total": 0,
+          "unselected": 0
+        },
+        "note_from_message": {
+          "total": 0,
+          "unselected": 0
+        },
+        "related_to": {
+          "total": 1,
+          "unselected": 1
+        },
+        "supports": {
+          "total": 0,
+          "unselected": 0
+        }
+      },
+      "unselected_mentions_exact": 29,
+      "unselected_notes_exact_f64_and_serving_f32": 9740,
+      "unselected_sources_exact": 806
+    },
+    "production_migration_performed": false,
+    "retained_policy_parts_after": 0,
+    "retained_policy_parts_before": 8,
+    "source_generations_promoted": 8,
+    "upload_admissions": 8
+  },
+  "ordinary_refresh_after_migration": {
+    "each_run": {
+      "inference": false,
+      "job_calls": 0,
+      "service_status_reads": 1,
+      "source_reads": 809,
+      "upload_calls": 0
+    },
+    "runs": 2
+  },
+  "paired_quality": {
+    "after_failures": 0,
+    "after_full_readbacks": 790,
+    "before_failures": 0,
+    "before_full_readbacks": 790,
+    "calibration_questions": 34,
+    "canonical_ranked_id_list_changes": 0,
+    "exact_full_readback_rows": 200,
+    "exact_full_record_rows": 200,
+    "exact_metric_rows": 200,
+    "false_positive_count_definition": "All returned results count as false positives only for reviewed no-answer cases; other cases count explicitly judged zero-grade results. Unjudged results remain unknown.",
+    "frozen_suite_bytes_unchanged": true,
+    "full_revision_pinned_readbacks_performed": true,
+    "groups": [
+      {
+        "after_known_false_positive_results_all_cases": 0,
+        "after_precision_withheld_cases": 5,
+        "after_unjudged_hits": 11,
+        "before_known_false_positive_results_all_cases": 0,
+        "before_precision_withheld_cases": 5,
+        "before_unjudged_hits": 11,
+        "cases": 34,
+        "lineage_normalized_rank_changes": 0,
+        "no_answer": {
+          "after_empty": 2,
+          "after_false_positive_results": 0,
+          "after_nonempty": 0,
+          "before_empty": 2,
+          "before_false_positive_results": 0,
+          "before_nonempty": 0,
+          "cases": 2
+        },
+        "policy": "keyword-off",
+        "recall_of_judged_positives": {
+          "after_mean": 0.2375,
+          "before_mean": 0.2375,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 32,
+          "unchanged_cases": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "after_mean": 0.24479166666666666,
+          "before_mean": 0.24479166666666666,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 32,
+          "unchanged_cases": 32
+        },
+        "split": "calibration"
+      },
+      {
+        "after_known_false_positive_results_all_cases": 0,
+        "after_precision_withheld_cases": 5,
+        "after_unjudged_hits": 9,
+        "before_known_false_positive_results_all_cases": 0,
+        "before_precision_withheld_cases": 5,
+        "before_unjudged_hits": 9,
+        "cases": 16,
+        "lineage_normalized_rank_changes": 0,
+        "no_answer": {
+          "after_empty": 2,
+          "after_false_positive_results": 0,
+          "after_nonempty": 0,
+          "before_empty": 2,
+          "before_false_positive_results": 0,
+          "before_nonempty": 0,
+          "cases": 2
+        },
+        "policy": "keyword-off",
+        "recall_of_judged_positives": {
+          "after_mean": 0.42857142857142855,
+          "before_mean": 0.42857142857142855,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 14,
+          "unchanged_cases": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "after_mean": 0.42857142857142855,
+          "before_mean": 0.42857142857142855,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 14,
+          "unchanged_cases": 14
+        },
+        "split": "holdout"
+      },
+      {
+        "after_known_false_positive_results_all_cases": 10,
+        "after_precision_withheld_cases": 34,
+        "after_unjudged_hits": 117,
+        "before_known_false_positive_results_all_cases": 10,
+        "before_precision_withheld_cases": 34,
+        "before_unjudged_hits": 117,
+        "cases": 34,
+        "lineage_normalized_rank_changes": 0,
+        "no_answer": {
+          "after_empty": 0,
+          "after_false_positive_results": 10,
+          "after_nonempty": 2,
+          "before_empty": 0,
+          "before_false_positive_results": 10,
+          "before_nonempty": 2,
+          "cases": 2
+        },
+        "policy": "hybrid-off",
+        "recall_of_judged_positives": {
+          "after_mean": 0.678125,
+          "before_mean": 0.678125,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 32,
+          "unchanged_cases": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "after_mean": 0.7135416666666666,
+          "before_mean": 0.7135416666666666,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 32,
+          "unchanged_cases": 32
+        },
+        "split": "calibration"
+      },
+      {
+        "after_known_false_positive_results_all_cases": 10,
+        "after_precision_withheld_cases": 16,
+        "after_unjudged_hits": 58,
+        "before_known_false_positive_results_all_cases": 10,
+        "before_precision_withheld_cases": 16,
+        "before_unjudged_hits": 58,
+        "cases": 16,
+        "lineage_normalized_rank_changes": 0,
+        "no_answer": {
+          "after_empty": 0,
+          "after_false_positive_results": 10,
+          "after_nonempty": 2,
+          "before_empty": 0,
+          "before_false_positive_results": 10,
+          "before_nonempty": 2,
+          "cases": 2
+        },
+        "policy": "hybrid-off",
+        "recall_of_judged_positives": {
+          "after_mean": 0.8571428571428571,
+          "before_mean": 0.8571428571428571,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 14,
+          "unchanged_cases": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "after_mean": 0.8571428571428571,
+          "before_mean": 0.8571428571428571,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 14,
+          "unchanged_cases": 14
+        },
+        "split": "holdout"
+      },
+      {
+        "after_known_false_positive_results_all_cases": 10,
+        "after_precision_withheld_cases": 34,
+        "after_unjudged_hits": 117,
+        "before_known_false_positive_results_all_cases": 10,
+        "before_precision_withheld_cases": 34,
+        "before_unjudged_hits": 117,
+        "cases": 34,
+        "lineage_normalized_rank_changes": 0,
+        "no_answer": {
+          "after_empty": 0,
+          "after_false_positive_results": 10,
+          "after_nonempty": 2,
+          "before_empty": 0,
+          "before_false_positive_results": 10,
+          "before_nonempty": 2,
+          "cases": 2
+        },
+        "policy": "hybrid-auto",
+        "recall_of_judged_positives": {
+          "after_mean": 0.678125,
+          "before_mean": 0.678125,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 32,
+          "unchanged_cases": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "after_mean": 0.7135416666666666,
+          "before_mean": 0.7135416666666666,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 32,
+          "unchanged_cases": 32
+        },
+        "split": "calibration"
+      },
+      {
+        "after_known_false_positive_results_all_cases": 10,
+        "after_precision_withheld_cases": 16,
+        "after_unjudged_hits": 58,
+        "before_known_false_positive_results_all_cases": 10,
+        "before_precision_withheld_cases": 16,
+        "before_unjudged_hits": 58,
+        "cases": 16,
+        "lineage_normalized_rank_changes": 0,
+        "no_answer": {
+          "after_empty": 0,
+          "after_false_positive_results": 10,
+          "after_nonempty": 2,
+          "before_empty": 0,
+          "before_false_positive_results": 10,
+          "before_nonempty": 2,
+          "cases": 2
+        },
+        "policy": "hybrid-auto",
+        "recall_of_judged_positives": {
+          "after_mean": 0.8571428571428571,
+          "before_mean": 0.8571428571428571,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 14,
+          "unchanged_cases": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "after_mean": 0.8571428571428571,
+          "before_mean": 0.8571428571428571,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 14,
+          "unchanged_cases": 14
+        },
+        "split": "holdout"
+      },
+      {
+        "after_known_false_positive_results_all_cases": 10,
+        "after_precision_withheld_cases": 34,
+        "after_unjudged_hits": 117,
+        "before_known_false_positive_results_all_cases": 10,
+        "before_precision_withheld_cases": 34,
+        "before_unjudged_hits": 117,
+        "cases": 34,
+        "lineage_normalized_rank_changes": 0,
+        "no_answer": {
+          "after_empty": 0,
+          "after_false_positive_results": 10,
+          "after_nonempty": 2,
+          "before_empty": 0,
+          "before_false_positive_results": 10,
+          "before_nonempty": 2,
+          "cases": 2
+        },
+        "policy": "hybrid-on",
+        "recall_of_judged_positives": {
+          "after_mean": 0.678125,
+          "before_mean": 0.678125,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 32,
+          "unchanged_cases": 32
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "after_mean": 0.7135416666666666,
+          "before_mean": 0.7135416666666666,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 32,
+          "unchanged_cases": 32
+        },
+        "split": "calibration"
+      },
+      {
+        "after_known_false_positive_results_all_cases": 10,
+        "after_precision_withheld_cases": 16,
+        "after_unjudged_hits": 58,
+        "before_known_false_positive_results_all_cases": 10,
+        "before_precision_withheld_cases": 16,
+        "before_unjudged_hits": 58,
+        "cases": 16,
+        "lineage_normalized_rank_changes": 0,
+        "no_answer": {
+          "after_empty": 0,
+          "after_false_positive_results": 10,
+          "after_nonempty": 2,
+          "before_empty": 0,
+          "before_false_positive_results": 10,
+          "before_nonempty": 2,
+          "cases": 2
+        },
+        "policy": "hybrid-on",
+        "recall_of_judged_positives": {
+          "after_mean": 0.8571428571428571,
+          "before_mean": 0.8571428571428571,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 14,
+          "unchanged_cases": 14
+        },
+        "reciprocal_rank_of_judged_positives": {
+          "after_mean": 0.8571428571428571,
+          "before_mean": 0.8571428571428571,
+          "excluded_cases": 2,
+          "improved_cases": 0,
+          "regressed_cases": 0,
+          "scored_cases": 14,
+          "unchanged_cases": 14
+        },
+        "split": "holdout"
+      }
+    ],
+    "holdout_questions": 16,
+    "judged_id_field_replacements": 0,
+    "lineage_normalized_rank_changes": 0,
+    "policies": 4,
+    "policy_cases_per_role": 200,
+    "precision_and_ndcg_withheld_for_unjudged_hits": true,
+    "questions": 50,
+    "questions_splits_grades_denominators_unchanged": true,
+    "scope_caveat": "The frozen suite checks corpus-wide retrieval; it does not directly grade extraction accuracy on the selected sources.",
+    "selected_chunk_ranked_occurrences_after": 0,
+    "selected_chunk_ranked_occurrences_before": 0,
+    "selected_chunks_with_frozen_judged_positives": 0
+  },
+  "runtime": {
+    "binary_compiled_inputs_revision": "c372dd7b90ead6df94b469f36279f7b59eb0219d",
+    "binary_sha256": "725e130333bfeb990e1c7613b9310f597bafab6b873442c4187bfe876b78ca3f",
+    "build_profile": "isolated development debug build",
+    "embedding_model": "bge-m3:latest",
+    "extraction_model": "phi4-mini:latest",
+    "latency_claim": false,
+    "schema_version": 20,
+    "source_commit": "2e2ad2203aed8fab6b3c39499e4ff9512a370be1"
+  },
+  "schema_version": 1,
+  "selection": {
+    "collection_default_extract_entities": false,
+    "content_changes": 0,
+    "indexed_documents": 790,
+    "registered_parts": 809,
+    "selected_parts": 8,
+    "unselected_registered_parts": 801
+  },
+  "status": "restored_rehearsal_and_paired_quality_completed"
+}

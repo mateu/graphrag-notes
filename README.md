@@ -94,6 +94,11 @@ upgrade status. The remaining native Linux/Intel acceptance is tracked in #66.
 The [live rc.3 acceptance record](https://github.com/mateu/graphrag-notes/issues/97#issuecomment-6009885555)
 tracks publication, installation and deployment gates as they are completed.
 
+The [rc.4 follow-up candidate](docs/releases/0.1.0-rc.4.md) prepares matching
+clients for explicit retained extraction-policy migration and the measured
+note-search and OpenClaw connection improvements. Its guide records the
+separate validation and publication gates; rc.3 assets remain immutable.
+
 
 ## Architecture
 
