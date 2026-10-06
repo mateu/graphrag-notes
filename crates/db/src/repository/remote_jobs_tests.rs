@@ -1882,15 +1882,44 @@ async fn status_query_redacts_private_checkpoints_and_saved_input_before_materia
         .iter()
         .any(|row| row.result.as_ref() == Some(&public_result)));
     for status in statuses {
+        let id = record_id_to_string(status.job.id.as_ref().unwrap());
         let single = repo
-            .get_remote_upload_job_status(
-                "owner",
-                &record_id_to_string(status.job.id.as_ref().unwrap()),
-            )
+            .get_remote_upload_job_status("owner", &id)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(single.result, status.result);
+        // Cancellation uses the same query-side bounded projection, including
+        // repeated requests against an already terminal private checkpoint.
+        for phase in ["running", "failed", "cancelled", "completed", "queued"] {
+            db.query("UPDATE $id SET status = $status, remote_cancel_requested = false")
+                .bind(("id", job_id(&id).unwrap()))
+                .bind(("status", phase))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            for _ in 0..2 {
+                let cancelled = repo
+                    .cancel_remote_upload_job_status("owner", &id)
+                    .await
+                    .unwrap();
+                assert_eq!(cancelled.result, status.result);
+                assert_eq!(
+                    cancelled.job.status.as_str(),
+                    if phase == "queued" {
+                        "cancelled"
+                    } else {
+                        phase
+                    }
+                );
+            }
+        }
+        assert!(matches!(
+            repo.cancel_remote_upload_job_status("other-owner", &id)
+                .await,
+            Err(DbError::NotFound(..))
+        ));
     }
     let saved: Vec<serde_json::Value> = db.query("SELECT remote_result FROM processing_job WHERE remote_request_id = 'private-checkpoint'").await.unwrap().take(0).unwrap();
     assert_eq!(saved[0]["remote_result"], private);

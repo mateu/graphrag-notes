@@ -597,9 +597,16 @@ impl Repository {
         id: &str,
     ) -> Result<Option<RemoteUploadJobStatus>> {
         identity(instance)?;
+        Ok(self
+            .remote_job_status_row(instance, &job_id(id)?)
+            .await?
+            .map(JobRow::status))
+    }
+
+    async fn remote_job_status_row(&self, instance: &str, id: &RecordId) -> Result<Option<JobRow>> {
         let row: Option<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE id = $id AND job_type = 'remote_upload' AND remote_instance_id = $instance LIMIT 1"))
-            .bind(("id", job_id(id)?)).bind(("instance", instance.to_string())).await?.take(0)?;
-        Ok(row.map(JobRow::status))
+            .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.take(0)?;
+        Ok(row)
     }
 
     async fn remote_job_rows(&self, instance: &str, limit: usize) -> Result<Vec<JobRow>> {
@@ -641,16 +648,18 @@ impl Repository {
         Ok(rows.into_iter().map(JobRow::status).collect())
     }
 
-    async fn cancel_remote_upload_row(&self, instance: &str, id: &str) -> Result<JobRow> {
+    async fn request_remote_upload_cancellation(
+        &self,
+        instance: &str,
+        id: &str,
+    ) -> Result<RecordId> {
         identity(instance)?;
         let id = job_id(id)?;
         // Deliberately no transition/lifecycle mutex. A provider-blocked worker
         // can observe this immediately, and an entered DB phase can finish.
-        self.db.query("UPDATE $id SET remote_cancel_requested = true, finished_at = IF status = 'queued' THEN time::now() ELSE finished_at END, status = IF status = 'queued' THEN 'cancelled' ELSE status END, updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND (status = 'queued' OR status = 'running')")
+        self.db.query("UPDATE $id SET remote_cancel_requested = true, finished_at = IF status = 'queued' THEN time::now() ELSE finished_at END, status = IF status = 'queued' THEN 'cancelled' ELSE status END, updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND (status = 'queued' OR status = 'running') RETURN NONE")
             .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.check()?;
-        self.remote_job_row(instance, &id)
-            .await?
-            .ok_or_else(|| DbError::NotFound("remote upload job".into(), record_id_to_string(&id)))
+        Ok(id)
     }
 
     pub async fn cancel_remote_upload_job(
@@ -658,7 +667,13 @@ impl Repository {
         instance: &str,
         id: &str,
     ) -> Result<RemoteUploadJob> {
-        self.cancel_remote_upload_row(instance, id).await?.public()
+        let id = self
+            .request_remote_upload_cancellation(instance, id)
+            .await?;
+        self.remote_job_row(instance, &id)
+            .await?
+            .ok_or_else(|| DbError::NotFound("remote upload job".into(), record_id_to_string(&id)))?
+            .public()
     }
 
     pub async fn cancel_remote_upload_job_status(
@@ -666,7 +681,14 @@ impl Repository {
         instance: &str,
         id: &str,
     ) -> Result<RemoteUploadJobStatus> {
-        Ok(self.cancel_remote_upload_row(instance, id).await?.status())
+        let id = self
+            .request_remote_upload_cancellation(instance, id)
+            .await?;
+        Ok(self
+            .remote_job_status_row(instance, &id)
+            .await?
+            .ok_or_else(|| DbError::NotFound("remote upload job".into(), record_id_to_string(&id)))?
+            .status())
     }
     pub async fn resume_remote_upload_job(
         &self,
