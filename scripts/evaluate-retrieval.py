@@ -6,6 +6,7 @@ rankings, readback content, and identifiers stay in the private report. Only
 explicitly whitelisted aggregate fields enter the separately requested summary.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -62,6 +63,47 @@ def validate_destinations(output, summary):
     private_directory(Path(output).parent)
     if summary is not None:
         private_directory(Path(summary).parent)
+
+
+@contextmanager
+def reserve_reports(output, summary):
+    """Reserve both files before retrieval using the filesystem's own identity rules."""
+    validate_destinations(output, summary)
+    reserved = {}
+    written = set()
+    try:
+        for destination in (output, summary):
+            if destination is None:
+                continue
+            path = Path(destination)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            reserved[path] = fd
+
+        def write(path, value):
+            path = Path(path)
+            fd = reserved[path]
+            require(path not in written, "report already written")
+            current, owned = path.stat(), os.fstat(fd)
+            require((current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino),
+                    "report reservation changed")
+            encoded = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+            with os.fdopen(os.dup(fd), "w", encoding="utf-8") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            written.add(path)
+
+        yield write
+    finally:
+        for path, fd in reserved.items():
+            try:
+                current, owned = path.stat(), os.fstat(fd)
+                if path not in written and (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino):
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+            finally:
+                os.close(fd)
 
 
 def strict_json(raw):
@@ -332,36 +374,36 @@ def main(argv=None):
         suite_sha256 = hashlib.sha256(suite_bytes).hexdigest()
         suite = load_suite(args.suite, captured_bytes=suite_bytes)
         require(args.timeout > 0 and math.isfinite(args.timeout), "invalid timeout")
-        validate_destinations(args.output, args.summary)
-        if args.recorded:
-            require(args.binary is None and args.endpoint is None, "recorded and live modes conflict")
-            fixture = strict_json(args.recorded.read_text())
-            def search(item, policy):
-                try:
-                    return fixture["rankings"][item["name"]][policy]
-                except (KeyError, TypeError) as error:
-                    raise EvaluationError("recorded ranking missing") from error
-            def inspect(record):
-                try:
-                    return fixture["inspections"][record["id"]]
-                except (KeyError, TypeError) as error:
-                    raise EvaluationError("recorded inspection missing") from error
-        else:
-            require(args.binary is not None and args.endpoint, "live evaluation requires binary and endpoint")
-            require(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.credential_env) is not None,
-                    "invalid credential environment name")
-            require(bool(os.environ.get(args.credential_env)), "credential environment variable missing")
-            client = RemoteCli(args.binary, args.endpoint, args.credential_env, args.timeout)
-            search, inspect = client.search, client.inspect
-        report = evaluate(suite, search, inspect)
-        report["suite_sha256"] = suite_sha256
-        report["runner_sha256"] = RUNNER_SHA256
-        write_new(args.output, report)
-        if args.summary:
-            write_new(args.summary, aggregate(report))
-        failures = sum(row["status"] != "ok" for row in report["cases"])
-        print(json.dumps({"policy_cases": len(report["cases"]), "failures": failures}))
-        return 1 if failures else 0
+        with reserve_reports(args.output, args.summary) as write_report:
+            if args.recorded:
+                require(args.binary is None and args.endpoint is None, "recorded and live modes conflict")
+                fixture = strict_json(args.recorded.read_text())
+                def search(item, policy):
+                    try:
+                        return fixture["rankings"][item["name"]][policy]
+                    except (KeyError, TypeError) as error:
+                        raise EvaluationError("recorded ranking missing") from error
+                def inspect(record):
+                    try:
+                        return fixture["inspections"][record["id"]]
+                    except (KeyError, TypeError) as error:
+                        raise EvaluationError("recorded inspection missing") from error
+            else:
+                require(args.binary is not None and args.endpoint, "live evaluation requires binary and endpoint")
+                require(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.credential_env) is not None,
+                        "invalid credential environment name")
+                require(bool(os.environ.get(args.credential_env)), "credential environment variable missing")
+                client = RemoteCli(args.binary, args.endpoint, args.credential_env, args.timeout)
+                search, inspect = client.search, client.inspect
+            report = evaluate(suite, search, inspect)
+            report["suite_sha256"] = suite_sha256
+            report["runner_sha256"] = RUNNER_SHA256
+            write_report(args.output, report)
+            if args.summary:
+                write_report(args.summary, aggregate(report))
+            failures = sum(row["status"] != "ok" for row in report["cases"])
+            print(json.dumps({"policy_cases": len(report["cases"]), "failures": failures}))
+            return 1 if failures else 0
     except (EvaluationError, ValueError, OSError, KeyError, TypeError):
         print("Evaluation failed; check private input/output permissions, schema, and connection configuration.", file=sys.stderr)
         return 2

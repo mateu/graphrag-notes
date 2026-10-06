@@ -33,6 +33,48 @@ def inspect(value):
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
+    def test_filesystem_case_alias_is_rejected_before_private_data_is_written(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            root.chmod(0o700)
+            probe = root / "probe"
+            probe.write_text("")
+            insensitive = (root / "PROBE").exists()
+            probe.unlink()
+            if not insensitive:
+                self.skipTest("filesystem is case-sensitive")
+            with self.assertRaises(FileExistsError):
+                with evaluation.reserve_reports(root / "report.json", root / "REPORT.json"):
+                    self.fail("alias reservation must fail before retrieval")
+            self.assertFalse((root / "report.json").exists())
+            self.assertFalse((root / "REPORT.json").exists())
+
+    def test_both_reports_are_reserved_until_their_content_is_written(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            root.chmod(0o700)
+            output, summary = root / "private.json", root / "public.json"
+            with evaluation.reserve_reports(output, summary) as write:
+                self.assertEqual(output.read_bytes(), b"")
+                self.assertEqual(summary.read_bytes(), b"")
+                with self.assertRaises(FileExistsError):
+                    evaluation.write_new(summary, {"unexpected": True})
+                write(output, {"private": "fictional"})
+                write(summary, {"cases": 1})
+            self.assertEqual(json.loads(summary.read_text()), {"cases": 1})
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_failed_setup_removes_only_empty_owned_reservations(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            root.chmod(0o700)
+            output, summary = root / "private.json", root / "public.json"
+            with self.assertRaises(evaluation.EvaluationError):
+                with evaluation.reserve_reports(output, summary):
+                    raise evaluation.EvaluationError("fixture setup failure")
+            self.assertFalse(output.exists())
+            self.assertFalse(summary.exists())
+
     def test_nested_eval_schema_version_requires_an_integer(self):
         with tempfile.TemporaryDirectory() as name:
             path = Path(name) / "suite.json"
