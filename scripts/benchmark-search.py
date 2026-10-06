@@ -313,9 +313,7 @@ def main(argv=None):
         token = os.environ.get(args.credential_env, "")
         evaluation.require(token and not any(ch.isspace() for ch in token), "missing credential")
         endpoint(args.endpoint)
-        evaluation.require(not args.output.exists() and not args.summary.exists(), "report exists")
-        evaluation.private_directory(args.output.parent)
-        evaluation.private_directory(args.summary.parent)
+        evaluation.validate_destinations(args.output, args.summary)
         deadline = time.monotonic() + args.deadline_seconds
         samples = run(suite, lambda: McpClient(args.endpoint, token, args.timeout, deadline), args.rounds, concurrency)
         if args.backend_log:

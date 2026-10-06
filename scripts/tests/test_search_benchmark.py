@@ -37,6 +37,23 @@ class Client:
 
 
 class SearchBenchmarkTests(unittest.TestCase):
+    def test_raw_and_summary_path_alias_is_rejected_before_measurement(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            root.chmod(0o700)
+            alias = root / "alias"
+            alias.symlink_to(root, target_is_directory=True)
+            suite = root / "suite.json"
+            suite.write_text(json.dumps({"schema_version": 1, "metadata": {}, "cases": [case()]}))
+            with mock.patch.object(benchmark, "run") as run, \
+                    mock.patch.dict("os.environ", {"FIXTURE_TOKEN": "fictional"}), mock.patch("sys.stderr"):
+                code = benchmark.main(["--suite", str(suite), "--endpoint", "http://127.0.0.1:1/mcp",
+                    "--credential-env", "FIXTURE_TOKEN", "--output", str(root / "result.json"),
+                    "--summary", str(alias / "result.json")])
+            self.assertEqual(code, 2)
+            self.assertFalse((root / "result.json").exists())
+            run.assert_not_called()
+
     def test_http_rejects_duplicate_fields_nonfinite_json_and_boolean_schema(self):
         class Handler(BaseHTTPRequestHandler):
             variant = "valid"
