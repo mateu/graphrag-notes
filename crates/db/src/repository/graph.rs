@@ -997,7 +997,10 @@ impl Repository {
                 ON DUPLICATE KEY UPDATE 
                     name = $name,
                     embedding = $embedding,
-                    metadata = object::extend(
+                    metadata = IF string::starts_with($identity_key, 'extracted-v1:') THEN
+                        object::extend(object::extend(metadata ?? {}, $metadata ?? {}),
+                            { aliases: array::slice($metadata.aliases ?? [], 0, 8) })
+                    ELSE object::extend(
                         object::extend(metadata ?? {}, $metadata ?? {}),
                         {
                             extraction: IF $metadata.extraction = NONE THEN metadata.extraction ELSE object::extend($metadata.extraction, {
@@ -1010,7 +1013,7 @@ impl Repository {
                                 $metadata.aliases ?? []
                             ))
                         }
-                    )
+                    ) END
             "#)
             .bind(("entity_type", entity_type.clone()))
             .bind(("name", name.clone()))
@@ -1067,45 +1070,10 @@ impl Repository {
             ));
         }
 
-        // Preserve links that predate this batch: a rollback may only remove
-        // records this call actually added, never a concurrent/manual link
-        // that happened to target the same entity. The lifecycle lock keeps
-        // this snapshot stable with respect to supported graph mutations.
-        let existing_links: HashSet<RecordId> = self
-            .db
-            .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
-            .bind(("note_id", note_id.clone()))
-            .await?
-            .take(0)?;
-        let mut created_links = Vec::new();
-        let mut linked = 0;
-        let result: Result<()> = async {
-            for entity in entities {
-                let entity = self.upsert_entity(entity).await?;
-                let entity_id = entity.id.as_ref().ok_or_else(|| {
-                    DbError::CreateFailed("upserted entity did not receive an id".into())
-                })?;
-                if !existing_links.contains(entity_id) {
-                    self.link_note_to_entity_locked(note_id, entity_id).await?;
-                    created_links.push(entity_id.clone());
-                }
-                linked += 1;
-            }
-            Ok(())
-        }
-        .await;
-
-        if let Err(error) = result {
-            for entity_id in created_links {
-                self.db
-                    .query("DELETE mentions WHERE in = $note_id AND out = $entity_id")
-                    .bind(("note_id", note_id.clone()))
-                    .bind(("entity_id", entity_id))
-                    .await?;
-            }
-            return Err(error);
-        }
-        Ok(linked)
+        // Additive extraction retains previous manual mentions, and all
+        // current alias evidence rolls back together if any write fails.
+        self.persist_note_entity_evidence(note_id, entities, false)
+            .await
     }
 
     /// Replace a note's extracted entity mention set after inference has
@@ -1128,61 +1096,70 @@ impl Repository {
             ));
         }
 
-        // Complete all fallible inference-result persistence before replacing
-        // mentions. A malformed entity therefore leaves the prior extraction
-        // intact instead of clearing it first.
-        let entity_ids = self.replacement_entity_ids(entities).await?;
-
-        let previous_ids: Vec<RecordId> = self
-            .db
-            .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
-            .bind(("note_id", note_id.clone()))
-            .await?
-            .take(0)?;
-        self.delete_mentions_for_note_locked(note_id).await?;
-
-        let result: Result<()> = async {
-            for entity_id in &entity_ids {
-                self.link_note_to_entity_locked(note_id, entity_id).await?;
-            }
-            Ok(())
-        }
-        .await;
-        if let Err(error) = result {
-            // Restore the pre-replacement set if a database failure occurs
-            // after deletion. The lock prevents source reconciliation from
-            // observing the transient empty set.
-            self.delete_mentions_for_note_locked(note_id).await?;
-            for entity_id in previous_ids {
-                self.link_note_to_entity_locked(note_id, &entity_id).await?;
-            }
-            return Err(error);
-        }
-        Ok(entity_ids.len())
+        self.persist_note_entity_evidence(note_id, entities, true)
+            .await
     }
 
-    pub(crate) async fn replacement_entity_ids(
+    async fn persist_note_entity_evidence(
         &self,
+        note_id: &RecordId,
         entities: Vec<Entity>,
-    ) -> Result<Vec<RecordId>> {
-        let mut entity_ids = Vec::with_capacity(entities.len());
-        let mut seen = HashSet::new();
-        for entity in entities {
-            let entity = self.upsert_entity(entity).await?;
-            let entity_id = entity.id.ok_or_else(|| {
-                DbError::CreateFailed("upserted entity did not receive an id".into())
-            })?;
-            if seen.insert(record_id_to_string(&entity_id)) {
-                entity_ids.push(entity_id);
-            }
+        replace: bool,
+    ) -> Result<usize> {
+        let entity_names = entities
+            .iter()
+            .map(Entity::effective_identity_key)
+            .collect::<Vec<_>>();
+        let result_count = if replace {
+            entity_names.iter().collect::<HashSet<_>>().len()
+        } else {
+            entities.len()
+        };
+        let deletion = if replace {
+            "DELETE mentions WHERE in = $note_id; "
+        } else {
+            ""
+        };
+        let mut response = self
+            .db
+            .query(format!(
+                "BEGIN TRANSACTION; \
+                 LET $writable = (SELECT VALUE id FROM note WHERE id = $note_id AND \
+                    (source_id IS NONE OR source_generation IS NONE \
+                     OR source_generation = source_id.successful_generation \
+                     OR (source_generation = source_id.generation AND source_id.status = 'pending')) LIMIT 1); \
+                 IF array::len($writable) != 1 {{ THROW 'entity replacement endpoint is no longer writable'; }}; {} \
+                 {deletion} {} COMMIT TRANSACTION;",
+                super::notes::replacement_entities_transaction(),
+                super::notes::replacement_mentions_transaction("$note_id")
+            ))
+            .bind(("note_id", note_id.clone()))
+            .bind(("replacement_entities", entities))
+            .bind(("replacement_entity_names", entity_names))
+            .await?;
+        let errors = response.take_errors();
+        if !errors.is_empty() {
+            return Err(DbError::QueryFailed(format!(
+                "atomic entity-evidence replacement failed: {errors:?}"
+            )));
         }
-        Ok(entity_ids)
+        Ok(result_count)
     }
 
     pub(crate) async fn link_note_to_entity_locked(
         &self,
         note_id: &surrealdb::types::RecordId,
         entity_id: &surrealdb::types::RecordId,
+    ) -> Result<()> {
+        self.link_note_to_entity_with_metadata_locked(note_id, entity_id, None)
+            .await
+    }
+
+    pub(crate) async fn link_note_to_entity_with_metadata_locked(
+        &self,
+        note_id: &RecordId,
+        entity_id: &RecordId,
+        metadata: Option<serde_json::Value>,
     ) -> Result<()> {
         if !self.note_is_writable(note_id).await? {
             return Err(DbError::NotFound(
@@ -1208,10 +1185,20 @@ impl Repository {
         let count = existing.and_then(|row| row.count).unwrap_or(0);
         if count == 0 {
             self.db
-                .query("CREATE mentions SET in = $note_id, out = $entity_id")
+                .query("CREATE mentions SET in = $note_id, out = $entity_id, metadata = IF $metadata = NONE THEN NONE ELSE object::extend($metadata, { aliases: array::slice($metadata.aliases ?? [], 0, 8) }) END")
                 .bind(("note_id", note_id.clone()))
                 .bind(("entity_id", entity_id.clone()))
-                .await?;
+                .bind(("metadata", metadata))
+                .await?
+                .check()?;
+        } else if let Some(metadata) = metadata {
+            self.db
+                .query("UPDATE mentions SET metadata = object::extend($metadata, { aliases: array::slice($metadata.aliases ?? [], 0, 8) }) WHERE in = $note_id AND out = $entity_id")
+                .bind(("note_id", note_id.clone()))
+                .bind(("entity_id", entity_id.clone()))
+                .bind(("metadata", metadata))
+                .await?
+                .check()?;
         }
 
         Ok(())
@@ -1251,21 +1238,37 @@ impl Repository {
         let raw = note_id.strip_prefix("note:").unwrap_or(note_id).to_string();
         let note_record_id = RecordId::new("note", raw);
 
-        let entity_ids: Vec<RecordId> = self
+        #[derive(Deserialize, SurrealValue)]
+        struct MentionEvidence {
+            out: RecordId,
+            metadata: Option<serde_json::Value>,
+        }
+        let mentions: Vec<MentionEvidence> = self
             .db
-            .query("SELECT VALUE out FROM mentions WHERE in = $note_id")
+            .query("SELECT out, metadata FROM mentions WHERE in = $note_id")
             .bind(("note_id", note_record_id))
             .await?
             .take(0)?;
 
-        if entity_ids.is_empty() {
+        if mentions.is_empty() {
             return Ok(Vec::new());
         }
 
-        let mut entities = Vec::with_capacity(entity_ids.len());
-        for entity_id in entity_ids {
-            let entity: Option<Entity> = self.db.select(entity_id).await?;
-            if let Some(entity) = entity {
+        let mut entities = Vec::with_capacity(mentions.len());
+        for mention in mentions {
+            let entity: Option<Entity> = self.db.select(mention.out).await?;
+            if let Some(mut entity) = entity {
+                if entity.effective_identity_key().starts_with("extracted-v1:") {
+                    if let Some(evidence) = mention
+                        .metadata
+                        .and_then(|value| value.as_object().cloned())
+                    {
+                        let metadata = entity.metadata.as_object().cloned().unwrap_or_default();
+                        entity.metadata = serde_json::Value::Object(
+                            metadata.into_iter().chain(evidence).collect(),
+                        );
+                    }
+                }
                 entities.push(entity);
             }
         }
@@ -1425,12 +1428,33 @@ impl Repository {
         // be found from either a punctuated or a sentence query.
         let canonical_lexical = r#"string::trim(string::replace(string::lowercase(canonical_name), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
         let alias_lexical = r#"string::trim(string::replace(string::lowercase($alias), <regex>"[^\\p{L}\\p{N}]+", ' '))"#;
+        let eligible = graph_endpoint_eligible_sql("in");
+        let alias_matches = match tier {
+            GraphEntityMatchTier::Exact => format!("{alias_lexical} = $query"),
+            GraphEntityMatchTier::ContainedPhrase => format!(
+                "string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' '))"
+            ),
+            GraphEntityMatchTier::Prefix => "false".to_string(),
+        };
+        // Extracted aliases belong to current eligible mentions, not the last
+        // entity display payload. Filtering before the bounded page retains a
+        // matching alias on a high-degree source entity without preserving an
+        // edited, deleted, hidden-generation or out-of-scope chunk's evidence.
+        let aliases = format!(
+            "IF string::starts_with(identity_key ?? '', 'extracted-v1:') THEN \
+             array::slice(array::sort(array::distinct(array::flatten((SELECT VALUE \
+                array::filter(metadata.aliases ?? [], |$alias| {alias_matches}) \
+                FROM mentions WHERE out = $parent.id AND {eligible} \
+                AND array::any(metadata.aliases ?? [], |$alias| {alias_matches}) \
+                ORDER BY in ASC LIMIT 200)))), 0, 8) \
+             ELSE metadata.aliases ?? [] END"
+        );
         let match_condition = match tier {
             GraphEntityMatchTier::Exact => format!(
-                "{canonical_lexical} = $query OR array::any(metadata.aliases ?? [], |$alias| {alias_lexical} = $query)"
+                "{canonical_lexical} = $query OR array::any(graph_current_aliases, |$alias| {alias_lexical} = $query)"
             ),
             GraphEntityMatchTier::ContainedPhrase => format!(
-                "string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' ')) OR array::any(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))"
+                "string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' ')) OR array::any(graph_current_aliases, |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' ')))"
             ),
             GraphEntityMatchTier::Prefix => prefixes
                 .iter()
@@ -1448,7 +1472,7 @@ impl Repository {
                 // alias), rather than the stored canonical name, so aliases
                 // receive the same specificity treatment before the cap.
                 let matching_alias_lengths = format!(
-                    "array::map(array::filter(metadata.aliases ?? [], |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' '))), |$alias| string::len({alias_lexical}))"
+                    "array::map(array::filter(graph_current_aliases, |$alias| string::contains(string::concat(' ', $query, ' '), string::concat(' ', {alias_lexical}, ' '))), |$alias| string::len({alias_lexical}))"
                 );
                 let phrase_specificity = format!(
                     "array::max([IF string::contains(string::concat(' ', $query, ' '), string::concat(' ', {canonical_lexical}, ' ')) THEN string::len({canonical_lexical}) ELSE 0 END, array::max({matching_alias_lengths})])"
@@ -1486,7 +1510,6 @@ impl Repository {
             .as_ref()
             .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
             .unwrap_or_default();
-        let eligible = graph_endpoint_eligible_sql("in");
         let (select_direct, mention_condition, direct_order) = if scope.is_some() {
             (
                 format!(", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"),
@@ -1505,8 +1528,8 @@ impl Repository {
         };
         let query = format!(
             r#"
-                SELECT id, name, canonical_name, metadata{select_specificity}{select_prefix_plausibility}{select_direct}
-                FROM entity
+                SELECT id, name, canonical_name, object::extend(metadata ?? {{}}, {{ aliases: graph_current_aliases }}) AS metadata{select_specificity}{select_prefix_plausibility}{select_direct}
+                FROM (SELECT id, name, canonical_name, metadata, ({aliases}) AS graph_current_aliases FROM entity)
                 WHERE ({match_condition}) {mention_condition}
                 ORDER BY {ordering}
                 LIMIT $limit
@@ -1516,7 +1539,12 @@ impl Repository {
             .db
             .query(query)
             .bind(("query", normalized_query.to_string()))
-            .bind(("limit", limit));
+            .bind(("limit", limit))
+            .bind(("since", scope.and_then(|value| value.since.clone())))
+            .bind((
+                "source_uri",
+                scope.and_then(|value| value.source_uri.clone()),
+            ));
         if let Some(scope) = scope {
             query = query
                 .bind(("ranked_notes", scope.ranked_note_ids.clone()))

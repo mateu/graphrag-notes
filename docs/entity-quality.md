@@ -12,13 +12,13 @@ blank/control-character labels, and labels longer than 80 characters are
 ignored. Valid aliases are normalized by case and whitespace, deduplicated,
 sorted deterministically, and capped at eight per prepared entity. An alias
 equal to the canonical label is redundant. Original mention and valid alias
-spellings remain in extraction metadata; the linked note and its source retain
+spellings remain in extraction metadata on the owning mention; the linked note and its source retain
 the original text and provenance. Alias hints never assert entity identity or
 create accepted note edges. Strict malformed JSON still fails; the existing
 tolerant JSON recovery remains available when configured.
 
-Schema 19 adds an explicit entity identity key and an index on entity/note
-mention pairs. It preserves every existing entity ID, type, mention, and
+Schema 19 adds an explicit entity identity key, optional mention evidence, and
+an index on entity/note mention pairs. It preserves every existing entity ID, type, mention, and
 canonical label. Older/manual entity upserts and older portable backups use
 the legacy canonical-name key. New extracted keys include type and evidence
 scope; matching still uses the readable canonical label and aliases.
@@ -35,6 +35,14 @@ provider must distinguish them with different labels; extraction has no
 evidence to infer a global identity. Identical chunk locations preserve scoped
 keys across source refreshes. This deliberately avoids silently relabeling the
 older globally deduplicated entities.
+
+Extracted entity display metadata reflects the latest prepared result instead
+of accumulating aliases across edits. Graph alias matching reads current,
+source/time-eligible mention evidence: replacing one note retracts its old
+aliases while preserving another chunk's valid aliases on a shared source
+entity. Exact-content source successors copy this evidence. Deleted notes and
+hidden generations contribute no aliases. Each mention and returned match
+keeps the eight-alias cap; legacy/manual aliases retain their older behavior.
 
 Graph matching keeps whole-query/contained-phrase/prefix tiers and stable ties.
 For retrieval it requires a visible, source/time-eligible mention and prefers
@@ -71,7 +79,7 @@ graphrag search --graph=auto -- 'Fictional Atlas retry policy'
 ```
 
 `--force` performs inference before replacing the selected note's complete
-mention set. Failure preserves its previous mentions and last good source
+mention set and evidence in one transaction. Failure preserves its previous mentions and last good source
 generation; durable jobs pin their selected items and resume after their
 checkpoint. Repeating a completed forced selection reuses its scoped entity
 IDs without duplicate mentions. Unselected entities/notes are not rewritten.

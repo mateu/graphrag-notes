@@ -204,6 +204,7 @@ impl Repository {
             .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
         let entities_sql = super::notes::replacement_entities_transaction();
+        let mentions_sql = super::notes::replacement_mentions_transaction("$note");
         // Validate the full stored note before recording its response. A schema
         // normalization or default which changes that snapshot aborts all writes
         // rather than committing a response with an incorrect revision.
@@ -217,7 +218,7 @@ impl Repository {
              CREATE $note SET note_type = 'raw', title = $title, content = $content, embedding = $embedding, \
                 source_id = $source, tags = $tags, search_content = $content, \
                 created_at = <datetime>$created, updated_at = <datetime>$updated; \
-             FOR $entity_id IN $entity_ids {{ CREATE mentions SET in = $note, out = $entity_id; }}; \
+             {mentions_sql}\
              {snapshot_guard}\
              IF array::len((SELECT VALUE id FROM source WHERE id = $source AND source_type = 'manual' \
                 AND uri = $uri AND normalized_uri = $uri AND metadata = $metadata)) != 1 \
