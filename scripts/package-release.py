@@ -696,7 +696,13 @@ def assemble(args) -> dict:
     require(output.parent.is_dir(), "assembly output parent must exist")
     expected = set(args.targets)
     require(expected and expected <= TARGETS.keys(), "assembly targets must be supported native targets")
-    records = [json_file(path) for path in sorted(args.input.glob("*/BUILDINFO.json"))]
+    snapshots = {}
+    for path in sorted(args.input.glob("*/BUILDINFO.json")):
+        raw = regular_file(path, "assembly metadata").read_bytes()
+        record = json.loads(raw)
+        require(isinstance(record, dict), "assembly metadata must be an object")
+        snapshots[path] = (record, raw)
+    records = [record for record, _ in snapshots.values()]
     require(len(records) == len(expected) and {record["target"] for record in records} == expected,
             "assembly is missing targets or contains duplicate/unexpected targets")
     require(all(record["tag"] == args.tag and record["version"] == args.tag[1:] for record in records),
@@ -708,8 +714,8 @@ def assemble(args) -> dict:
             validate_feature_proof(record.get("cargo_features"), record["target"], record["version"], record["binary_sha256"])
     with tempfile.TemporaryDirectory(prefix=".graphrag-assemble-", dir=output.parent) as temp:
         staged = Path(temp)
-        for path in sorted(args.input.glob("*/BUILDINFO.json")):
-            record = json_file(path)
+        for path, (record, metadata_bytes) in snapshots.items():
+            metadata_hash = hashlib.sha256(metadata_bytes).hexdigest()
             asset = record["archive"]
             require(asset == f"graphrag-notes-{args.tag}-{record['target']}.tar.gz", "unsafe or mismatched archive filename")
             archive = regular_file(path.parent / asset, "archive")
@@ -722,7 +728,7 @@ def assemble(args) -> dict:
             client_asset = record.get("client_archive")
             expected_entries = {"BUILDINFO.json", asset} | ({client_asset, "CLIENTINFO.json", "CLIENTINFO.identity", "BUILDINFO.identity"} if client_asset else set())
             require(set(entries) == expected_entries, "per-target checksum manifest must identify archive and metadata")
-            require(entries["BUILDINFO.json"] == sha256(path), "assembly metadata checksum differs from manifest")
+            require(entries["BUILDINFO.json"] == metadata_hash, "assembly metadata checksum differs from manifest")
             require(entries[asset] == record["archive_sha256"], "assembly manifest and metadata disagree on archive hash")
             require(sha256(archive) == record["archive_sha256"], "assembly archive checksum differs from BUILDINFO")
             inspect_archive(archive, record["binary_sha256"], record["sample_sha256"], record.get("payload_sha256"),
@@ -730,7 +736,7 @@ def assemble(args) -> dict:
             if client_asset:
                 native_identity = regular_file(path.parent / "BUILDINFO.identity", "native identity")
                 require(entries["BUILDINFO.identity"] == sha256(native_identity)
-                        and native_identity.read_bytes() == release_identity(record, sha256(path)),
+                        and native_identity.read_bytes() == release_identity(record, metadata_hash),
                         "native identity differs from semantic metadata")
                 shutil.copyfile(native_identity, staged / f"BUILDINFO-{record['target']}.identity")
                 require(sha256(staged / f"BUILDINFO-{record['target']}.identity") == entries["BUILDINFO.identity"],
@@ -758,7 +764,7 @@ def assemble(args) -> dict:
                         shutil.copyfile(source_file, staged / name)
                     require(sha256(staged / name) == entries[name], "client artifact changed during assembly copy")
             shutil.copyfile(archive, staged / asset)
-            shutil.copyfile(path, staged / f"BUILDINFO-{record['target']}.json")
+            (staged / f"BUILDINFO-{record['target']}.json").write_bytes(metadata_bytes)
             require(sha256(staged / asset) == entries[asset]
                     and sha256(staged / f"BUILDINFO-{record['target']}.json") == entries["BUILDINFO.json"],
                     "assembly inputs changed during copy")

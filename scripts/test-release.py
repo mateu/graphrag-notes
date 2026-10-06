@@ -248,6 +248,40 @@ class ReleaseTests(unittest.TestCase):
             release.assemble(argparse.Namespace(input=self.root, output=self.root / "bad-assembly",
                                                tag=self.tag, targets=[self.target]))
 
+    def test_concurrent_assembly_metadata_replacement_cannot_bypass_feature_policy(self):
+        messages = self.rc5_build()
+        release.package(self.package_args("native", cargo_messages=messages))
+        folder = self.root / "native"
+        info_path = folder / "BUILDINFO.json"
+        original = json.loads(info_path.read_bytes())
+        validate = release.validate_feature_proof
+        replaced = False
+
+        def replace_metadata_after_validation(proof, target, version, binary_hash):
+            nonlocal replaced
+            validate(proof, target, version, binary_hash)
+            if not replaced:
+                replaced = True
+                altered = deepcopy(original)
+                del altered["cargo_features"]
+                # Simulate a consistent replacement of metadata, flat identity,
+                # and checksums between the initial read and assembly copying.
+                info_path.write_text(json.dumps(altered, sort_keys=True) + "\n")
+                (folder / "BUILDINFO.identity").write_bytes(release.release_identity(altered, release.sha256(info_path)))
+                lines = (folder / "SHA256SUMS").read_text().splitlines()
+                updated = []
+                for line in lines:
+                    _, name = line.split("  ")
+                    updated.append(release.sha256(folder / name) + "  " + name + "\n")
+                (folder / "SHA256SUMS").write_text("".join(updated))
+
+        args = argparse.Namespace(input=self.root, output=self.root / "raced-assembly", tag=self.tag, targets=[self.target])
+        with patch.object(release, "validate_feature_proof", side_effect=replace_metadata_after_validation):
+            with self.assertRaisesRegex(release.ReleaseError, "metadata checksum"):
+                release.assemble(args)
+        self.assertTrue(replaced)
+        self.assertFalse(args.output.exists())
+
     def test_allocator_feature_does_not_enable_library_or_cli_defaults(self):
         import tomllib
         source = SCRIPT.parents[1]
