@@ -138,9 +138,25 @@ pub(crate) async fn upload(
     {
         return Err(ApplicationError::Validation("document_key must be nonempty, at most 256 characters/512 UTF-8 bytes, without controls or surrounding whitespace; content cannot contain NUL".into()));
     }
-    if request.preserve_unchanged && request.create_only {
+    if request.create_only
+        && (request.preserve_unchanged || request.expected_source_revision.is_some())
+    {
         return Err(ApplicationError::Validation(
-            "preserve_unchanged and create_only are mutually exclusive".into(),
+            "create_only cannot accompany preserve_unchanged or expected_source_revision".into(),
+        ));
+    }
+    if request
+        .expected_source_revision
+        .as_ref()
+        .is_some_and(|revision| {
+            revision.len() != 64
+                || !revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    {
+        return Err(ApplicationError::Validation(
+            "expected_source_revision must be lowercase SHA-256".into(),
         ));
     }
     // Keep legacy unguarded fingerprint bytes immutable for durable replay.
@@ -159,6 +175,10 @@ pub(crate) async fn upload(
     }
     if request.create_only {
         fingerprint_input.extend_from_slice(b"\0create_only");
+    }
+    if let Some(revision) = &request.expected_source_revision {
+        fingerprint_input.extend_from_slice(b"\0expected_source_revision\0");
+        fingerprint_input.extend_from_slice(revision.as_bytes());
     }
     let fingerprint = format!("{:x}", Sha256::digest(&fingerprint_input));
     let admission = if let Some(admission) = app
@@ -198,6 +218,7 @@ pub(crate) async fn upload(
                 extract_entities: request.extract_entities,
                 preserve_unchanged: request.preserve_unchanged,
                 create_only: request.create_only,
+                expected_source_revision: request.expected_source_revision,
                 processing_options: options(app),
             })
             .await?
@@ -272,23 +293,7 @@ pub(crate) async fn source(
     // Normalized unchanged refreshes retain backing text for existing byte
     // spans. The public source contract returns the exact latest supplied input.
     let content = origin_job.input.markdown;
-    let revision = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&(
-                id,
-                &source.title,
-                &source.content,
-                &content,
-                &source.content_hash,
-                source.generation,
-                source.successful_generation,
-                &source.status,
-                origin
-            ))
-            .map_err(|e| ApplicationError::Internal(e.to_string()))?
-        )
-    );
+    let revision = graphrag_db::uploaded_source_revision(&source, &content)?;
     Ok(UploadedSource {
         id: record_id_to_string(
             source

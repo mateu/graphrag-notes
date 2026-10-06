@@ -65,7 +65,7 @@ class FakeService:
                 job['failed'] = False
             if not job['failed'] and not job.get('published'):
                 old = self.sources.get(admission['source_id'], {})
-                if payload.get('create_only') and old:
+                if (payload.get('create_only') and old) or (payload.get('expected_source_revision') and old.get('revision') != payload['expected_source_revision']):
                     job['failed'] = True
                     self.fail_code = 'conflict'
                     return self.call(name, value)
@@ -222,6 +222,28 @@ class RefreshTests(unittest.TestCase):
         with self.assertRaisesRegex(m.ImportFailure, 'job_failed_nonretryable'):
             m.run_refresh(self.client, self.state, self.save, self.args)
         self.assertEqual(self.client.sources[admission['source_id']], original)
+        self.assertEqual(self.state['counts']['failed'], 1)
+
+    def test_changed_source_revision_fences_concurrent_origin_and_policy_change(self):
+        self.prepare(); self.run_refresh()
+        source = next(iter(self.client.sources.values()))
+        source['provenance']['metadata'].pop('collection_id')
+        self.state = m.new_state(self.config)
+        self.write('memory/atlas.md', b'# Atlas\n\nNew indexed version after legacy import.')
+        self.prepare()
+        m.review_existing_policies(self.client, self.state, self.save, self.args)
+        task = next(iter(self.state['pending']['tasks'].values()))
+        self.assertEqual(task['payload']['expected_source_revision'], source['revision'])
+        late = json.loads(json.dumps(task['payload']))
+        late.update(request_id='older-pending-edited', extract_entities=True)
+        late.pop('expected_source_revision')
+        late['provenance']['metadata']['host'] = 'foreign'
+        admission = self.client.call('upload_source', late)
+        self.client.call('get_job', {'id': admission['job_id']})
+        foreign = json.loads(json.dumps(self.client.sources[admission['source_id']]))
+        with self.assertRaisesRegex(m.ImportFailure, 'job_failed_nonretryable'):
+            m.run_refresh(self.client, self.state, self.save, self.args)
+        self.assertEqual(self.client.sources[admission['source_id']], foreign)
         self.assertEqual(self.state['counts']['failed'], 1)
 
     def test_operator_counts_distinguish_collection_registration_and_service_actions(self):

@@ -30,6 +30,9 @@ pub struct RemoteUploadInput {
     /// Create only if this source is still absent when the worker begins.
     #[serde(default)]
     pub create_only: bool,
+    /// Revision of the existing source inspected before this upload.
+    #[serde(default)]
+    pub expected_source_revision: Option<String>,
     pub processing_options: serde_json::Value,
 }
 
@@ -220,6 +223,32 @@ fn digest(domain: &str, parts: &[&str]) -> String {
     let bytes = serde_json::to_vec(&(domain, parts)).expect("string tuples serialize");
     format!("{:x}", Sha256::digest(bytes))
 }
+/// Provider-free source revision shared by inspection and generation fencing.
+pub fn uploaded_source_revision(source: &Source, original_markdown: &str) -> Result<String> {
+    let id = source
+        .id
+        .as_ref()
+        .ok_or_else(|| DbError::InvalidRemoteRequest("source identity missing".into()))?;
+    let origin = source
+        .metadata
+        .get("remote_upload_pending")
+        .or_else(|| source.metadata.get("remote_upload"))
+        .ok_or_else(|| DbError::InvalidRemoteRequest("uploaded source origin missing".into()))?;
+    let snapshot = serde_json::to_vec(&(
+        record_id_to_string(id),
+        &source.title,
+        &source.content,
+        original_markdown,
+        &source.content_hash,
+        source.generation,
+        source.successful_generation,
+        &source.status,
+        origin,
+    ))
+    .map_err(|error| DbError::InvalidRemoteRequest(error.to_string()))?;
+    Ok(format!("{:x}", Sha256::digest(snapshot)))
+}
+
 pub fn uploaded_source_id(instance: &str, document_key: &str) -> String {
     format!(
         "source:{}",
@@ -247,9 +276,9 @@ fn job_id(value: &str) -> Result<RecordId> {
 fn validate_input(input: &RemoteUploadInput) -> Result<()> {
     identity(&input.authenticated_instance_id)?;
     identity(&input.request_id)?;
-    if input.preserve_unchanged && input.create_only {
+    if input.create_only && (input.preserve_unchanged || input.expected_source_revision.is_some()) {
         return Err(DbError::InvalidRemoteRequest(
-            "preserve_unchanged and create_only are mutually exclusive".into(),
+            "create_only cannot accompany preserve_unchanged or expected_source_revision".into(),
         ));
     }
     if input.document_key.trim().is_empty()
@@ -260,6 +289,20 @@ fn validate_input(input: &RemoteUploadInput) -> Result<()> {
     {
         return Err(DbError::InvalidRemoteRequest(
             "document key exceeds its bounds or contains controls or surrounding whitespace".into(),
+        ));
+    }
+    if input
+        .expected_source_revision
+        .as_ref()
+        .is_some_and(|revision| {
+            revision.len() != 64
+                || !revision
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    {
+        return Err(DbError::InvalidRemoteRequest(
+            "expected source revision must be lowercase SHA-256".into(),
         ));
     }
     if input.payload_fingerprint.len() != 64
@@ -785,6 +828,7 @@ impl Repository {
         let hash = graphrag_core::normalized_content_hash(&input.markdown);
         let mut prior_completed = false;
         let mut prior_exact_input_matches = false;
+        let mut prior_revision_matches = input.expected_source_revision.is_none();
         if let Some(source) = &prior {
             let origin = source
                 .metadata
@@ -807,6 +851,10 @@ impl Repository {
                         )));
                     }
                     prior_completed = other.job.status == "completed";
+                    if let Some(expected) = &input.expected_source_revision {
+                        prior_revision_matches =
+                            uploaded_source_revision(source, &other.input.markdown)? == *expected;
+                    }
                     let mut prior_provenance = other.input.source_provenance.clone();
                     let mut desired_provenance = input.source_provenance.clone();
                     for provenance in [&mut prior_provenance, &mut desired_provenance] {
@@ -818,6 +866,11 @@ impl Repository {
                         && prior_provenance == desired_provenance;
                 }
             }
+        }
+        if !prior_revision_matches {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
         }
         let unchanged = prior_completed
             && prior.as_ref().is_some_and(|source| {

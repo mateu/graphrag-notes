@@ -944,6 +944,7 @@ mod tests {
             extract_entities: false,
             preserve_unchanged: false,
             create_only: false,
+            expected_source_revision: None,
         };
         let app = application(&repo);
         let admission = app
@@ -1051,6 +1052,7 @@ mod tests {
             extract_entities: false,
             preserve_unchanged: false,
             create_only: false,
+            expected_source_revision: None,
             processing_options: serde_json::json!({"provider":"fixture","chunk_size":200}),
         };
         let admitted = repo.admit_remote_upload(input.clone()).await.unwrap();
@@ -1244,6 +1246,7 @@ mod tests {
             extract_entities: false,
             preserve_unchanged: false,
             create_only: false,
+            expected_source_revision: None,
         };
         let active_app = application(500);
         let admission = active_app

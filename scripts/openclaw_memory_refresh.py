@@ -515,6 +515,9 @@ def _review_existing_policies(client, state, save, args):
                 or source.get('document_key') != key or source.get('uri') != 'mcp://upload/' + source['id'][7:]
                 or source.get('status') != 'ready' or source.get('generation') != source.get('successful_generation')):
             raise ImportFailure('existing_source_scope_mismatch')
+        if not isinstance(source.get('revision'), str) or not re.fullmatch(r'[0-9a-f]{64}', source['revision']):
+            raise ImportFailure('existing_source_revision_invalid')
+        payload['expected_source_revision'] = source['revision']
         policy_hash = source.get('processing_policy_sha256')
         if (not isinstance(source.get('extract_entities'), bool) or source.get('processing_policy_current') is not True
                 or not isinstance(policy_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', policy_hash)):
@@ -552,9 +555,9 @@ def _review_existing_policies(client, state, save, args):
         # identities exclude it so a later unchanged run requires no upload.
         if key not in state['documents'] and source.get('content') == payload['content'] and source.get('title') == payload['title']:
             payload['preserve_unchanged'] = True
-        semantic = {k: v for k, v in payload.items() if k not in ('request_id', 'preserve_unchanged', 'create_only')}
+        semantic = {k: v for k, v in payload.items() if k not in ('request_id', 'preserve_unchanged', 'create_only', 'expected_source_revision')}
         task['payload_hash'] = sha(canonical(semantic))
-        payload['request_id'] = 'ocmem-' + sha(canonical([pending['attempt'], task['payload_hash'], bool(payload.get('preserve_unchanged')), bool(payload.get('create_only'))]))
+        payload['request_id'] = 'ocmem-' + sha(canonical([pending['attempt'], task['payload_hash'], bool(payload.get('preserve_unchanged')), bool(payload.get('create_only')), payload.get('expected_source_revision')]))
         task['policy_reviewed'] = True
     pending['policy_review_complete'] = True
     pending.pop('reviewing_key', None)

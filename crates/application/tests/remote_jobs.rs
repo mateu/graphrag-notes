@@ -35,6 +35,7 @@ fn request(id: &str) -> UploadSourceRequest {
         extract_entities: false,
         preserve_unchanged: false,
         create_only: false,
+        expected_source_revision: None,
     }
 }
 fn app(
@@ -831,6 +832,124 @@ async fn create_only_negative_lookup_is_fenced_at_generation_start() {
     assert_eq!(
         application
             .get_remote_job(caller("owner"), &fresh.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn expected_existing_revision_fences_changed_source_after_policy_review() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let (application, embedding_calls, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://extraction.invalid",
+    );
+    let initial = application
+        .upload_source(caller("owner"), request("legacy-origin"))
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let reviewed = application
+        .get_uploaded_source(&initial.source_id)
+        .await
+        .unwrap();
+    let mut older = request("older-queued-foreign-origin");
+    older.extract_entities = true;
+    older.content = "# Atlas\n\nAtlas unrelated enriched original.".into();
+    older.provenance.as_mut().unwrap().uri = Some("file:///foreign.md".into());
+    application
+        .upload_source(caller("owner"), older)
+        .await
+        .unwrap();
+    let mut changed = request("reviewed-changed-original");
+    changed.content.push_str("\nNew indexed version");
+    changed.expected_source_revision = Some(reviewed.revision.clone());
+    let later = application
+        .upload_source(caller("owner"), changed.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let before = application
+        .get_uploaded_source(&initial.source_id)
+        .await
+        .unwrap();
+    assert_ne!(before.revision, reviewed.revision);
+    let source_id = graphrag_db::parse_record_id(&before.id, Some("source")).unwrap();
+    let chunks = repo.get_source_chunks(&source_id).await.unwrap();
+    let mut entity = graphrag_core::Entity::new("Atlas", graphrag_core::EntityType::Project);
+    entity.metadata = serde_json::json!({});
+    let entity = repo.upsert_entity(entity).await.unwrap();
+    repo.link_note_to_entity(chunks[0].id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    let mut query = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    let mentions: Vec<serde_json::Value> = query.take(0).unwrap();
+    embedding_calls.store(0, Ordering::Relaxed);
+    extraction_calls.store(0, Ordering::Relaxed);
+    let execution = application
+        .claim_remote_job("epoch", "changed-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(application
+        .execute_remote_job(execution, ActionCancellation::new())
+        .await
+        .is_err());
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &later.job_id)
+            .await
+            .unwrap()
+            .status,
+        "failed"
+    );
+    assert_eq!(
+        application
+            .get_uploaded_source(&initial.source_id)
+            .await
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        repo.get_source_chunks(&source_id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n.id.clone())
+            .collect::<Vec<_>>(),
+        chunks.iter().map(|n| n.id.clone()).collect::<Vec<_>>()
+    );
+    let mut query = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    assert_eq!(query.take::<Vec<serde_json::Value>>(0).unwrap(), mentions);
+    assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+    assert!(
+        application
+            .upload_source(caller("owner"), changed.clone())
+            .await
+            .unwrap()
+            .replayed
+    );
+    changed.request_id = "reviewed-current-edit".into();
+    changed.expected_source_revision = Some(before.revision);
+    let accepted = application
+        .upload_source(caller("owner"), changed)
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    assert_eq!(
+        application
+            .get_remote_job(caller("owner"), &accepted.job_id)
             .await
             .unwrap()
             .status,

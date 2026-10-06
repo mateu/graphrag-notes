@@ -215,3 +215,9 @@ A negative source lookup pins a `create_only` admission: the service rechecks
 absence under its generation lock before any inference or source mutation.
 A source that appeared after the lookup produces a failed conflict job requiring
 an operator to inspect and start a reviewed new attempt.
+
+Existing-source admissions also pin `expected_source_revision`. The service
+checks this provider-free source snapshot under its generation lock, including
+original content, provenance and processing policy. A queued source update that
+wins after client preflight causes a conflict before mutation or inference.
+The adapter never silently replaces that newly published original or its graph.

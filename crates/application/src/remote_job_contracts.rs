@@ -30,6 +30,10 @@ pub struct UploadSourceRequest {
     /// Create only if this source is still absent when the worker begins.
     #[serde(default)]
     pub create_only: bool,
+    /// Revision of the existing source inspected before this upload.
+    #[serde(default)]
+    #[schemars(length(min = 64, max = 64))]
+    pub expected_source_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

@@ -59,3 +59,9 @@ retains its successful generation; `create_only` requires the caller's source
 identity to remain absent when the worker begins. Both checks run under the
 source generation lock before inference. Unguarded legacy admission fingerprints
 remain byte-identical for durable retries.
+
+`expected_source_revision` optionally pins an inspected existing source for an
+edited upload. It is incompatible with `create_only`, may accompany
+`preserve_unchanged`, and is checked before preparing a new generation. Omitting
+it retains legacy upload/replay behavior; revisions and guard flags are frozen in
+the admission payload.
