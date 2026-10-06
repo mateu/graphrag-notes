@@ -24,6 +24,17 @@ impl Repository {
         &self,
         successors: &[(RecordId, RecordId, bool)],
     ) -> Result<()> {
+        self.copy_note_dependents_to_successors_with_options_locked(successors, true, true)
+            .await
+    }
+
+    #[allow(clippy::mutable_key_type)]
+    pub(super) async fn copy_note_dependents_to_successors_with_options_locked(
+        &self,
+        successors: &[(RecordId, RecordId, bool)],
+        copy_mentions: bool,
+        anchor_old: bool,
+    ) -> Result<()> {
         if successors.is_empty() {
             return Ok(());
         }
@@ -54,13 +65,14 @@ impl Repository {
                         // even without mentions; entity evidence still copies
                         // only for exact content below. Unmatched new chunks
                         // keep their own final-ID-derived scope.
-                        self.db.query("BEGIN TRANSACTION; UPDATE $old SET extraction_scope = $scope; UPDATE $new SET extraction_scope = $scope; COMMIT TRANSACTION;")
+                        self.db.query("BEGIN TRANSACTION; IF $anchor_old { UPDATE $old SET extraction_scope = $scope; }; UPDATE $new SET extraction_scope = $scope; COMMIT TRANSACTION;")
                             .bind(("old", old_id.clone())).bind(("new", new_id.clone()))
+                            .bind(("anchor_old", anchor_old))
                             .bind(("scope", scope)).await?.check()?;
                     }
                 }
             }
-            if exact_content_successors.contains(old_id) {
+            if copy_mentions && exact_content_successors.contains(old_id) {
                 #[derive(Deserialize, SurrealValue)]
                 struct MentionEvidence {
                     out: RecordId,

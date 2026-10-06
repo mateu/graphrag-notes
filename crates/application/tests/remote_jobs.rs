@@ -36,6 +36,7 @@ fn request(id: &str) -> UploadSourceRequest {
         preserve_unchanged: false,
         create_only: false,
         expected_source_revision: None,
+        policy_migration: None,
     }
 }
 fn app(

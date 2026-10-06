@@ -53,6 +53,14 @@ fn endpoint_identity(endpoint: &str) -> String {
 }
 
 fn compatible(app: &EmbeddedApplication, job: &RemoteUploadJob) -> ApplicationResult<()> {
+    if job.input.policy_migration.as_ref().is_some_and(|intent| {
+        graphrag_db::uploaded_processing_policy_sha256(&options(app))
+            .ok()
+            .as_deref()
+            != intent["target_policy_sha256"].as_str()
+    }) {
+        return Err(ApplicationError::Compatibility("Reviewed migration target policy changed; restore the exact configured policy before resuming".into()));
+    }
     if !graphrag_db::uploaded_processing_compatible(
         &job.input.processing_options,
         &options(app),
@@ -92,7 +100,9 @@ pub(crate) fn view(job: RemoteUploadJobStatus) -> ApplicationResult<RemoteJobSta
         completed: job.job.completed_count.max(0) as u64,
         failed: job.job.failed_count.max(0) as u64,
         checkpoint: job.job.checkpoint,
-        result: job.result,
+        result: job
+            .result
+            .filter(|result| result.get("policy_migration_stage").is_none()),
         error_code: job.job.last_error.map(|code| match code.as_str() {
             "interrupted"
             | "worker_interrupted"
@@ -165,6 +175,29 @@ pub(crate) async fn upload(
             "expected_source_revision must be lowercase SHA-256".into(),
         ));
     }
+    if let Some(intent) = &request.policy_migration {
+        let valid = [
+            &intent.original_policy_sha256,
+            &intent.target_policy_sha256,
+            &intent.plan_sha256,
+        ]
+        .iter()
+        .all(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        });
+        if !valid
+            || !request.extract_entities
+            || request.preserve_unchanged
+            || request.create_only
+            || request.expected_source_revision.is_none()
+            || intent.original_policy_sha256 == intent.target_policy_sha256
+        {
+            return Err(ApplicationError::Validation("Policy migration requires distinct exact old/target/plan digests, extraction and an existing source revision".into()));
+        }
+    }
     // Keep legacy unguarded fingerprint bytes immutable for durable replay.
     let mut fingerprint_input = serde_json::to_vec(&(
         REMOTE_UPLOAD_PAYLOAD_VERSION,
@@ -186,6 +219,13 @@ pub(crate) async fn upload(
         fingerprint_input.extend_from_slice(b"\0expected_source_revision\0");
         fingerprint_input.extend_from_slice(revision.as_bytes());
     }
+    if let Some(intent) = &request.policy_migration {
+        fingerprint_input.extend_from_slice(b"\0policy_migration\0");
+        fingerprint_input.extend_from_slice(
+            &serde_json::to_vec(intent)
+                .map_err(|error| ApplicationError::Internal(error.to_string()))?,
+        );
+    }
     let fingerprint = format!("{:x}", Sha256::digest(&fingerprint_input));
     let admission = if let Some(admission) = app
         .repo
@@ -194,6 +234,16 @@ pub(crate) async fn upload(
     {
         admission
     } else {
+        if let Some(intent) = &request.policy_migration {
+            if intent.target_policy_sha256
+                != graphrag_db::uploaded_processing_policy_sha256(&options(app))?
+            {
+                return Err(ApplicationError::Compatibility(
+                    "Reviewed migration target policy changed before admission; preview again"
+                        .into(),
+                ));
+            }
+        }
         let preview = LibrarianAgent::new(
             app.repo.clone(),
             app.embedder.clone(),
@@ -253,6 +303,11 @@ pub(crate) async fn upload(
                 preserve_unchanged: request.preserve_unchanged,
                 create_only: request.create_only,
                 expected_source_revision: request.expected_source_revision,
+                policy_migration: request
+                    .policy_migration
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|error| ApplicationError::Internal(error.to_string()))?,
                 processing_options,
             })
             .await?
@@ -361,6 +416,10 @@ pub(crate) async fn source(
                     .map_err(|e| ApplicationError::Internal(e.to_string()))?
             )
         ),
+        latest_upload_request_id: origin_job.request_id.clone(),
+        configured_processing_policy_sha256: graphrag_db::uploaded_processing_policy_sha256(
+            &options(app),
+        )?,
         processing_policy_current: graphrag_db::uploaded_processing_compatible(
             &origin_job.input.processing_options,
             &options(app),
@@ -524,13 +583,13 @@ async fn run(
             return Err(ApplicationError::Cancelled);
         }
         match job.phase.as_str() {
-            "queued" | "admitted" => {
+            "queued" | "admitted" | "migration_admitted" => {
                 app.repo.begin_remote_upload_generation(lease).await?;
             }
-            "preparing" => {
+            "preparing" | "migration_preparing" => {
                 let source = app.repo.begin_remote_upload_generation(lease).await?;
                 let job = app.repo.owned_remote_upload_job(lease).await?;
-                if job.phase != "preparing" {
+                if !matches!(job.phase.as_str(), "preparing" | "migration_preparing") {
                     continue;
                 }
                 app.require_providers(false, cancellation).await?;
@@ -541,7 +600,13 @@ async fn run(
                 // preparation; exact old chunks must not reuse stale vectors.
                 let existing = if source.metadata["remote_upload"]["processing_options"]
                     == job.input.processing_options
-                {
+                    || (job.input.policy_migration.is_some()
+                        && graphrag_db::uploaded_processing_compatible(
+                            &source.metadata["remote_upload"]["processing_options"],
+                            &job.input.processing_options,
+                            false,
+                            false,
+                        )) {
                     app.repo.get_source_chunks(&source_id).await?
                 } else {
                     Vec::new()
@@ -564,23 +629,70 @@ async fn run(
                 }
                 app.repo.stage_remote_upload_notes(lease, notes).await?;
             }
-            "staged" => {
+            "staged" | "migration_staged" => {
                 let source_id = job
                     .source_id
                     .ok_or_else(|| ApplicationError::Internal("Staged source ID missing".into()))?;
                 let old = app.repo.get_source_chunks(&source_id).await?;
                 let staged = app.repo.remote_upload_notes(lease).await?;
+                let successors = markdown_chunk_successors(&old, &staged);
+                if job.input.policy_migration.is_some() {
+                    app.repo
+                        .prepare_policy_migration_extraction(lease, &successors)
+                        .await?;
+                } else {
+                    app.repo.reconcile_remote_upload(lease, &successors).await?;
+                }
+            }
+            "migration_extracting" => {
+                if job.input.policy_migration.is_none() {
+                    return Err(ApplicationError::Validation(
+                        "Migration phase lacks explicit intent".into(),
+                    ));
+                }
+                let notes = app.repo.remote_upload_notes(lease).await?;
+                if (job.job.completed_count as usize) < notes.len() {
+                    let available = tokio::select! {biased; _=cancellation.cancelled()=>return Err(ApplicationError::Cancelled),result=app.extractor.health()=>result.unwrap_or(false)};
+                    if !available {
+                        return Err(ApplicationError::ProviderUnavailable("Migration extraction provider unavailable; previous searchable generation retained".into()));
+                    }
+                }
+                for (index, note) in notes
+                    .iter()
+                    .enumerate()
+                    .skip(job.job.completed_count as usize)
+                {
+                    compatible(app, &job)?;
+                    if cancellation.is_cancelled() {
+                        return Err(ApplicationError::Cancelled);
+                    }
+                    let entities = librarian.prepare_note_entities(note).await?;
+                    compatible(app, &job)?;
+                    if cancellation.is_cancelled() {
+                        return Err(ApplicationError::Cancelled);
+                    }
+                    app.repo
+                        .checkpoint_policy_migration_entities(lease, index, entities)
+                        .await?;
+                }
+                compatible(app, &job)?;
+                let source = job
+                    .source_id
+                    .as_ref()
+                    .ok_or_else(|| ApplicationError::Internal("Migration source missing".into()))?;
+                let old = app.repo.get_source_chunks(source).await?;
                 app.repo
-                    .reconcile_remote_upload(lease, &markdown_chunk_successors(&old, &staged))
+                    .promote_policy_migration(lease, &markdown_chunk_successors(&old, &notes))
                     .await?;
             }
-            "promoted" => {
+            "promoted" | "migration_promoted" => {
                 if job.job.scope.as_deref() != Some("unchanged") {
                     // Promotion may have succeeded before cleanup/retargeting failed.
                     // Repair that safe boundary before extraction or final success.
                     app.repo.reconcile_remote_upload(lease, &[]).await?;
                 }
-                if job.job.scope.as_deref() == Some("unchanged")
+                if job.input.policy_migration.is_some()
+                    || job.job.scope.as_deref() == Some("unchanged")
                     || !job.input.extract_entities
                     || job.job.item_ids.is_empty()
                 {

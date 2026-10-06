@@ -237,6 +237,7 @@ mod tests {
                         preserve_unchanged: false,
                         create_only: false,
                         expected_source_revision: None,
+                        policy_migration: None,
                     },
                 )
                 .await
@@ -379,6 +380,7 @@ mod tests {
                     preserve_unchanged: false,
                     create_only: false,
                     expected_source_revision: None,
+                    policy_migration: None,
                 },
             )
             .await
