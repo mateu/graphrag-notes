@@ -229,6 +229,19 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         anyhow::bail!("remote mode uses host configuration; omit local database, config, inference and explain overrides");
     }
     let url = endpoint(server)?;
+    if let Commands::Doctor {
+        format,
+        refresh_status_file,
+    } = &cli.command
+    {
+        return crate::remote_doctor::run(
+            cli,
+            url.as_str(),
+            *format,
+            refresh_status_file.as_deref(),
+        )
+        .await;
+    }
     let mut invocation = invocation(cli, url.as_str()).await?;
     let value = call_tool(
         cli,
@@ -236,7 +249,23 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         invocation.tool,
         invocation.arguments.clone(),
     )
-    .await?;
+    .await
+    .inspect_err(|error| {
+        if error
+            .downcast_ref::<ApplicationError>()
+            .is_some_and(|error| {
+                matches!(
+                    error,
+                    ApplicationError::ProviderUnavailable(_) | ApplicationError::Compatibility(_)
+                )
+            })
+        {
+            if let Some(command) = crate::search_recovery::remote_keyword_command(cli, url.as_str())
+            {
+                eprintln!("Explicit keyword retry: {command}");
+            }
+        }
+    })?;
     validate_read_result(invocation.tool, &value)?;
     crate::remote_mutations::validate_result(&invocation, &value)?;
     // Remove recovery only after the authoritative successful result arrived,

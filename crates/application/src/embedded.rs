@@ -20,6 +20,7 @@ pub struct EmbeddedApplication {
     pub(crate) extractor: SharedEntityExtractor,
     pub(crate) runtime: LibrarianRuntimeConfig,
     pub(crate) augment_options: AugmentOptions,
+    pub(crate) provider_observations: std::sync::Mutex<crate::remote_status::ProviderObservations>,
 }
 
 impl EmbeddedApplication {
@@ -37,6 +38,9 @@ impl EmbeddedApplication {
             extractor,
             runtime,
             augment_options: AugmentOptions::default(),
+            provider_observations: std::sync::Mutex::new(
+                crate::remote_status::ProviderObservations::default(),
+            ),
         }
     }
 
@@ -55,6 +59,10 @@ impl EmbeddedApplication {
             _ = cancel.cancelled() => return Err(ApplicationError::Cancelled),
             result = self.embedder.health() => result.unwrap_or(false),
         };
+        self.provider_observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .embeddings = Some((available, std::time::SystemTime::now()));
         if !available {
             return Err(ApplicationError::ProviderUnavailable(
                 "Embeddings service unavailable. Use keyword search to browse offline.".into(),
@@ -66,6 +74,10 @@ impl EmbeddedApplication {
                 _ = cancel.cancelled() => return Err(ApplicationError::Cancelled),
                 result = self.extractor.health() => result.unwrap_or(false),
             };
+            self.provider_observations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extraction = Some((available, std::time::SystemTime::now()));
             if !available {
                 return Err(ApplicationError::ProviderUnavailable(
                     "Extraction service unavailable; the capture draft was retained.".into(),

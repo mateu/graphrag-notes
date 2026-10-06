@@ -146,6 +146,9 @@ pub(crate) enum Commands {
         /// Output format for the diagnostic report
         #[arg(long, value_enum, default_value_t = DoctorFormat::Human)]
         format: DoctorFormat,
+        /// Optional private, endpoint/principal-bound client collection freshness evidence (remote only)
+        #[arg(long)]
+        refresh_status_file: Option<PathBuf>,
     },
 
     /// Inspect or validate the resolved runtime configuration

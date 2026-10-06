@@ -5,6 +5,7 @@ pub mod credentials;
 mod jobs;
 mod mutations;
 mod server;
+mod status;
 mod tools;
 mod uploads;
 

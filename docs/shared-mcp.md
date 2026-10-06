@@ -13,6 +13,8 @@ durable jobs, and the shared-service/client acceptance from
 Build current source for the commands below;
 published `v0.1.0-rc.2` predates MCP.
 macOS and Linux are the targets.
+Use [remote diagnostics](remote-diagnostics.md) for provider-free `--server doctor`,
+cached readiness semantics, collection freshness evidence, and exact keyword recovery.
 See [foundation validation](shared-mcp-validation.md) for automated and installed
 native-runtime evidence, including the remaining deployment acceptance gates.
 

@@ -158,6 +158,9 @@ fn capture_response(
 
 #[async_trait]
 impl RemoteApplicationOperations for EmbeddedApplication {
+    async fn service_readiness(&self) -> ApplicationResult<ApplicationReadiness> {
+        self.readonly_readiness().await
+    }
     async fn note_snapshot(&self, reference: RecordRef) -> ApplicationResult<RemoteNoteSnapshot> {
         self.remote_note_snapshot_impl(reference).await
     }

@@ -11,6 +11,7 @@ mod remote_jobs;
 mod remote_mutation_contracts;
 mod remote_mutations;
 mod remote_operations;
+mod remote_status;
 
 pub use contracts::*;
 pub use embedded::{
@@ -23,6 +24,7 @@ pub use remote_job_contracts::*;
 pub use remote_mutation_contracts::*;
 pub use remote_mutations::remote_mutation_fingerprint;
 pub use remote_operations::remote_capture_fingerprint;
+pub use remote_status::*;
 
 use async_trait::async_trait;
 use graphrag_core::{Note, ProposedEdgeStatus};
@@ -63,6 +65,10 @@ pub trait ApplicationOperations: Send + Sync {
 /// Shared remote foundation; transports authenticate the caller before invoking it.
 #[async_trait]
 pub trait RemoteApplicationOperations: ApplicationOperations {
+    /// Read-only, bounded owner-side evidence. Never initialize storage or probe inference.
+    async fn service_readiness(&self) -> ApplicationResult<ApplicationReadiness> {
+        Ok(ApplicationReadiness::default())
+    }
     async fn note_snapshot(&self, reference: RecordRef) -> ApplicationResult<RemoteNoteSnapshot> {
         let _ = reference;
         Err(ApplicationError::Validation(
