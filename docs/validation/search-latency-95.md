@@ -39,7 +39,7 @@ not a claim of four searches continuously running simultaneously.
 | hybrid/on | 509.2 / 833.7 | 564.8 / 872.8 | 1,000 |
 
 Pooled p95 must not hide category misses. Narrow keyword title/entity/filter
-p95 is 2.9–6.3 ms, but the broad keyword case is 303.4 ms at one lane and
+p95 is 2.8–5.5 ms, but the broad keyword case is 303.4 ms at one lane and
 322.5 ms at four. Broad graph p95 at four lanes is 867.0 ms (auto) and
 890.0 ms (on), within target for this pre-#93 build. Keep the stated budgets as operating
 goals and document these corpus/load limits rather than relaxing the targets

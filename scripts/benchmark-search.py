@@ -21,6 +21,9 @@ import uuid
 
 RUNNER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
+# Installed clients live in a sealed version bundle. Local imports must not
+# create files that make a subsequent same-version installation diverge.
+sys.dont_write_bytecode = True
 SPEC = importlib.util.spec_from_file_location("retrieval_evaluation", Path(__file__).with_name("evaluate-retrieval.py"))
 evaluation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(evaluation)
