@@ -510,6 +510,41 @@ esac
             self.assertEqual(environment.read_text(), "# Existing operator environment fixture; preserve\n")
             self.assertFalse((bundle / ".env").exists())
 
+    def test_packaged_openclaw_sources_preserve_documented_dependencies(self):
+        source = SCRIPT.parents[1]
+        plugin_files = [relative for relative in release.RELEASE_PAYLOADS
+                        if relative.startswith("clients/openclaw-fast-notes/")]
+        self.assertEqual(len(plugin_files), 13)
+        for relative in plugin_files + ["docs/validation/openclaw-dispatch-108.md"]:
+            (self.repo / relative).write_bytes((source / relative).read_bytes())
+        self.commit()
+        self.build_record = self.root / "openclaw-client-build.json"
+        self.seal_build()
+        info = release.package(self.package_args())
+        installed = self.install_fixture(self.root / "dist", clients_only=True)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        bundle = self.root / "installed-data/releases" / self.tag
+        plugin = bundle / "clients/openclaw-fast-notes"
+        package = json.loads((plugin / "package.json").read_bytes())
+        lock = json.loads((plugin / "package-lock.json").read_bytes())
+        manifest = json.loads((plugin / "openclaw.plugin.json").read_bytes())
+        self.assertEqual(package["version"], manifest["version"])
+        self.assertEqual(package["version"], lock["packages"][""]["version"])
+        for filename in package["files"] + ["package-lock.json"]:
+            self.assertTrue((plugin / filename).is_file(), filename)
+        for relative in plugin_files:
+            contents = (bundle / relative).read_bytes()
+            self.assertEqual(contents, (source / relative).read_bytes())
+            self.assertEqual(info["payload_sha256"]["release/" + relative],
+                             hashlib.sha256(contents).hexdigest())
+        self.assertEqual(len(list(plugin.glob("*.test.mjs"))), 6)
+        for document in (plugin / "README.md", bundle / "docs/validation/openclaw-dispatch-108.md"):
+            for target in re.findall(r"\]\(([^)]+)\)", document.read_text()):
+                if not target.startswith(("https://", "http://", "#")):
+                    self.assertTrue((document.parent / target.split("#", 1)[0]).is_file(), target)
+        self.assertTrue((plugin / "mcp-read-pool.mjs").is_file())
+        self.assertFalse((bundle / ".env").exists())
+
     def test_packaged_clients_run_without_changing_versioned_bundle(self):
         # Exercise real importing entrypoints after packaging, with no providers.
         for relative in ("scripts/validate-native-mcp.py", "scripts/validate-daily-workflow.py",
