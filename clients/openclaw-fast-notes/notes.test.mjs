@@ -8,7 +8,7 @@ const result = (records = [record]) => ({ structuredContent: { schema_version: 1
 
 function fixture(options = {}) {
   const events = [];
-  let transport;
+  let transport, fetchOptions;
   class Client {
     async connect(value, opts) {
       transport = value; events.push(['connect', opts]);
@@ -29,9 +29,9 @@ function fixture(options = {}) {
   const command = createNotesCommand({ reuseConnections: false, ...(options.config ?? {}) }, {
     env: options.env ?? { GRAPHRAG_NOTES_TOKEN: 'private-fixture-credential' },
     loadSdk: async () => { events.push(['sdk']); return { Client, StreamableHTTPClientTransport }; },
-    fetch: async (_input, init) => init,
+    fetch: async (_input, init) => { fetchOptions = init; return new Response(null, { status: 202 }); },
   });
-  return { command, events, get transport() { return transport; } };
+  return { command, events, get transport() { return transport; }, get fetchOptions() { return fetchOptions; } };
 }
 
 test('registers an async authorized command and help/denied calls never touch MCP', async () => {
@@ -55,8 +55,8 @@ test('default search has exact graph-enabled hybrid arguments, header, citation/
   assert.match(reply.text, /note:abc123/); assert.match(reply.text, /Actor: mcp:openclaw-shiva/); assert.match(reply.text, /ms total .*ms connect, .*ms search/);
   assert.equal(reply.continueAgent, false); assert.equal(f.events.at(-1)[0], 'close');
   assert.equal(f.transport.config.requestInit.headers.Authorization, 'Bearer private-fixture-credential');
-  const fetchOptions = await f.transport.config.fetch(f.transport.url, {});
-  assert.equal(fetchOptions.redirect, 'error'); assert.equal(fetchOptions.signal.aborted, true);
+  await f.transport.config.fetch(f.transport.url, {});
+  assert.equal(f.fetchOptions.redirect, 'error'); assert.equal(f.fetchOptions.signal.aborted, true);
 });
 
 test('parser and mock MCP preserve graph defaults, explicit opt-outs, escape, and conflicts', async () => {

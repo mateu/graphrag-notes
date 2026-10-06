@@ -170,7 +170,15 @@ export function createFreshNotesCommand(config = {}, overrides = {}) {
           const transport = new StreamableHTTPClientTransport(endpoint, {
             requestInit: { headers: { Authorization: `Bearer ${token}` } },
             reconnectionOptions: { maxRetries: 0 },
-            fetch: (input, init = {}) => fetchImpl(input, { ...init, redirect: 'error', signal: init.signal ? AbortSignal.any([init.signal, abort.signal]) : abort.signal }),
+            fetch: async (input, init = {}) => {
+              const signal = init.signal ? AbortSignal.any([init.signal, abort.signal]) : abort.signal;
+              const response = await fetchImpl(input, { ...init, redirect: 'error', signal });
+              if (response.ok && ![202, 204].includes(response.status) &&
+                  response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
+                await response.body?.cancel(); throw new NotesError('response');
+              }
+              return boundedResponse(response, signal);
+            },
           });
           await client.connect(transport, { signal: abort.signal, timeout: timeoutMs });
           abort.signal.throwIfAborted();

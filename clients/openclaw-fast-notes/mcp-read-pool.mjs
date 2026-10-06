@@ -10,12 +10,13 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export async function boundedResponse(response, signal) {
   const length = response.headers.get('content-length');
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_RESPONSE_BYTES)) {
-    await response.body?.cancel(); throw new PoolError('response');
-  }
   // Fetch decodes compression while retaining the encoded Content-Length.
   const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
-  const expected = length === null || (encoding && encoding !== 'identity') ? null : Number(length);
+  const decodedLength = !encoding || encoding === 'identity';
+  if (length !== null && (!/^\d+$/.test(length) || (decodedLength && Number(length) > MAX_RESPONSE_BYTES))) {
+    await response.body?.cancel(); throw new PoolError('response');
+  }
+  const expected = length === null || !decodedLength ? null : Number(length);
   if (!response.body) {
     if (expected !== null && expected !== 0) throw new PoolError('response');
     return response;

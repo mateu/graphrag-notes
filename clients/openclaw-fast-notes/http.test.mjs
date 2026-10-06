@@ -6,7 +6,7 @@ import { createNotesCommand } from './index.mjs';
 
 async function fixture(config = {}) {
   const calls = [], revoked = new Set();
-  const state = { disconnect: false, expire: false, stall: false, sse: false, oversized: false, truncated: false, oversizedInitialize: false, gzip: false };
+  const state = { disconnect: false, expire: false, stall: false, bodyStall: false, sse: false, oversized: false, truncated: false, oversizedInitialize: false, oversizedError: false, gzip: false, gzipHeaderOverhead: false, gzipDecodedOversized: false };
   const server = createServer(async (req, res) => {
     const token = req.headers.authorization;
     if (!token || revoked.has(token)) { res.writeHead(401); res.end('fictional secret'); return; }
@@ -16,6 +16,9 @@ async function fixture(config = {}) {
     if (!Object.hasOwn(message, 'id')) { res.writeHead(202); res.end(); return; }
     if ((state.oversized && message.method === 'tools/call') || (state.oversizedInitialize && message.method === 'initialize')) {
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('x'.repeat(2 * 1024 * 1024 + 1)); return;
+    }
+    if (state.oversizedError && message.method === 'tools/call') {
+      res.writeHead(503, { 'Content-Type': 'application/json' }); res.end('x'.repeat(2 * 1024 * 1024 + 1)); return;
     }
     if (state.truncated && message.method === 'tools/call') {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '100' }); res.end('{}');
@@ -28,6 +31,7 @@ async function fixture(config = {}) {
       if (state.disconnect) { req.socket.destroy(); return; }
       if (state.expire) { res.writeHead(404); res.end('fictional expired session'); return; }
       if (state.stall) return;
+      if (state.bodyStall) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.write('{'); return; }
       if (state.sse) { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write('event: message\ndata: {}\n\n'); return; }
       assert.equal(message.params.name, 'search_notes');
       const envelope = { schema_version: 1, error: null, data: { records: [{
@@ -39,8 +43,14 @@ async function fixture(config = {}) {
       await new Promise(resolve => setTimeout(resolve, 10));
     } else throw new Error('unexpected fixture method');
     const body = JSON.stringify({ jsonrpc: '2.0', id: message.id, result });
-    if (state.gzip) {
-      const compressed = gzipSync(body);
+    if (state.gzip || state.gzipHeaderOverhead || state.gzipDecodedOversized) {
+      let compressed = gzipSync(state.gzipDecodedOversized ? 'x'.repeat(2 * 1024 * 1024 + 1) : body);
+      if (state.gzipHeaderOverhead) {
+        // A legal gzip FCOMMENT header can make encoded length exceed the
+        // decoded limit even though the actual JSON document is small.
+        const header = Buffer.from(compressed.subarray(0, 10)); header[3] |= 0x10;
+        compressed = Buffer.concat([header, Buffer.alloc(2 * 1024 * 1024 + 1, 'x'), Buffer.from([0]), compressed.subarray(10)]);
+      }
       res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', 'Content-Length': String(compressed.length) });
       res.end(compressed);
     } else {
@@ -143,5 +153,52 @@ test('valid compressed initialization/search JSON keeps decoded bound without co
     assert.match((await f.command.handler(f.ctx())).text, /Atlas/);
     assert.match((await f.command.handler(f.ctx('Borealis'))).text, /Borealis/);
     assert.equal(f.calls.filter(c => c.method === 'initialize').length, 1);
+  } finally { await f.close(); }
+});
+
+test('fresh SDK clients bound initialization, chunked search/error bodies and truncated responses', async () => {
+  for (const fault of ['oversizedInitialize', 'oversized', 'oversizedError', 'truncated', 'sse']) {
+    const f = await fixture({ reuseConnections: false });
+    try {
+      f.state[fault] = true;
+      assert.ok(!(await f.command.handler(f.ctx('Borealis'))).text.startsWith('Notes ·'));
+      assert.equal(f.calls.filter(c => c.method === 'tools/call').length, fault === 'oversizedInitialize' ? 0 : 1);
+      f.state[fault] = false;
+      assert.match((await f.command.handler(f.ctx('Cirrus'))).text, /Cirrus/);
+      assert.equal(f.calls.filter(c => c.method === 'initialize').length, 2);
+      assert.equal(f.calls.filter(c => c.method === 'tools/call').length, fault === 'oversizedInitialize' ? 1 : 2);
+    } finally { await f.close(); }
+  }
+});
+
+test('compressed encoded overhead is accepted while decoded oversize is refused in fresh and pooled modes', async () => {
+  for (const reuseConnections of [false, true]) {
+    const f = await fixture({ reuseConnections });
+    try {
+      f.state.gzipHeaderOverhead = true;
+      assert.match((await f.command.handler(f.ctx())).text, /Atlas/);
+      assert.match((await f.command.handler(f.ctx('Borealis'))).text, /Borealis/);
+      f.state.gzipHeaderOverhead = false; f.state.gzipDecodedOversized = true;
+      assert.ok(!(await f.command.handler(f.ctx('Cirrus'))).text.startsWith('Notes ·'));
+      f.state.gzipDecodedOversized = false;
+      assert.match((await f.command.handler(f.ctx('Dune'))).text, /Dune/);
+      assert.equal(f.calls.filter(c => c.method === 'tools/call').length, reuseConnections ? 4 : 3);
+    } finally { await f.close(); }
+  }
+});
+
+test('fresh SDK partial JSON response is cancelled at the deadline without another tool submission', async () => {
+  const f = await fixture({ reuseConnections: false, timeoutMs: 250 });
+  try {
+    // Warm the SDK loader without changing the command's connection policy.
+    assert.match((await f.command.handler(f.ctx())).text, /Atlas/);
+    f.state.bodyStall = true;
+    const started = performance.now();
+    assert.match((await f.command.handler(f.ctx('Borealis'))).text, /timed out/);
+    assert.ok(performance.now() - started < 1500);
+    assert.equal(f.calls.filter(c => c.method === 'tools/call').length, 2);
+    f.state.bodyStall = false;
+    assert.match((await f.command.handler(f.ctx('Cirrus'))).text, /Cirrus/);
+    assert.equal(f.calls.filter(c => c.method === 'tools/call').length, 3);
   } finally { await f.close(); }
 });
