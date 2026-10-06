@@ -1,6 +1,7 @@
 import importlib.metadata
 import json
 import sys
+sys.dont_write_bytecode = True
 from envelope import checked_result
 
 from hermes_cli import __version__
