@@ -2,6 +2,7 @@
 import contextlib
 import importlib.util
 import io
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -155,6 +158,101 @@ class RefreshTests(unittest.TestCase):
 
     def save(self):
         self.saved.append(json.loads(json.dumps(self.state)))
+
+    def test_http_lifecycle_and_notification_failure_prevent_admission(self):
+        class Handler(BaseHTTPRequestHandler):
+            initialized = False
+            deny_notification = False
+            methods = []
+            def log_message(self, *_):
+                pass
+            def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                self.methods.append(request['method'])
+                if request['method'] == 'notifications/initialized':
+                    self.server.notification_has_id = 'id' in request
+                    if self.deny_notification:
+                        self.send_error(403)
+                    else:
+                        Handler.initialized = True
+                        self.send_response(202)
+                        self.send_header('Content-Length', '0')
+                        self.end_headers()
+                    return
+                if request['method'] == 'initialize':
+                    result = {'protocolVersion': '2025-11-25'}
+                elif not self.initialized:
+                    self.send_error(400)
+                    return
+                else:
+                    result = {'structuredContent': {'schema_version': 1, 'error': None,
+                              'data': {'schema_version': 1, 'read_only': True, 'inference_probed': False,
+                                       'instance_id': 'fixture-importer'}}}
+                body = json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}).encode()
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        endpoint = f'http://127.0.0.1:{server.server_port}/mcp'
+        try:
+            client = m.Client(endpoint, 'fictional-bearer', time.monotonic() + 10)
+            with self.assertRaises(m.ImportFailure):
+                client.call('service_status', {})
+            client.initialize()
+            m.verify_principal(client, 'fixture-importer')
+            self.assertFalse(server.notification_has_id)
+            self.assertEqual(Handler.methods[-3:], ['initialize', 'notifications/initialized', 'tools/call'])
+            Handler.initialized = False
+            Handler.deny_notification = True
+            output = io.StringIO()
+            with patch.dict(os.environ, {'GRAPHRAG_TOKEN': 'fictional-bearer'}), contextlib.redirect_stdout(output):
+                code = m.main(['--state-dir', str(self.root / 'http-state'), '--database', str(self.database),
+                               '--workspace', str(self.workspace), '--server', endpoint, '--instance-id', 'fixture-importer',
+                               '--format', 'json'])
+            self.assertEqual(code, 1)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report['status'], 'failed')
+            self.assertEqual(report['error_code'], 'forbidden')
+            self.assertEqual(report['pending_parts'], 1)
+            self.assertNotIn('fictional-bearer', output.getvalue())
+            self.assertEqual(Handler.methods[-2:], ['initialize', 'notifications/initialized'])
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+    def test_http_truncated_frames_are_safe_retryable_transport_failures(self):
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
+            variant = 'chunked'
+            def log_message(self, *_):
+                pass
+            def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                self.send_response(200)
+                body = json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {'protocolVersion': '2025-11-25'}}).encode()
+                if self.variant == 'chunked':
+                    self.send_header('Transfer-Encoding', 'chunked')
+                else:
+                    self.send_header('Content-Length', str(len(body) + 10))
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(b'10\r\n{}' if self.variant == 'chunked' else body)
+                self.close_connection = True
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for variant in ('chunked', 'content-length'):
+                Handler.variant = variant
+                client = m.Client(f'http://127.0.0.1:{server.server_port}/mcp', 'fictional', time.monotonic() + 10)
+                with self.assertRaises(m.ImportFailure) as caught:
+                    client.initialize()
+                self.assertEqual(caught.exception.code, 'transport')
+                self.assertTrue(caught.exception.retryable)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=2)
 
     def write(self, path, raw, source='memory'):
         (self.workspace / path).write_bytes(raw)

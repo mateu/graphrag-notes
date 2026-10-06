@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -117,35 +118,47 @@ class Client:
             raise ImportFailure('deadline')
         return remaining
 
-    def request(self, method, params):
+    def request(self, method, params, notification=False):
         self.counter += 1
-        request = urllib.request.Request(self.server, data=canonical({'jsonrpc': '2.0', 'id': self.counter, 'method': method, 'params': params}),
+        message = {'jsonrpc': '2.0', 'method': method, 'params': params}
+        if not notification:
+            message['id'] = self.counter
+        request = urllib.request.Request(self.server, data=canonical(message),
                   headers={'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream',
                            'Authorization': 'Bearer ' + self.token, 'MCP-Protocol-Version': self.protocol})
         try:
             with self.opener.open(request, timeout=min(self.timeout, self.remaining())) as response:
+                expected_length = response.length
                 body = response.read(1048577)
+                status = response.status
+                if expected_length is not None and len(body) <= 1048576 and len(body) != expected_length:
+                    raise ImportFailure('transport', True)
             if len(body) > 1048576:
                 raise ImportFailure('response_too_large')
+            if notification:
+                if status != 202 or body:
+                    raise ImportFailure('protocol_error')
+                return None
             value = json.loads(body)
         except urllib.error.HTTPError as error:
             code = 'unauthorized' if error.code == 401 else 'forbidden' if error.code == 403 else 'http_error'
             retryable = error.code in (429, 500, 502, 503, 504)
             error.close()
             raise ImportFailure(code, retryable) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
             raise ImportFailure('transport', True) from None
         except (ValueError, UnicodeError):
             raise ImportFailure('malformed_response') from None
-        if value.get('id') != self.counter or value.get('jsonrpc') != '2.0' or value.get('error') or 'result' not in value:
+        if not isinstance(value, dict) or value.get('id') != self.counter or value.get('jsonrpc') != '2.0' or value.get('error') or 'result' not in value:
             raise ImportFailure('protocol_error')
         return value['result']
 
     def initialize(self):
         result = self.request('initialize', {'protocolVersion': self.protocol, 'capabilities': {},
                     'clientInfo': {'name': 'private-openclaw-memory-importer', 'version': '1'}})
-        if result.get('protocolVersion') != self.protocol:
+        if not isinstance(result, dict) or result.get('protocolVersion') != self.protocol:
             raise ImportFailure('protocol_version')
+        self.request('notifications/initialized', {}, notification=True)
 
     def call(self, name, arguments):
         result = self.request('tools/call', {'name': name, 'arguments': arguments})

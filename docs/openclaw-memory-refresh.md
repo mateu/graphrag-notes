@@ -95,6 +95,10 @@ Registered unchanged graph parts can be retained with the same explicit
 `--adopt-existing-policy` choice without any upload or job. Use matching client
 and service builds; source inspection lacking the applied-policy fields fails
 verification and needs upgrading.
+The client completes MCP initialization before checking its authenticated
+principal or admitting jobs. Failed/truncated initialization retains the pinned
+pending attempt and a safe error category; repair the transport/authorization
+and explicitly resume it.
 
 Metadata registration sets the server's `preserve_unchanged` upload guard. Under
 the generation lock, exact input, title, extraction choice and original applied policy must
