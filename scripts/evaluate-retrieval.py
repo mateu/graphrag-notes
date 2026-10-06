@@ -54,9 +54,21 @@ def write_new(path, value):
         os.fsync(stream.fileno())
 
 
+def strict_json(raw):
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            require(key not in value, "duplicate JSON field")
+            value[key] = item
+        return value
+    def constant(value):
+        raise EvaluationError("non-finite JSON constant")
+    return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+
+
 def load_suite(path, *, captured_bytes=None):
-    suite = json.loads(Path(path).read_bytes() if captured_bytes is None else captured_bytes)
-    require(isinstance(suite, dict) and suite.get("schema_version") == 1,
+    suite = strict_json(Path(path).read_bytes() if captured_bytes is None else captured_bytes)
+    require(isinstance(suite, dict) and type(suite.get("schema_version")) is int and suite["schema_version"] == 1,
             "unsupported retrieval suite version")
     require(isinstance(suite.get("metadata"), dict), "suite metadata missing")
     require(isinstance(suite.get("cases"), list) and suite["cases"], "suite has no cases")
@@ -153,11 +165,11 @@ def metrics(item, records):
 
 
 def cli_data(value, command):
-    require(isinstance(value, dict) and value.get("schema_version") == 1 and
+    require(isinstance(value, dict) and type(value.get("schema_version")) is int and value["schema_version"] == 1 and
             value.get("command") == command and value.get("success") is True and
             value.get("errors") == [], "invalid CLI success envelope")
     service = value.get("data")
-    require(isinstance(service, dict) and service.get("schema_version") == 1 and
+    require(isinstance(service, dict) and type(service.get("schema_version")) is int and service["schema_version"] == 1 and
             "error" in service and service["error"] is None and "data" in service,
             "invalid service success envelope")
     return service["data"]
@@ -176,7 +188,7 @@ class RemoteCli:
             raise EvaluationError("remote CLI request exceeded evaluation timeout") from error
         require(response.returncode == 0, "remote CLI request failed; no mode fallback was attempted")
         try:
-            return cli_data(json.loads(response.stdout), command)
+            return cli_data(strict_json(response.stdout), command)
         except (ValueError, TypeError) as error:
             raise EvaluationError("invalid remote CLI JSON") from error
 
@@ -306,7 +318,7 @@ def main(argv=None):
                 "output already exists; use new report paths")
         if args.recorded:
             require(args.binary is None and args.endpoint is None, "recorded and live modes conflict")
-            fixture = json.loads(args.recorded.read_text())
+            fixture = strict_json(args.recorded.read_text())
             def search(item, policy):
                 try:
                     return fixture["rankings"][item["name"]][policy]

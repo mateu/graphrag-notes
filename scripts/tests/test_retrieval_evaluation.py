@@ -131,6 +131,17 @@ class RetrievalEvaluationTests(unittest.TestCase):
             bad[changed] = None
             with self.assertRaises(evaluation.EvaluationError):
                 evaluation.cli_data(bad, "search_notes")
+        for nested in (False, True):
+            bad = copy.deepcopy(value)
+            envelope = bad["data"] if nested else bad
+            envelope["schema_version"] = True
+            with self.assertRaises(evaluation.EvaluationError):
+                evaluation.cli_data(bad, "search_notes")
+
+    def test_protocol_json_refuses_duplicate_keys_and_nonfinite_values(self):
+        for raw in ('{"schema_version": 99, "schema_version": 1}', '{"metadata": {"value": NaN}}'):
+            with self.subTest(raw=raw), self.assertRaises(evaluation.EvaluationError):
+                evaluation.strict_json(raw)
 
     def test_query_and_filters_are_literal_arguments_not_shell_text(self):
         item = case()
