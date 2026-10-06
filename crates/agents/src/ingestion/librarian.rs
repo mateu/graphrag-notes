@@ -836,7 +836,7 @@ impl LibrarianAgent {
                     self.runtime.extract_max_chars,
                 ))
                 .await?;
-            extracted_entities_for_note(extraction.entities, existing)
+            extracted_entities_for_note(extraction.entities, existing, None)
         };
 
         let mut replacement = existing.clone();
@@ -1599,9 +1599,14 @@ impl LibrarianAgent {
     /// Perform inference before a caller's guarded note/mention transaction.
     /// No entities or mentions are persisted by this preparation step.
     pub async fn prepare_note_entities(&self, note: &Note) -> Result<Vec<Entity>> {
+        let scope = self.repo.note_extraction_scope(note).await?;
         let text = truncate_for_extraction(&note.content, self.runtime.extract_max_chars);
         let extraction = self.extractor.extract(&text).await?;
-        Ok(extracted_entities_for_note(extraction.entities, note))
+        Ok(extracted_entities_for_note(
+            extraction.entities,
+            note,
+            scope.as_deref(),
+        ))
     }
 
     /// Extract entities for notes missing entity links
@@ -3161,19 +3166,19 @@ impl LibrarianAgent {
 
 /// Scope describes evidence, not an inferred real-world identity. Person/project
 /// homonyms remain separate even inside a source; other types may share only
-/// within that explicit source. Stable chunk locations survive refreshes.
+/// within that explicit source. Copied exact-successor evidence retains its
+/// original scope when positional chunk locations move during a refresh.
 fn extracted_entities_for_note(
     entities: Vec<crate::inference::ExtractedEntity>,
     note: &Note,
+    inherited_scope: Option<&str>,
 ) -> Vec<Entity> {
     // A detached/manual note retains source_id only as provenance.
     let source_scope = note
         .source_generation
         .and_then(|_| note.source_id.as_ref().map(record_id_to_string));
-    let note_scope = match (source_scope.as_deref(), note.chunk_location_key.as_deref()) {
-        (Some(source), Some(location)) => format!("{source}:chunk:{location}"),
-        _ => note
-            .id
+    let note_scope = inherited_scope.map(str::to_owned).unwrap_or_else(|| {
+        note.id
             .as_ref()
             .map(record_id_to_string)
             .unwrap_or_else(|| {
@@ -3182,8 +3187,8 @@ fn extracted_entities_for_note(
                     note.created_at,
                     normalized_content_hash(&note.content)
                 )
-            }),
-    };
+            })
+    });
     extracted_entities_to_domain(entities, &note_scope, source_scope.as_deref())
 }
 
@@ -4396,6 +4401,242 @@ mod tests {
             .unwrap()
             .len(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn source_entity_scope_survives_rechunking_and_a_generation_without_mentions() {
+        use std::collections::HashSet;
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let extraction = EntityExtraction {
+            entities: vec![
+                ExtractedEntity {
+                    name: "Sam".into(),
+                    entity_type: Some("Person".into()),
+                    aliases: vec![],
+                },
+                ExtractedEntity {
+                    name: "Atlas".into(),
+                    entity_type: Some("Project".into()),
+                    aliases: vec![],
+                },
+            ],
+            relationships: vec![],
+        };
+        let config = LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            chunk_overlap: 0,
+            ..Default::default()
+        };
+        let agent = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().with_default(extraction.clone())),
+        )
+        .with_runtime_config(config.clone());
+        let original = "# Plan\n\nFirst stable paragraph has enough content.\n\nMiddle stable paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+        let first = agent
+            .ingest_markdown_with_options("fictional-lineage.md", original, false)
+            .await
+            .unwrap();
+        assert_eq!(first.notes.len(), 3);
+        let ids = first
+            .notes
+            .iter()
+            .map(|note| record_id_to_string(note.id.as_ref().unwrap()))
+            .collect::<Vec<_>>();
+        agent
+            .extract_entities_for_note_ids_result(&ids, true)
+            .await
+            .unwrap();
+        let middle = first.notes[1].content.clone();
+        let first_keys = repo
+            .get_entities_for_note(&ids[1])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entity| entity.id.unwrap())
+            .collect::<HashSet<_>>();
+        // Simulate an earlier scoped extraction with no persisted anchor. Its
+        // validated scope is adopted rather than switching typed identities.
+        let source = record_id_to_string(first.notes[1].source_id.as_ref().unwrap());
+        let legacy_scope = format!(
+            "{source}:chunk:{}",
+            first.notes[1].chunk_location_key.as_ref().unwrap()
+        );
+        let legacy = super::extracted_entities_to_domain(
+            extraction.entities.clone(),
+            &legacy_scope,
+            Some(&source),
+        );
+        repo.replace_note_entities(first.notes[1].id.as_ref().unwrap(), legacy)
+            .await
+            .unwrap();
+        db.query("UPDATE $id UNSET extraction_scope")
+            .bind(("id", first.notes[1].id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let legacy_keys = repo
+            .get_entities_for_note(&ids[1])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entity| entity.id.unwrap())
+            .collect::<HashSet<_>>();
+        assert_ne!(legacy_keys, first_keys);
+        let shifted = "# Plan\n\nInserted independent paragraph has enough content.\n\nFirst stable paragraph has enough content.\n\nMiddle stable paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+        let second = agent
+            .ingest_markdown_with_options("fictional-lineage.md", shifted, true)
+            .await
+            .unwrap();
+        let moved = second
+            .notes
+            .iter()
+            .find(|note| note.content == middle)
+            .unwrap();
+        assert_ne!(moved.chunk_location_key, first.notes[1].chunk_location_key);
+        let moved_id = record_id_to_string(moved.id.as_ref().unwrap());
+        agent
+            .extract_entities_for_note_ids_result(std::slice::from_ref(&moved_id), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_note(&moved_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .extraction_scope
+                .as_deref(),
+            Some(legacy_scope.as_str())
+        );
+        assert_eq!(
+            repo.get_entities_for_note(&moved_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|entity| entity.id.unwrap())
+                .collect::<HashSet<_>>(),
+            legacy_keys
+        );
+        let inserted = second
+            .notes
+            .iter()
+            .find(|note| note.content.contains("Inserted independent"))
+            .unwrap();
+        let inserted_id = record_id_to_string(inserted.id.as_ref().unwrap());
+        agent
+            .extract_entities_for_note_ids_result(std::slice::from_ref(&inserted_id), true)
+            .await
+            .unwrap();
+        let inserted_keys = repo
+            .get_entities_for_note(&inserted_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entity| entity.id.unwrap())
+            .collect::<HashSet<_>>();
+        assert!(inserted_keys.is_disjoint(&legacy_keys));
+        assert_eq!(
+            repo.get_note(&inserted_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .extraction_scope,
+            Some(format!("{source}:chunk:{inserted_id}"))
+        );
+        let empty = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default()),
+        )
+        .with_runtime_config(config);
+        empty
+            .extract_entities_for_note_ids_result(std::slice::from_ref(&moved_id), true)
+            .await
+            .unwrap();
+        assert!(repo
+            .get_entities_for_note(&moved_id)
+            .await
+            .unwrap()
+            .is_empty());
+        let third = agent
+            .ingest_markdown_with_options("fictional-lineage.md", original, true)
+            .await
+            .unwrap();
+        let restored = third
+            .notes
+            .iter()
+            .find(|note| note.content == middle)
+            .unwrap();
+        let restored_id = record_id_to_string(restored.id.as_ref().unwrap());
+        assert!(repo
+            .get_entities_for_note(&restored_id)
+            .await
+            .unwrap()
+            .is_empty());
+        agent
+            .extract_entities_for_note_ids_result(std::slice::from_ref(&restored_id), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get_entities_for_note(&restored_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|entity| entity.id.unwrap())
+                .collect::<HashSet<_>>(),
+            legacy_keys
+        );
+        let inserted = second
+            .notes
+            .iter()
+            .find(|note| note.content.contains("Inserted independent"))
+            .unwrap();
+        let inserted_scope = repo
+            .get_note(&record_id_to_string(inserted.id.as_ref().unwrap()))
+            .await;
+        assert!(inserted_scope.unwrap().is_none()); // Removed generation is not visible.
+        let restored_repo = Repository::new(init_memory().await.unwrap());
+        for table in ["source", "note", "entity", "mentions"] {
+            for record in repo.portable_records_page(table, 0, 100).await.unwrap() {
+                restored_repo
+                    .restore_portable_record(table, record)
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            restored_repo
+                .get_note(&restored_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .extraction_scope,
+            Some(legacy_scope)
+        );
+        let restored_agent = LibrarianAgent::new(
+            restored_repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(FixtureEntityExtractor::default().with_default(extraction)),
+        );
+        restored_agent
+            .extract_entities_for_note_ids_result(std::slice::from_ref(&restored_id), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored_repo
+                .get_entities_for_note(&restored_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|entity| entity.id.unwrap())
+                .collect::<HashSet<_>>(),
+            legacy_keys
         );
     }
 

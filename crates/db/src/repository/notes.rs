@@ -42,6 +42,7 @@ pub(super) fn editor_snapshot_guard(require_manual: bool) -> String {
          AND source_generation = $editor_expected.source_generation \
          AND chunk_key = $editor_expected.chunk_key \
          AND chunk_location_key = $editor_expected.chunk_location_key \
+         AND extraction_scope = $editor_expected.extraction_scope \
          AND chunk_ordinal = $editor_expected.chunk_ordinal \
          AND (chunk_heading_path ?? []) = $editor_expected.chunk_heading_path \
          AND source_start_line = $editor_expected.source_start_line \
@@ -175,6 +176,7 @@ impl Repository {
                     embedding = $embedding, source_id = $source_id, \
                     source_generation = $source_generation, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    extraction_scope = $extraction_scope, \
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
@@ -202,6 +204,7 @@ impl Repository {
             ))
             .bind(("chunk_key", note.chunk_key.clone()))
             .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("extraction_scope", note.extraction_scope.clone()))
             .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
             .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
             .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
@@ -298,6 +301,7 @@ impl Repository {
                     embedding = $embedding, source_id = $source_id, \
                     source_generation = $source_generation, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    extraction_scope = $extraction_scope, \
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
@@ -320,6 +324,7 @@ impl Repository {
             .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
             .bind(("chunk_key", note.chunk_key.clone()))
             .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("extraction_scope", note.extraction_scope.clone()))
             .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
             .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
             .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
@@ -403,6 +408,7 @@ impl Repository {
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    extraction_scope = IF $extraction_scope = NONE THEN extraction_scope ELSE $extraction_scope END, \
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
@@ -424,6 +430,7 @@ impl Repository {
             .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
             .bind(("chunk_key", note.chunk_key.clone()))
             .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("extraction_scope", note.extraction_scope.clone()))
             .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
             .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
             .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))
@@ -523,6 +530,7 @@ impl Repository {
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
+                    extraction_scope = IF $extraction_scope = NONE THEN extraction_scope ELSE $extraction_scope END, \
                     chunk_heading_path = $chunk_heading_path, source_start_line = $source_start_line, \
                     source_end_line = $source_end_line, source_start_byte = $source_start_byte, \
                     source_end_byte = $source_end_byte, chunk_overlap_from = $chunk_overlap_from, \
@@ -548,6 +556,7 @@ impl Repository {
             .bind(("source_generation", note.source_generation.map(|generation| generation as i64)))
             .bind(("chunk_key", note.chunk_key.clone()))
             .bind(("chunk_location_key", note.chunk_location_key.clone()))
+            .bind(("extraction_scope", note.extraction_scope.clone()))
             .bind(("chunk_ordinal", note.chunk_ordinal.map(|value| value as i64)))
             .bind(("chunk_heading_path", note.chunk_heading_path.clone()))
             .bind(("source_start_line", note.source_start_line.map(|value| value as i64)))

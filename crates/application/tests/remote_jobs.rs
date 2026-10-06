@@ -1,9 +1,9 @@
 //! Durable jobs are executed by server authority, never by an HTTP cancellation token.
 use async_trait::async_trait;
 use graphrag_agents::{
-    DeterministicEmbedder, Embedder, EntityExtraction, EntityExtractor, FixtureEntityExtractor,
-    InferenceCapabilities, LibrarianRuntimeConfig, SearchAgent, SharedEmbedder,
-    SharedEntityExtractor,
+    DeterministicEmbedder, Embedder, EntityExtraction, EntityExtractor, ExtractedEntity,
+    FixtureEntityExtractor, InferenceCapabilities, LibrarianRuntimeConfig, SearchAgent,
+    SharedEmbedder, SharedEntityExtractor,
 };
 use graphrag_application::*;
 use graphrag_db::{init_memory, Repository};
@@ -2096,4 +2096,126 @@ async fn disabled_extraction_job_resumes_after_unused_extractor_change() {
         "completed"
     );
     assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn remote_source_extraction_preserves_chunk_lineage_after_an_earlier_insertion() {
+    use std::collections::BTreeSet;
+    let repo = Repository::new(init_memory().await.unwrap());
+    let embedding: SharedEmbedder = Arc::new(DeterministicEmbedder::default());
+    let extraction: SharedEntityExtractor = Arc::new(
+        FixtureEntityExtractor::default().with_default(EntityExtraction {
+            entities: vec![
+                ExtractedEntity {
+                    name: "Sam".into(),
+                    entity_type: Some("Person".into()),
+                    aliases: vec![],
+                },
+                ExtractedEntity {
+                    name: "Atlas".into(),
+                    entity_type: Some("Project".into()),
+                    aliases: vec![],
+                },
+            ],
+            relationships: vec![],
+        }),
+    );
+    let application = EmbeddedApplication::new(
+        repo.clone(),
+        SearchAgent::new(repo.clone(), embedding.clone()),
+        embedding,
+        extraction,
+        LibrarianRuntimeConfig {
+            min_chunk_size: 10,
+            target_chunk_size: 60,
+            max_chunk_size: 100,
+            chunk_overlap: 0,
+            skip_entity_extraction: true,
+            ..Default::default()
+        },
+    );
+    let original = "# Plan\n\nFirst stable paragraph has enough content.\n\nMiddle stable paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+    let shifted = "# Plan\n\nInserted independent paragraph has enough content.\n\nFirst stable paragraph has enough content.\n\nMiddle stable paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+    let reshuffled = "# Plan\n\nAnother independent paragraph has enough content.\n\nInserted independent paragraph has enough content.\n\nFirst stable paragraph has enough content.\n\nMiddle stable paragraph has enough content.\n\nAfter stable paragraph has enough content.";
+    let mut prior_note = None;
+    let mut prior_ids = BTreeSet::new();
+    let mut expected_scope = None;
+    for (request_id, content, expected_count, extract) in [
+        ("lineage-original", original, 3, false),
+        ("lineage-earlier-insertion", shifted, 4, false),
+        ("lineage-second-insertion", reshuffled, 5, false),
+        ("lineage-first-extraction", reshuffled, 5, true),
+        ("lineage-earlier-removal", original, 3, true),
+    ] {
+        let mut input = request(request_id);
+        input.content = content.into();
+        input.extract_entities = extract;
+        let admission = application
+            .upload_source(caller("openclaw"), input)
+            .await
+            .unwrap();
+        execute(&application, "epoch").await;
+        let status = application
+            .get_remote_job(caller("openclaw"), &admission.job_id)
+            .await
+            .unwrap();
+        assert_eq!(status.status, "completed");
+        let result = status.result.unwrap();
+        let ids = result["note_ids"].as_array().unwrap();
+        assert_eq!(ids.len(), expected_count);
+        let mut middle = None;
+        let mut inserted = None;
+        for id in ids {
+            let note = repo.get_note(id.as_str().unwrap()).await.unwrap().unwrap();
+            if extract {
+                assert!(note.extraction_scope.is_some());
+            }
+            if note.content.contains("Middle stable") {
+                middle = Some(note);
+            } else if note.content.contains("Inserted independent") {
+                inserted = Some(note);
+            }
+        }
+        let middle = middle.unwrap();
+        let middle_id = graphrag_core::record_id_to_string(middle.id.as_ref().unwrap());
+        let entity_ids = repo
+            .get_entities_for_note(&middle_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entity| graphrag_core::record_id_to_string(entity.id.as_ref().unwrap()))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(entity_ids.len(), if extract { 2 } else { 0 });
+        if expected_scope.is_none() {
+            expected_scope = repo.note_extraction_scope(&middle).await.unwrap();
+        } else {
+            assert_eq!(middle.extraction_scope, expected_scope);
+        }
+        if let Some(old) = &prior_note {
+            let old: &graphrag_core::Note = old;
+            assert_ne!(old.id, middle.id);
+            if old.content != middle.content || request_id != "lineage-first-extraction" {
+                assert_ne!(old.chunk_location_key, middle.chunk_location_key);
+            }
+            if !prior_ids.is_empty() {
+                assert_eq!(entity_ids, prior_ids);
+            }
+            if let Some(inserted) = inserted {
+                if extract {
+                    assert_ne!(inserted.extraction_scope, middle.extraction_scope);
+                }
+                let inserted_id = graphrag_core::record_id_to_string(inserted.id.as_ref().unwrap());
+                let inserted_ids = repo
+                    .get_entities_for_note(&inserted_id)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|entity| graphrag_core::record_id_to_string(entity.id.as_ref().unwrap()))
+                    .collect::<BTreeSet<_>>();
+                assert!(entity_ids.is_disjoint(&inserted_ids));
+            }
+        }
+        prior_ids = entity_ids;
+        prior_note = Some(middle);
+    }
 }

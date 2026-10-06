@@ -1212,13 +1212,18 @@ impl Repository {
         let note_id = parse_record_id(&job.job.item_ids[item_index], Some("note"))?;
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         self.ensure_remote_source_current(&job).await?;
+        let note: Option<Note> = self.db.select(note_id.clone()).await?;
+        let extraction_scope = match note {
+            Some(note) => self.note_extraction_scope(&note).await?,
+            None => None,
+        };
         let entity_names = entities
             .iter()
             .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
-        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation AND source_generation = source_id.successful_generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; {} DELETE mentions WHERE in = $note; {} UPDATE $job SET remote_phase = 'extracting', completed_count += 1, checkpoint = $checkpoint; COMMIT TRANSACTION;", guard_sql(), super::notes::replacement_entities_transaction(), super::notes::replacement_mentions_transaction("$note")))
+        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation AND source_generation = source_id.successful_generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; {} IF $extraction_scope != NONE {{ UPDATE $note SET extraction_scope = $extraction_scope; }}; DELETE mentions WHERE in = $note; {} UPDATE $job SET remote_phase = 'extracting', completed_count += 1, checkpoint = $checkpoint; COMMIT TRANSACTION;", guard_sql(), super::notes::replacement_entities_transaction(), super::notes::replacement_mentions_transaction("$note")))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
-            .bind(("note", note_id)).bind(("source", job.source_id.clone())).bind(("generation", job.source_generation)).bind(("checkpoint", job.job.item_ids[item_index].clone())).bind(("replacement_entities", entities)).bind(("replacement_entity_names", entity_names)).await?;
+            .bind(("extraction_scope", extraction_scope)).bind(("note", note_id)).bind(("source", job.source_id.clone())).bind(("generation", job.source_generation)).bind(("checkpoint", job.job.item_ids[item_index].clone())).bind(("replacement_entities", entities)).bind(("replacement_entity_names", entity_names)).await?;
         check_write(response.take_errors(), lease)?;
         self.owned_remote_upload(lease, true).await
     }
