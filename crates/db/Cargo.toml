@@ -7,6 +7,8 @@ rust-version.workspace = true
 [features]
 default = ["rocksdb"]
 rocksdb = ["surrealdb/kv-rocksdb"]
+# Opt-in allocator experiment; normal builds retain the platform allocator.
+allocator = ["surrealdb/allocator"]
 
 [dependencies]
 graphrag-core = { path = "../core" }
