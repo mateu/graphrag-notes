@@ -7,6 +7,8 @@ mod chats;
 #[cfg(test)]
 mod exact_vector_diagnostic_tests;
 mod folder_sync;
+#[cfg(test)]
+mod fulltext_projection_tests;
 mod graph;
 #[cfg(test)]
 mod graph_retrieval_batch_tests;
