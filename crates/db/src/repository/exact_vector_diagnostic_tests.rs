@@ -3,6 +3,20 @@
 use super::*;
 use crate::init_memory;
 
+async fn diagnostic_database(label: &str) -> (DbConnection, &'static str) {
+    if let Some(root) = std::env::var_os("GRAPHRAG_VECTOR_PROBE_ROCKS_ROOT") {
+        #[cfg(feature = "rocksdb")]
+        {
+            let path = std::path::PathBuf::from(root).join(label);
+            assert!(!path.exists(), "diagnostic never reuses a database");
+            return (crate::init_persistent(path).await.unwrap(), "rocksdb");
+        }
+        #[cfg(not(feature = "rocksdb"))]
+        panic!("persistent diagnostic requires the rocksdb feature: {root:?}");
+    }
+    (init_memory().await.unwrap(), "memory")
+}
+
 fn projection() -> &'static str {
     "id, title, content, note_type, tags, created_at, source_id.uri AS source_uri"
 }
@@ -131,7 +145,7 @@ async fn query(
 #[tokio::test]
 #[ignore = "opt-in pinned-engine plans and paired timing, not a hardware CI budget"]
 async fn exact_vector_plan_and_projection_diagnostic() {
-    let db = init_memory().await.unwrap();
+    let (db, _) = diagnostic_database("vector-sql-plans").await;
     let mut query_embedding = vec![0.0_f32; 1024];
     query_embedding[0] = 1.0;
     for n in 0..160 {
@@ -310,6 +324,81 @@ struct ExactVectorCandidate {
     seq: usize,
 }
 
+// The SDK opens optimistic WRITE transactions even for reads and does not
+// cancel on Drop. This experimental owner keeps cancellation in an owned task
+// when its caller is aborted or panics, including while normal cancellation
+// is awaiting the embedded engine. It never commits.
+struct VectorSnapshot {
+    transaction: Option<surrealdb::method::Transaction<surrealdb::engine::local::Db>>,
+    runtime: tokio::runtime::Handle,
+    cancelled: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl VectorSnapshot {
+    async fn begin(db: &DbConnection) -> Self {
+        Self::begin_with_receipt(db, None).await
+    }
+
+    async fn begin_with_receipt(
+        db: &DbConnection,
+        cancelled: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Self {
+        let client = (**db).clone();
+        tokio::spawn(async move {
+            Self {
+                transaction: Some(client.begin().await.unwrap()),
+                runtime: tokio::runtime::Handle::current(),
+                cancelled,
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    fn transaction(&self) -> &surrealdb::method::Transaction<surrealdb::engine::local::Db> {
+        self.transaction.as_ref().unwrap()
+    }
+
+    async fn cancel(mut self) {
+        let transaction = self.transaction.take().unwrap();
+        let cancelled = self.cancelled.take();
+        self.runtime
+            .spawn(async move {
+                transaction.cancel().await.unwrap();
+                if let Some(cancelled) = cancelled {
+                    let _ = cancelled.send(());
+                }
+            })
+            .await
+            .unwrap();
+    }
+}
+
+impl Drop for VectorSnapshot {
+    fn drop(&mut self) {
+        if let Some(transaction) = self.transaction.take() {
+            let cancelled = self.cancelled.take();
+            self.runtime.spawn(async move {
+                transaction.cancel().await.unwrap();
+                if let Some(cancelled) = cancelled {
+                    let _ = cancelled.send(());
+                }
+            });
+        }
+    }
+}
+
+#[derive(Default, serde::Serialize)]
+struct VectorPhases {
+    begin_ms: f64,
+    scan_ms: f64,
+    heap_ms: f64,
+    hydrate_ms: f64,
+    cancel_ms: f64,
+    pages: usize,
+    scanned: usize,
+}
+
 impl PartialEq for ExactVectorCandidate {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other).is_eq()
@@ -376,14 +465,53 @@ async fn paged_exact_vectors(
     since: Option<String>,
     source: Option<String>,
 ) -> Vec<SearchResult> {
+    paged_exact_vectors_traced(db, embedding, limit, page, cbor, since, source)
+        .await
+        .0
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn paged_exact_vectors_traced(
+    db: &DbConnection,
+    embedding: &[f32],
+    limit: usize,
+    page: usize,
+    cbor: bool,
+    since: Option<String>,
+    source: Option<String>,
+) -> (Vec<SearchResult>, VectorPhases) {
+    paged_exact_vectors_checkpoint(db, embedding, limit, page, cbor, since, source, None).await
+}
+
+type FirstPageCheckpoint = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
+#[allow(clippy::too_many_arguments)]
+async fn paged_exact_vectors_checkpoint(
+    db: &DbConnection,
+    embedding: &[f32],
+    limit: usize,
+    page: usize,
+    cbor: bool,
+    since: Option<String>,
+    source: Option<String>,
+    mut checkpoint: Option<FirstPageCheckpoint>,
+) -> (Vec<SearchResult>, VectorPhases) {
     assert!(page > 0, "private diagnostic page must be positive");
-    let tx = (**db).clone().begin().await.unwrap();
+    let mut phases = VectorPhases::default();
+    let start = std::time::Instant::now();
+    let snapshot = VectorSnapshot::begin(db).await;
+    phases.begin_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let tx = snapshot.transaction();
     let query_vector: Vec<f64> = embedding.iter().map(|n| f64::from(*n)).collect();
     let magnitude = query_vector.iter().map(|n| n.powi(2)).sum::<f64>().sqrt();
     let mut after: Option<RecordId> = None;
     let mut heap = std::collections::BinaryHeap::with_capacity(limit);
     let mut seq = 0;
     loop {
+        let start = std::time::Instant::now();
         let rows: Vec<VectorOnlyRow> = tx
             .query(page_query(after.is_some(), cbor))
             .bind(("range", page_range(after.as_ref(), cbor)))
@@ -394,7 +522,15 @@ async fn paged_exact_vectors(
             .unwrap()
             .take(0)
             .unwrap();
+        phases.scan_ms += start.elapsed().as_secs_f64() * 1000.0;
+        phases.pages += 1;
         let count = rows.len();
+        phases.scanned += count;
+        if let Some((ready, resume)) = checkpoint.take() {
+            ready.send(()).unwrap();
+            resume.await.unwrap();
+        }
+        let start = std::time::Instant::now();
         for row in rows {
             after = Some(row.id.clone());
             let vector = if cbor {
@@ -433,6 +569,7 @@ async fn paged_exact_vectors(
                 heap.push(candidate);
             }
         }
+        phases.heap_ms += start.elapsed().as_secs_f64() * 1000.0;
         if count < page {
             break;
         }
@@ -442,6 +579,7 @@ async fn paged_exact_vectors(
         .iter()
         .map(|candidate| candidate.id.clone())
         .collect();
+    let start = std::time::Instant::now();
     let rows: Vec<SearchResult> = tx
         .query(format!("SELECT {} FROM $ids", projection()))
         .bind(("ids", ids))
@@ -461,8 +599,11 @@ async fn paged_exact_vectors(
             row
         })
         .collect();
-    tx.cancel().await.unwrap();
-    output
+    phases.hydrate_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let start = std::time::Instant::now();
+    snapshot.cancel().await;
+    phases.cancel_ms = start.elapsed().as_secs_f64() * 1000.0;
+    (output, phases)
 }
 
 #[tokio::test]
@@ -552,7 +693,7 @@ async fn exact_vector_paged_float_diagnostic() {
 async fn exact_vector_paged_semantics_diagnostic() {
     use chrono::TimeZone;
     use surrealdb::types::{Object, RecordIdKey};
-    let db = init_memory().await.unwrap();
+    let (db, _) = diagnostic_database("vector-semantic-contract").await;
     db.query(
         "REMOVE INDEX idx_note_embedding ON note; DEFINE TABLE exact_vector_cbor_probe SCHEMALESS",
     )
@@ -648,6 +789,27 @@ async fn exact_vector_paged_semantics_diagnostic() {
             .take(0)
             .unwrap();
     }
+    db.query("CREATE note:absent_vector SET content='actual absent embedding'; CREATE exact_vector_cbor_probe:absent_vector SET note_id=note:absent_vector,embedding_cbor=NONE,created_at=note:absent_vector.created_at")
+        .await.unwrap().check().unwrap();
+    let mut precise = positive
+        .iter()
+        .map(|value| f64::from(*value))
+        .collect::<Vec<_>>();
+    precise[0] = 1.0 + 0.000_000_001;
+    precise[1] = 0.000_000_003;
+    db.query("CREATE note:precise_f64 SET content='persisted f64 precision fixture',embedding=$embedding; CREATE exact_vector_cbor_probe:precise_f64 SET note_id=note:precise_f64,embedding_cbor=encoding::cbor::encode(note:precise_f64.embedding),created_at=note:precise_f64.created_at")
+        .bind(("embedding",precise.clone())).await.unwrap().check().unwrap();
+    let encoded: Vec<surrealdb::types::Bytes> = db
+        .query("SELECT VALUE embedding_cbor FROM exact_vector_cbor_probe:precise_f64")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    let decoded: Vec<f64> = ciborium::from_reader(encoded[0].as_ref()).unwrap();
+    assert_eq!(
+        decoded.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+        precise.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+    );
     for embedding in [&positive, &vec![0.0; 1024], &vec![1.0, 0.0], &vec![]] {
         for (since, source) in [
             (None, None),
@@ -739,7 +901,7 @@ async fn exact_vector_skinny_storage_diagnostic() {
     };
     let mut runs = Vec::new();
     for repeats in bodies.iter().copied() {
-        let db = init_memory().await.unwrap();
+        let (db, backend) = diagnostic_database(&format!("fictional-{count}-{repeats}")).await;
         db.query("DEFINE TABLE exact_vector_probe SCHEMALESS; DEFINE TABLE exact_vector_cbor_probe SCHEMALESS")
             .await
             .unwrap()
@@ -852,12 +1014,13 @@ async fn exact_vector_skinny_storage_diagnostic() {
                     ("cbor_paged", skinny_query(limit)),
                 ] {
                     let mut samples = Vec::new();
+                    let mut phase_samples = Vec::new();
                     let mut exact = true;
                     let mut bits_exact = true;
                     for _ in 0..21 {
                         let start = std::time::Instant::now();
                         let rows = if name == "cbor_paged" {
-                            paged_exact_vectors(
+                            let (rows, phases) = paged_exact_vectors_traced(
                                 &db,
                                 &query_embedding,
                                 limit,
@@ -866,7 +1029,9 @@ async fn exact_vector_skinny_storage_diagnostic() {
                                 since.clone(),
                                 source_uri.clone(),
                             )
-                            .await
+                            .await;
+                            phase_samples.push(phases);
+                            rows
                         } else {
                             query(
                                 &db,
@@ -908,6 +1073,7 @@ async fn exact_vector_skinny_storage_diagnostic() {
                         .unwrap();
                     runs.push(
                         serde_json::json!({"variant":name,"filter":filter,"rows":baseline.len(),
+                    "backend":backend,"phase_samples":phase_samples,
                     "body_payload_bytes":if count>160 {None} else {Some(repeats*"payload ".len())},
                     "mixed_body_sizes":count>160,
                     "limit":limit,"full_rows_exact":exact,"distance_bits_exact":bits_exact,
@@ -922,4 +1088,141 @@ async fn exact_vector_skinny_storage_diagnostic() {
         serde_json::json!({"fictional_records_per_population":count,"populations":bodies.len(),"dense_vectors":dense,
         "dimension":1024,"provider_calls":0,"engine":"surrealdb-core 3.2.4","runs":runs})
     );
+}
+
+#[tokio::test]
+#[ignore = "opt-in actual SDK transaction cancellation fault experiment"]
+async fn exact_vector_snapshot_cancels_on_panic_abort_and_normal_exit() {
+    let (db, _) = diagnostic_database("snapshot-cancellation").await;
+    db.query("DEFINE TABLE vector_guard_probe SCHEMALESS; CREATE vector_guard_probe:one SET value='persisted'")
+        .await.unwrap().check().unwrap();
+    for fault in ["normal", "panic", "abort"] {
+        let (cancelled, receipt) = tokio::sync::oneshot::channel();
+        let (ready, entered) = tokio::sync::oneshot::channel();
+        let client = db.clone();
+        let task = tokio::spawn(async move {
+            let snapshot = VectorSnapshot::begin_with_receipt(&client, Some(cancelled)).await;
+            snapshot
+                .transaction()
+                .query("UPDATE vector_guard_probe:one SET value='uncommitted'")
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            ready.send(()).unwrap();
+            match fault {
+                "normal" => snapshot.cancel().await,
+                "panic" => panic!("intentional private transaction fault"),
+                "abort" => std::future::pending::<()>().await,
+                _ => unreachable!(),
+            }
+        });
+        entered.await.unwrap();
+        if fault == "abort" {
+            task.abort();
+        }
+        let result = task.await;
+        assert_eq!(result.is_ok(), fault == "normal");
+        tokio::time::timeout(std::time::Duration::from_secs(5), receipt)
+            .await
+            .unwrap()
+            .unwrap();
+        let values: Vec<String> = db
+            .query("SELECT VALUE value FROM vector_guard_probe:one")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(values, ["persisted"], "SDK-acknowledged rollback: {fault}");
+    }
+    // A separate transaction still writes/commits normally after all faults.
+    db.query("BEGIN TRANSACTION; UPDATE vector_guard_probe:one SET value='after-faults'; COMMIT TRANSACTION")
+        .await.unwrap().check().unwrap();
+    let values: Vec<String> = db
+        .query("SELECT VALUE value FROM vector_guard_probe:one")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(values, ["after-faults"]);
+}
+
+#[tokio::test]
+#[ignore = "opt-in coherent source promotion across actual paged SDK snapshot"]
+async fn exact_vector_snapshot_preserves_generation_and_payload_during_promotion() {
+    let (db, _) = diagnostic_database("snapshot-promotion").await;
+    db.query("DEFINE TABLE exact_vector_cbor_probe SCHEMALESS")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let mut source = Source::manual();
+    source.uri = Some("fixture://snapshot-promotion".into());
+    source.successful_generation = 1;
+    source.generation = 2;
+    let source: Option<Source> = db
+        .create(("source", "fixture-promotion"))
+        .content(source)
+        .await
+        .unwrap();
+    let source_id = source.unwrap().id.unwrap();
+    let mut embedding = vec![0.0; 1024];
+    embedding[0] = 1.0;
+    for n in 0..8 {
+        let mut note =
+            Note::new(format!("original snapshot row {n}")).with_embedding(embedding.clone());
+        note.source_id = Some(source_id.clone());
+        note.source_generation = Some(if n < 4 { 1 } else { 2 });
+        db.query("CREATE $id CONTENT $note; CREATE $shadow SET note_id=$id,embedding_cbor=encoding::cbor::encode($note.embedding),created_at=$note.created_at,source_id=$note.source_id,source_generation=$note.source_generation")
+            .bind(("id", RecordId::new("note", format!("promotion-{n}"))))
+            .bind(("shadow", RecordId::new("exact_vector_cbor_probe", format!("promotion-{n}"))))
+            .bind(("note", note)).await.unwrap().check().unwrap();
+    }
+    let baseline = query(&db, old_query(50), &embedding, 50, None, None).await;
+    assert_eq!(baseline.len(), 4);
+    let (ready, entered) = tokio::sync::oneshot::channel();
+    let (resume, resumed) = tokio::sync::oneshot::channel();
+    let reader = db.clone();
+    let query_vector = embedding.clone();
+    let task = tokio::spawn(async move {
+        paged_exact_vectors_checkpoint(
+            &reader,
+            &query_vector,
+            50,
+            1,
+            true,
+            None,
+            None,
+            Some((ready, resumed)),
+        )
+        .await
+        .0
+    });
+    entered.await.unwrap();
+    db.query("BEGIN TRANSACTION; UPDATE $source SET successful_generation=2; UPDATE note SET content='newly committed payload' WHERE source_id=$source; COMMIT TRANSACTION")
+        .bind(("source",source_id)).await.unwrap().check().unwrap();
+    resume.send(()).unwrap();
+    let snapshot = task.await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&snapshot).unwrap(),
+        serde_json::to_value(&baseline).unwrap()
+    );
+    assert_eq!(
+        snapshot
+            .iter()
+            .map(|r| r.vec_distance.map(f32::to_bits))
+            .collect::<Vec<_>>(),
+        baseline
+            .iter()
+            .map(|r| r.vec_distance.map(f32::to_bits))
+            .collect::<Vec<_>>()
+    );
+    let committed = query(&db, old_query(50), &embedding, 50, None, None).await;
+    assert_eq!(committed.len(), 4);
+    assert!(committed
+        .iter()
+        .all(|row| row.content == "newly committed payload"));
+    assert!(committed
+        .iter()
+        .all(|row| !snapshot.iter().any(|old| old.id == row.id)));
 }
