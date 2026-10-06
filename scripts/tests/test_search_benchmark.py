@@ -108,6 +108,16 @@ class SearchBenchmarkTests(unittest.TestCase):
         self.assertEqual(len(seen), 4)
         self.assertTrue(all(row["status"] == "ok" for row in rows))
 
+    def test_failed_pair_prevents_budget_claim_even_with_twenty_fast_successes(self):
+        rows = benchmark.run({"cases": [case()]}, Client, 21, [1])
+        row = next(r for r in rows if r["phase"] == "warmed" and r["policy"] == "hybrid-off")
+        row.update(status="failed", error="transport_or_timeout")
+        summary = benchmark.summary({"suite_sha256": "fixture", "samples": rows})
+        pair = summary["graph_pairs"][0]
+        self.assertEqual(pair["paired_search_rpc_delta"]["samples"], 20)
+        self.assertEqual(pair["failed_pairs"], 1)
+        self.assertIsNone(pair["within_target"])
+
 
 if __name__ == "__main__":
     unittest.main()

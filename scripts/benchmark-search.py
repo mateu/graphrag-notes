@@ -249,12 +249,14 @@ def summary(report):
     indexed = {(r["concurrency"], r["phase"], r["round"], r["name"], r["policy"]): r for r in report["samples"]}
     for concurrency in sorted({r["concurrency"] for r in report["samples"]}):
         for policy in ("hybrid-auto", "hybrid-on"):
-            deltas, regressions, comparisons = [], 0, 0
+            deltas, regressions, comparisons, scheduled, failed = [], 0, 0, 0, 0
             for row in report["samples"]:
-                if row["concurrency"] != concurrency or row["phase"] != "warmed" or row["policy"] != policy or row["status"] != "ok":
+                if row["concurrency"] != concurrency or row["phase"] != "warmed" or row["policy"] != policy:
                     continue
+                scheduled += 1
                 base = indexed.get((concurrency, "warmed", row["round"], row["name"], "hybrid-off"))
-                if not base or base["status"] != "ok":
+                if row["status"] != "ok" or not base or base["status"] != "ok":
+                    failed += 1
                     continue
                 deltas.append(row["search_rpc_ms"] - base["search_rpc_ms"])
                 a, b = base["metrics"]["reciprocal_rank_of_judged_positives"], row["metrics"]["reciprocal_rank_of_judged_positives"]
@@ -263,7 +265,8 @@ def summary(report):
                     regressions += b < a
             dist = distribution(deltas)
             pairs.append({"concurrency": concurrency, "policy": policy, "paired_search_rpc_delta": dist,
-                          "target_delta_ms": 250, "within_target": dist["p95_ms"] <= 250 if dist["p95_ms"] is not None else None,
+                          "scheduled_pairs": scheduled, "failed_pairs": failed,
+                          "target_delta_ms": 250, "within_target": dist["p95_ms"] <= 250 if dist["p95_ms"] is not None and not failed else None,
                           "judged_positive_rr_comparisons": comparisons, "judged_positive_rr_regressions": regressions})
     result["graph_pairs"] = pairs
     return result
