@@ -27,11 +27,11 @@ class ReleaseTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.repo = self.root / "repo"
         self.repo.mkdir()
-        self.version = "0.1.0-rc.2"
+        self.version = "0.1.0-rc.3"
         self.tag = f"v{self.version}"
         (self.repo / "Cargo.toml").write_text(
             '[workspace]\nmembers = ["crates/cli", "crates/core"]\n'
-            '[workspace.package]\nversion = "0.1.0-rc.2"\nrust-version = "1.97.1"\n')
+            '[workspace.package]\nversion = "0.1.0-rc.3"\nrust-version = "1.97.1"\n')
         (self.repo / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.97.1"\n')
         lock = 'version = 4\n'
         for name in ["cli", "core"]:
@@ -43,6 +43,10 @@ class ReleaseTests(unittest.TestCase):
         (self.repo / "Cargo.lock").write_text(lock)
         (self.repo / "samples").mkdir()
         (self.repo / "samples/first-notes.md").write_text("# Sanitized sample\nAtlas launch fixture.\n")
+        for relative in release.RELEASE_PAYLOADS:
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Public fictional release fixture: " + relative + "\n")
         self.git("init", "-q")
         self.git("config", "user.name", "Offline fixture")
         self.git("config", "user.email", "fixture@example.invalid")
@@ -157,7 +161,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotEqual(first["source_commit"], first["build_source_commit"])
         self.assertEqual(first["validation"]["published_asset_install"]["status"], "not_run")
         with tarfile.open(self.root / "first" / first["archive"]) as archive:
-            self.assertEqual(archive.getnames(), ["graphrag", "samples/first-notes.md"])
+            self.assertEqual(archive.getnames(), ["graphrag", "samples/first-notes.md", *sorted(first["payload_sha256"])])
+            self.assertEqual(set(first["payload_sha256"]), {"release/" + p for p in release.RELEASE_PAYLOADS} | {"release/PAYLOADS.json", "release/PAYLOADS.sha256", "release/VERSION", "release/SOURCE-COMMIT"})
             self.assertTrue(all(member.uid == member.gid == 0 for member in archive.getmembers()))
 
     def test_missing_symlink_modified_and_wrong_version_binaries_are_rejected(self):
@@ -345,7 +350,7 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "allowlist"):
             release.inspect_archive(bad, info["binary_sha256"], info["sample_sha256"])
         with self.assertRaisesRegex(release.ReleaseError, "differ"):
-            release.inspect_archive(self.root / "dist" / info["archive"], "0" * 64, info["sample_sha256"])
+            release.inspect_archive(self.root / "dist" / info["archive"], "0" * 64, info["sample_sha256"], info["payload_sha256"])
 
     def test_assembly_requires_all_targets_consistent_provenance_and_valid_checksums(self):
         release.package(self.package_args("native"))
@@ -355,6 +360,18 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "missing targets"):
             release.assemble(args)
         args.targets = [self.target]
+        valid_tag = args.tag
+        args.tag = "../unsafe"
+        with self.assertRaisesRegex(release.ReleaseError, "versioned release tag"):
+            release.assemble(args)
+        args.tag = valid_tag
+        info_path = self.root / "native/BUILDINFO.json"
+        original = info_path.read_text()
+        value = json.loads(original); value['version'] = '9.9.9'
+        info_path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(release.ReleaseError, "versions/tags"):
+            release.assemble(args)
+        info_path.write_text(original)
         assembled = release.assemble(args)
         self.assertEqual(assembled["targets"], args.targets)
         self.assertTrue((args.output / f"BUILDINFO-{self.target}.json").is_file())
@@ -363,6 +380,181 @@ class ReleaseTests(unittest.TestCase):
         args.output = self.root / "tampered-assembly"
         with self.assertRaisesRegex(release.ReleaseError, "metadata checksum"):
             release.assemble(args)
+
+    def install_fixture(self, dist, force=False, clients_only=False):
+        tools = self.root / "installer-tools"
+        tools.mkdir(exist_ok=True)
+        curl = tools / "curl"
+        curl.write_text("""#!/bin/bash
+set -euo pipefail
+output='' url=''
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -o) output="$2"; shift 2 ;;
+      --proto|--proto-redir) shift 2 ;;
+      --tlsv1.2|-fsSL) shift ;;
+      https://*) url="$1"; shift ;;
+      *) exit 2 ;;
+    esac
+done
+case "$url" in
+  https://github.com/mateu/graphrag-notes/releases/download/*) cp "$GRN_TEST_DIST/${url##*/}" "$output" ;;
+  *) exit 22 ;;
+esac
+""")
+        curl.chmod(0o755)
+        no_python = tools / "python3"
+        no_python.write_text("#!/bin/sh\nexit 99\n")
+        no_python.chmod(0o755)
+        env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'], GRN_TEST_DIST=str(dist))
+        return subprocess.run(["bash", str(SCRIPT.with_name("install.sh")), "--version", self.version,
+                               "--bin-dir", str(self.root / "installed-bin"), "--data-dir", str(self.root / "installed-data"),
+                               *(["--force"] if force else []), *(["--clients-only"] if clients_only else [])],
+                              env=env, capture_output=True, text=True)
+
+    def test_platform_neutral_clients_share_native_payloads_without_installing_binary(self):
+        info = release.package(self.package_args())
+        clients = self.root / "dist" / info['client_archive']
+        self.assertEqual(release.sha256(clients), info['client_archive_sha256'])
+        with tarfile.open(clients) as client_source, tarfile.open(self.root / 'dist' / info['archive']) as native_source:
+            self.assertEqual(client_source.getnames(), sorted(info['payload_sha256']))
+            self.assertNotIn('graphrag', client_source.getnames())
+            self.assertNotIn('samples/first-notes.md', client_source.getnames())
+            for name in client_source.getnames():
+                self.assertEqual(client_source.extractfile(name).read(), native_source.extractfile(name).read())
+        installed = self.install_fixture(self.root / 'dist', clients_only=True)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertFalse((self.root / 'installed-bin/graphrag').exists())
+        self.assertFalse((self.root / 'installed-data/samples').exists())
+        bundle = self.root / 'installed-data/releases' / self.tag
+        self.assertEqual((bundle / 'VERSION').read_text(), self.version + '\n')
+        self.assertEqual((bundle / 'scripts/native-mcp/envelope.py').read_bytes(),
+                         (self.repo / 'scripts/native-mcp/envelope.py').read_bytes())
+
+    def test_packaged_clients_run_without_changing_versioned_bundle(self):
+        # Exercise real importing entrypoints after packaging, with no providers.
+        for relative in ("scripts/validate-native-mcp.py", "scripts/validate-daily-workflow.py",
+                         "scripts/native-mcp/extended.py", "scripts/native-mcp/envelope.py",
+                         "scripts/refresh-openclaw-memory.py", "scripts/openclaw_memory_refresh.py",
+                         "scripts/benchmark-search.py", "scripts/evaluate-retrieval.py"):
+            if not (SCRIPT.parents[1] / relative).exists():
+                continue  # Draft dependencies are required before final source packaging.
+            (self.repo / relative).write_bytes((SCRIPT.parents[1] / relative).read_bytes())
+        self.commit()
+        self.build_record = self.root / "client-use-build.json"
+        self.seal_build()
+        release.package(self.package_args())
+        installed = self.install_fixture(self.root / "dist", clients_only=True)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        bundle = self.root / "installed-data/releases" / self.tag
+        driver = bundle / "scripts/validate-native-mcp.py"
+        environment = {k: v for k, v in os.environ.items() if k not in
+                       ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX")}
+        invoked = subprocess.run([sys.executable, str(driver), "--help"],
+                                 capture_output=True, text=True, env=environment)
+        self.assertEqual(invoked.returncode, 0, invoked.stderr)
+        for name in ("refresh-openclaw-memory.py", "benchmark-search.py"):
+            if (SCRIPT.parents[1] / "scripts" / name).exists():
+                invoked = subprocess.run([sys.executable, str(bundle / "scripts" / name), "--help"],
+                                         capture_output=True, text=True, env=environment)
+                self.assertEqual(invoked.returncode, 0, invoked.stderr)
+        loader = """import importlib.util,runpy,sys
+runpy.run_path(sys.argv[1])
+for path in sys.argv[2:]:
+ spec=importlib.util.spec_from_file_location('installed_fixture',path)
+ module=importlib.util.module_from_spec(spec)
+ spec.loader.exec_module(module)
+"""
+        loaded = subprocess.run([sys.executable, "-c", loader, str(driver),
+                                 str(bundle / "scripts/native-mcp/extended.py"),
+                                 str(bundle / "scripts/validate-daily-workflow.py")],
+                                capture_output=True, text=True, env=environment)
+        self.assertEqual(loaded.returncode, 0, loaded.stderr)
+        self.assertEqual(list(bundle.rglob("__pycache__")), [])
+        reinstalled = self.install_fixture(self.root / "dist", clients_only=True)
+        self.assertEqual(reinstalled.returncode, 0, reinstalled.stderr)
+
+    def test_client_bundle_installs_without_python_and_refuses_edited_version(self):
+        info = release.package(self.package_args())
+        installed = self.install_fixture(self.root / "dist")
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        bundle = self.root / "installed-data/releases" / self.tag
+        self.assertEqual((bundle / "VERSION").read_text(), self.version + "\n")
+        self.assertEqual((bundle / "SOURCE-COMMIT").read_text(), self.commit_id + "\n")
+        for path in release.RELEASE_PAYLOADS:
+            self.assertEqual((bundle / path).read_bytes(), (self.repo / path).read_bytes())
+        client = bundle / "scripts/refresh-openclaw-memory.py"
+        client.write_text("operator edited versioned client\n")
+        refused = self.install_fixture(self.root / "dist", force=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("installed release bundle differs", refused.stderr)
+        self.assertEqual(release.sha256(self.root / "installed-bin/graphrag"), info['binary_sha256'])
+        self.assertEqual(client.read_text(), "operator edited versioned client\n")
+        self.assertFalse((bundle.parent / (".install-" + self.tag + ".lock")).exists())
+
+    def test_installer_refuses_client_or_metadata_tampering_before_binary_publication(self):
+        info = release.package(self.package_args())
+        dist = self.root / "dist"
+        archive = dist / info['archive']
+        with tarfile.open(archive) as source:
+            payloads = {name: source.extractfile(name).read() for name in info['payload_sha256']}
+        payloads['release/scripts/refresh-openclaw-memory.py'] += b"tampered\n"
+        archive.unlink()
+        release.deterministic_archive(archive, self.binary, self.repo / "samples/first-notes.md", 1, payloads)
+        manifest = dist / "SHA256SUMS"
+        original_manifest = manifest.read_text()
+        manifest.write_text(original_manifest.replace(info['archive_sha256'], release.sha256(archive)))
+        refused = self.install_fixture(dist)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("release identity archive checksum differs", refused.stderr)
+        self.assertFalse((self.root / "installed-bin/graphrag").exists())
+        # Metadata is independently pinned by SHA256SUMS as well.
+        (dist / "BUILDINFO.json").write_text((dist / "BUILDINFO.json").read_text() + "\n")
+        refused = self.install_fixture(dist)
+        self.assertIn("BUILDINFO checksum does not match", refused.stderr)
+        self.assertFalse((self.root / "installed-bin/graphrag").exists())
+
+    def rewrite_checksum(self, dist, name):
+        manifest = dist / "SHA256SUMS"
+        lines = manifest.read_text().splitlines()
+        manifest.write_text("".join((release.sha256(dist / name) + "  " + name if line.split()[1] == name else line) + "\n" for line in lines))
+
+    def test_installer_cross_binds_native_and_client_metadata_bytes(self):
+        release.package(self.package_args())
+        dist = self.root / "dist"
+        for name, clients in [("BUILDINFO.json", False), ("CLIENTINFO.json", True)]:
+            metadata = dist / name
+            original = metadata.read_bytes()
+            value = json.loads(original)
+            value.update(version="9.9.9", source_commit="0" * 40)
+            metadata.write_text(json.dumps(value))
+            self.rewrite_checksum(dist, name)
+            refused = self.install_fixture(dist, clients_only=clients)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn(name[:-5] + " bytes differ from release identity", refused.stderr)
+            self.assertFalse((self.root / "installed-bin/graphrag").exists())
+            self.assertFalse((self.root / "installed-data/releases" / self.tag).exists())
+            metadata.write_bytes(original)
+            self.rewrite_checksum(dist, name)
+
+    def test_installer_refuses_mixed_flat_source_target_and_archive_identity(self):
+        release.package(self.package_args())
+        dist = self.root / "dist"
+        for name, clients in [("BUILDINFO.identity", False), ("CLIENTINFO.identity", True)]:
+            identity = dist / name
+            original = identity.read_text()
+            for key, replacement in [("source_commit", "0" * 40), ("target", "unexpected"),
+                                     ("version", "9.9.9"), ("archive_sha256", "0" * 64)]:
+                identity.write_text("".join((key + "=" + replacement if line.startswith(key + "=") else line) + "\n" for line in original.splitlines()))
+                self.rewrite_checksum(dist, name)
+                refused = self.install_fixture(dist, clients_only=clients)
+                self.assertNotEqual(refused.returncode, 0, key)
+                self.assertFalse((self.root / "installed-data/releases" / self.tag).exists())
+            identity.write_text(original + "source_commit=" + "0" * 40 + "\n")
+            self.rewrite_checksum(dist, name)
+            self.assertIn("release identity fields are invalid", self.install_fixture(dist, clients_only=clients).stderr)
+            identity.write_text(original)
+            self.rewrite_checksum(dist, name)
 
     def test_real_packaged_archive_works_with_existing_installer_local_transport(self):
         # Only native-inspection output is doubled; the archive, checksum,

@@ -1,17 +1,21 @@
 # Shared application operations
 
-This design defines the local operation boundary required by terminal workspace
-issue #63 and the future remote service in #56. The terminal and the ordinary
-CLI use the same retrieval, ingestion, inspection, and proposal policy. Issue
-#63 implements an embedded backend; it does not introduce an HTTP server, MCP
-transport, remote credentials, or remote CLI configuration.
+The terminal, CLI and authenticated MCP service share retrieval, ingestion,
+inspection and proposal policy through `graphrag-application`. An embedded
+workspace owns its local database; `graphrag serve` owns the shared corpus and
+remote clients use HTTP without opening it themselves.
 
-Current source also implements the first #56 slice in `graphrag-service`:
-authenticated Streamable HTTP search/inspection/context and retry-safe capture.
-`RemoteApplicationOperations` extends the shared local interface with bounded
-context and durable capture contracts; [shared MCP setup](shared-mcp.md) documents
-its ownership, wire envelope and client recipes. Remote editing, proposal
-decisions and jobs remain follow-up work.
+`RemoteApplicationOperations` extends the typed local interface with bounded
+context, durable capture, revision-guarded editing/deletion, proposal decisions,
+uploaded Markdown and durable jobs. Each operation has an independent
+server-enforced capability; trusted instance/actor identity comes from
+authentication. [Shared MCP setup](shared-mcp.md),
+[mutations](shared-mcp-mutations.md), [uploaded jobs](remote-upload-jobs.md) and
+[remote diagnostics](remote-diagnostics.md) describe these existing contracts.
+The published rc.2 binary predates the shared service; the rc.3 release bundles
+these clients and operating guides with matching source provenance.
+Actual publication and deployment evidence is tracked in the
+[release acceptance record](https://github.com/mateu/graphrag-notes/issues/97#issuecomment-6009885555).
 
 ## Ownership and adapters
 
@@ -36,7 +40,7 @@ retrying. It must not kill the owner or wait indefinitely. Memory-backed
 sessions remain useful for tests and ephemeral browsing; recoverable captures
 still require a persistent corpus.
 
-The optional service becomes the sole database owner. A remote adapter invokes
+The optional service is the sole database owner. A remote adapter invokes
 the same operations without opening a client-side RocksDB store or requiring
 client-side inference. Service authentication, authorization, request identity,
 and transport negotiation belong to the MCP adapter rather than the local
@@ -90,17 +94,17 @@ and linked conversation information where applicable.
 Guarded content edits and detach retain the existing full opening-note
 snapshot check inside the atomic write transaction. An inspection fingerprint
 is an observational read guard; it is not a substitute for that mutation
-snapshot. Editing through the future service must supply an expected revision
+snapshot. Editing through the service must supply an expected revision
 and use a repository-backed conflict check.
 
 Proposal cards retain proposal metadata plus both endpoint revisions. The
 shared decision operation rebuilds the card and refuses changed proposals or
 endpoints before invoking the existing accept/reject/undo repository methods.
 Acceptance requires explicit human confirmation and remains manual and
-audited. This preserves the existing inbox's freshness check and lifecycle
-coordination; it does not claim that its pre-mutation read is a new SQL
-compare-and-swap. Stronger remote concurrency guarantees must be implemented
-and tested in #56 before exposing competing-client mutation tools.
+audited. Remote decisions retain the repository lifecycle guard, validate
+proposal and endpoint snapshots in the committing transaction, and commit
+the authenticated decision receipt with its effect. Competing clients must
+refresh stale revisions rather than silently replace another decision.
 
 ## Provider availability and cancellation
 
@@ -127,10 +131,13 @@ On cancellation or provider failure before commit, the client retains its
 private draft and reports recovery guidance.
 
 Existing checkpointed processing continues to use librarian/reindex
-cancellation flags at item boundaries and existing durable job records. A
-future service owns those jobs independently of a client connection. A
-disconnect will not imply cancellation; explicit cancel/resume and reconnect
-behavior, durable capture retry identities, and upload limits are #56 work.
+cancellation flags at item boundaries and existing durable job records. The
+service owns uploaded jobs independently of a client connection. Disconnect
+does not imply cancellation; explicit owned cancel/resume, durable upload
+admissions and capture retry receipts support recovery. Source generations
+and retirement fences prevent stale resumed jobs from publishing replaced
+content. See [uploaded jobs](remote-upload-jobs.md) and
+[capture recovery](capture-journal.md).
 
 ## Local paths and interaction
 
@@ -140,11 +147,13 @@ arguments must not become application operation requests. Local open validates
 the selected revision and uses the existing literal-argv opener behavior.
 
 Source URIs describe the corpus owner's source, not a file automatically
-available on another client. A future remote client must use an explicit path
-mapping or supported source-content workflow before opening such a URI.
+available on another client. A remote client needs an explicit path
+mapping or supplied source-content workflow before opening such a URI.
 Remote imports upload content with stable identity rather than asking the
-service to read arbitrary client-supplied paths. Host-managed folders and
-client uploads require distinct refresh contracts in #56.
+service to read arbitrary client-supplied paths. Host-managed folders use their local sync contract;
+client uploads use stable authenticated document keys, durable jobs and
+registered incremental refresh. See [folder sync](folder-sync.md) and
+[OpenClaw refresh](openclaw-memory-refresh.md).
 
 The terminal must remain readable in a narrow window and usable with piped
 commands for deterministic tests. An interactive line editor may add keyboard
@@ -157,12 +166,13 @@ Application errors distinguish validation, not found, revision conflict,
 provider unavailable, cancellation, and internal failures. Database ownership
 errors are produced during bootstrap before an operation backend exists. The
 CLI adapter preserves established exit codes and machine output behavior.
-Future unauthorized, forbidden, service-unreachable, and retry-identity
-conflicts require #56 implementation rather than fictitious local behavior.
+Unauthorized, forbidden, service-unreachable and retry-identity conflicts
+remain explicit remote errors with retained client recovery state.
 
-The boundary introduces no schema migration, no new source-generation policy,
-and no change to existing archives or embedded installations. macOS and Linux
-are supported targets. Windows is outside this project's requested scope.
+The local typed interface preserves embedded behavior. Shared uploads add
+durable staged generations and receipts; supported releases declare their
+schema/portable-backup compatibility in the matching release guide. macOS
+and Linux are supported targets. Windows is outside this project's requested scope.
 
 ## Validation
 
@@ -176,4 +186,5 @@ Terminal walkthroughs cover an empty corpus, unavailable providers, result
 selection without retyping IDs, open/copy, proposal review, narrow terminals,
 competing database ownership, and recovery to the prompt after errors.
 Non-interactive CLI/JSON regression checks remain required. Network and real
-OpenClaw/Hermes interoperability validation belongs to #56.
+OpenClaw/Hermes interoperability evidence and its version limits are recorded
+in the [shared walkthrough](shared-mcp-walkthrough.md).

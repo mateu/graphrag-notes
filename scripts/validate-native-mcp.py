@@ -27,6 +27,9 @@ import sys
 import tempfile
 import time
 
+# Keep immutable installed client bundles free of generated sibling bytecode.
+sys.dont_write_bytecode = True
+
 SCRIPTS = Path(__file__).resolve().parent
 RUNTIMES = SCRIPTS / "native-mcp"
 LINUX_SUBREAPER_PID = None

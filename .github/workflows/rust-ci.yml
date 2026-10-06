@@ -94,15 +94,15 @@ jobs:
         with:
           shared-key: quality-gates-v1
       - name: Fresh migration fixture
-        run: cargo test -p graphrag-db migrations::tests::fresh_database_reaches_latest_schema_version --lib -- --exact
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name migrations::tests::fresh_database_reaches_latest_schema_version
       - name: Upgrade migration fixture
-        run: cargo test -p graphrag-db migrations::tests::a_database_at_v001_can_upgrade_without_losing_data --lib -- --exact
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name migrations::tests::a_database_at_v001_can_upgrade_without_losing_data
       - name: Source idempotency fixture
-        run: cargo test -p graphrag-db repository::tests::source_lifecycle_is_idempotent_and_preserves_manual_notes --lib -- --exact
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::tests::source_lifecycle_is_idempotent_and_preserves_manual_notes
       - name: Resumable inference fault-injection fixture
-        run: cargo test -p graphrag-agents librarian::tests::embedding_resume_persists_reconciliation_before_next_batch_cancellation --lib -- --exact
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-agents --lib --test-name ingestion::librarian::tests::embedding_resume_persists_reconciliation_before_next_batch_cancellation
       - name: Portable backup and reindex round-trip fixture
-        run: cargo test -p graphrag-cli backup::tests::portable_backup_round_trip_is_streamed_verified_and_restorable --bin graphrag -- --exact
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-cli --bin graphrag --test-name backup::tests::portable_backup_round_trip_is_streamed_verified_and_restorable
 
   retrieval-regression:
     name: retrieval regression baseline
@@ -114,7 +114,7 @@ jobs:
         with:
           shared-key: quality-gates-v1
       - name: Compare deterministic fixture with tests/baselines/retrieval-v1.json
-        run: cargo test -p graphrag-cli eval::tests::committed_retrieval_fixture_matches_versioned_baseline --bin graphrag -- --exact --nocapture
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-cli --bin graphrag --test-name eval::tests::committed_retrieval_fixture_matches_versioned_baseline --nocapture
 
   dependency-audit:
     name: scheduled dependency and security audit

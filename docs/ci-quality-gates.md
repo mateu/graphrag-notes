@@ -11,7 +11,7 @@ service. Normal pull requests run only deterministic offline tests.
 | `msrv` | `python3 scripts/check-workspace-rust-version.py`, then `cargo +1.97.1 check --workspace --locked` | Exact workspace declaration and Rust 1.97.1 MSRV |
 | `offline-integration` | `cargo test --workspace --locked`, then `python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline` | Unit tests, offline integration, and the combined daily workflow with deterministic doubles |
 | `persistent-round-trip` | commands shown in `.github/workflows/rust-ci.yml` | Fresh/upgrade migrations, source idempotency, resilient processing, and portable round trips |
-| `retrieval-regression` | `cargo test -p graphrag-cli eval::tests::committed_retrieval_fixture_matches_versioned_baseline --bin graphrag -- --exact --nocapture` | Committed retrieval fixture baseline |
+| `retrieval-regression` | `python3 scripts/run-exact-rust-test.py --package graphrag-cli --bin graphrag --test-name eval::tests::committed_retrieval_fixture_matches_versioned_baseline --nocapture` | Committed retrieval fixture baseline |
 | `dependency-audit` | `scripts/check-audit-exemptions.sh && cargo audit` | Scheduled RustSec scan plus reachability checks for scoped exemptions |
 
 Each build job uses the same `quality-gates-v1` Cargo cache key. Compilation is
@@ -19,6 +19,16 @@ not merged into one opaque job: a focused failure is more useful to an agent
 than a few saved incremental build minutes. The workflow cancels superseded PR
 commits, while preserving every main-branch run. The scheduled/manual audit is
 the only job allowed to install or query an advisory tool over the network.
+
+All six focused Rust test invocations use `scripts/run-exact-rust-test.py`.
+It first lists the exact target and requires one matching test, then requires
+the actual run to report exactly one passed test and no ignored/failed tests.
+Cargo's successful zero-test exit is a gate failure. In particular, the embedding
+resume fixture uses the full `ingestion::librarian::tests::` module path; the
+shorter historical filter selected zero tests. The other focused gates cover
+fresh and upgraded migrations, source idempotency, portable backup round trips,
+and the committed retrieval baseline. Script fixtures exercise both listing and
+execution failures without invoking Cargo.
 
 ## Audit exemption policy
 
