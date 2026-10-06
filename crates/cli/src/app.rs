@@ -630,7 +630,7 @@ pub(crate) async fn run() -> Result<()> {
         return Ok(());
     }
     let doctor_format = match &cli.command {
-        Commands::Doctor { format } => Some(*format),
+        Commands::Doctor { format, .. } => Some(*format),
         _ => None,
     };
     let overrides = CliOverrides {
@@ -646,7 +646,14 @@ pub(crate) async fn run() -> Result<()> {
         Err(error) => return Err(error).context("failed to resolve runtime configuration"),
     };
 
-    if let Commands::Doctor { format } = &cli.command {
+    if let Commands::Doctor {
+        format,
+        refresh_status_file,
+    } = &cli.command
+    {
+        if refresh_status_file.is_some() {
+            anyhow::bail!("--refresh-status-file requires remote --server doctor");
+        }
         let report = doctor::run(&config, &inference_provider_config(&config), cli.memory).await;
         print_doctor_report(&report, *format)?;
         return Err(DoctorExit(report.exit_code).into());

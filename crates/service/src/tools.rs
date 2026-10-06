@@ -124,6 +124,10 @@ struct SearchInput {
     #[schemars(length(max = 2048))]
     source_uri: Option<String>,
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct StatusInput {}
 fn hybrid() -> SearchMode {
     SearchMode::Hybrid
 }
@@ -263,6 +267,7 @@ pub(crate) fn definition<I: JsonSchema + 'static, O: JsonSchema + 'static>(
 
 fn catalog() -> Vec<(Capability, Tool)> {
     let mut tools = vec![
+        (Capability::Read, definition::<StatusInput, graphrag_application::ServiceReadiness>("service_status", "Bounded authenticated readiness through the owning service: storage, configured/cached providers, refresh/backup evidence and permitted own jobs. No inference or mutation. Unknown evidence is not healthy; no private host paths are exposed.", true)),
         (Capability::Read, definition::<SearchInput, SearchOutput>("search_notes", "Search shared notes and chat records. Use mode=keyword and graph=off for provider-free retrieval. Source URIs describe the server's corpus.", true)),
         (Capability::Read, definition::<InspectInput, InspectionOutput>("get_record", "Inspect an exact record ID with bounded chat context. Supply the search revision to reject stale selection. Server source paths are provenance, never client file actions.", true)),
         (Capability::Read, definition::<ContextInput, ContextResponse>("build_context", "Build bounded, cited context from shared notes and chats using server-owned providers and defaults.", true)),
@@ -485,6 +490,13 @@ impl ToolService {
             .into());
         }
         let result = match request.name.as_ref() {
+            "service_status" => {
+                let _: StatusInput = match parse(request.arguments) {
+                    Ok(input) => input,
+                    Err(error) => return Ok(error.into()),
+                };
+                success(crate::status::report(self.application.as_ref(), &principal).await)
+            }
             "search_notes" => {
                 let input: SearchInput = match parse(request.arguments) {
                     Ok(input) => input,

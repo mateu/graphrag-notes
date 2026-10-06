@@ -17,6 +17,39 @@ use rmcp::{
 use serde_json::{json, Value};
 use std::io::Read;
 
+/// Recovery eligibility comes from a server search error, never a wire-schema failure.
+#[derive(Debug)]
+struct ServerSearchRecovery;
+impl std::fmt::Display for ServerSearchRecovery {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("server search provider/configuration failure")
+    }
+}
+impl std::error::Error for ServerSearchRecovery {}
+
+fn server_failure(tool: &str, code: &str, message: String) -> anyhow::Error {
+    let error: anyhow::Error = match code {
+        "invalid_input" | "validation" => ApplicationError::Validation(message),
+        "not_found" => ApplicationError::NotFound(message),
+        "revision_conflict" | "conflict" => ApplicationError::RevisionConflict(message),
+        "compatibility" => ApplicationError::Compatibility(message),
+        "provider_unavailable" => ApplicationError::ProviderUnavailable(message),
+        "service_unreachable" => ApplicationError::ServiceUnreachable(message),
+        "cancelled" => ApplicationError::Cancelled,
+        _ => ApplicationError::Internal(message),
+    }
+    .into();
+    if tool == "search_notes" && matches!(code, "provider_unavailable" | "compatibility") {
+        error.context(ServerSearchRecovery)
+    } else {
+        error
+    }
+}
+
+fn keyword_recovery_eligible(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ServerSearchRecovery>().is_some()
+}
+
 fn endpoint(value: &str) -> Result<reqwest_mcp::Url> {
     let mut url = reqwest_mcp::Url::parse(value).context("invalid --server URL")?;
     if !url.username().is_empty()
@@ -229,6 +262,19 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         anyhow::bail!("remote mode uses host configuration; omit local database, config, inference and explain overrides");
     }
     let url = endpoint(server)?;
+    if let Commands::Doctor {
+        format,
+        refresh_status_file,
+    } = &cli.command
+    {
+        return crate::remote_doctor::run(
+            cli,
+            url.as_str(),
+            *format,
+            refresh_status_file.as_deref(),
+        )
+        .await;
+    }
     let mut invocation = invocation(cli, url.as_str()).await?;
     let value = call_tool(
         cli,
@@ -236,7 +282,15 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         invocation.tool,
         invocation.arguments.clone(),
     )
-    .await?;
+    .await
+    .inspect_err(|error| {
+        if keyword_recovery_eligible(error) {
+            if let Some(command) = crate::search_recovery::remote_keyword_command(cli, url.as_str())
+            {
+                eprintln!("Explicit keyword retry: {command}");
+            }
+        }
+    })?;
     validate_read_result(invocation.tool, &value)?;
     crate::remote_mutations::validate_result(&invocation, &value)?;
     // Remove recovery only after the authoritative successful result arrived,
@@ -318,17 +372,7 @@ pub(super) async fn call_tool(
             output::safe_text(code, false),
             output::safe_text(message, false)
         );
-        return Err(match code {
-            "invalid_input" | "validation" => ApplicationError::Validation(message),
-            "not_found" => ApplicationError::NotFound(message),
-            "revision_conflict" | "conflict" => ApplicationError::RevisionConflict(message),
-            "compatibility" => ApplicationError::Compatibility(message),
-            "provider_unavailable" => ApplicationError::ProviderUnavailable(message),
-            "service_unreachable" => ApplicationError::ServiceUnreachable(message),
-            "cancelled" => ApplicationError::Cancelled,
-            _ => ApplicationError::Internal(message),
-        }
-        .into());
+        return Err(server_failure(tool, code, message));
     }
     if !value["error"].is_null() {
         return Err(ApplicationError::Compatibility(
@@ -432,6 +476,31 @@ fn acknowledge_capture(invocation: &mut Invocation, value: &Value) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn keyword_recovery_only_applies_to_server_search_provider_failures() {
+        let malformed =
+            validate_envelope(&json!({"schema_version":999,"data":null,"error":null})).unwrap_err();
+        assert!(!keyword_recovery_eligible(&malformed));
+        let missing_schema = validate_envelope(&json!({"data":null,"error":null})).unwrap_err();
+        assert!(!keyword_recovery_eligible(&missing_schema));
+        for code in ["compatibility", "provider_unavailable"] {
+            let error = server_failure("search_notes", code, "fictional server error".into());
+            assert!(keyword_recovery_eligible(&error));
+            assert_eq!(
+                crate::app::exit_code_for(&error),
+                if code == "compatibility" {
+                    output::ExitCode::Compatibility
+                } else {
+                    output::ExitCode::Internal
+                }
+            );
+            assert!(!keyword_recovery_eligible(&server_failure(
+                "capture_note",
+                code,
+                "fictional capture error".into()
+            )));
+        }
+    }
     #[test]
     fn endpoint_requires_encryption_without_accepting_url_secrets() {
         assert_eq!(endpoint("http://127.0.0.1:3000").unwrap().path(), "/mcp");

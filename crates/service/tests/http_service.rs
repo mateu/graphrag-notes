@@ -34,6 +34,7 @@ struct TestApplication {
     captures: AtomicUsize,
     uploads: AtomicUsize,
     searches: AtomicUsize,
+    job_reads: AtomicUsize,
     slow: bool,
     huge: bool,
     near_limit: bool,
@@ -43,6 +44,56 @@ struct TestApplication {
 
 fn unsupported<T>() -> ApplicationResult<T> {
     Err(ApplicationError::Internal("unused test operation".into()))
+}
+
+#[tokio::test]
+async fn readiness_reports_independent_evidence_without_reads_writes_or_job_permission() {
+    let fixture = Fixture::new(TestApplication::default()).await;
+    let response = fixture.tool(TOKEN_READ, "service_status", json!({})).await;
+    let report = data(&response);
+    assert_eq!(report["read_only"], true);
+    assert_eq!(report["inference_probed"], false);
+    assert_eq!(report["instance_id"], "reader");
+    assert_eq!(report["application"]["storage"]["state"], "ready");
+    assert_eq!(report["application"]["embeddings"]["state"], "unavailable");
+    assert_eq!(report["application"]["sources"]["state"], "partial");
+    assert_eq!(report["application"]["backup"]["state"], "unknown");
+    assert_eq!(report["jobs"]["readiness"]["state"], "forbidden");
+    assert_eq!(fixture.application.searches.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.application.captures.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.application.uploads.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.application.job_reads.load(Ordering::SeqCst), 0);
+    credentials(
+        &fixture.credentials,
+        &[(
+            "reader",
+            TOKEN_READ,
+            vec![Capability::Read, Capability::Jobs],
+        )],
+    );
+    let owned = fixture.tool(TOKEN_READ, "service_status", json!({})).await;
+    assert_eq!(data(&owned)["jobs"]["sampled"], 1);
+    assert_eq!(data(&owned)["jobs"]["counts"]["failed"], 1);
+    assert_eq!(data(&owned)["jobs"]["readiness"]["state"], "partial");
+    assert!(data(&owned)["jobs"]["readiness"]["next_action"]
+        .as_str()
+        .unwrap()
+        .contains("explicitly resume"));
+    let encoded = owned.to_string();
+    assert!(!encoded.contains("other-private-principal"));
+    assert!(!encoded.contains("private-checkpoint"));
+    assert!(!encoded.contains("/private/job/result"));
+    let invalid = fixture
+        .tool(TOKEN_READ, "service_status", json!({"deep":true}))
+        .await;
+    assert_eq!(error(&invalid)["code"], "invalid_input");
+    credentials(
+        &fixture.credentials,
+        &[("reader", TOKEN_READ, vec![Capability::Capture])],
+    );
+    let denied = fixture.tool(TOKEN_READ, "service_status", json!({})).await;
+    assert_eq!(error(&denied)["code"], "forbidden");
+    fixture.task.abort();
 }
 
 #[async_trait]
@@ -125,6 +176,54 @@ impl ApplicationOperations for TestApplication {
 
 #[async_trait]
 impl RemoteApplicationOperations for TestApplication {
+    async fn list_remote_jobs(
+        &self,
+        caller: CallerIdentity,
+        limit: usize,
+    ) -> ApplicationResult<RemoteJobList> {
+        self.job_reads.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(limit, 10);
+        let job = |instance_id: String| RemoteJobStatus {
+            id: "processing_job:private".into(),
+            job_type: "upload".into(),
+            instance_id,
+            status: "failed".into(),
+            phase: "private-phase".into(),
+            cancellation_requested: false,
+            source_id: "source:private".into(),
+            generation: Some(1),
+            total: 1,
+            completed: 0,
+            failed: 0,
+            checkpoint: Some("private-checkpoint".into()),
+            result: Some(json!({"private_path":"/private/job/result"})),
+            error_code: None,
+            created_at: "2026-10-05T00:00:00Z".into(),
+            updated_at: "2026-10-05T00:00:00Z".into(),
+        };
+        Ok(RemoteJobList {
+            jobs: vec![
+                job(caller.instance_id),
+                job("other-private-principal".into()),
+            ],
+        })
+    }
+    async fn service_readiness(&self) -> ApplicationResult<ApplicationReadiness> {
+        Ok(ApplicationReadiness {
+            storage: Readiness::new(ReadinessState::Ready, "Owner read succeeded.", None),
+            embeddings: Readiness::new(
+                ReadinessState::Unavailable,
+                "Cached stopped-provider evidence.",
+                None,
+            ),
+            sources: Readiness::new(
+                ReadinessState::Partial,
+                "Registered source refresh incomplete.",
+                None,
+            ),
+            ..Default::default()
+        })
+    }
     async fn upload_source(
         &self,
         caller: CallerIdentity,
@@ -396,6 +495,7 @@ async fn modern_catalog_cache_metadata_is_private_and_preserves_principal_filter
             "get_source",
             "list_proposals",
             "search_notes",
+            "service_status",
         ];
         if can_capture {
             expected.push("capture_note");
@@ -491,7 +591,7 @@ async fn legacy_handshake_catalog_and_trusted_instance_retry_contract() {
         )
         .await;
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 7);
+    assert_eq!(tools.len(), 8);
     assert!(tools
         .iter()
         .all(|tool| tool["annotations"]["readOnlyHint"] == true

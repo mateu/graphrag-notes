@@ -82,6 +82,8 @@ release acceptance follows in [#66](https://github.com/mateu/graphrag-notes/issu
 Current source adds an optional [shared MCP service](docs/shared-mcp.md) for
 OpenClaw, Hermes and the remote CLI, with per-instance authorization and durable
 capture retries, [uploaded Markdown and durable jobs](docs/remote-upload-jobs.md).
+The remote CLI also offers [authenticated diagnostics](docs/remote-diagnostics.md)
+through the owning service, without opening client storage or running inference.
 Published rc.2 predates these commands. The remaining remote editing and
 two-computer deployment work is tracked under
 [#56](https://github.com/mateu/graphrag-notes/issues/56).

@@ -252,6 +252,14 @@ fn source_content_value(source: &Source) -> Result<serde_json::Value> {
 }
 
 impl Repository {
+    /// Constant-size owner-side read; no record contents, statistics, or inference.
+    pub async fn check_readiness(&self) -> Result<()> {
+        self.db
+            .query("SELECT VALUE id FROM graphrag_metadata LIMIT 1")
+            .await?
+            .check()?;
+        Ok(())
+    }
     /// Create a new repository
     pub fn new(db: DbConnection) -> Self {
         let proposal_acceptance_lock = db.proposal_lifecycle_lock();
