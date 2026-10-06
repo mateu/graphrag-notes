@@ -281,6 +281,8 @@ bounds explicitly for inspection.
 
 See [graph performance](docs/graph-search-performance.md) for interactive latency
 targets, release-build guidance, phase profiling, and the fictional scaling fixture.
+See [entity quality and graph seeds](docs/entity-quality.md) for supported types,
+alias/identity rules, query evidence weighting, and explicit pilot reprocessing.
 
 Graph traversal defaults to one hop and is validation-capped at two. The
 `[search].graph_*` settings bound entity/note seeds, per-node fanout, edge

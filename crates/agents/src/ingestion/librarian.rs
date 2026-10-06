@@ -4401,6 +4401,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn corrected_pilot_resumes_after_cancellation_without_reprocessing_its_checkpoint() {
+        struct PilotExtractor {
+            cancel: Arc<AtomicBool>,
+        }
+        #[async_trait::async_trait]
+        impl crate::EntityExtractor for PilotExtractor {
+            async fn extract(&self, _text: &str) -> crate::Result<EntityExtraction> {
+                self.cancel.store(true, Ordering::Release);
+                Ok(EntityExtraction {
+                    entities: vec![ExtractedEntity {
+                        name: "Atlas".into(),
+                        entity_type: Some("Project".into()),
+                        aliases: vec!["Atlas program".into()],
+                    }],
+                    relationships: vec![],
+                })
+            }
+            async fn health(&self) -> crate::Result<bool> {
+                Ok(true)
+            }
+            fn capabilities(&self) -> InferenceCapabilities {
+                FixtureEntityExtractor::default().capabilities()
+            }
+        }
+        let repo = Repository::new(init_memory().await.unwrap());
+        let first = repo
+            .create_note(Note::new("First fictional Atlas project"))
+            .await
+            .unwrap();
+        let second = repo
+            .create_note(Note::new("A distinct fictional Atlas project"))
+            .await
+            .unwrap();
+        let ids = vec![
+            record_id_to_string(first.id.as_ref().unwrap()),
+            record_id_to_string(second.id.as_ref().unwrap()),
+        ];
+        let cancel = Arc::new(AtomicBool::new(false));
+        let run = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(PilotExtractor {
+                cancel: cancel.clone(),
+            }),
+        )
+        .with_cancellation_flag(cancel)
+        .extract_entities_for_note_ids_result(&ids, true)
+        .await
+        .unwrap();
+        assert!(run.cancelled);
+        assert_eq!(run.completed, 1);
+        let checkpoint_id = repo.get_entities_for_note(&ids[0]).await.unwrap()[0]
+            .id
+            .clone();
+        assert!(repo
+            .get_entities_for_note(&ids[1])
+            .await
+            .unwrap()
+            .is_empty());
+        let resumed = LibrarianAgent::new(
+            repo.clone(),
+            Arc::new(DeterministicEmbedder::default()),
+            Arc::new(
+                FixtureEntityExtractor::default().with_default(EntityExtraction {
+                    entities: vec![ExtractedEntity {
+                        name: "Atlas".into(),
+                        entity_type: Some("Project".into()),
+                        aliases: vec!["Atlas program".into()],
+                    }],
+                    relationships: vec![],
+                }),
+            ),
+        )
+        .resume_processing_job(&run.job_id)
+        .await
+        .unwrap();
+        assert!(!resumed.cancelled);
+        assert_eq!(resumed.completed, 2);
+        let left = repo.get_entities_for_note(&ids[0]).await.unwrap();
+        let right = repo.get_entities_for_note(&ids[1]).await.unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(right.len(), 1);
+        assert_eq!(left[0].id, checkpoint_id);
+        assert_ne!(left[0].id, right[0].id);
+        assert_eq!(right[0].entity_type, EntityType::Project);
+        assert_eq!(
+            right[0].metadata["aliases"],
+            serde_json::json!(["atlas program"])
+        );
+    }
+
+    #[tokio::test]
     async fn force_clear_replaces_mentions_only_after_successful_extraction() {
         let repo = Repository::new(init_memory().await.unwrap());
         let content = "force clear replacement fixture";

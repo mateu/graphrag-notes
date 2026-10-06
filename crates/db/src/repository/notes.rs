@@ -86,7 +86,8 @@ pub(super) fn replacement_entities_transaction() -> &'static str {
                 object::extend(metadata ?? {}, $entity.metadata ?? {}), \
                 { extraction: IF $entity.metadata.extraction = NONE THEN metadata.extraction ELSE object::extend($entity.metadata.extraction, { \
                     mention_spellings: array::distinct(array::concat(metadata.extraction.mention_spellings ?? [], $entity.metadata.extraction.mention_spellings ?? [])), \
-                    alias_spellings: array::distinct(array::concat(metadata.extraction.alias_spellings ?? [], $entity.metadata.extraction.alias_spellings ?? [])) \
+                    alias_spellings: array::distinct(array::concat(metadata.extraction.alias_spellings ?? [], $entity.metadata.extraction.alias_spellings ?? [])), \
+                    reported_types: array::distinct(array::concat(metadata.extraction.reported_types ?? [], $entity.metadata.extraction.reported_types ?? [])) \
                 }) END, aliases: array::distinct(array::concat( \
                     metadata.aliases ?? [], $entity.metadata.aliases ?? [] \
                 )) } \
