@@ -184,6 +184,18 @@ class RetrievalEvaluationTests(unittest.TestCase):
                          {"mean": 1, "cases_scored": 1})
         self.assertIsNone(group["formulation_metrics"]["title"]["recall_of_judged_positives"]["mean"])
 
+    def test_summary_separates_reviewed_no_answer_false_positives(self):
+        negative = case()
+        negative.update(name="fictional-absent", answerability="unanswerable")
+        negative["eval"]["relevance"] = []
+        report = evaluation.evaluate({"metadata": {}, "cases": [case(), negative]},
+                                     lambda item, policy: [record()], inspect)
+        group = next(g for g in evaluation.aggregate(report)["groups"]
+                     if g["split"] == "holdout" and g["policy"] == "hybrid-off")
+        self.assertEqual(group["reviewed_no_answer"],
+                         {"cases": 1, "empty_results": 0, "returned_false_positives": 1})
+        self.assertEqual(group["metrics"]["false_positive_count"], {"mean": 0.5, "cases_scored": 2})
+
     def test_suite_rejects_typos_and_conflicting_answerability(self):
         with tempfile.TemporaryDirectory() as name:
             path = Path(name) / "suite.json"

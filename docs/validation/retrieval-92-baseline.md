@@ -46,7 +46,8 @@ broader rollout.
 ## Misses, uncertainty and next work
 
 Keyword returned no hits for all four deliberately absent-answer questions;
-hybrid and graph returned nearest records for all four. A nonempty retrieval
+hybrid and graph returned nearest records for all four: each produced 20
+top-five false positives across those four cases. A nonempty retrieval
 result is not proof that a question is answerable: inspect the cited text.
 No implicit mode fallback occurred. Repeated full text under distinct canonical
 IDs is counted separately in the report; canonical duplicate IDs are rejected.

@@ -241,7 +241,7 @@ def evaluate(suite, search, inspect):
 def aggregate(report):
     metrics_names = {"top_k_useful_lower_bound", "top_k_useful_upper_bound", "precision_at_k",
                      "recall_of_judged_positives", "reciprocal_rank_of_judged_positives", "ndcg_at_k", "negative_empty",
-                     "duplicate_full_content_count"}
+                     "duplicate_full_content_count", "false_positive_count"}
     summary = {"schema_version": 1, "suite_sha256": report.get("suite_sha256"),
                "limits": ["Recall counts judged positives, not every relevant record in the corpus.",
                           "Reciprocal rank is of judged positives and is a lower bound while hits remain unjudged.",
@@ -257,6 +257,11 @@ def aggregate(report):
                      "failed": len(rows) - len(good), "unjudged_hits": sum(r["metrics"]["unjudged_hits"] for r in good),
                      "fully_judged_cases": sum(r["metrics"]["fully_judged_top_k"] for r in good),
                      "metrics": {}, "formulation_metrics": {}}
+            negatives = [r for r in good if r["metrics"]["negative_empty"] is not None]
+            group["reviewed_no_answer"] = {
+                "cases": len(negatives),
+                "empty_results": sum(r["metrics"]["negative_empty"] for r in negatives),
+                "returned_false_positives": sum(r["metrics"]["false_positive_count"] for r in negatives)}
             for name in sorted(metrics_names):
                 values = [r["metrics"][name] for r in good if r["metrics"][name] is not None]
                 group["metrics"][name] = {"mean": sum(values) / len(values) if values else None,

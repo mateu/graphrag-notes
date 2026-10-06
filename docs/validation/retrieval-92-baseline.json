@@ -26,6 +26,10 @@
           "mean": 0.029411764705882353,
           "cases_scored": 34
         },
+        "false_positive_count": {
+          "mean": 0.0,
+          "cases_scored": 34
+        },
         "ndcg_at_k": {
           "mean": 0.2185917312163316,
           "cases_scored": 29
@@ -86,6 +90,11 @@
             "cases_scored": 0
           }
         }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 2,
+        "returned_false_positives": 0
       }
     },
     {
@@ -103,6 +112,10 @@
       "fully_judged_cases": 13,
       "metrics": {
         "duplicate_full_content_count": {
+          "mean": 0.0,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
           "mean": 0.0,
           "cases_scored": 16
         },
@@ -166,6 +179,11 @@
             "cases_scored": 2
           }
         }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 2,
+        "returned_false_positives": 0
       }
     },
     {
@@ -184,6 +202,10 @@
       "metrics": {
         "duplicate_full_content_count": {
           "mean": 0.08823529411764706,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
           "cases_scored": 34
         },
         "ndcg_at_k": {
@@ -246,6 +268,11 @@
             "cases_scored": 0
           }
         }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
       }
     },
     {
@@ -266,6 +293,10 @@
           "mean": 0.0625,
           "cases_scored": 16
         },
+        "false_positive_count": {
+          "mean": 0.625,
+          "cases_scored": 16
+        },
         "ndcg_at_k": {
           "mean": null,
           "cases_scored": 0
@@ -326,6 +357,11 @@
             "cases_scored": 2
           }
         }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
       }
     },
     {
@@ -344,6 +380,10 @@
       "metrics": {
         "duplicate_full_content_count": {
           "mean": 0.058823529411764705,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
           "cases_scored": 34
         },
         "ndcg_at_k": {
@@ -406,6 +446,11 @@
             "cases_scored": 0
           }
         }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
       }
     },
     {
@@ -424,6 +469,10 @@
       "metrics": {
         "duplicate_full_content_count": {
           "mean": 0.0,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.625,
           "cases_scored": 16
         },
         "ndcg_at_k": {
@@ -486,6 +535,11 @@
             "cases_scored": 2
           }
         }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
       }
     },
     {
@@ -504,6 +558,10 @@
       "metrics": {
         "duplicate_full_content_count": {
           "mean": 0.058823529411764705,
+          "cases_scored": 34
+        },
+        "false_positive_count": {
+          "mean": 0.29411764705882354,
           "cases_scored": 34
         },
         "ndcg_at_k": {
@@ -566,6 +624,11 @@
             "cases_scored": 0
           }
         }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
       }
     },
     {
@@ -584,6 +647,10 @@
       "metrics": {
         "duplicate_full_content_count": {
           "mean": 0.0,
+          "cases_scored": 16
+        },
+        "false_positive_count": {
+          "mean": 0.625,
           "cases_scored": 16
         },
         "ndcg_at_k": {
@@ -646,6 +713,11 @@
             "cases_scored": 2
           }
         }
+      },
+      "reviewed_no_answer": {
+        "cases": 2,
+        "empty_results": 0,
+        "returned_false_positives": 10
       }
     }
   ],
