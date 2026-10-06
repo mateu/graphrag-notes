@@ -369,7 +369,7 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.ReleaseError, "metadata checksum"):
             release.assemble(args)
 
-    def install_fixture(self, dist, force=False):
+    def install_fixture(self, dist, force=False, clients_only=False):
         tools = self.root / "installer-tools"
         tools.mkdir(exist_ok=True)
         curl = tools / "curl"
@@ -397,7 +397,27 @@ esac
         env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'], GRN_TEST_DIST=str(dist))
         return subprocess.run(["bash", str(SCRIPT.with_name("install.sh")), "--version", self.version,
                                "--bin-dir", str(self.root / "installed-bin"), "--data-dir", str(self.root / "installed-data"),
-                               *(["--force"] if force else [])], env=env, capture_output=True, text=True)
+                               *(["--force"] if force else []), *(["--clients-only"] if clients_only else [])],
+                              env=env, capture_output=True, text=True)
+
+    def test_platform_neutral_clients_share_native_payloads_without_installing_binary(self):
+        info = release.package(self.package_args())
+        clients = self.root / "dist" / info['client_archive']
+        self.assertEqual(release.sha256(clients), info['client_archive_sha256'])
+        with tarfile.open(clients) as client_source, tarfile.open(self.root / 'dist' / info['archive']) as native_source:
+            self.assertEqual(client_source.getnames(), sorted(info['payload_sha256']))
+            self.assertNotIn('graphrag', client_source.getnames())
+            self.assertNotIn('samples/first-notes.md', client_source.getnames())
+            for name in client_source.getnames():
+                self.assertEqual(client_source.extractfile(name).read(), native_source.extractfile(name).read())
+        installed = self.install_fixture(self.root / 'dist', clients_only=True)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.assertFalse((self.root / 'installed-bin/graphrag').exists())
+        self.assertFalse((self.root / 'installed-data/samples').exists())
+        bundle = self.root / 'installed-data/releases' / self.tag
+        self.assertEqual((bundle / 'VERSION').read_text(), self.version + '\n')
+        self.assertEqual((bundle / 'scripts/native-mcp/envelope.py').read_bytes(),
+                         (self.repo / 'scripts/native-mcp/envelope.py').read_bytes())
 
     def test_client_bundle_installs_without_python_and_refuses_edited_version(self):
         info = release.package(self.package_args())
