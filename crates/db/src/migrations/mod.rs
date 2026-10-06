@@ -341,6 +341,12 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
             .map_err(|error| migration_failed(migration, error))?;
     }
 
+    if migration.version == v021_note_search::MIGRATION.version {
+        v021_note_search::backfill(db)
+            .await
+            .map_err(|error| migration_failed(migration, error))?;
+    }
+
     let recorded = db
         .query(
             "INSERT INTO schema_migration (version, name, checksum, applied_at) \
