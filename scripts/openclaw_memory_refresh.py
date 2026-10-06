@@ -189,6 +189,26 @@ def check_job(entry, job, principal):
         raise ImportFailure('job_identity_or_state')
 
 
+
+def verified_policy(source, payload, expected=None):
+    policy = {'extract_entities': source.get('extract_entities'),
+              'processing_policy_sha256': source.get('processing_policy_sha256')}
+    retained = (policy['extract_entities'] is True and source.get('processing_policy_current') is False
+                and source.get('ingestion_policy_current') is True and source.get('extraction_policy_current') is False)
+    if (policy['extract_entities'] is not payload['extract_entities']
+            or source.get('ingestion_policy_current') is not True
+            or (policy['extract_entities'] is False and source.get('extraction_policy_current') is not None)
+            or (policy['extract_entities'] is True and source.get('extraction_policy_current') is not True and not retained)
+            or (source.get('processing_policy_current') is not True
+                and not (retained and expected and expected.get('retained_extraction_drift') is True))
+            or not isinstance(policy['processing_policy_sha256'], str)
+            or not re.fullmatch(r'[0-9a-f]{64}', policy['processing_policy_sha256'])
+            or (expected is not None and any(policy[name] != expected[name] for name in policy))):
+        raise ImportFailure('committed_processing_policy_mismatch')
+    policy['retained_extraction_drift'] = retained
+    return policy
+
+
 def verify_completed(client, task, entry, job, principal):
     result = job.get('result') or {}
     generation = job.get('generation')
@@ -209,8 +229,10 @@ def verify_completed(client, task, entry, job, principal):
             source.get('provenance') != payload['provenance'] or source.get('generation') != generation or
             source.get('successful_generation') != generation or source.get('status') != 'ready'):
         raise ImportFailure('committed_source_mismatch')
+    policy = verified_policy(source, payload, task.get('expected_policy'))
     entry['source_verified'] = {'id': source['id'], 'revision': source['revision'], 'generation': generation,
-                                'content_sha256': sha(source['content'].encode('utf-8')), 'provenance_matches': True}
+                                'content_sha256': sha(source['content'].encode('utf-8')), 'provenance_matches': True, 'processing_policy': policy}
+    return policy
 
 
 def now():
@@ -385,6 +407,7 @@ def evidence(state):
     pending = state.get('pending') or {}
     return {'schema_version': 1, 'collection_id': config['collection_id'],
             'endpoint_sha256': endpoint_hash(config['server']), 'instance_id': config['instance_id'],
+            'retained_extraction_policy_parts': sum(state.get('source_policies', {}).get(k, {}).get('retained_extraction_drift') is True for k in state['documents']),
             'status': state['status'], 'last_attempt_at': state.get('last_attempt_at'),
             'last_success_at': state.get('last_success_at'), 'counts': state.get('counts', {}),
             'pending_parts': sum(not task.get('verified_this_attempt', False) for task in pending.get('tasks', {}).values()),
@@ -436,7 +459,7 @@ def prepare(state, documents, failures, attempt=None):
     return state['pending']
 
 
-def source_matches(client, task, entry, principal):
+def source_matches(client, task, entry, principal, expected_policy=None, adopt_existing_policy=False):
     source = retry_call(client, 'get_source', {'id': entry['admission']['source_id']})
     payload = task['payload']
     if (source.get('id') != entry['admission']['source_id'] or source.get('instance_id') != principal
@@ -445,7 +468,18 @@ def source_matches(client, task, entry, principal):
             or source.get('status') != 'ready' or source.get('generation') != source.get('successful_generation')
             or source.get('generation') != entry['source_verified']['generation']):
         raise ImportFailure('committed_source_mismatch')
+    expected_policy = expected_policy or entry['source_verified'].get('processing_policy')
+    if expected_policy is None and source['revision'] != entry['source_verified']['revision']:
+        raise ImportFailure('registered_processing_policy_unknown')
+    if (adopt_existing_policy and expected_policy is not None
+            and source['revision'] == entry['source_verified']['revision']):
+        # Explicit adoption can retain a previously verified graph snapshot
+        # after only the owner's extraction policy has changed.
+        expected_policy = dict(expected_policy, retained_extraction_drift=True)
+    policy = verified_policy(source, payload, expected_policy)
+    entry['source_verified']['processing_policy'] = policy
     entry['source_verified']['revision'] = source['revision']
+    return policy
 
 
 def verify_principal(client, principal):
@@ -526,12 +560,24 @@ def _review_existing_policies(client, state, save, args):
             raise ImportFailure('existing_source_revision_invalid')
         payload['expected_source_revision'] = source['revision']
         policy_hash = source.get('processing_policy_sha256')
-        if (not isinstance(source.get('extract_entities'), bool) or source.get('processing_policy_current') is not True
+        retained_drift = (source.get('extract_entities') is True and source.get('processing_policy_current') is False
+                          and source.get('ingestion_policy_current') is True and source.get('extraction_policy_current') is False)
+        if (not isinstance(source.get('extract_entities'), bool)
+                or source.get('ingestion_policy_current') is not True
+                or (source.get('extract_entities') is False and source.get('extraction_policy_current') is not None)
+                or (source.get('extract_entities') is True and source.get('extraction_policy_current') is not True and not retained_drift)
+                or (source.get('processing_policy_current') is not True and not retained_drift)
                 or not isinstance(policy_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', policy_hash)):
             raise ImportFailure('existing_processing_policy_mismatch')
         prior_policy = policies.get(key)
-        if prior_policy and prior_policy != {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash}:
+        if prior_policy and any(prior_policy[name] != value for name, value in
+                                {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash}.items()):
             raise ImportFailure('registered_processing_policy_mismatch')
+        if retained_drift:
+            if retired or source.get('content') != payload['content'] or source.get('title') != payload['title']:
+                raise ImportFailure('retained_extraction_policy_requires_owner_reprocessing')
+            if not (getattr(args, 'adopt_existing_policy', False) or (prior_policy and prior_policy.get('retained_extraction_drift'))):
+                raise ImportFailure('existing_extraction_policy_requires_adoption')
         # Existing sources must belong to this original source, regardless of
         # extraction policy. Compare edited registered parts with their last
         # verified provenance, not their newly indexed original hash.
@@ -557,10 +603,12 @@ def _review_existing_policies(client, state, save, args):
             if source.get('content') != payload['content'] or source.get('title') != payload['title']:
                 raise ImportFailure('existing_adoption_source_mismatch')
             payload['extract_entities'] = source['extract_entities']
-        policies[key] = {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash}
+        policies[key] = {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash,
+                         'retained_extraction_drift': retained_drift}
+        task['expected_policy'] = policies[key]
         # The guard belongs to this initial admission only; semantic content
         # identities exclude it so a later unchanged run requires no upload.
-        if key not in state['documents'] and not retired and source.get('content') == payload['content'] and source.get('title') == payload['title']:
+        if (key not in state['documents'] or retained_drift) and not retired and source.get('content') == payload['content'] and source.get('title') == payload['title']:
             payload['preserve_unchanged'] = True
         semantic = {k: v for k, v in payload.items() if k not in ('request_id', 'preserve_unchanged', 'create_only', 'expected_source_revision')}
         task['payload_hash'] = sha(canonical(semantic))
@@ -585,7 +633,9 @@ def run_refresh(client, state, save, args):
             entry = task['entry']
             try:
                 if task['action'] == 'unchanged':
-                    source_matches(client, task, entry, principal)
+                    policy = source_matches(client, task, entry, principal, state.get('source_policies', {}).get(key), getattr(args, 'adopt_existing_policy', False))
+                    state.setdefault('source_policies', {})[key] = policy
+                    state['documents'][key]['entry'] = json.loads(json.dumps(entry))
                     task['verified_this_attempt'] = True
                     entry.pop('error_code', None)
                     checked.add(key)
@@ -605,7 +655,8 @@ def run_refresh(client, state, save, args):
                 entry['job'] = job
                 save()
                 if job['status'] == 'completed':
-                    verify_completed(client, task, entry, job, principal)
+                    policy = verify_completed(client, task, entry, job, principal)
+                    state.setdefault('source_policies', {})[key] = policy
                     action = job.get('result', {}).get('action')
                     if action in ('created', 'updated', 'unchanged'):
                         task['service_action'] = action
@@ -778,6 +829,8 @@ def emit(value, format):
         print(label + ', '.join(f'{key}: {count}' for key, count in value['counts'].items()))
     if value.get('service_actions'):
         print('Server source generations: ' + ', '.join(f'{key}: {count}' for key, count in value['service_actions'].items()))
+    if value.get('retained_extraction_policy_parts'):
+        print('Retained older extraction-policy parts: ' + str(value['retained_extraction_policy_parts']) + '; graph policy needs explicit owner reprocessing. Collection status describes indexed original/vector evidence separately.')
     if value.get('last_success_at'):
         print('Last successful refresh: ' + value['last_success_at'])
     if value.get('plan_sha256'):

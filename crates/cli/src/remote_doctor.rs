@@ -55,6 +55,8 @@ struct RefreshEvidence {
     last_success_at: Option<String>,
     counts: RefreshCounts,
     pending_parts: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_extraction_policy_parts: Option<u64>,
     error_code: Option<String>,
     retry: RefreshRetry,
 }
@@ -304,12 +306,18 @@ pub(crate) async fn run(
             .as_ref()
             .and_then(|service| load_refresh(path, server, &service.instance_id));
         if let Some(evidence) = evidence {
+            let retained_graph = evidence.retained_extraction_policy_parts.unwrap_or(0) > 0;
             let state = match evidence.status.as_str() {
                 "failed" => ReadinessState::Unavailable,
                 "partial" | "running" | "paused" => ReadinessState::Partial,
+                _ if retained_graph => ReadinessState::Partial,
                 _ => ReadinessState::Unknown,
             };
-            report.application.sources = Readiness::new(state, "Bound client collection refresh evidence is available; it does not prove the source is still current.", Some("Inspect client_refresh_evidence and run refresh/resume as appropriate."));
+            report.application.sources = if retained_graph {
+                Readiness::new(state, "Bound client evidence describes indexed originals/vectors separately from retained older graph policy; current source freshness is unknown.", Some("Inspect collection status, and have the owner explicitly reprocess the retained graph-policy parts when ready."))
+            } else {
+                Readiness::new(state, "Bound client collection refresh evidence is available; it does not prove the source is still current.", Some("Inspect client_refresh_evidence and run refresh/resume as appropriate."))
+            };
             if state == ReadinessState::Unavailable {
                 report.exit_code = 2;
             }
@@ -364,6 +372,9 @@ pub(crate) async fn run(
                     evidence.last_attempt_at.as_deref().unwrap_or("unknown"),
                     evidence.last_success_at.as_deref().unwrap_or("unknown")
                 );
+                if let Some(parts) = evidence.retained_extraction_policy_parts {
+                    println!("  Retained older extraction-policy parts: {parts}; collection status describes indexed original/vector evidence separately. Graph policy needs explicit owner reprocessing.");
+                }
                 if let Some(plan) = &evidence.retry.plan_sha256 {
                     println!("  Pending cleanup retry: review the saved plan, then use the refresh adapter with --reconcile --yes --plan-sha256 {plan}.");
                 }

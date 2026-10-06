@@ -67,6 +67,12 @@ Its version-one contract contains `collection_id`, `endpoint_sha256`,
 `instance_id`, `status`, nullable RFC3339 `last_attempt_at`/`last_success_at`,
 `counts` (`created`, `changed`, `unchanged`, `failed`, `missing`), `pending_parts`,
 nullable static `error_code`, and `retry.action` (`resume`, `refresh`, or `reconcile`).
+The optional `retained_extraction_policy_parts` count describes older graph
+snapshots retained by explicit client adoption. A positive count makes source
+readiness partial, including after a complete indexed original/vector refresh,
+with explicit owner reprocessing guidance. Older status files omit the count;
+that absence establishes no graph-policy evidence. Failed/partial collection
+status still controls the indexed original/vector evidence separately.
 Pending reconciliation also carries an optional `retry.plan_sha256` containing
 the reviewed plan's 64-character lowercase SHA-256; cleanup remains explicit. It
 contains no corpus text, database paths, request IDs, or bearer values.

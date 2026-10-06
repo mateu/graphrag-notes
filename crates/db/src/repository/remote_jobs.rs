@@ -223,6 +223,45 @@ fn digest(domain: &str, parts: &[&str]) -> String {
     let bytes = serde_json::to_vec(&(domain, parts)).expect("string tuples serialize");
     format!("{:x}", Sha256::digest(bytes))
 }
+/// Compare applied upload settings; metadata-only registration never invokes
+/// extraction, and disabled extraction has no effect on generated vectors.
+pub fn uploaded_processing_compatible(
+    saved: &serde_json::Value,
+    current: &serde_json::Value,
+    extract_entities: bool,
+    preserve_unchanged: bool,
+) -> bool {
+    let known = |options: &serde_json::Value| {
+        options.is_object()
+            && options["runtime"].as_str().is_some_and(|v| !v.is_empty())
+            && ["provider", "model", "cache_identity", "endpoint_identity"]
+                .iter()
+                .all(|field| {
+                    options["embedding"][field]
+                        .as_str()
+                        .is_some_and(|v| !v.is_empty())
+                })
+            && (!extract_entities
+                || ["provider", "model", "cache_identity", "endpoint_identity"]
+                    .iter()
+                    .all(|field| {
+                        options["extraction"][field]
+                            .as_str()
+                            .is_some_and(|v| !v.is_empty())
+                    }))
+    };
+    if !known(saved) || !known(current) {
+        return false;
+    }
+    let mut saved = saved.clone();
+    let mut current = current.clone();
+    if !extract_entities || preserve_unchanged {
+        saved.as_object_mut().unwrap().remove("extraction");
+        current.as_object_mut().unwrap().remove("extraction");
+    }
+    saved == current
+}
+
 /// Provider-free source revision shared by inspection and generation fencing.
 pub fn uploaded_source_revision(source: &Source, original_markdown: &str) -> Result<String> {
     let id = source
@@ -858,7 +897,13 @@ impl Repository {
                     prior_completed = other.job.status == "completed";
                     if let Some(expected) = &input.expected_source_revision {
                         prior_revision_matches =
-                            uploaded_source_revision(source, &other.input.markdown)? == *expected;
+                            uploaded_source_revision(source, &other.input.markdown)? == *expected
+                                && uploaded_processing_compatible(
+                                    &other.input.processing_options,
+                                    &input.processing_options,
+                                    input.extract_entities,
+                                    input.preserve_unchanged,
+                                );
                     }
                     let mut prior_provenance = other.input.source_provenance.clone();
                     let mut desired_provenance = input.source_provenance.clone();

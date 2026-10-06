@@ -71,13 +71,30 @@ authenticated document key. A different extraction policy fails with
 enriched an otherwise matching source, explicitly add `--adopt-existing-policy`
 to retain that part's existing extraction policy. Adoption requires exact owner,
 document key, supplied bytes, title and original provenance, a ready generation,
-and compatibility with the service's current processing snapshot. It persists
-the per-source policy for future changed uploads and recovery; new parts still
-use the collection default. A changed processing snapshot fails closed and
-requires a separately reviewed migration rather than silently re-embedding.
+and compatibility with the service's current embedding and chunk settings.
+It persists the per-source policy for future changed uploads and recovery; new
+parts still use the collection default. Disabled extraction ignores unused
+extractor identity. Embedding/chunk changes or unknown applied settings fail
+closed rather than silently re-embedding.
+
+If only the extraction prompt/model policy has changed, exact-content adoption
+can retain the older graph snapshot without inference. This includes historical
+snapshots that predate explicit extraction cache-version evidence. Inspection
+reports `ingestion_policy_current=true`, `extraction_policy_current=false`, and
+`processing_policy_current=false`; it does not claim the retained graph policy
+is current. `retained_extraction_policy_parts` records that count separately in
+status evidence. Remote doctor reports partial source readiness with owner
+reprocessing guidance, even when the indexed original/vector refresh completed.
+Changed or retired graph parts with that older policy fail with
+`retained_extraction_policy_requires_owner_reprocessing` until the owner has
+explicitly reprocessed and the collection's policy evidence has been reviewed.
+Registered unchanged graph parts can be retained with the same explicit
+`--adopt-existing-policy` choice without any upload or job. Use matching client
+and service builds; a service lacking the applied-policy fields fails before
+admission and needs upgrading.
 
 Metadata registration sets the server's `preserve_unchanged` upload guard. Under
-the generation lock, exact input, title, extraction and processing policy must
+the generation lock, exact input, title, extraction choice and original applied policy must
 still match; otherwise the job fails without replacing existing chunks or graph
 mentions. A compatible registration retains the successful generation, chunk
 IDs and previously extracted mentions without embedding or extraction calls.

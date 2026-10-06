@@ -38,6 +38,7 @@ fn options(app: &EmbeddedApplication) -> Value {
     // credentials, and these snapshots travel in portable archives.
     snapshot["embedding"]["endpoint_identity"] = json!(endpoint_identity(&embedding.endpoint));
     snapshot["extraction"]["endpoint_identity"] = json!(endpoint_identity(&extraction.endpoint));
+    snapshot["extraction"]["cache_version"] = json!(graphrag_agents::extraction_cache_version());
     if let Some(dimension) = embedding.known_dimension {
         snapshot["embedding"]["dimension"] = json!(dimension.to_string());
     }
@@ -52,7 +53,12 @@ fn endpoint_identity(endpoint: &str) -> String {
 }
 
 fn compatible(app: &EmbeddedApplication, job: &RemoteUploadJob) -> ApplicationResult<()> {
-    if job.input.processing_options != options(app) {
+    if !graphrag_db::uploaded_processing_compatible(
+        &job.input.processing_options,
+        &options(app),
+        job.input.extract_entities,
+        job.input.preserve_unchanged,
+    ) {
         return Err(ApplicationError::Compatibility("Uploaded job configuration changed or lacks provider identity; restore its server endpoint/model/chunk settings before resuming, or submit a new upload request".into()));
     }
     Ok(())
@@ -205,6 +211,34 @@ pub(crate) async fn upload(
                 "Uploaded Markdown exceeds 200 chunks under server settings".into(),
             ));
         }
+        let mut processing_options = options(app);
+        // Retain the original snapshot for supplied-source metadata registration
+        // and unused extraction settings. Durable generation guards revalidate
+        // source ownership/revision/input before publishing any change.
+        if request.preserve_unchanged
+            || (!request.extract_entities && request.expected_source_revision.is_some())
+        {
+            let id = graphrag_db::repository::uploaded_source_id(
+                &caller.instance_id,
+                &request.document_key,
+            );
+            if let Some(source) = app.repo.get_source(&id).await? {
+                let origin = &source.metadata["remote_upload"];
+                let prior = &origin["processing_options"];
+                if origin["instance_id"] == caller.instance_id
+                    && origin["document_key"] == request.document_key
+                    && origin["extract_entities"] == request.extract_entities
+                    && graphrag_db::uploaded_processing_compatible(
+                        prior,
+                        &processing_options,
+                        request.extract_entities,
+                        request.preserve_unchanged,
+                    )
+                {
+                    processing_options = prior.clone();
+                }
+            }
+        }
         app.repo
             .admit_remote_upload(RemoteUploadInput {
                 authenticated_instance_id: caller.instance_id,
@@ -219,7 +253,7 @@ pub(crate) async fn upload(
                 preserve_unchanged: request.preserve_unchanged,
                 create_only: request.create_only,
                 expected_source_revision: request.expected_source_revision,
-                processing_options: options(app),
+                processing_options,
             })
             .await?
     };
@@ -327,7 +361,21 @@ pub(crate) async fn source(
                     .map_err(|e| ApplicationError::Internal(e.to_string()))?
             )
         ),
-        processing_policy_current: origin_job.input.processing_options == options(app),
+        processing_policy_current: graphrag_db::uploaded_processing_compatible(
+            &origin_job.input.processing_options,
+            &options(app),
+            origin_job.input.extract_entities,
+            false,
+        ),
+        ingestion_policy_current: graphrag_db::uploaded_processing_compatible(
+            &origin_job.input.processing_options,
+            &options(app),
+            false,
+            false,
+        ),
+        extraction_policy_current: origin_job.input.extract_entities.then(|| {
+            origin_job.input.processing_options["extraction"] == options(app)["extraction"]
+        }),
         revision,
     })
 }

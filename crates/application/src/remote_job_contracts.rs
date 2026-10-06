@@ -106,6 +106,10 @@ pub struct UploadedSource {
     /// Opaque processing snapshot identity, without provider URLs/settings.
     pub processing_policy_sha256: String,
     pub processing_policy_current: bool,
+    /// Embedding and chunk/runtime settings match; no inference is probed.
+    pub ingestion_policy_current: bool,
+    /// None when extraction was disabled; false retains an older graph policy.
+    pub extraction_policy_current: Option<bool>,
     pub revision: String,
 }
 

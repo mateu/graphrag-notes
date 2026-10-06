@@ -164,7 +164,8 @@ async fn changed_provider_endpoints_reject_resume_but_preserve_completed_receipt
     ] {
         let repo = Repository::new(init_memory().await.unwrap());
         let (original, _, _) = endpoint_app(&repo, EMBEDDING, EXTRACTION);
-        let input = request("endpoint-pinned-upload");
+        let mut input = request("endpoint-pinned-upload");
+        input.extract_entities = true;
         let admitted = original
             .upload_source(caller("owner"), input.clone())
             .await
@@ -1881,4 +1882,218 @@ async fn uploaded_source_retirement_guard_serializes_concurrent_job_admission() 
         .await
         .unwrap();
     assert!(current.content.ends_with("Intentional later upload"));
+}
+
+#[tokio::test]
+async fn applied_policy_drift_preserves_reviewed_graph_and_ignores_unused_extraction() {
+    for extract in [false, true] {
+        let db = init_memory().await.unwrap();
+        let repo = Repository::new(db.clone());
+        let (application, embedding_calls, extraction_calls) = endpoint_app(
+            &repo,
+            "http://embedding.invalid",
+            "http://extraction.invalid",
+        );
+        let mut input = request("legacy-prompt-upload");
+        input.extract_entities = extract;
+        let admission = application
+            .upload_source(caller("owner"), input.clone())
+            .await
+            .unwrap();
+        execute(&application, "epoch").await;
+        let job = repo
+            .get_remote_upload_job("owner", &admission.job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut legacy = job.input.processing_options;
+        legacy["extraction"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cache_version");
+        let source_id = graphrag_db::parse_record_id(&admission.source_id, Some("source")).unwrap();
+        db.query("UPDATE $source SET metadata.remote_upload.processing_options = $legacy; UPDATE $job SET remote_input.processing_options = $legacy")
+            .bind(("source", source_id.clone()))
+            .bind(("job", graphrag_db::parse_record_id(&admission.job_id, Some("processing_job")).unwrap()))
+            .bind(("legacy", legacy.clone())).await.unwrap().check().unwrap();
+        let before = application
+            .get_uploaded_source(&admission.source_id)
+            .await
+            .unwrap();
+        assert!(before.ingestion_policy_current);
+        assert_eq!(before.processing_policy_current, !extract);
+        assert_eq!(before.extraction_policy_current, extract.then_some(false));
+        let chunks = repo.get_source_chunks(&source_id).await.unwrap();
+        let mut entity = graphrag_core::Entity::new("Atlas", graphrag_core::EntityType::Project);
+        entity.metadata = serde_json::json!({});
+        let entity = repo.upsert_entity(entity).await.unwrap();
+        repo.link_note_to_entity(chunks[0].id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        let mut query = db
+            .query("SELECT * FROM mentions ORDER BY id")
+            .await
+            .unwrap();
+        let mentions: Vec<serde_json::Value> = query.take(0).unwrap();
+        embedding_calls.store(0, Ordering::Relaxed);
+        extraction_calls.store(0, Ordering::Relaxed);
+        input.request_id = "reviewed-prompt-registration".into();
+        input.preserve_unchanged = true;
+        input.expected_source_revision = Some(before.revision.clone());
+        let registered = application
+            .upload_source(caller("owner"), input.clone())
+            .await
+            .unwrap();
+        execute(&application, "epoch").await;
+        let registered_status = application
+            .get_remote_job(caller("owner"), &registered.job_id)
+            .await
+            .unwrap();
+        assert_eq!(registered_status.status, "completed");
+        assert_eq!(
+            registered_status.result.as_ref().unwrap()["action"],
+            "unchanged"
+        );
+        let after = application
+            .get_uploaded_source(&admission.source_id)
+            .await
+            .unwrap();
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(after.successful_generation, before.successful_generation);
+        assert_eq!(
+            after.processing_policy_sha256,
+            before.processing_policy_sha256
+        );
+        assert_eq!(after.processing_policy_current, !extract);
+        assert_eq!(
+            repo.get_source_chunks(&source_id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|n| n.id.clone())
+                .collect::<Vec<_>>(),
+            chunks.iter().map(|n| n.id.clone()).collect::<Vec<_>>()
+        );
+        let mut query = db
+            .query("SELECT * FROM mentions ORDER BY id")
+            .await
+            .unwrap();
+        assert_eq!(query.take::<Vec<serde_json::Value>>(0).unwrap(), mentions);
+        assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+        let (incompatible, calls, extraction) = endpoint_app(
+            &repo,
+            "http://new-embedding.invalid",
+            "http://extraction.invalid",
+        );
+        input.request_id = "reject-embedding-drift".into();
+        input.expected_source_revision = Some(after.revision.clone());
+        let rejected = incompatible
+            .upload_source(caller("owner"), input.clone())
+            .await
+            .unwrap();
+        let execution = incompatible
+            .claim_remote_job("epoch", "worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(incompatible
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await
+            .is_err());
+        assert_eq!(
+            incompatible
+                .get_remote_job(caller("owner"), &rejected.job_id)
+                .await
+                .unwrap()
+                .status,
+            "failed"
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(extraction.load(Ordering::Relaxed), 0);
+        input.request_id = "changed-original-policy".into();
+        input.preserve_unchanged = false;
+        input.content.push_str("\nChanged indexed original.");
+        let changed = application
+            .upload_source(caller("owner"), input)
+            .await
+            .unwrap();
+        let execution = application
+            .claim_remote_job("epoch", "worker")
+            .await
+            .unwrap()
+            .unwrap();
+        let result = application
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await;
+        if extract {
+            assert!(result.is_err());
+            assert_eq!(
+                application
+                    .get_uploaded_source(&admission.source_id)
+                    .await
+                    .unwrap(),
+                after
+            );
+            assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+            assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+        } else {
+            result.unwrap();
+            let current = application
+                .get_uploaded_source(&admission.source_id)
+                .await
+                .unwrap();
+            assert!(current.processing_policy_current);
+            assert_eq!(
+                current.processing_policy_sha256,
+                before.processing_policy_sha256
+            );
+            assert_eq!(
+                application
+                    .get_remote_job(caller("owner"), &changed.job_id)
+                    .await
+                    .unwrap()
+                    .status,
+                "completed"
+            );
+            assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn disabled_extraction_job_resumes_after_unused_extractor_change() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let (original, _, _) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://original-extraction.invalid",
+    );
+    let admission = original
+        .upload_source(caller("owner"), request("disabled-extraction-job"))
+        .await
+        .unwrap();
+    original
+        .cancel_remote_job(caller("owner"), &admission.job_id)
+        .await
+        .unwrap();
+    let (changed, _, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://changed-extraction.invalid",
+    );
+    changed
+        .resume_remote_job(caller("owner"), &admission.job_id)
+        .await
+        .unwrap();
+    execute(&changed, "epoch").await;
+    assert_eq!(
+        changed
+            .get_remote_job(caller("owner"), &admission.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
 }

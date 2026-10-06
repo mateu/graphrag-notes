@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -25,6 +27,7 @@ class FakeService:
         self.fail_key = None
         self.fail_code = 'provider_unavailable'
         self.wrong_owner = self.bad_source = self.retain_retired_source = False
+        self.extraction_policy_drift = False
         self.authenticated_instance = 'fixture-importer'
         self.manual_notes = ['synthetic unrelated manual note']
 
@@ -95,6 +98,11 @@ class FakeService:
             if value['id'] not in self.sources:
                 raise m.ImportFailure('not_found')
             result = json.loads(json.dumps(self.sources[value['id']]))
+            result.setdefault('ingestion_policy_current', True)
+            result.setdefault('extraction_policy_current', True if result['extract_entities'] else None)
+            if self.extraction_policy_drift and result['extract_entities']:
+                result.update(processing_policy_current=False, ingestion_policy_current=True,
+                              extraction_policy_current=False)
             if self.bad_source:
                 result['content'] = 'foreign bytes'
             return result
@@ -196,6 +204,65 @@ class RefreshTests(unittest.TestCase):
         self.assertTrue(latest['extract_entities'])
         self.assertNotIn('preserve_unchanged', latest)
 
+    def test_reviewed_older_graph_policy_keeps_exact_evidence_and_blocks_changed_content(self):
+        self.config['extract_entities'] = True
+        self.state = m.new_state(self.config)
+        self.prepare(); self.run_refresh()
+        source = next(iter(self.client.sources.values()))
+        source['provenance']['metadata'].pop('collection_id')
+        self.client.extraction_policy_drift = True
+        self.config['extract_entities'] = False
+        self.state = m.new_state(self.config)
+        self.prepare()
+        before = (self.client.embedding_calls, self.client.extraction_calls)
+        uploads = len(self.client.receipts)
+        with self.assertRaisesRegex(m.ImportFailure, 'existing_extraction_policy_requires_adoption'):
+            self.run_refresh()
+        self.assertEqual(len(self.client.receipts), uploads)
+        self.args.adopt_existing_policy = True
+        self.run_refresh()
+        self.assertEqual(m.evidence(self.state)['retained_extraction_policy_parts'], 1)
+        self.assertEqual(self.state['status'], 'complete')
+        self.assertEqual((self.client.embedding_calls, self.client.extraction_calls), before)
+
+        uploads = len(self.client.receipts)
+        self.prepare(); self.run_refresh()
+        self.assertEqual(len(self.client.receipts), uploads)
+        self.assertEqual(self.state['counts']['unchanged'], 1)
+        self.assertEqual(m.evidence(self.state)['retained_extraction_policy_parts'], 1)
+        self.write('memory/atlas.md', b'# Atlas\n\nNew indexed graph-bearing body')
+        self.prepare()
+        with self.assertRaisesRegex(m.ImportFailure, 'retained_extraction_policy_requires_owner_reprocessing'):
+            self.run_refresh()
+        self.assertEqual(len(self.client.receipts), uploads)
+        self.assertEqual((self.client.embedding_calls, self.client.extraction_calls), before)
+
+    def test_registered_graph_drift_requires_explicit_adoption_and_zero_uploads(self):
+        self.config['extract_entities'] = True
+        self.state = m.new_state(self.config)
+        self.prepare(); self.run_refresh()
+        self.client.extraction_policy_drift = True
+        self.prepare()
+        uploads = len(self.client.receipts)
+        with self.assertRaisesRegex(m.ImportFailure, 'committed_processing_policy_mismatch'):
+            self.run_refresh()
+        self.args.adopt_existing_policy = True
+        self.run_refresh()
+        self.assertEqual(len(self.client.receipts), uploads)
+        self.assertEqual(self.state['status'], 'complete')
+        self.assertEqual(m.evidence(self.state)['retained_extraction_policy_parts'], 1)
+
+    def test_installed_shim_help_creates_no_sibling_bytecode(self):
+        scripts = self.root / 'installed' / 'scripts'
+        scripts.mkdir(parents=True)
+        for name in ('refresh-openclaw-memory.py', 'openclaw_memory_refresh.py'):
+            (scripts / name).write_bytes((Path(__file__).parents[1] / name).read_bytes())
+        environment = {k: v for k, v in os.environ.items() if k not in ('PYTHONDONTWRITEBYTECODE', 'PYTHONPYCACHEPREFIX')}
+        completed = subprocess.run([sys.executable, str(scripts / 'refresh-openclaw-memory.py'), '--help'],
+                                   capture_output=True, env=environment, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(list(scripts.rglob('__pycache__')), [])
+
     def test_legacy_adoption_rejects_changed_bytes_owner_and_processing_before_upload(self):
         self.prepare(); self.run_refresh()
         original = json.loads(json.dumps(next(iter(self.client.sources.values()))))
@@ -255,7 +322,7 @@ class RefreshTests(unittest.TestCase):
         self.prepare(); self.run_refresh()
         original = json.loads(json.dumps(next(iter(self.client.sources.values()))))
         (self.workspace / 'memory/atlas.md').unlink()
-        with sqlite3.connect(self.database) as connection:
+        with contextlib.closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute('DELETE FROM memory_index_sources')
         self.prepare(); self.run_refresh()
         plan = m.reconciliation_preview(self.client, self.state)
@@ -284,6 +351,42 @@ class RefreshTests(unittest.TestCase):
         with self.assertRaisesRegex(m.ImportFailure, 'retired_source_requires_registered_cleanup'):
             self.run_refresh()
         self.assertEqual(len(self.client.receipts), before)
+
+    def test_unchanged_processing_drift_fails_without_upload_and_recovers(self):
+        self.prepare(); self.run_refresh()
+        original = json.loads(json.dumps(next(iter(self.client.sources.values()))))
+        last_success = self.state['last_success_at']
+        uploads = len(self.client.receipts)
+        for field, value in [('processing_policy_current', False), ('processing_policy_sha256', 'b' * 64),
+                             ('extract_entities', True)]:
+            source = json.loads(json.dumps(original)); source[field] = value
+            self.client.sources[source['id']] = source
+            self.prepare()
+            with self.assertRaisesRegex(m.ImportFailure, 'committed_processing_policy_mismatch'):
+                self.run_refresh()
+            self.assertEqual(self.state['counts']['failed'], 1)
+            self.assertEqual(self.state['last_success_at'], last_success)
+            self.assertEqual(len(self.client.receipts), uploads)
+            self.client.sources[original['id']] = original
+            self.run_refresh()
+            self.assertEqual(self.state['status'], 'complete')
+            last_success = self.state['last_success_at']
+        self.assertEqual(len(self.client.receipts), uploads)
+
+    def test_legacy_policy_evidence_requires_exact_previously_verified_revision(self):
+        self.prepare(); self.run_refresh()
+        self.state.pop('source_policies')
+        for registered in self.state['documents'].values():
+            registered['entry']['source_verified'].pop('processing_policy', None)
+        self.prepare(); self.run_refresh()
+        self.assertTrue(self.state['source_policies'])
+        self.state.pop('source_policies')
+        for registered in self.state['documents'].values():
+            registered['entry']['source_verified'].pop('processing_policy', None)
+        source = next(iter(self.client.sources.values())); source['revision'] = 'e' * 64
+        self.prepare()
+        with self.assertRaisesRegex(m.ImportFailure, 'registered_processing_policy_unknown'):
+            self.run_refresh()
 
     def test_operator_counts_distinguish_collection_registration_and_service_actions(self):
         self.prepare(); self.run_refresh()
