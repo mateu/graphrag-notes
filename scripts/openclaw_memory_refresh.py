@@ -329,12 +329,15 @@ def payloads(documents, config, attempt):
         pieces = split_utf8(raw, config['part_bytes']) if len(raw) > MAX_UPLOAD else [raw]
         filename = PurePosixPath(path).name
         title = ''.join(ch if ch.isalnum() or ch in ' ._()-' else '_' for ch in filename)[:240]
+        uri = 'openclaw://' + config['host'] + '/' + config['agent'] + '/' + urllib.parse.quote(path, safe='/')
+        if len(uri) > 2048:
+            raise ImportFailure('provenance_uri_too_long')
         for index, piece in enumerate(pieces, 1):
             key = base + f'/part-{index:04d}'
             payload = {'document_key': key, 'content': piece.decode('utf-8'),
                        'title': title if len(pieces) == 1 else f'{title} [part {index}/{len(pieces)}]',
                        'extract_entities': config['extract_entities'],
-                       'provenance': {'uri': 'openclaw://' + config['host'] + '/' + config['agent'] + '/' + urllib.parse.quote(path, safe='/'),
+                       'provenance': {'uri': uri,
                                       'label': 'OpenClaw indexed memory',
                                       'metadata': {'host': config['host'], 'agent': config['agent'], 'source_path': path,
                                                    'original_sha256': sha(raw), 'part': str(index), 'parts': str(len(pieces)),
@@ -519,10 +522,14 @@ def reconciliation_preview(client, state):
     for key in state.get('missing_keys', []):
         registered = state['documents'][key]
         source = retry_call(client, 'get_source', {'id': registered['entry']['admission']['source_id']})
-        if (source.get('instance_id') != state['config']['instance_id']
+        if (source.get('id') != registered['entry']['admission']['source_id']
+                or source.get('uri') != registered['entry']['admission']['source_uri']
+                or source.get('instance_id') != state['config']['instance_id']
                 or source.get('document_key') != key or source.get('provenance') != registered['provenance']
                 or source.get('provenance', {}).get('metadata', {}).get('collection_id') != state['config']['collection_id']
-                or source.get('status') != 'ready' or source.get('generation') != source.get('successful_generation')):
+                or source.get('status') != 'ready' or source.get('generation') != source.get('successful_generation')
+                or source.get('generation') != registered['entry']['source_verified']['generation']
+                or sha(source.get('content', '').encode()) != registered['entry']['source_verified']['content_sha256']):
             raise ImportFailure('reconciliation_scope_mismatch')
         classification = 'obsolete_part' if any(desired.rsplit('/part-', 1)[0] == key.rsplit('/part-', 1)[0]
                                                for desired in state.get('desired_keys', [])) else 'removed_original'
