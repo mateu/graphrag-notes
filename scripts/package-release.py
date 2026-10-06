@@ -152,6 +152,17 @@ def regular_file(path: Path, label: str) -> Path:
     return path
 
 
+def committed_payload(repo: Path, relative: str, commit: str, label: str) -> bytes:
+    """Freeze the verified Git blob rather than reopen a mutable worktree file."""
+    payload = regular_file(repo / relative, label)
+    object_id = run(["git", "rev-parse", f"{commit}:{relative}"], repo)
+    require(run(["git", "hash-object", str(payload)], repo) == object_id,
+            f"{label} differs from the final committed source")
+    result = subprocess.run(["git", "cat-file", "blob", object_id], cwd=repo, capture_output=True)
+    require(result.returncode == 0, f"cannot read the verified {label} Git blob")
+    return result.stdout
+
+
 def json_file(path: Path) -> dict:
     regular_file(path, "JSON input")
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -361,7 +372,7 @@ def validation_checks(path: Path | None, require_gates: bool, context: dict | No
     return checks
 
 
-def deterministic_archive(path: Path, binary: Path, sample: Path, epoch: int,
+def deterministic_archive(path: Path, binary: Path, sample: Path | bytes, epoch: int,
                           payloads: dict[str, Path | bytes] | None = None) -> None:
     entries = [(binary, "graphrag", 0o755), (sample, "samples/first-notes.md", 0o644)]
     entries += [(value, name, 0o644) for name, value in sorted((payloads or {}).items())]
@@ -478,15 +489,10 @@ def package(args) -> dict:
     native = {**{name: native[name] for name in historical}, **intrinsic}
     smoke = smoke_binary(binary, source["version"])
     require(record["binary_smoke"] == smoke, "build record smoke results differ from the actual binary")
-    sample = regular_file(repo / "samples/first-notes.md", "starter sample")
-    require(run(["git", "hash-object", str(sample)], repo) == run(["git", "rev-parse", "HEAD:samples/first-notes.md"], repo),
-            "starter sample differs from the final committed source")
+    sample = committed_payload(repo, "samples/first-notes.md", source["commit"], "starter sample")
     payloads = {}
     for relative in RELEASE_PAYLOADS:
-        payload = regular_file(repo / relative, "release client/document")
-        require(run(["git", "hash-object", str(payload)], repo) == run(["git", "rev-parse", f"HEAD:{relative}"], repo),
-                "release client/document differs from the final committed source")
-        payloads["release/" + relative] = payload
+        payloads["release/" + relative] = committed_payload(repo, relative, source["commit"], "release client/document")
     payloads["release/VERSION"] = (source["version"] + "\n").encode()
     payloads["release/SOURCE-COMMIT"] = (source["commit"] + "\n").encode()
     payload_hashes = {name: hashlib.sha256(path).hexdigest() if isinstance(path, bytes) else sha256(path)
@@ -501,7 +507,7 @@ def package(args) -> dict:
     payloads["release/PAYLOADS.sha256"] = flat_manifest
     payload_hashes["release/PAYLOADS.sha256"] = hashlib.sha256(flat_manifest).hexdigest()
     asset = f"graphrag-notes-{args.tag}-{target}.tar.gz"
-    binary_hash, sample_hash = record["binary_sha256"], sha256(sample)
+    binary_hash, sample_hash = record["binary_sha256"], hashlib.sha256(sample).hexdigest()
     with tempfile.TemporaryDirectory(prefix=".graphrag-package-", dir=output.parent) as temp:
         staged = Path(temp)
         deterministic_archive(staged / asset, binary, sample, source["source_date_epoch"], payloads)

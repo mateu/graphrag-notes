@@ -2,6 +2,7 @@
 """Offline release checks using temporary repositories and native-tool fixtures."""
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -164,6 +165,36 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(archive.getnames(), ["graphrag", "samples/first-notes.md", *sorted(first["payload_sha256"])])
             self.assertEqual(set(first["payload_sha256"]), {"release/" + p for p in release.RELEASE_PAYLOADS} | {"release/PAYLOADS.json", "release/PAYLOADS.sha256", "release/VERSION", "release/SOURCE-COMMIT"})
             self.assertTrue(all(member.uid == member.gid == 0 for member in archive.getmembers()))
+
+    def test_concurrent_worktree_rewrites_cannot_change_verified_release_payloads(self):
+        relatives = ("samples/first-notes.md", "scripts/refresh-openclaw-memory.py", "README.md")
+        committed = {name: subprocess.check_output(["git", "show", f"{self.commit_id}:{name}"], cwd=self.repo)
+                     for name in relatives}
+        pending = {(self.repo / name).resolve(): b"Uncommitted concurrent editor rewrite\n" for name in relatives}
+        original_run = release.run
+
+        def rewrite_after_verification(argv, repo=None, env=None):
+            value = original_run(argv, repo, env)
+            if argv[:2] == ["git", "hash-object"] and Path(argv[2]).resolve() in pending:
+                path = Path(argv[2]).resolve()
+                path.write_bytes(pending.pop(path))
+            return value
+
+        with patch.object(release, "run", side_effect=rewrite_after_verification):
+            info = release.package(self.package_args())
+        self.assertFalse(pending, "all concurrent rewrites must occur after their successful Git hash checks")
+        self.assertEqual(info["source_commit"], self.commit_id)
+        self.assertEqual(info["sample_sha256"], hashlib.sha256(committed[relatives[0]]).hexdigest())
+        for asset, native in ((info["archive"], True), (info["client_archive"], False)):
+            with tarfile.open(self.root / "dist" / asset) as archive:
+                if native:
+                    self.assertEqual(archive.extractfile(relatives[0]).read(), committed[relatives[0]])
+                for relative in relatives[1:]:
+                    self.assertEqual(archive.extractfile("release/" + relative).read(), committed[relative])
+                    self.assertEqual(info["payload_sha256"]["release/" + relative],
+                                     hashlib.sha256(committed[relative]).hexdigest())
+        for relative in relatives:
+            self.assertEqual((self.repo / relative).read_bytes(), b"Uncommitted concurrent editor rewrite\n")
 
     def test_missing_symlink_modified_and_wrong_version_binaries_are_rejected(self):
         self.binary.write_text("#!/bin/sh\necho graphrag 9.9.9\n")
