@@ -245,6 +245,7 @@ def distribution(values, minimum=20):
 
 def summary(report):
     result = {"schema_version": 1, "suite_sha256": report["suite_sha256"], "groups": [],
+              "load_schedule": "homogeneous_policy_batches" if report.get("load_schedule") == "homogeneous_policy_batches" else "unspecified",
               "limits": ["Stateless HTTP client timings exclude MCP initialization and guarded readback.",
                          "First observations are not proof of unloaded model/cold OS cache.",
                          "Percentiles require at least 20 successful samples; failures remain counted.",

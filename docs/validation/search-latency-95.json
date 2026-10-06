@@ -1551,864 +1551,6 @@
         },
         "target_ms": 1000,
         "within_target": true
-      },
-      {
-        "concurrency": 4,
-        "policy": "keyword-off",
-        "phase": "first_observed",
-        "scheduled": 4,
-        "successful": 4,
-        "failed": 0,
-        "failure_categories": {},
-        "search_rpc": {
-          "samples": 4,
-          "p50_ms": null,
-          "p95_ms": null,
-          "min_ms": 2.0157499820925295,
-          "max_ms": 317.49191595008597
-        },
-        "same_rpc_backend_observations": 4,
-        "backend_phases": {
-          "application_search": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 1.662417,
-            "max_ms": 316.911167
-          }
-        },
-        "categories": {
-          "direct": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 317.49191595008597,
-              "max_ms": 317.49191595008597
-            }
-          },
-          "entity": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 3.2972500193864107,
-              "max_ms": 3.2972500193864107
-            }
-          },
-          "filters": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 2.0157499820925295,
-              "max_ms": 2.0157499820925295
-            }
-          },
-          "title": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 20.3932499862276,
-              "max_ms": 20.3932499862276
-            }
-          }
-        },
-        "target_ms": 250,
-        "within_target": null
-      },
-      {
-        "concurrency": 4,
-        "policy": "keyword-off",
-        "phase": "warmed",
-        "scheduled": 80,
-        "successful": 80,
-        "failed": 0,
-        "failure_categories": {},
-        "search_rpc": {
-          "samples": 80,
-          "p50_ms": 4.273583501344547,
-          "p95_ms": 333.4700419800356,
-          "min_ms": 1.9554159953258932,
-          "max_ms": 353.5195830045268
-        },
-        "same_rpc_backend_observations": 80,
-        "backend_phases": {
-          "application_search": {
-            "samples": 80,
-            "p50_ms": 3.4999795000000002,
-            "p95_ms": 332.68841599999996,
-            "min_ms": 1.6056670000000002,
-            "max_ms": 352.896541
-          }
-        },
-        "categories": {
-          "direct": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 319.5604170032311,
-              "p95_ms": 337.79695798875764,
-              "min_ms": 298.95299999043345,
-              "max_ms": 353.5195830045268
-            }
-          },
-          "entity": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 3.213207994122058,
-              "p95_ms": 3.7214590120129287,
-              "min_ms": 2.3269160301424563,
-              "max_ms": 12.271833955310285
-            }
-          },
-          "filters": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 2.4942920135799795,
-              "p95_ms": 2.9544999706558883,
-              "min_ms": 1.9554159953258932,
-              "max_ms": 3.1465840293094516
-            }
-          },
-          "title": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 5.191395990550518,
-              "p95_ms": 6.271707999985665,
-              "min_ms": 4.129124979954213,
-              "max_ms": 7.05262494739145
-            }
-          }
-        },
-        "target_ms": 250,
-        "within_target": false
-      },
-      {
-        "concurrency": 4,
-        "policy": "hybrid-off",
-        "phase": "first_observed",
-        "scheduled": 4,
-        "successful": 4,
-        "failed": 0,
-        "failure_categories": {},
-        "search_rpc": {
-          "samples": 4,
-          "p50_ms": null,
-          "p95_ms": null,
-          "min_ms": 450.7631250307895,
-          "max_ms": 896.1897080298513
-        },
-        "same_rpc_backend_observations": 4,
-        "backend_phases": {
-          "application_search": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 450.11591699999997,
-            "max_ms": 895.593292
-          },
-          "note_fulltext": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 1.315666,
-            "max_ms": 346.63379199999997
-          },
-          "note_vector": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 444.603292,
-            "max_ms": 583.862542
-          },
-          "query_embedding": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.152583,
-            "max_ms": 0.424417
-          }
-        },
-        "categories": {
-          "direct": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 896.1897080298513,
-              "max_ms": 896.1897080298513
-            }
-          },
-          "entity": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 562.615291972179,
-              "max_ms": 562.615291972179
-            }
-          },
-          "filters": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 450.7631250307895,
-              "max_ms": 450.7631250307895
-            }
-          },
-          "title": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 591.2092920043506,
-              "max_ms": 591.2092920043506
-            }
-          }
-        },
-        "target_ms": 1000,
-        "within_target": null
-      },
-      {
-        "concurrency": 4,
-        "policy": "hybrid-off",
-        "phase": "warmed",
-        "scheduled": 80,
-        "successful": 80,
-        "failed": 0,
-        "failure_categories": {},
-        "search_rpc": {
-          "samples": 80,
-          "p50_ms": 605.7657500205096,
-          "p95_ms": 972.0862079993822,
-          "min_ms": 434.30166598409414,
-          "max_ms": 1021.2555829784833
-        },
-        "same_rpc_backend_observations": 80,
-        "backend_phases": {
-          "application_search": {
-            "samples": 80,
-            "p50_ms": 604.9849999999999,
-            "p95_ms": 971.3155,
-            "min_ms": 433.620541,
-            "max_ms": 1020.5187090000001
-          },
-          "note_fulltext": {
-            "samples": 80,
-            "p50_ms": 2.033792,
-            "p95_ms": 352.228541,
-            "min_ms": 1.1782080000000001,
-            "max_ms": 357.314083
-          },
-          "note_vector": {
-            "samples": 80,
-            "p50_ms": 582.45175,
-            "p95_ms": 630.2642910000001,
-            "min_ms": 428.402125,
-            "max_ms": 663.159625
-          },
-          "query_embedding": {
-            "samples": 80,
-            "p50_ms": 0.227875,
-            "p95_ms": 0.302625,
-            "min_ms": 0.145375,
-            "max_ms": 0.406541
-          }
-        },
-        "categories": {
-          "direct": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 943.3191044663545,
-              "p95_ms": 990.4377920320258,
-              "min_ms": 836.7817089892924,
-              "max_ms": 1021.2555829784833
-            }
-          },
-          "entity": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 605.8391249971464,
-              "p95_ms": 652.2594999987632,
-              "min_ms": 538.1327089853585,
-              "max_ms": 669.633999990765
-            }
-          },
-          "filters": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 484.1013124969322,
-              "p95_ms": 507.13612500112504,
-              "min_ms": 434.30166598409414,
-              "max_ms": 522.1049580140971
-            }
-          },
-          "title": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 604.9000000057276,
-              "p95_ms": 636.8263330077752,
-              "min_ms": 533.6864169803448,
-              "max_ms": 638.3253749809228
-            }
-          }
-        },
-        "target_ms": 1000,
-        "within_target": true
-      },
-      {
-        "concurrency": 4,
-        "policy": "hybrid-auto",
-        "phase": "first_observed",
-        "scheduled": 4,
-        "successful": 4,
-        "failed": 0,
-        "failure_categories": {},
-        "search_rpc": {
-          "samples": 4,
-          "p50_ms": null,
-          "p95_ms": null,
-          "min_ms": 470.09566699853167,
-          "max_ms": 935.8485830016434
-        },
-        "same_rpc_backend_observations": 4,
-        "backend_phases": {
-          "application_search": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 469.402292,
-            "max_ms": 935.2004579999999
-          },
-          "graph_edge_expansion": {
-            "samples": 2,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.995959,
-            "max_ms": 4.5380840000000005
-          },
-          "graph_entity_matching": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 5.472167,
-            "max_ms": 15.003375
-          },
-          "graph_mentions": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.002792,
-            "max_ms": 1.622292
-          },
-          "graph_note_hydration": {
-            "samples": 2,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.207,
-            "max_ms": 0.685459
-          },
-          "graph_provenance": {
-            "samples": 2,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.099166,
-            "max_ms": 0.105459
-          },
-          "note_fulltext": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 1.588791,
-            "max_ms": 360.375917
-          },
-          "note_vector": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 449.593709,
-            "max_ms": 559.199875
-          },
-          "query_embedding": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.130541,
-            "max_ms": 0.242458
-          }
-        },
-        "categories": {
-          "direct": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 935.8485830016434,
-              "max_ms": 935.8485830016434
-            }
-          },
-          "entity": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 579.6467500040308,
-              "max_ms": 579.6467500040308
-            }
-          },
-          "filters": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 470.09566699853167,
-              "max_ms": 470.09566699853167
-            }
-          },
-          "title": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 565.080417029094,
-              "max_ms": 565.080417029094
-            }
-          }
-        },
-        "target_ms": 1000,
-        "within_target": null
-      },
-      {
-        "concurrency": 4,
-        "policy": "hybrid-auto",
-        "phase": "warmed",
-        "scheduled": 80,
-        "successful": 80,
-        "failed": 0,
-        "failure_categories": {},
-        "search_rpc": {
-          "samples": 80,
-          "p50_ms": 615.5457504792139,
-          "p95_ms": 981.9644580129534,
-          "min_ms": 443.1934580206871,
-          "max_ms": 1008.4022079827264
-        },
-        "same_rpc_backend_observations": 80,
-        "backend_phases": {
-          "application_search": {
-            "samples": 80,
-            "p50_ms": 614.864229,
-            "p95_ms": 981.238125,
-            "min_ms": 442.612166,
-            "max_ms": 1007.6028749999999
-          },
-          "graph_edge_expansion": {
-            "samples": 40,
-            "p50_ms": 2.7939795000000003,
-            "p95_ms": 6.046250000000001,
-            "min_ms": 0.783625,
-            "max_ms": 6.216374999999999
-          },
-          "graph_entity_matching": {
-            "samples": 80,
-            "p50_ms": 12.776646,
-            "p95_ms": 17.1965,
-            "min_ms": 4.476583,
-            "max_ms": 19.351708
-          },
-          "graph_mentions": {
-            "samples": 80,
-            "p50_ms": 0.5045000000000001,
-            "p95_ms": 1.5035420000000002,
-            "min_ms": 0.002084,
-            "max_ms": 1.795
-          },
-          "graph_note_hydration": {
-            "samples": 40,
-            "p50_ms": 0.43862499999999993,
-            "p95_ms": 0.775833,
-            "min_ms": 0.188792,
-            "max_ms": 0.813542
-          },
-          "graph_provenance": {
-            "samples": 40,
-            "p50_ms": 0.11310400000000001,
-            "p95_ms": 0.172291,
-            "min_ms": 0.084208,
-            "max_ms": 0.190875
-          },
-          "note_fulltext": {
-            "samples": 80,
-            "p50_ms": 1.9796040000000001,
-            "p95_ms": 352.2415,
-            "min_ms": 1.239209,
-            "max_ms": 362.04170899999997
-          },
-          "note_vector": {
-            "samples": 80,
-            "p50_ms": 576.7325625,
-            "p95_ms": 633.307083,
-            "min_ms": 424.70804200000003,
-            "max_ms": 660.7551659999999
-          },
-          "query_embedding": {
-            "samples": 80,
-            "p50_ms": 0.213229,
-            "p95_ms": 0.265834,
-            "min_ms": 0.14179199999999997,
-            "max_ms": 0.30200000000000005
-          }
-        },
-        "categories": {
-          "direct": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 947.6695834891871,
-              "p95_ms": 1004.9075420247391,
-              "min_ms": 865.3770840028301,
-              "max_ms": 1008.4022079827264
-            }
-          },
-          "entity": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 621.2022295221686,
-              "p95_ms": 637.6084170187823,
-              "min_ms": 563.039833039511,
-              "max_ms": 671.0976249887608
-            }
-          },
-          "filters": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 502.00022899662144,
-              "p95_ms": 528.0206250026822,
-              "min_ms": 443.1934580206871,
-              "max_ms": 531.2292500166222
-            }
-          },
-          "title": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 613.0090215010568,
-              "p95_ms": 654.5555000193417,
-              "min_ms": 548.8154589547776,
-              "max_ms": 683.6081250221469
-            }
-          }
-        },
-        "target_ms": 1000,
-        "within_target": true
-      },
-      {
-        "concurrency": 4,
-        "policy": "hybrid-on",
-        "phase": "first_observed",
-        "scheduled": 4,
-        "successful": 4,
-        "failed": 0,
-        "failure_categories": {},
-        "search_rpc": {
-          "samples": 4,
-          "p50_ms": null,
-          "p95_ms": null,
-          "min_ms": 481.7267920006998,
-          "max_ms": 922.7902910206467
-        },
-        "same_rpc_backend_observations": 4,
-        "backend_phases": {
-          "application_search": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 481.115709,
-            "max_ms": 922.1928750000001
-          },
-          "graph_edge_expansion": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 3.9297919999999995,
-            "max_ms": 9.063709
-          },
-          "graph_entity_matching": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 5.317083,
-            "max_ms": 14.670292
-          },
-          "graph_mentions": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.003042,
-            "max_ms": 1.302125
-          },
-          "graph_note_hydration": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.001833,
-            "max_ms": 0.625625
-          },
-          "graph_provenance": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.0006670000000000001,
-            "max_ms": 0.10370800000000001
-          },
-          "note_fulltext": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 1.179792,
-            "max_ms": 349.323917
-          },
-          "note_vector": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 456.48024999999996,
-            "max_ms": 585.367625
-          },
-          "query_embedding": {
-            "samples": 4,
-            "p50_ms": null,
-            "p95_ms": null,
-            "min_ms": 0.151833,
-            "max_ms": 0.19675
-          }
-        },
-        "categories": {
-          "direct": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 922.7902910206467,
-              "max_ms": 922.7902910206467
-            }
-          },
-          "entity": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 575.5057499627583,
-              "max_ms": 575.5057499627583
-            }
-          },
-          "filters": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 481.7267920006998,
-              "max_ms": 481.7267920006998
-            }
-          },
-          "title": {
-            "scheduled": 1,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 1,
-              "p50_ms": null,
-              "p95_ms": null,
-              "min_ms": 608.4587500081398,
-              "max_ms": 608.4587500081398
-            }
-          }
-        },
-        "target_ms": 1000,
-        "within_target": null
-      },
-      {
-        "concurrency": 4,
-        "policy": "hybrid-on",
-        "phase": "warmed",
-        "scheduled": 80,
-        "successful": 80,
-        "failed": 0,
-        "failure_categories": {},
-        "search_rpc": {
-          "samples": 80,
-          "p50_ms": 626.3807290233672,
-          "p95_ms": 992.6907499902882,
-          "min_ms": 447.20933301141486,
-          "max_ms": 1029.3922920245677
-        },
-        "same_rpc_backend_observations": 80,
-        "backend_phases": {
-          "application_search": {
-            "samples": 80,
-            "p50_ms": 625.6323125,
-            "p95_ms": 992.030667,
-            "min_ms": 446.52216599999997,
-            "max_ms": 1028.651875
-          },
-          "graph_edge_expansion": {
-            "samples": 80,
-            "p50_ms": 5.041916499999999,
-            "p95_ms": 9.745625,
-            "min_ms": 3.4459999999999997,
-            "max_ms": 10.736667
-          },
-          "graph_entity_matching": {
-            "samples": 80,
-            "p50_ms": 12.656417,
-            "p95_ms": 17.061541,
-            "min_ms": 4.386958,
-            "max_ms": 17.809416000000002
-          },
-          "graph_mentions": {
-            "samples": 80,
-            "p50_ms": 0.4931875,
-            "p95_ms": 1.527625,
-            "min_ms": 0.001958,
-            "max_ms": 1.764083
-          },
-          "graph_note_hydration": {
-            "samples": 80,
-            "p50_ms": 0.096896,
-            "p95_ms": 0.71775,
-            "min_ms": 0.0022919999999999998,
-            "max_ms": 0.842625
-          },
-          "graph_provenance": {
-            "samples": 80,
-            "p50_ms": 0.0404375,
-            "p95_ms": 0.162375,
-            "min_ms": 0.000625,
-            "max_ms": 0.217042
-          },
-          "note_fulltext": {
-            "samples": 80,
-            "p50_ms": 1.940833,
-            "p95_ms": 350.47279100000003,
-            "min_ms": 1.166917,
-            "max_ms": 367.82599999999996
-          },
-          "note_vector": {
-            "samples": 80,
-            "p50_ms": 579.2613125,
-            "p95_ms": 629.722042,
-            "min_ms": 424.384792,
-            "max_ms": 649.8017080000001
-          },
-          "query_embedding": {
-            "samples": 80,
-            "p50_ms": 0.23114600000000002,
-            "p95_ms": 0.309833,
-            "min_ms": 0.1375,
-            "max_ms": 0.410625
-          }
-        },
-        "categories": {
-          "direct": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 958.4268954931758,
-              "p95_ms": 1013.380209042225,
-              "min_ms": 868.187082989607,
-              "max_ms": 1029.3922920245677
-            }
-          },
-          "entity": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 627.08689601277,
-              "p95_ms": 651.754540973343,
-              "min_ms": 561.2209580140188,
-              "max_ms": 677.4595830356702
-            }
-          },
-          "filters": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 504.1046040132642,
-              "p95_ms": 538.6687089921907,
-              "min_ms": 447.20933301141486,
-              "max_ms": 539.0275420504622
-            }
-          },
-          "title": {
-            "scheduled": 20,
-            "failed": 0,
-            "search_rpc": {
-              "samples": 20,
-              "p50_ms": 620.3906660084613,
-              "p95_ms": 654.0920829866081,
-              "min_ms": 543.6810420360416,
-              "max_ms": 659.6026659826748
-            }
-          }
-        },
-        "target_ms": 1000,
-        "within_target": true
       }
     ],
     "limits": [
@@ -2453,42 +1595,9 @@
         "within_target": true,
         "judged_positive_rr_comparisons": 60,
         "judged_positive_rr_regressions": 0
-      },
-      {
-        "concurrency": 4,
-        "policy": "hybrid-auto",
-        "paired_search_rpc_delta": {
-          "samples": 80,
-          "p50_ms": 13.387687533395365,
-          "p95_ms": 46.69679293874651,
-          "min_ms": -82.60354201775044,
-          "max_ms": 77.20229198457673
-        },
-        "scheduled_pairs": 80,
-        "failed_pairs": 0,
-        "target_delta_ms": 250,
-        "within_target": true,
-        "judged_positive_rr_comparisons": 60,
-        "judged_positive_rr_regressions": 0
-      },
-      {
-        "concurrency": 4,
-        "policy": "hybrid-on",
-        "paired_search_rpc_delta": {
-          "samples": 80,
-          "p50_ms": 16.06787453056313,
-          "p95_ms": 65.74687507236376,
-          "min_ms": -87.58649998344481,
-          "max_ms": 96.68695798609406
-        },
-        "scheduled_pairs": 80,
-        "failed_pairs": 0,
-        "target_delta_ms": 250,
-        "within_target": true,
-        "judged_positive_rr_comparisons": 60,
-        "judged_positive_rr_regressions": 0
       }
-    ]
+    ],
+    "load_schedule": "historical_interleaved_single_lane"
   },
   "uncached_traced": {
     "schema_version": 1,
@@ -4211,7 +3320,916 @@
       "get_record": 21
     }
   },
-  "final_graph_candidate": {
+  "cached_traced_four_lane": {
+    "schema_version": 1,
+    "suite_sha256": "fd8185acd3bd5eb09389e7a0ad06c11dc67808d7ca61efbcc401bf715bad4ace",
+    "groups": [
+      {
+        "concurrency": 4,
+        "policy": "keyword-off",
+        "phase": "first_observed",
+        "scheduled": 4,
+        "successful": 4,
+        "failed": 0,
+        "failure_categories": {},
+        "search_rpc": {
+          "samples": 4,
+          "p50_ms": null,
+          "p95_ms": null,
+          "min_ms": 14.713625016156584,
+          "max_ms": 548.175249947235
+        },
+        "same_rpc_backend_observations": 4,
+        "backend_phases": {
+          "application_search": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 12.827833,
+            "max_ms": 546.353
+          }
+        },
+        "categories": {
+          "direct": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 548.175249947235,
+              "max_ms": 548.175249947235
+            }
+          },
+          "entity": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 15.325999993365258,
+              "max_ms": 15.325999993365258
+            }
+          },
+          "filters": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 14.713625016156584,
+              "max_ms": 14.713625016156584
+            }
+          },
+          "title": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 22.38012501038611,
+              "max_ms": 22.38012501038611
+            }
+          }
+        },
+        "target_ms": 250,
+        "within_target": null
+      },
+      {
+        "concurrency": 4,
+        "policy": "keyword-off",
+        "phase": "warmed",
+        "scheduled": 80,
+        "successful": 80,
+        "failed": 0,
+        "failure_categories": {},
+        "search_rpc": {
+          "samples": 80,
+          "p50_ms": 3.5154169891029596,
+          "p95_ms": 314.109249971807,
+          "min_ms": 1.862625009380281,
+          "max_ms": 331.52025000890717
+        },
+        "same_rpc_backend_observations": 80,
+        "backend_phases": {
+          "application_search": {
+            "samples": 80,
+            "p50_ms": 2.9546665,
+            "p95_ms": 313.686042,
+            "min_ms": 1.536333,
+            "max_ms": 330.85375
+          }
+        },
+        "categories": {
+          "direct": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 301.42337549477816,
+              "p95_ms": 322.49658403452486,
+              "min_ms": 278.65254203788936,
+              "max_ms": 331.52025000890717
+            }
+          },
+          "entity": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 2.9082710098009557,
+              "p95_ms": 3.2840000349096954,
+              "min_ms": 1.862625009380281,
+              "max_ms": 3.402458969503641
+            }
+          },
+          "filters": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 2.4979790032375604,
+              "p95_ms": 2.7959589497186244,
+              "min_ms": 1.9566250266507268,
+              "max_ms": 2.924832981079817
+            }
+          },
+          "title": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 4.310146003263071,
+              "p95_ms": 5.440125009045005,
+              "min_ms": 3.628375008702278,
+              "max_ms": 5.99824998062104
+            }
+          }
+        },
+        "target_ms": 250,
+        "within_target": false
+      },
+      {
+        "concurrency": 4,
+        "policy": "hybrid-off",
+        "phase": "first_observed",
+        "scheduled": 4,
+        "successful": 4,
+        "failed": 0,
+        "failure_categories": {},
+        "search_rpc": {
+          "samples": 4,
+          "p50_ms": null,
+          "p95_ms": null,
+          "min_ms": 555.6637920089997,
+          "max_ms": 839.6613749791868
+        },
+        "same_rpc_backend_observations": 4,
+        "backend_phases": {
+          "application_search": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 554.914833,
+            "max_ms": 838.798625
+          },
+          "note_fulltext": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 1.146417,
+            "max_ms": 270.173583
+          },
+          "note_vector": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 548.395667,
+            "max_ms": 583.959084
+          },
+          "query_embedding": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.755792,
+            "max_ms": 0.84225
+          }
+        },
+        "categories": {
+          "direct": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 839.6613749791868,
+              "max_ms": 839.6613749791868
+            }
+          },
+          "entity": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 590.9742910298519,
+              "max_ms": 590.9742910298519
+            }
+          },
+          "filters": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 555.6637920089997,
+              "max_ms": 555.6637920089997
+            }
+          },
+          "title": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 572.336167038884,
+              "max_ms": 572.336167038884
+            }
+          }
+        },
+        "target_ms": 1000,
+        "within_target": null
+      },
+      {
+        "concurrency": 4,
+        "policy": "hybrid-off",
+        "phase": "warmed",
+        "scheduled": 80,
+        "successful": 80,
+        "failed": 0,
+        "failure_categories": {},
+        "search_rpc": {
+          "samples": 80,
+          "p50_ms": 527.064978989074,
+          "p95_ms": 822.3377079702914,
+          "min_ms": 398.9179580239579,
+          "max_ms": 859.5040829968639
+        },
+        "same_rpc_backend_observations": 80,
+        "backend_phases": {
+          "application_search": {
+            "samples": 80,
+            "p50_ms": 526.339167,
+            "p95_ms": 821.8746249999999,
+            "min_ms": 398.22620800000004,
+            "max_ms": 858.937875
+          },
+          "note_fulltext": {
+            "samples": 80,
+            "p50_ms": 1.5901245,
+            "p95_ms": 292.083666,
+            "min_ms": 0.9086660000000001,
+            "max_ms": 307.520583
+          },
+          "note_vector": {
+            "samples": 80,
+            "p50_ms": 516.2909380000001,
+            "p95_ms": 545.220625,
+            "min_ms": 392.660334,
+            "max_ms": 560.320084
+          },
+          "query_embedding": {
+            "samples": 80,
+            "p50_ms": 0.1551245,
+            "p95_ms": 0.26079199999999997,
+            "min_ms": 0.117375,
+            "max_ms": 0.339584
+          }
+        },
+        "categories": {
+          "direct": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 806.8042710074224,
+              "p95_ms": 843.3220830047503,
+              "min_ms": 774.0763330366462,
+              "max_ms": 859.5040829968639
+            }
+          },
+          "entity": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 526.8971044861246,
+              "p95_ms": 546.475708950311,
+              "min_ms": 493.8928749761544,
+              "max_ms": 553.5089999902993
+            }
+          },
+          "filters": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 416.05037497356534,
+              "p95_ms": 434.8012920236215,
+              "min_ms": 398.9179580239579,
+              "max_ms": 435.5270420201123
+            }
+          },
+          "title": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 527.0780624996405,
+              "p95_ms": 544.0110000199638,
+              "min_ms": 494.37158298678696,
+              "max_ms": 567.1072500408627
+            }
+          }
+        },
+        "target_ms": 1000,
+        "within_target": true
+      },
+      {
+        "concurrency": 4,
+        "policy": "hybrid-auto",
+        "phase": "first_observed",
+        "scheduled": 4,
+        "successful": 4,
+        "failed": 0,
+        "failure_categories": {},
+        "search_rpc": {
+          "samples": 4,
+          "p50_ms": null,
+          "p95_ms": null,
+          "min_ms": 437.9661660059355,
+          "max_ms": 781.1670419760048
+        },
+        "same_rpc_backend_observations": 4,
+        "backend_phases": {
+          "application_search": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 437.201542,
+            "max_ms": 780.394041
+          },
+          "graph_edge_expansion": {
+            "samples": 2,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.9239580000000001,
+            "max_ms": 3.683917
+          },
+          "graph_entity_matching": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 3.870417,
+            "max_ms": 15.839083
+          },
+          "graph_mentions": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.001375,
+            "max_ms": 1.1754580000000001
+          },
+          "graph_note_hydration": {
+            "samples": 2,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.204125,
+            "max_ms": 0.411708
+          },
+          "graph_provenance": {
+            "samples": 2,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.072542,
+            "max_ms": 0.07325000000000001
+          },
+          "note_fulltext": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 1.101292,
+            "max_ms": 238.63558300000003
+          },
+          "note_vector": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 417.742209,
+            "max_ms": 544.780875
+          },
+          "query_embedding": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.15795800000000002,
+            "max_ms": 0.278875
+          }
+        },
+        "categories": {
+          "direct": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 781.1670419760048,
+              "max_ms": 781.1670419760048
+            }
+          },
+          "entity": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 565.4761249898002,
+              "max_ms": 565.4761249898002
+            }
+          },
+          "filters": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 437.9661660059355,
+              "max_ms": 437.9661660059355
+            }
+          },
+          "title": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 566.0719579900615,
+              "max_ms": 566.0719579900615
+            }
+          }
+        },
+        "target_ms": 1000,
+        "within_target": null
+      },
+      {
+        "concurrency": 4,
+        "policy": "hybrid-auto",
+        "phase": "warmed",
+        "scheduled": 80,
+        "successful": 80,
+        "failed": 0,
+        "failure_categories": {},
+        "search_rpc": {
+          "samples": 80,
+          "p50_ms": 554.2176249728072,
+          "p95_ms": 848.5405839746818,
+          "min_ms": 413.59995800303295,
+          "max_ms": 871.0046249907464
+        },
+        "same_rpc_backend_observations": 80,
+        "backend_phases": {
+          "application_search": {
+            "samples": 80,
+            "p50_ms": 553.5713539999999,
+            "p95_ms": 847.9415839999999,
+            "min_ms": 412.890709,
+            "max_ms": 870.3025829999999
+          },
+          "graph_edge_expansion": {
+            "samples": 40,
+            "p50_ms": 2.5795005,
+            "p95_ms": 5.418125,
+            "min_ms": 0.762333,
+            "max_ms": 8.610541
+          },
+          "graph_entity_matching": {
+            "samples": 80,
+            "p50_ms": 11.7900205,
+            "p95_ms": 15.778917,
+            "min_ms": 4.16575,
+            "max_ms": 17.47475
+          },
+          "graph_mentions": {
+            "samples": 80,
+            "p50_ms": 0.46525,
+            "p95_ms": 1.274208,
+            "min_ms": 0.00125,
+            "max_ms": 1.582458
+          },
+          "graph_note_hydration": {
+            "samples": 40,
+            "p50_ms": 0.398896,
+            "p95_ms": 0.607042,
+            "min_ms": 0.168708,
+            "max_ms": 0.658833
+          },
+          "graph_provenance": {
+            "samples": 40,
+            "p50_ms": 0.0964165,
+            "p95_ms": 0.123375,
+            "min_ms": 0.070333,
+            "max_ms": 0.18820800000000001
+          },
+          "note_fulltext": {
+            "samples": 80,
+            "p50_ms": 1.6357914999999998,
+            "p95_ms": 294.43220799999995,
+            "min_ms": 0.908167,
+            "max_ms": 310.286833
+          },
+          "note_vector": {
+            "samples": 80,
+            "p50_ms": 528.2321454999999,
+            "p95_ms": 546.600334,
+            "min_ms": 394.780125,
+            "max_ms": 548.338084
+          },
+          "query_embedding": {
+            "samples": 80,
+            "p50_ms": 0.1535415,
+            "p95_ms": 0.240792,
+            "min_ms": 0.11725000000000001,
+            "max_ms": 0.266417
+          }
+        },
+        "categories": {
+          "direct": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 833.0191879940685,
+              "p95_ms": 866.9858329812996,
+              "min_ms": 792.4555420177057,
+              "max_ms": 871.0046249907464
+            }
+          },
+          "entity": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 552.1878539875615,
+              "p95_ms": 563.9401670196094,
+              "min_ms": 539.051958010532,
+              "max_ms": 566.4382919785567
+            }
+          },
+          "filters": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 437.9887709801551,
+              "p95_ms": 446.2994579807855,
+              "min_ms": 413.59995800303295,
+              "max_ms": 452.92020798660815
+            }
+          },
+          "title": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 554.6471465204377,
+              "p95_ms": 568.5305419610813,
+              "min_ms": 537.2102910187095,
+              "max_ms": 571.4985000086017
+            }
+          }
+        },
+        "target_ms": 1000,
+        "within_target": true
+      },
+      {
+        "concurrency": 4,
+        "policy": "hybrid-on",
+        "phase": "first_observed",
+        "scheduled": 4,
+        "successful": 4,
+        "failed": 0,
+        "failure_categories": {},
+        "search_rpc": {
+          "samples": 4,
+          "p50_ms": null,
+          "p95_ms": null,
+          "min_ms": 413.7657089740969,
+          "max_ms": 733.8219999801368
+        },
+        "same_rpc_backend_observations": 4,
+        "backend_phases": {
+          "application_search": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 413.082833,
+            "max_ms": 733.1342920000001
+          },
+          "graph_edge_expansion": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 3.65525,
+            "max_ms": 5.913458
+          },
+          "graph_entity_matching": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 3.8957919999999997,
+            "max_ms": 13.296375
+          },
+          "graph_mentions": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.003291,
+            "max_ms": 1.098583
+          },
+          "graph_note_hydration": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.0022919999999999998,
+            "max_ms": 0.414875
+          },
+          "graph_provenance": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.000875,
+            "max_ms": 0.08075
+          },
+          "note_fulltext": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.9740000000000001,
+            "max_ms": 219.836542
+          },
+          "note_vector": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 390.484042,
+            "max_ms": 519.362833
+          },
+          "query_embedding": {
+            "samples": 4,
+            "p50_ms": null,
+            "p95_ms": null,
+            "min_ms": 0.135792,
+            "max_ms": 0.15
+          }
+        },
+        "categories": {
+          "direct": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 733.8219999801368,
+              "max_ms": 733.8219999801368
+            }
+          },
+          "entity": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 527.744207996875,
+              "max_ms": 527.744207996875
+            }
+          },
+          "filters": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 413.7657089740969,
+              "max_ms": 413.7657089740969
+            }
+          },
+          "title": {
+            "scheduled": 1,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 1,
+              "p50_ms": null,
+              "p95_ms": null,
+              "min_ms": 540.5076669994742,
+              "max_ms": 540.5076669994742
+            }
+          }
+        },
+        "target_ms": 1000,
+        "within_target": null
+      },
+      {
+        "concurrency": 4,
+        "policy": "hybrid-on",
+        "phase": "warmed",
+        "scheduled": 80,
+        "successful": 80,
+        "failed": 0,
+        "failure_categories": {},
+        "search_rpc": {
+          "samples": 80,
+          "p50_ms": 564.7949580161367,
+          "p95_ms": 872.7806659881026,
+          "min_ms": 424.0127080120146,
+          "max_ms": 894.2132500233129
+        },
+        "same_rpc_backend_observations": 80,
+        "backend_phases": {
+          "application_search": {
+            "samples": 80,
+            "p50_ms": 562.3969165000001,
+            "p95_ms": 872.072416,
+            "min_ms": 423.43541600000003,
+            "max_ms": 893.593834
+          },
+          "graph_edge_expansion": {
+            "samples": 80,
+            "p50_ms": 4.2393125000000005,
+            "p95_ms": 8.173334,
+            "min_ms": 2.988542,
+            "max_ms": 10.771457999999999
+          },
+          "graph_entity_matching": {
+            "samples": 80,
+            "p50_ms": 12.652313,
+            "p95_ms": 15.913165999999999,
+            "min_ms": 4.267709,
+            "max_ms": 16.791708999999997
+          },
+          "graph_mentions": {
+            "samples": 80,
+            "p50_ms": 0.4700205,
+            "p95_ms": 1.235625,
+            "min_ms": 0.001209,
+            "max_ms": 1.434958
+          },
+          "graph_note_hydration": {
+            "samples": 80,
+            "p50_ms": 0.0909585,
+            "p95_ms": 0.593583,
+            "min_ms": 0.001167,
+            "max_ms": 0.638959
+          },
+          "graph_provenance": {
+            "samples": 80,
+            "p50_ms": 0.036937500000000005,
+            "p95_ms": 0.114,
+            "min_ms": 0.000542,
+            "max_ms": 0.156
+          },
+          "note_fulltext": {
+            "samples": 80,
+            "p50_ms": 1.747021,
+            "p95_ms": 301.155625,
+            "min_ms": 0.8515,
+            "max_ms": 324.21662499999996
+          },
+          "note_vector": {
+            "samples": 80,
+            "p50_ms": 534.6722705,
+            "p95_ms": 559.603208,
+            "min_ms": 402.465625,
+            "max_ms": 581.976167
+          },
+          "query_embedding": {
+            "samples": 80,
+            "p50_ms": 0.15537450000000003,
+            "p95_ms": 0.208375,
+            "min_ms": 0.118,
+            "max_ms": 0.252083
+          }
+        },
+        "categories": {
+          "direct": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 849.0163335227408,
+              "p95_ms": 889.9882499827072,
+              "min_ms": 775.4144159844145,
+              "max_ms": 894.2132500233129
+            }
+          },
+          "entity": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 564.7949580161367,
+              "p95_ms": 585.947584011592,
+              "min_ms": 539.0255830134265,
+              "max_ms": 612.2696670354344
+            }
+          },
+          "filters": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 448.0703544977587,
+              "p95_ms": 460.84512502420694,
+              "min_ms": 424.0127080120146,
+              "max_ms": 461.66395902400836
+            }
+          },
+          "title": {
+            "scheduled": 20,
+            "failed": 0,
+            "search_rpc": {
+              "samples": 20,
+              "p50_ms": 564.8603125009686,
+              "p95_ms": 580.4207500186749,
+              "min_ms": 551.7023749998771,
+              "max_ms": 583.7078330223449
+            }
+          }
+        },
+        "target_ms": 1000,
+        "within_target": true
+      }
+    ],
+    "limits": [
+      "Stateless HTTP client timings exclude MCP initialization and guarded readback.",
+      "First observations are not proof of unloaded model/cold OS cache.",
+      "Percentiles require at least 20 successful samples; failures remain counted.",
+      "Phase timings use the same hashed RPC identity; nested phases are not additive.",
+      "Concurrent lanes include guarded readback between searches; this is bounded client load.",
+      "Conversational model time and direct OpenClaw dispatch require separate observations."
+    ],
+    "graph_pairs": [
+      {
+        "concurrency": 4,
+        "policy": "hybrid-auto",
+        "paired_search_rpc_delta": {
+          "samples": 80,
+          "p50_ms": 23.993000446353108,
+          "p95_ms": 55.12725003063679,
+          "min_ms": -31.139208003878593,
+          "max_ms": 72.4388329545036
+        },
+        "scheduled_pairs": 80,
+        "failed_pairs": 0,
+        "target_delta_ms": 250,
+        "within_target": true,
+        "judged_positive_rr_comparisons": 60,
+        "judged_positive_rr_regressions": 0
+      },
+      {
+        "concurrency": 4,
+        "policy": "hybrid-on",
+        "paired_search_rpc_delta": {
+          "samples": 80,
+          "p50_ms": 34.15233251871541,
+          "p95_ms": 70.5114989541471,
+          "min_ms": -28.7357930210419,
+          "max_ms": 106.4115830231458
+        },
+        "scheduled_pairs": 80,
+        "failed_pairs": 0,
+        "target_delta_ms": 250,
+        "within_target": true,
+        "judged_positive_rr_comparisons": 60,
+        "judged_positive_rr_regressions": 0
+      }
+    ],
+    "load_schedule": "homogeneous_policy_batches"
+  },
+  "graph_candidate_checkpoint": {
     "compiled_inputs_commit": "3dc616a09ce37465dd96a3298ddf3e405ab62a54",
     "binary_sha256": "ddc33f9b5c15bc40affe392b7691267945785ed34cfb2b20baa6a05d08d561cf",
     "profile": "release",
@@ -4243,8 +4261,8 @@
             "samples": 4,
             "p50_ms": null,
             "p95_ms": null,
-            "min_ms": 1.7513339989818633,
-            "max_ms": 277.26391598116606
+            "min_ms": 1.6636659856885672,
+            "max_ms": 312.9214579821564
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4256,8 +4274,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 277.26391598116606,
-                "max_ms": 277.26391598116606
+                "min_ms": 312.9214579821564,
+                "max_ms": 312.9214579821564
               }
             },
             "entity": {
@@ -4267,8 +4285,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 2.918332989793271,
-                "max_ms": 2.918332989793271
+                "min_ms": 3.3432499621994793,
+                "max_ms": 3.3432499621994793
               }
             },
             "filters": {
@@ -4278,8 +4296,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 1.7513339989818633,
-                "max_ms": 1.7513339989818633
+                "min_ms": 1.6636659856885672,
+                "max_ms": 1.6636659856885672
               }
             },
             "title": {
@@ -4289,8 +4307,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 8.850166050251573,
-                "max_ms": 8.850166050251573
+                "min_ms": 8.968250011093915,
+                "max_ms": 8.968250011093915
               }
             }
           },
@@ -4307,10 +4325,10 @@
           "failure_categories": {},
           "search_rpc": {
             "samples": 80,
-            "p50_ms": 3.1447919900529087,
-            "p95_ms": 255.71491598384455,
-            "min_ms": 1.5985410427674651,
-            "max_ms": 290.99595797015354
+            "p50_ms": 2.7168545057065785,
+            "p95_ms": 235.36145803518593,
+            "min_ms": 1.4673339901492,
+            "max_ms": 259.8774170037359
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4320,10 +4338,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 230.20337501657195,
-                "p95_ms": 274.65979201951995,
-                "min_ms": 208.95666698925197,
-                "max_ms": 290.99595797015354
+                "p50_ms": 231.04629150475375,
+                "p95_ms": 248.6289170337841,
+                "min_ms": 210.1422090199776,
+                "max_ms": 259.8774170037359
               }
             },
             "entity": {
@@ -4331,10 +4349,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 2.1465209720190614,
-                "p95_ms": 3.578791976906359,
-                "min_ms": 1.910791965201497,
-                "max_ms": 8.66241700714454
+                "p50_ms": 1.9454790162853897,
+                "p95_ms": 2.222917042672634,
+                "min_ms": 1.802916987799108,
+                "max_ms": 2.5602499954402447
               }
             },
             "filters": {
@@ -4342,10 +4360,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 1.7271249962504953,
-                "p95_ms": 2.528916986193508,
-                "min_ms": 1.5985410427674651,
-                "max_ms": 2.5412089889869094
+                "p50_ms": 1.6011044790502638,
+                "p95_ms": 1.8972909892909229,
+                "min_ms": 1.4673339901492,
+                "max_ms": 1.9030420226044953
               }
             },
             "title": {
@@ -4353,15 +4371,15 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 3.457667015027255,
-                "p95_ms": 5.2657920168712735,
-                "min_ms": 2.911332994699478,
-                "max_ms": 5.273666989523917
+                "p50_ms": 3.2338749733753502,
+                "p95_ms": 3.490125003736466,
+                "min_ms": 2.8734590159729123,
+                "max_ms": 3.745416004676372
               }
             }
           },
           "target_ms": 250,
-          "within_target": false
+          "within_target": true
         },
         {
           "concurrency": 1,
@@ -4375,8 +4393,8 @@
             "samples": 4,
             "p50_ms": null,
             "p95_ms": null,
-            "min_ms": 332.15616596862674,
-            "max_ms": 1505.9585840208456
+            "min_ms": 336.43041702453047,
+            "max_ms": 653.3310420345515
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4388,8 +4406,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 1505.9585840208456,
-                "max_ms": 1505.9585840208456
+                "min_ms": 653.3310420345515,
+                "max_ms": 653.3310420345515
               }
             },
             "entity": {
@@ -4399,8 +4417,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 421.1191250360571,
-                "max_ms": 421.1191250360571
+                "min_ms": 439.7300420096144,
+                "max_ms": 439.7300420096144
               }
             },
             "filters": {
@@ -4410,8 +4428,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 332.15616596862674,
-                "max_ms": 332.15616596862674
+                "min_ms": 336.43041702453047,
+                "max_ms": 336.43041702453047
               }
             },
             "title": {
@@ -4421,8 +4439,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 538.652999966871,
-                "max_ms": 538.652999966871
+                "min_ms": 516.3005829672329,
+                "max_ms": 516.3005829672329
               }
             }
           },
@@ -4439,10 +4457,10 @@
           "failure_categories": {},
           "search_rpc": {
             "samples": 80,
-            "p50_ms": 462.4278749979567,
-            "p95_ms": 717.3972909804434,
-            "min_ms": 338.45595800084993,
-            "max_ms": 938.5164580307901
+            "p50_ms": 456.3204375153873,
+            "p95_ms": 701.8699170439504,
+            "min_ms": 339.61941697634757,
+            "max_ms": 721.6604170389473
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4452,10 +4470,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 689.7091454884503,
-                "p95_ms": 842.1737909666263,
-                "min_ms": 649.4131250074133,
-                "max_ms": 938.5164580307901
+                "p50_ms": 685.3203545033466,
+                "p95_ms": 715.4400420258753,
+                "min_ms": 646.7796659562737,
+                "max_ms": 721.6604170389473
               }
             },
             "entity": {
@@ -4463,10 +4481,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 457.9196250124369,
-                "p95_ms": 513.1449999753386,
-                "min_ms": 431.3637079903856,
-                "max_ms": 518.289708008524
+                "p50_ms": 456.3204375153873,
+                "p95_ms": 478.078042040579,
+                "min_ms": 442.3533750232309,
+                "max_ms": 481.9177080062218
               }
             },
             "filters": {
@@ -4474,10 +4492,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 354.4416039949283,
-                "p95_ms": 398.8664170028642,
-                "min_ms": 338.45595800084993,
-                "max_ms": 432.4827079544775
+                "p50_ms": 352.2828959976323,
+                "p95_ms": 380.1937919924967,
+                "min_ms": 339.61941697634757,
+                "max_ms": 382.52174999797717
               }
             },
             "title": {
@@ -4485,10 +4503,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 462.4278749979567,
-                "p95_ms": 530.3037089761347,
-                "min_ms": 428.9864170132205,
-                "max_ms": 533.7977919843979
+                "p50_ms": 455.36054199328646,
+                "p95_ms": 480.84799997741356,
+                "min_ms": 433.74924996169284,
+                "max_ms": 481.9466670160182
               }
             }
           },
@@ -4507,8 +4525,8 @@
             "samples": 4,
             "p50_ms": null,
             "p95_ms": null,
-            "min_ms": 496.1697499966249,
-            "max_ms": 960.1862499839626
+            "min_ms": 514.4635839969851,
+            "max_ms": 995.7296250504442
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4520,8 +4538,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 960.1862499839626,
-                "max_ms": 960.1862499839626
+                "min_ms": 995.7296250504442,
+                "max_ms": 995.7296250504442
               }
             },
             "entity": {
@@ -4531,8 +4549,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 613.0287910345942,
-                "max_ms": 613.0287910345942
+                "min_ms": 609.1056659934111,
+                "max_ms": 609.1056659934111
               }
             },
             "filters": {
@@ -4542,8 +4560,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 496.1697499966249,
-                "max_ms": 496.1697499966249
+                "min_ms": 514.4635839969851,
+                "max_ms": 514.4635839969851
               }
             },
             "title": {
@@ -4553,8 +4571,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 632.5775000150315,
-                "max_ms": 632.5775000150315
+                "min_ms": 606.0453340178356,
+                "max_ms": 606.0453340178356
               }
             }
           },
@@ -4571,10 +4589,10 @@
           "failure_categories": {},
           "search_rpc": {
             "samples": 80,
-            "p50_ms": 623.3208125049714,
-            "p95_ms": 1067.0432499609888,
-            "min_ms": 501.576374983415,
-            "max_ms": 1305.9923329856247
+            "p50_ms": 626.9414380076341,
+            "p95_ms": 1039.8497079731897,
+            "min_ms": 509.40625002840534,
+            "max_ms": 1116.2430830299854
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4584,10 +4602,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 1019.671541522257,
-                "p95_ms": 1198.7107919994742,
-                "min_ms": 952.6031669811346,
-                "max_ms": 1305.9923329856247
+                "p50_ms": 1012.3188330035191,
+                "p95_ms": 1091.2088750046678,
+                "min_ms": 966.7994169867598,
+                "max_ms": 1116.2430830299854
               }
             },
             "entity": {
@@ -4595,10 +4613,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 628.5303125041537,
-                "p95_ms": 721.6287499759346,
-                "min_ms": 595.781915995758,
-                "max_ms": 728.388375020586
+                "p50_ms": 626.2759585224558,
+                "p95_ms": 651.0419160476886,
+                "min_ms": 606.7082920344546,
+                "max_ms": 664.7394169704057
               }
             },
             "filters": {
@@ -4606,10 +4624,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 520.9215210052207,
-                "p95_ms": 609.9390420131385,
-                "min_ms": 501.576374983415,
-                "max_ms": 628.487584006507
+                "p50_ms": 518.7163960072212,
+                "p95_ms": 537.0224579819478,
+                "min_ms": 509.40625002840534,
+                "max_ms": 537.5228330376558
               }
             },
             "title": {
@@ -4617,10 +4635,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 621.1561874952167,
-                "p95_ms": 697.1994999912567,
-                "min_ms": 596.0084170219488,
-                "max_ms": 735.8594999532215
+                "p50_ms": 626.9414380076341,
+                "p95_ms": 653.8279159576632,
+                "min_ms": 607.3849169770256,
+                "max_ms": 714.8575409664772
               }
             }
           },
@@ -4639,8 +4657,8 @@
             "samples": 4,
             "p50_ms": null,
             "p95_ms": null,
-            "min_ms": 501.3451669947244,
-            "max_ms": 1008.5020420374349
+            "min_ms": 518.6128329951316,
+            "max_ms": 967.6916660391726
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4652,8 +4670,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 1008.5020420374349,
-                "max_ms": 1008.5020420374349
+                "min_ms": 967.6916660391726,
+                "max_ms": 967.6916660391726
               }
             },
             "entity": {
@@ -4663,8 +4681,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 601.4832080109045,
-                "max_ms": 601.4832080109045
+                "min_ms": 593.3867499697953,
+                "max_ms": 593.3867499697953
               }
             },
             "filters": {
@@ -4674,8 +4692,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 501.3451669947244,
-                "max_ms": 501.3451669947244
+                "min_ms": 518.6128329951316,
+                "max_ms": 518.6128329951316
               }
             },
             "title": {
@@ -4685,8 +4703,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 610.2325840038247,
-                "max_ms": 610.2325840038247
+                "min_ms": 609.5445000100881,
+                "max_ms": 609.5445000100881
               }
             }
           },
@@ -4703,10 +4721,10 @@
           "failure_categories": {},
           "search_rpc": {
             "samples": 80,
-            "p50_ms": 633.0359579878859,
-            "p95_ms": 1108.280458021909,
-            "min_ms": 506.50662498082966,
-            "max_ms": 1208.2439169753343
+            "p50_ms": 623.7690835259855,
+            "p95_ms": 1018.373541010078,
+            "min_ms": 511.76929101347923,
+            "max_ms": 1061.2100409925915
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4716,10 +4734,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 1019.270354474429,
-                "p95_ms": 1187.51991703175,
-                "min_ms": 942.1229580184445,
-                "max_ms": 1208.2439169753343
+                "p50_ms": 1010.3949579643086,
+                "p95_ms": 1053.278707957361,
+                "min_ms": 959.643334033899,
+                "max_ms": 1061.2100409925915
               }
             },
             "entity": {
@@ -4727,10 +4745,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 631.4375834772363,
-                "p95_ms": 732.1764170192182,
-                "min_ms": 600.8922079927288,
-                "max_ms": 739.624791953247
+                "p50_ms": 624.5426670357119,
+                "p95_ms": 641.2837079842575,
+                "min_ms": 601.7427910119295,
+                "max_ms": 658.7241659872234
               }
             },
             "filters": {
@@ -4738,10 +4756,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 520.8044374885503,
-                "p95_ms": 641.8377920053899,
-                "min_ms": 506.50662498082966,
-                "max_ms": 644.5328330155462
+                "p50_ms": 518.6662079649977,
+                "p95_ms": 530.4285410093144,
+                "min_ms": 511.76929101347923,
+                "max_ms": 555.0832080189139
               }
             },
             "title": {
@@ -4749,10 +4767,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 629.8129789938685,
-                "p95_ms": 710.5296250083484,
-                "min_ms": 589.3823329824954,
-                "max_ms": 733.0303749768063
+                "p50_ms": 622.7908745058812,
+                "p95_ms": 634.8927499493584,
+                "min_ms": 605.7199590140954,
+                "max_ms": 638.9054580358788
               }
             }
           },
@@ -4771,8 +4789,8 @@
             "samples": 4,
             "p50_ms": null,
             "p95_ms": null,
-            "min_ms": 3.4232919570058584,
-            "max_ms": 332.3352920124307
+            "min_ms": 2.942790975794196,
+            "max_ms": 219.53925001434982
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4784,8 +4802,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 332.3352920124307,
-                "max_ms": 332.3352920124307
+                "min_ms": 219.53925001434982,
+                "max_ms": 219.53925001434982
               }
             },
             "entity": {
@@ -4795,8 +4813,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 3.998541971668601,
-                "max_ms": 3.998541971668601
+                "min_ms": 3.4918750170618296,
+                "max_ms": 3.4918750170618296
               }
             },
             "filters": {
@@ -4806,8 +4824,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 3.4232919570058584,
-                "max_ms": 3.4232919570058584
+                "min_ms": 2.942790975794196,
+                "max_ms": 2.942790975794196
               }
             },
             "title": {
@@ -4817,8 +4835,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 7.2243340546265244,
-                "max_ms": 7.2243340546265244
+                "min_ms": 4.448291962035,
+                "max_ms": 4.448291962035
               }
             }
           },
@@ -4835,10 +4853,10 @@
           "failure_categories": {},
           "search_rpc": {
             "samples": 80,
-            "p50_ms": 4.320020496379584,
-            "p95_ms": 352.52695804229006,
-            "min_ms": 2.3232909734360874,
-            "max_ms": 372.1106249722652
+            "p50_ms": 4.141457990044728,
+            "p95_ms": 312.9552500322461,
+            "min_ms": 2.1152080153115094,
+            "max_ms": 324.70945798559114
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4848,10 +4866,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 337.2534794907551,
-                "p95_ms": 361.57104204175994,
-                "min_ms": 308.99395898450166,
-                "max_ms": 372.1106249722652
+                "p50_ms": 306.3398744852748,
+                "p95_ms": 318.01383302081376,
+                "min_ms": 282.95620798598975,
+                "max_ms": 324.70945798559114
               }
             },
             "entity": {
@@ -4859,10 +4877,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 3.543104510754347,
-                "p95_ms": 3.8655419484712183,
-                "min_ms": 3.0834589852020144,
-                "max_ms": 3.900500014424324
+                "p50_ms": 2.872749522794038,
+                "p95_ms": 3.376082982867956,
+                "min_ms": 2.5380830047652125,
+                "max_ms": 3.387083997949958
               }
             },
             "filters": {
@@ -4870,10 +4888,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 3.0733125167898834,
-                "p95_ms": 3.556207986548543,
-                "min_ms": 2.3232909734360874,
-                "max_ms": 3.5904159885831177
+                "p50_ms": 2.4103960022330284,
+                "p95_ms": 8.54220800101757,
+                "min_ms": 2.1152080153115094,
+                "max_ms": 9.387707978021353
               }
             },
             "title": {
@@ -4881,10 +4899,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 5.900457996176556,
-                "p95_ms": 12.921207991894335,
-                "min_ms": 4.739540978334844,
-                "max_ms": 12.965875037480146
+                "p50_ms": 4.714541515568271,
+                "p95_ms": 5.293958005495369,
+                "min_ms": 3.6162500036880374,
+                "max_ms": 5.461667024064809
               }
             }
           },
@@ -4903,8 +4921,8 @@
             "samples": 4,
             "p50_ms": null,
             "p95_ms": null,
-            "min_ms": 520.0139170046896,
-            "max_ms": 1000.109207991045
+            "min_ms": 407.53299999050796,
+            "max_ms": 751.692958001513
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4916,8 +4934,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 1000.109207991045,
-                "max_ms": 1000.109207991045
+                "min_ms": 751.692958001513,
+                "max_ms": 751.692958001513
               }
             },
             "entity": {
@@ -4927,8 +4945,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 649.0268749766983,
-                "max_ms": 649.0268749766983
+                "min_ms": 519.8884580167942,
+                "max_ms": 519.8884580167942
               }
             },
             "filters": {
@@ -4938,8 +4956,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 520.0139170046896,
-                "max_ms": 520.0139170046896
+                "min_ms": 407.53299999050796,
+                "max_ms": 407.53299999050796
               }
             },
             "title": {
@@ -4949,8 +4967,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 697.8854580083862,
-                "max_ms": 697.8854580083862
+                "min_ms": 537.2818330070004,
+                "max_ms": 537.2818330070004
               }
             }
           },
@@ -4967,10 +4985,10 @@
           "failure_categories": {},
           "search_rpc": {
             "samples": 80,
-            "p50_ms": 582.3258960153908,
-            "p95_ms": 911.6324579808861,
-            "min_ms": 441.65345799410716,
-            "max_ms": 963.7281670002267
+            "p50_ms": 542.2705209930427,
+            "p95_ms": 823.2016660040244,
+            "min_ms": 406.44104196690023,
+            "max_ms": 862.4465410248376
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -4980,10 +4998,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 874.4498955202289,
-                "p95_ms": 948.4492499614134,
-                "min_ms": 816.421291034203,
-                "max_ms": 963.7281670002267
+                "p50_ms": 804.1031045140699,
+                "p95_ms": 847.6187090273015,
+                "min_ms": 774.7497499804012,
+                "max_ms": 862.4465410248376
               }
             },
             "entity": {
@@ -4991,10 +5009,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 576.5755000174977,
-                "p95_ms": 640.5860839877278,
-                "min_ms": 541.1930839763954,
-                "max_ms": 657.6065419940278
+                "p50_ms": 541.134561994113,
+                "p95_ms": 568.1924159871414,
+                "min_ms": 521.2507499963976,
+                "max_ms": 578.1488330103457
               }
             },
             "filters": {
@@ -5002,10 +5020,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 458.8591250067111,
-                "p95_ms": 510.0034999777563,
-                "min_ms": 441.65345799410716,
-                "max_ms": 516.8414589716122
+                "p50_ms": 423.62091652466916,
+                "p95_ms": 449.9785420484841,
+                "min_ms": 406.44104196690023,
+                "max_ms": 486.1069589969702
               }
             },
             "title": {
@@ -5013,10 +5031,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 590.5868955305777,
-                "p95_ms": 641.8490419746377,
-                "min_ms": 550.8744579856284,
-                "max_ms": 657.2034999844618
+                "p50_ms": 542.9866460326593,
+                "p95_ms": 569.7587499744259,
+                "min_ms": 519.2202500184067,
+                "max_ms": 597.20625000773
               }
             }
           },
@@ -5035,8 +5053,8 @@
             "samples": 4,
             "p50_ms": null,
             "p95_ms": null,
-            "min_ms": 840.6948749907315,
-            "max_ms": 1500.2874999772757
+            "min_ms": 714.8690419853665,
+            "max_ms": 1112.2148750000633
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -5048,8 +5066,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 1500.2874999772757,
-                "max_ms": 1500.2874999772757
+                "min_ms": 1112.2148750000633,
+                "max_ms": 1112.2148750000633
               }
             },
             "entity": {
@@ -5059,8 +5077,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 987.1130840037949,
-                "max_ms": 987.1130840037949
+                "min_ms": 860.2875000215136,
+                "max_ms": 860.2875000215136
               }
             },
             "filters": {
@@ -5070,8 +5088,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 840.6948749907315,
-                "max_ms": 840.6948749907315
+                "min_ms": 714.8690419853665,
+                "max_ms": 714.8690419853665
               }
             },
             "title": {
@@ -5081,8 +5099,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 1007.1703339926898,
-                "max_ms": 1007.1703339926898
+                "min_ms": 833.6372909834608,
+                "max_ms": 833.6372909834608
               }
             }
           },
@@ -5099,10 +5117,10 @@
           "failure_categories": {},
           "search_rpc": {
             "samples": 80,
-            "p50_ms": 860.8544370217714,
-            "p95_ms": 1365.2960829786025,
-            "min_ms": 671.8934589880519,
-            "max_ms": 1465.248042019084
+            "p50_ms": 784.214104001876,
+            "p95_ms": 1247.4905410199426,
+            "min_ms": 622.7979999966919,
+            "max_ms": 1305.4555000271648
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -5112,10 +5130,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 1328.7601039628498,
-                "p95_ms": 1417.5387080176733,
-                "min_ms": 1185.0535000558011,
-                "max_ms": 1465.248042019084
+                "p50_ms": 1228.154791489942,
+                "p95_ms": 1261.330374982208,
+                "min_ms": 1177.174709038809,
+                "max_ms": 1305.4555000271648
               }
             },
             "entity": {
@@ -5123,10 +5141,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 863.9071460056584,
-                "p95_ms": 937.0573749765754,
-                "min_ms": 793.5784169822,
-                "max_ms": 980.1472090184689
+                "p50_ms": 788.3525000070222,
+                "p95_ms": 818.3272090391256,
+                "min_ms": 753.9384170086123,
+                "max_ms": 869.5668329601176
               }
             },
             "filters": {
@@ -5134,10 +5152,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 746.9984580238815,
-                "p95_ms": 805.8919159811921,
-                "min_ms": 671.8934589880519,
-                "max_ms": 809.1341669787653
+                "p50_ms": 663.641020481009,
+                "p95_ms": 695.3717910218984,
+                "min_ms": 622.7979999966919,
+                "max_ms": 718.3588330517523
               }
             },
             "title": {
@@ -5145,10 +5163,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 858.1865000305697,
-                "p95_ms": 894.4040419883095,
-                "min_ms": 779.3273329734802,
-                "max_ms": 945.2541670179926
+                "p50_ms": 779.8582715040538,
+                "p95_ms": 824.848624994047,
+                "min_ms": 743.4041249798611,
+                "max_ms": 874.0707079996355
               }
             }
           },
@@ -5167,8 +5185,8 @@
             "samples": 4,
             "p50_ms": null,
             "p95_ms": null,
-            "min_ms": 842.3712499788962,
-            "max_ms": 1503.6499169655144
+            "min_ms": 677.4258330115117,
+            "max_ms": 1047.8751250193454
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -5180,8 +5198,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 1503.6499169655144,
-                "max_ms": 1503.6499169655144
+                "min_ms": 1047.8751250193454,
+                "max_ms": 1047.8751250193454
               }
             },
             "entity": {
@@ -5191,8 +5209,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 974.2851249757223,
-                "max_ms": 974.2851249757223
+                "min_ms": 828.6525419680402,
+                "max_ms": 828.6525419680402
               }
             },
             "filters": {
@@ -5202,8 +5220,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 842.3712499788962,
-                "max_ms": 842.3712499788962
+                "min_ms": 677.4258330115117,
+                "max_ms": 677.4258330115117
               }
             },
             "title": {
@@ -5213,8 +5231,8 @@
                 "samples": 1,
                 "p50_ms": null,
                 "p95_ms": null,
-                "min_ms": 1005.9983750106767,
-                "max_ms": 1005.9983750106767
+                "min_ms": 817.8352909744717,
+                "max_ms": 817.8352909744717
               }
             }
           },
@@ -5231,10 +5249,10 @@
           "failure_categories": {},
           "search_rpc": {
             "samples": 80,
-            "p50_ms": 860.4614374926314,
-            "p95_ms": 1363.7152079609223,
-            "min_ms": 676.1304590036161,
-            "max_ms": 1454.8420829814859
+            "p50_ms": 783.187729481142,
+            "p95_ms": 1264.5090419682674,
+            "min_ms": 631.5595000050962,
+            "max_ms": 1297.9605000000447
           },
           "same_rpc_backend_observations": 0,
           "backend_phases": {},
@@ -5244,10 +5262,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 1321.3733334850986,
-                "p95_ms": 1405.6317079812288,
-                "min_ms": 1193.374790949747,
-                "max_ms": 1454.8420829814859
+                "p50_ms": 1225.1946880132891,
+                "p95_ms": 1294.0700830076821,
+                "min_ms": 1160.3580419905484,
+                "max_ms": 1297.9605000000447
               }
             },
             "entity": {
@@ -5255,10 +5273,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 849.8527290066704,
-                "p95_ms": 929.4367909897119,
-                "min_ms": 796.845042030327,
-                "max_ms": 956.9034170126542
+                "p50_ms": 783.8709999923594,
+                "p95_ms": 811.4981250255369,
+                "min_ms": 744.0818339819089,
+                "max_ms": 842.6282089785673
               }
             },
             "filters": {
@@ -5266,10 +5284,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 758.4831455023959,
-                "p95_ms": 814.0812499914318,
-                "min_ms": 676.1304590036161,
-                "max_ms": 825.1475830329582
+                "p50_ms": 660.4806460090913,
+                "p95_ms": 694.3481250200421,
+                "min_ms": 631.5595000050962,
+                "max_ms": 704.3268340057693
               }
             },
             "title": {
@@ -5277,10 +5295,10 @@
               "failed": 0,
               "search_rpc": {
                 "samples": 20,
-                "p50_ms": 863.3931249787565,
-                "p95_ms": 918.1236670119688,
-                "min_ms": 789.652582956478,
-                "max_ms": 924.5590419741347
+                "p50_ms": 776.4815000118688,
+                "p95_ms": 804.1724590002559,
+                "min_ms": 754.8872079933062,
+                "max_ms": 808.0642080167308
               }
             }
           },
@@ -5302,10 +5320,10 @@
           "policy": "hybrid-auto",
           "paired_search_rpc_delta": {
             "samples": 80,
-            "p50_ms": 178.90962553792633,
-            "p95_ms": 356.5370010328479,
-            "min_ms": 121.21824896894395,
-            "max_ms": 410.6620829552412
+            "p50_ms": 174.5456040080171,
+            "p95_ms": 348.85195799870417,
+            "min_ms": 130.68425003439188,
+            "max_ms": 418.1764160748571
           },
           "scheduled_pairs": 80,
           "failed_pairs": 0,
@@ -5319,10 +5337,10 @@
           "policy": "hybrid-on",
           "paired_search_rpc_delta": {
             "samples": 80,
-            "p50_ms": 178.58335404889658,
-            "p95_ms": 361.6966680274345,
-            "min_ms": 120.01983297523111,
-            "max_ms": 411.70574905117974
+            "p50_ms": 173.088417010149,
+            "p95_ms": 346.907667000778,
+            "min_ms": 131.86475000111386,
+            "max_ms": 384.4251249684021
           },
           "scheduled_pairs": 80,
           "failed_pairs": 0,
@@ -5336,10 +5354,10 @@
           "policy": "hybrid-auto",
           "paired_search_rpc_delta": {
             "samples": 80,
-            "p50_ms": 286.7806664726231,
-            "p95_ms": 485.9421669389121,
-            "min_ms": 185.77495805220678,
-            "max_ms": 588.3028339594603
+            "p50_ms": 250.72670800727792,
+            "p95_ms": 435.5771249975078,
+            "min_ms": 195.47320797573775,
+            "max_ms": 476.5279170242138
           },
           "scheduled_pairs": 80,
           "failed_pairs": 0,
@@ -5353,10 +5371,10 @@
           "policy": "hybrid-on",
           "paired_search_rpc_delta": {
             "samples": 80,
-            "p50_ms": 293.1428755109664,
-            "p95_ms": 473.5728340456262,
-            "min_ms": 169.07291603274643,
-            "max_ms": 589.2104169470258
+            "p50_ms": 245.82652052049525,
+            "p95_ms": 450.5292499670759,
+            "min_ms": 152.50004100380465,
+            "max_ms": 494.63358300272375
           },
           "scheduled_pairs": 80,
           "failed_pairs": 0,
@@ -5365,9 +5383,20 @@
           "judged_positive_rr_comparisons": 60,
           "judged_positive_rr_regressions": 0
         }
-      ]
+      ],
+      "load_schedule": "homogeneous_policy_batches"
     },
     "relevance_evidence": "graph-relevance-93.json",
-    "interpretation": "Hybrid/off stays within the pooled1s target; graph p95 and paired graph RPC delta exceed targets. Narrow keyword routes remain fast; broad keyword tail misses250ms. Cross-run changes do not isolate a causal phase. Keep extraction bounded and graph explicitly controlled; profile final seed preparation before further rollout."
+    "interpretation": "Hybrid/off stays within the pooled1s target; graph p95 and paired graph RPC delta exceed targets. Narrow keyword routes remain fast; broad keyword tail misses250ms. Cross-run changes do not isolate a causal phase. Keep extraction bounded and graph explicitly controlled; profile final seed preparation before further rollout.",
+    "position": "Typed graph checkpoint 3dc; later source-anchor and per-mention alias review fixes require separate final acceptance"
+  },
+  "measurement_history": {
+    "backend_total_including_superseded_mixed_runs": 3032,
+    "accepted_baseline_budget_samples": 1352,
+    "accepted_checkpoint_budget_samples": 672,
+    "superseded_four_lane_baseline_samples": 336,
+    "superseded_checkpoint_run_samples": 672,
+    "superseded_reason": "Old policy-fastest stride scheduling pinned four workers to different policies. Retained privately as historical mixed traffic; replaced by homogeneous policy batches for all four-lane budget claims. One-lane/cold/uncached/untraced observations remain valid.",
+    "all_retained_samples_search_readback_failures": 0
   }
 }

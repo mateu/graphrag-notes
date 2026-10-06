@@ -18,24 +18,30 @@ models. Four cases cover an exact title, entity terms, source/time filters and a
 broad query. The broad case is a performance/provenance check with unjudged
 answerability; it is not counted as evidence of useful-answer quality.
 
-All **1,352 backend samples** passed search and independent revision-pinned
-readback: eight initial/unloaded-model observations, 672 cached traced samples
-at one/four lanes, 336 uncached traced samples and 336 cached untraced samples.
+The accepted **1,352 backend budget samples** passed search and independent
+revision-pinned readback: eight initial/unloaded-model observations, 336 cached
+traced single-lane observations, 336 corrected homogeneous four-lane samples,
+336 uncached traced samples and 336 cached untraced samples. An additional
+336 early four-lane observations used mixed-policy traffic because a scheduler
+assigned one policy per lane; those are retained privately and superseded for
+policy load/budget claims. Corrected batches use each policy across all lanes
+and rotate cases. The older single-lane run interleaves policies; graph deltas
+remain matched query/round observations, subject to ordering/load differences.
 Each policy/load has twenty warm repetitions per case (80 pooled samples).
 Lanes include guarded readbacks between searches; this is bounded client load,
 not a claim of four searches continuously running simultaneously.
 
 | Warm policy | One lane p50 / p95 ms | Four lanes p50 / p95 ms | Target p95 ms |
 | --- | ---: | ---: | ---: |
-| keyword/off | 3.6 / 286.8 | 4.3 / 333.5 | 250 |
-| hybrid/off | 510.1 / 817.1 | 605.8 / 972.1 | 1,000 |
-| hybrid/auto | 506.0 / 816.1 | 615.5 / 982.0 | 1,000 |
-| hybrid/on | 509.2 / 833.7 | 626.4 / 992.7 | 1,000 |
+| keyword/off | 3.6 / 286.8 | 3.5 / 314.1 | 250 |
+| hybrid/off | 510.1 / 817.1 | 527.1 / 822.3 | 1,000 |
+| hybrid/auto | 506.0 / 816.1 | 554.2 / 848.5 | 1,000 |
+| hybrid/on | 509.2 / 833.7 | 564.8 / 872.8 | 1,000 |
 
 Pooled p95 must not hide category misses. Narrow keyword title/entity/filter
 p95 is 2.9–6.3 ms, but the broad keyword case is 303.4 ms at one lane and
-337.8 ms at four. Broad graph p95 at four lanes is 1,004.9 ms (auto) and
-1,013.4 ms (on), slightly above target. Keep the stated budgets as operating
+322.5 ms at four. Broad graph p95 at four lanes is 867.0 ms (auto) and
+890.0 ms (on), within target for this pre-#93 build. Keep the stated budgets as operating
 goals and document these corpus/load limits rather than relaxing the targets
 based on this one workload.
 
@@ -58,36 +64,39 @@ runs, so these differences do not isolate tracing overhead or establish that
 disabling the embedding cache improves total latency. Retain both runs and
 repeat on an otherwise quiet host before making a causal claim.
 
-Paired graph-minus-hybrid p95 deltas were 36.6–65.7 ms across the two graph
+Paired graph-minus-hybrid p95 deltas were 36.6–70.5 ms across the two graph
 policies and loads, within the 250 ms target. Each group has 80 pairs, zero
 failed pairs and zero judged-positive reciprocal-rank regressions in its 60
 answerable comparisons. This narrow timing workload does not replace #92's
 larger relevance suite or establish graph quality improvement.
 
-## Final graph candidate after the typed pilot
+## Typed graph checkpoint after the pilot
 
-The optimized #93 candidate (compiled inputs `3dc616a09ce3`) was measured
+The optimized #93 checkpoint (compiled inputs `3dc616a09ce3`) was measured
 separately after reprocessing eight selected notes. The same frozen corpus now
 has 482 entities and 582 mentions; note bodies, vectors, source generations and
 all 458 historical mentions remain intact. **672 further samples passed with
 zero failures**, with twenty warmed observations per category/policy/load.
 This run has RPC timing only, without the #95 same-RPC phase instrumentation.
-Concurrent refresh/build activity continued on the same host.
+Concurrent refresh/build activity continued on the same host. This corrected
+homogeneous-policy run supersedes the earlier checkpoint timing run; both are
+retained privately. Later source-anchor and per-mention alias review fixes need
+separate final acceptance, so this is a checkpoint measurement.
 
 | Warm policy | One lane p50 / p95 ms | Four lanes p50 / p95 ms |
 | --- | ---: | ---: |
-| keyword/off | 3.1 / 255.7 | 4.3 / 352.5 |
-| hybrid/off | 462.4 / 717.4 | 582.3 / 911.6 |
-| hybrid/auto | 623.3 / 1,067.0 | 860.9 / 1,365.3 |
-| hybrid/on | 633.0 / 1,108.3 | 860.5 / 1,363.7 |
+| keyword/off | 2.7 / 235.4 | 4.1 / 313.0 |
+| hybrid/off | 456.3 / 701.9 | 542.3 / 823.2 |
+| hybrid/auto | 626.9 / 1,039.9 | 784.2 / 1,247.5 |
+| hybrid/on | 623.8 / 1,018.4 | 783.2 / 1,264.5 |
 
 Hybrid/off meets the pooled one-second target; graph exceeds it. Paired
-RPC graph-minus-hybrid p95 is **356.5–361.7 ms** at one lane and
-**473.6–485.9 ms** at four, above the 250 ms target. Each group has 80 pairs,
+RPC graph-minus-hybrid p95 is **346.9–348.8 ms** at one lane and
+**435.6–450.5 ms** at four, above the 250 ms target. Each group has 80 pairs,
 zero failed pairs and no regression in 60 judged-positive RR comparisons.
-The broad graph category reaches 1,198.7 ms p95 at one lane and 1,417.5 ms
-at four; narrow graph categories stay below one second. Broad keyword still
-misses its 250 ms target. These are observed operating limits, not relaxed
+The broad graph category reaches 1,091.2 ms p95 at one lane and 1,294.1 ms
+at four; narrow graph categories stay below one second. Broad keyword at four lanes still
+misses its 250 ms target; the single-lane pooled keyword p95 meets it. These are observed operating limits, not relaxed
 budgets.
 
 The [full relevance comparison](graph-relevance-93.json) shows the graph
