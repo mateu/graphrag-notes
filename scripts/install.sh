@@ -126,8 +126,9 @@ awk '
 ' "$temp_dir/contents" || fail 'archive contains an unsafe or duplicate path'
 if awk '$0 == "release/PAYLOADS.sha256" {found=1} END {exit !found}' "$temp_dir/contents"; then
     has_bundle=1
-    # BUILDINFO and the archive are both pinned by the release checksum manifest.
-    # Semantic metadata/source checks also run during native release preparation.
+    # The flat identity is the installer provenance contract; its metadata
+    # digest binds JSON bytes without requiring a Python runtime. Native
+    # packaging/assembly validate flat fields against semantic JSON metadata.
     if [ "$clients_only" -eq 1 ]; then
         metadata_label='CLIENTINFO'
         metadata_file='CLIENTINFO.json'
@@ -146,6 +147,26 @@ if awk '$0 == "release/PAYLOADS.sha256" {found=1} END {exit !found}' "$temp_dir/
         "$releases/download/$tag/$metadata_file" -o "$temp_dir/BUILDINFO.json" || fail "cannot download matching $metadata_label"
     [ "$(checksum "$temp_dir/BUILDINFO.json" | tr '[:upper:]' '[:lower:]')" = \
         "$(printf '%s' "$metadata_checksum" | tr '[:upper:]' '[:lower:]')" ] || fail "$metadata_label checksum does not match; nothing was installed"
+    identity_file="${metadata_file%.json}.identity"
+    identity_checksum="$(awk -v name="$identity_file" '$2==name || $2=="*" name {print $1}' "$temp_dir/SHA256SUMS")"
+    [[ "$identity_checksum" =~ ^[0-9a-fA-F]{64}$ ]] || fail "release manifest must identify exactly one matching $metadata_label identity"
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+        "$releases/download/$tag/$identity_file" -o "$temp_dir/identity" || fail "cannot download matching $metadata_label identity"
+    [ "$(checksum "$temp_dir/identity")" = "$(printf '%s' "$identity_checksum" | tr '[:upper:]' '[:lower:]')" ] || fail 'release identity checksum does not match'
+    [ "$(wc -c < "$temp_dir/identity")" -le 2048 ] || fail 'release identity exceeds its bounds'
+    awk -F= -v clients="$clients_only" '
+      BEGIN { split("schema_version version tag source_commit target archive archive_sha256 metadata_sha256 python_minimum", names, " ");
+              for(i in names) required[names[i]]=1; if(!clients) {required["binary_sha256"]=1; required["sample_sha256"]=1} }
+      NF!=2 || !($1 in required) || seen[$1]++ || $2!~/^[A-Za-z0-9._-]+$/ {exit 1}
+      END {for(key in required) if(!seen[key]) exit 1}
+    ' "$temp_dir/identity" || fail 'release identity fields are invalid'
+    identity_value() { awk -F= -v key="$1" '$1==key {print $2}' "$temp_dir/identity"; }
+    [ "$(identity_value schema_version)" = '1' ] && [ "$(identity_value python_minimum)" = '3.11' ] || fail 'unsupported release identity'
+    [ "$(identity_value version)" = "$version" ] && [ "$(identity_value tag)" = "$tag" ] && \
+        [ "$(identity_value target)" = "$target" ] && [ "$(identity_value archive)" = "$asset" ] || fail 'release identity differs from selected release'
+    [ "$(identity_value archive_sha256)" = "$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')" ] || fail 'release identity archive checksum differs'
+    [ "$(identity_value metadata_sha256)" = "$(checksum "$temp_dir/BUILDINFO.json")" ] || fail "$metadata_label bytes differ from release identity"
+    [[ "$(identity_value source_commit)" =~ ^[0-9a-f]{40}$ ]] || fail 'release identity source commit is invalid'
     tar -tvzf "$temp_dir/$asset" | awk 'substr($1,1,1)!="-" {exit 1}' || fail 'release bundle contains a link or unsupported file type'
     tar -xOf "$temp_dir/$asset" release/PAYLOADS.sha256 > "$temp_dir/payloads"
     awk '
@@ -180,7 +201,11 @@ if [ "$has_bundle" -eq 1 ]; then
     done < "$temp_dir/payloads"
     [ "$(cat "$temp_dir/unpacked/release/VERSION")" = "$version" ] || fail 'release bundle version differs from selected release'
     source_commit="$(cat "$temp_dir/unpacked/release/SOURCE-COMMIT")"
-    [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || fail 'release bundle source identity is invalid'
+    [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] && [ "$source_commit" = "$(identity_value source_commit)" ] || fail 'release bundle source differs from release identity'
+    if [ "$clients_only" -ne 1 ]; then
+        [ "$(checksum "$temp_dir/unpacked/graphrag")" = "$(identity_value binary_sha256)" ] && \
+            [ "$(checksum "$temp_dir/unpacked/samples/first-notes.md")" = "$(identity_value sample_sha256)" ] || fail 'native payload differs from release identity'
+    fi
 fi
 
 mkdir -p "$data_dir"

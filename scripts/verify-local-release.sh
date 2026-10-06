@@ -44,7 +44,7 @@ done
 case "$url" in
     "https://github.com/mateu/graphrag-notes/releases/download/$GRN_RELEASE_TAG/"*)
         name="${url##*/}"
-        case "$name" in SHA256SUMS|BUILDINFO.json|BUILDINFO-*.json|graphrag-notes-*.tar.gz) ;; *) exit 22 ;; esac
+        case "$name" in SHA256SUMS|BUILDINFO.json|BUILDINFO-*.json|BUILDINFO.identity|BUILDINFO-*.identity|graphrag-notes-*.tar.gz) ;; *) exit 22 ;; esac
         [ -f "$GRN_RELEASE_DIST/$name" ] && [ ! -L "$GRN_RELEASE_DIST/$name" ] || exit 22
         printf '%s\n' "$url" >> "$GRN_RELEASE_REQUESTS"
         cp "$GRN_RELEASE_DIST/$name" "$output" ;;
