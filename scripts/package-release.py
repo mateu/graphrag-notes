@@ -219,7 +219,7 @@ def validate_source(repo: Path, tag: str, expected_commit: str, clean: bool = Tr
                 f"existing tag {tag} points to another commit; never move a release tag")
     require(not require_tag or bool(existing), f"release tag {tag} must already exist")
     return {
-        "commit": head, "tree": run(["git", "rev-parse", "HEAD^{tree}"], repo),
+        "commit": head, "tree": run(["git", "rev-parse", f"{head}^{{tree}}"], repo),
         "compile_inputs_sha256": input_identity(repo, head), "version": version,
         "tag": tag, "workspace_packages": packages, "rust_toolchain": toolchain,
         "source_date_epoch": int(run(["git", "show", "-s", "--format=%ct", head], repo)),

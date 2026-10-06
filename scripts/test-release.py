@@ -196,6 +196,29 @@ class ReleaseTests(unittest.TestCase):
         for relative in relatives:
             self.assertEqual((self.repo / relative).read_bytes(), b"Uncommitted concurrent editor rewrite\n")
 
+    def test_source_tree_remains_bound_to_pinned_commit_when_head_moves(self):
+        original_commit = self.commit_id
+        original_tree = self.git("rev-parse", f"{original_commit}^{{tree}}")
+        (self.repo / "another-commit.md").write_text("Concurrent commit fixture\n")
+        self.commit()
+        next_commit = self.commit_id
+        self.git("reset", "--hard", original_commit)
+        self.commit_id = original_commit
+        original_run = release.run
+
+        def move_head_after_manifest_validation(argv, repo=None, env=None):
+            value = original_run(argv, repo, env)
+            if argv == ["git", "tag", "--list", self.tag]:
+                self.git("update-ref", "HEAD", next_commit)
+            return value
+
+        with patch.object(release, "run", side_effect=move_head_after_manifest_validation):
+            source = release.validate_source(self.repo, self.tag, original_commit)
+        self.assertEqual(self.git("rev-parse", "HEAD"), next_commit)
+        self.assertEqual(source["commit"], original_commit)
+        self.assertEqual(source["tree"], original_tree)
+        self.assertEqual(source["compile_inputs_sha256"], release.input_identity(self.repo, original_commit))
+
     def test_missing_symlink_modified_and_wrong_version_binaries_are_rejected(self):
         self.binary.write_text("#!/bin/sh\necho graphrag 9.9.9\n")
         with self.assertRaisesRegex(release.ReleaseError, "sealed native"):
