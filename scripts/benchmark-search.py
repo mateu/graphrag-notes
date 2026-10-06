@@ -29,6 +29,7 @@ SPEC = importlib.util.spec_from_file_location("retrieval_evaluation", Path(__fil
 evaluation = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(evaluation)
 PHASES = {"application_search", "query_embedding", "note_vector", "note_fulltext",
+          "graph_query_candidates", "graph_seed_evidence",
           "graph_entity_matching", "graph_mentions", "graph_edge_expansion",
           "graph_note_hydration", "graph_provenance"}
 SAFE_ERRORS = {"unauthorized", "forbidden", "provider_unavailable", "compatibility", "busy",

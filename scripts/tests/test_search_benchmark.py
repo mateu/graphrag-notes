@@ -313,6 +313,14 @@ class SearchBenchmarkTests(unittest.TestCase):
                 f'DEBUG mcp_search{{rpc_id_sha256={key}}}: phase="private_field" elapsed_ms=99\n')
         self.assertEqual(benchmark.parse_phases(text), {key: {"query_embedding": [3.5], "application_search": [5]}})
 
+    def test_graph_preparation_phases_keep_same_request_identity(self):
+        key = benchmark.rpc_hash("fictional-graph-rpc")
+        trace = (f'DEBUG mcp_search{{rpc_id_sha256={key}}}: phase="graph_query_candidates" elapsed_ms=2\n'
+                 f'DEBUG mcp_search{{rpc_id_sha256={key}}}: phase="graph_seed_evidence" elapsed_ms=3\n'
+                 'DEBUG phase="graph_query_candidates" elapsed_ms=999\n')
+        self.assertEqual(benchmark.parse_phases(trace),
+                         {key: {"graph_query_candidates": [2], "graph_seed_evidence": [3]}})
+
     def test_percentiles_require_enough_samples_and_use_nearest_rank_p95(self):
         self.assertIsNone(benchmark.distribution([1] * 19)["p95_ms"])
         result = benchmark.distribution(list(range(1, 21)))
