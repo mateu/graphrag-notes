@@ -20,6 +20,7 @@ fn input(instance: &str, request: &str, body: &str) -> RemoteUploadInput {
         title: Some("Atlas".into()),
         source_provenance: serde_json::json!({"uri":"file:///client/atlas.md","label":"original"}),
         extract_entities: false,
+        preserve_unchanged: false,
         processing_options: serde_json::json!({"runtime":{"target_chunk_chars":1000},"provider":"fixture","model":"fixture","cache_identity":"fixture"}),
     }
 }

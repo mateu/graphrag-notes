@@ -234,6 +234,7 @@ mod tests {
                         title: None,
                         provenance: None,
                         extract_entities: false,
+                        preserve_unchanged: false,
                     },
                 )
                 .await
@@ -373,6 +374,7 @@ mod tests {
                     title: None,
                     provenance: None,
                     extract_entities: false,
+                    preserve_unchanged: false,
                 },
             )
             .await

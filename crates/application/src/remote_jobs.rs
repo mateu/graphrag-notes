@@ -138,21 +138,21 @@ pub(crate) async fn upload(
     {
         return Err(ApplicationError::Validation("document_key must be nonempty, at most 256 characters/512 UTF-8 bytes, without controls or surrounding whitespace; content cannot contain NUL".into()));
     }
-    let fingerprint = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&(
-                REMOTE_UPLOAD_PAYLOAD_VERSION,
-                "uploaded_markdown",
-                &request.document_key,
-                &request.content,
-                &request.title,
-                &request.provenance,
-                request.extract_entities
-            ))
-            .map_err(|e| ApplicationError::Internal(e.to_string()))?
-        )
-    );
+    // Keep legacy unguarded fingerprint bytes immutable for durable replay.
+    let mut fingerprint_input = serde_json::to_vec(&(
+        REMOTE_UPLOAD_PAYLOAD_VERSION,
+        "uploaded_markdown",
+        &request.document_key,
+        &request.content,
+        &request.title,
+        &request.provenance,
+        request.extract_entities,
+    ))
+    .map_err(|e| ApplicationError::Internal(e.to_string()))?;
+    if request.preserve_unchanged {
+        fingerprint_input.extend_from_slice(b"\0preserve_unchanged");
+    }
+    let fingerprint = format!("{:x}", Sha256::digest(&fingerprint_input));
     let admission = if let Some(admission) = app
         .repo
         .find_remote_upload_admission(&caller.instance_id, &request.request_id, &fingerprint)
@@ -188,6 +188,7 @@ pub(crate) async fn upload(
                 source_provenance: serde_json::to_value(request.provenance)
                     .map_err(|e| ApplicationError::Internal(e.to_string()))?,
                 extract_entities: request.extract_entities,
+                preserve_unchanged: request.preserve_unchanged,
                 processing_options: options(app),
             })
             .await?
@@ -300,6 +301,15 @@ pub(crate) async fn source(
         instance_id: origin["instance_id"].as_str().unwrap_or_default().into(),
         document_key: origin["document_key"].as_str().unwrap_or_default().into(),
         provenance: origin["source"].clone(),
+        extract_entities: origin_job.input.extract_entities,
+        processing_policy_sha256: format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&origin_job.input.processing_options)
+                    .map_err(|e| ApplicationError::Internal(e.to_string()))?
+            )
+        ),
+        processing_policy_current: origin_job.input.processing_options == options(app),
         revision,
     })
 }
@@ -360,6 +370,7 @@ pub(crate) async fn resume(
     // Retirement is definitive even when its saved input is damaged or current
     // provider configuration differs. Read the bounded status before decoding
     // execution input or producing compatibility/repair guidance.
+    let preflight = app.repo.remote_upload_resume_preflight_guard().await;
     let status = app
         .repo
         .get_remote_upload_job_status(&caller.instance_id, id)
@@ -380,6 +391,7 @@ pub(crate) async fn resume(
             ApplicationError::NotFound("This instance has no uploaded job with that ID".into())
         })?;
     compatible(app, &job)?;
+    drop(preflight);
     view(
         app.repo
             .resume_remote_upload_job(&caller.instance_id, id)

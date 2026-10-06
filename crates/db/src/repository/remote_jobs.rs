@@ -25,6 +25,8 @@ pub struct RemoteUploadInput {
     pub title: Option<String>,
     pub source_provenance: serde_json::Value,
     pub extract_entities: bool,
+    #[serde(default)]
+    pub preserve_unchanged: bool,
     pub processing_options: serde_json::Value,
 }
 
@@ -215,6 +217,15 @@ fn digest(domain: &str, parts: &[&str]) -> String {
     let bytes = serde_json::to_vec(&(domain, parts)).expect("string tuples serialize");
     format!("{:x}", Sha256::digest(bytes))
 }
+pub fn uploaded_source_id(instance: &str, document_key: &str) -> String {
+    format!(
+        "source:{}",
+        digest(
+            "graphrag-remote-upload-source-v1",
+            &[instance, document_key]
+        )
+    )
+}
 fn job_id(value: &str) -> Result<RecordId> {
     let key = value
         .strip_prefix("processing_job:")
@@ -334,6 +345,11 @@ fn claim_blocker_sql(instance: &str, uri: &str, id: &str, order: &str, created: 
 }
 
 impl Repository {
+    /// Keep resume status/decode/compatibility reads before one retirement
+    /// boundary. Drop this guard before entering the locked resume transition.
+    pub async fn remote_upload_resume_preflight_guard(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.remote_job_transition_lock.clone().lock_owned().await
+    }
     async fn remote_job_row(&self, instance: &str, id: &RecordId) -> Result<Option<JobRow>> {
         Ok(self.db.query("SELECT * FROM processing_job WHERE id = $id AND job_type = 'remote_upload' AND remote_instance_id = $instance LIMIT 1")
             .bind(("id", id.clone())).bind(("instance", instance.to_string())).await?.take(0)?)
@@ -753,6 +769,7 @@ impl Repository {
         let prior = self.get_source(&job.source_uri).await?;
         let hash = graphrag_core::normalized_content_hash(&input.markdown);
         let mut prior_completed = false;
+        let mut prior_exact_input_matches = false;
         if let Some(source) = &prior {
             let origin = source
                 .metadata
@@ -775,6 +792,7 @@ impl Repository {
                         )));
                     }
                     prior_completed = other.job.status == "completed";
+                    prior_exact_input_matches = other.input.markdown == input.markdown;
                 }
             }
         }
@@ -788,6 +806,11 @@ impl Repository {
                     && source.metadata["remote_upload"]["extract_entities"]
                         == input.extract_entities
             });
+        if input.preserve_unchanged && (!unchanged || !prior_exact_input_matches) {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
         let generation = prior.as_ref().map_or(1, |source| {
             if unchanged {
                 source.successful_generation

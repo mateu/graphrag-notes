@@ -24,6 +24,9 @@ pub struct UploadSourceRequest {
     pub provenance: Option<CaptureProvenance>,
     #[serde(default)]
     pub extract_entities: bool,
+    /// Register matching metadata only; never replace a source generation.
+    #[serde(default)]
+    pub preserve_unchanged: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -90,6 +93,10 @@ pub struct UploadedSource {
     pub instance_id: String,
     pub document_key: String,
     pub provenance: serde_json::Value,
+    pub extract_entities: bool,
+    /// Opaque processing snapshot identity, without provider URLs/settings.
+    pub processing_policy_sha256: String,
+    pub processing_policy_current: bool,
     pub revision: String,
 }
 

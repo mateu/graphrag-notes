@@ -65,6 +65,25 @@ processing avoids fresh embeddings while confirming ownership and provenance.
 Legacy bespoke progress files are retained separately and are not silently
 adopted as verified adapter state.
 
+Before any initial upload, the adapter inspects existing sources by the
+authenticated document key. A different extraction policy fails with
+`existing_extraction_policy_requires_adoption`. If an earlier entity pilot
+enriched an otherwise matching source, explicitly add `--adopt-existing-policy`
+to retain that part's existing extraction policy. Adoption requires exact owner,
+document key, supplied bytes, title and original provenance, a ready generation,
+and compatibility with the service's current processing snapshot. It persists
+the per-source policy for future changed uploads and recovery; new parts still
+use the collection default. A changed processing snapshot fails closed and
+requires a separately reviewed migration rather than silently re-embedding.
+
+Metadata registration sets the server's `preserve_unchanged` upload guard. Under
+the generation lock, exact input, title, extraction and processing policy must
+still match; otherwise the job fails without replacing existing chunks or graph
+mentions. A compatible registration retains the successful generation, chunk
+IDs and previously extracted mentions without embedding or extraction calls.
+This is a per-part guard, not an all-parts transaction. Resume a policy-review
+failure with `--resume --adopt-existing-policy` only after reviewing its cause.
+
 UTF-8 bytes, BOM, whitespace, and line endings are preserved exactly. Originals
 over 64 KiB split at UTF-8/newline boundaries into approximately 49 KiB parts.
 Part identities stay stable as originals grow or shrink. Original path, hash,

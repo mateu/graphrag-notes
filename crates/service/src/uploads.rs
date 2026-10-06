@@ -17,7 +17,10 @@ use serde_json::{Map, Value};
 struct SourceInput {
     /// Canonical source:ID returned by upload_source; never a client/server path.
     #[schemars(length(min = 1, max = 512))]
-    id: String,
+    id: Option<String>,
+    /// Look up this authenticated instance's existing opaque document key.
+    #[schemars(length(min = 1, max = 256))]
+    document_key: Option<String>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -83,7 +86,18 @@ pub(crate) async fn dispatch(
                 Ok(input) => input,
                 Err(error) => return error,
             };
-            match application.get_uploaded_source(&input.id).await {
+            let result = match (input.id, input.document_key) {
+                (Some(id), None) => application.get_uploaded_source(&id).await,
+                (None, Some(key)) => application.lookup_uploaded_source(caller, &key).await,
+                _ => {
+                    return failure(
+                        "invalid_input",
+                        "Supply exactly one of id or document_key",
+                        false,
+                    )
+                }
+            };
+            match result {
                 Ok(result) => success(result),
                 Err(error) => application_failure(error),
             }

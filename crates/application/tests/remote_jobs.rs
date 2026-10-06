@@ -33,6 +33,7 @@ fn request(id: &str) -> UploadSourceRequest {
             metadata: Default::default(),
         }),
         extract_entities: false,
+        preserve_unchanged: false,
     }
 }
 fn app(
@@ -536,6 +537,180 @@ async fn document_identity_refresh_and_unchanged_runs_keep_safe_generation_bound
         .await
         .unwrap();
     assert_ne!(independent.source_id, first.source_id);
+}
+
+#[tokio::test]
+async fn reviewed_policy_registration_preserves_enriched_generation_and_fences_drift() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let (application, embedding_calls, extraction_calls) = endpoint_app(
+        &repo,
+        "http://embedding.invalid",
+        "http://extraction.invalid",
+    );
+    let mut initial = request("enriched-origin");
+    initial.extract_entities = true;
+    initial.content = "# Atlas\n\nAtlas launch is Monday. Mira leads Atlas.".into();
+    let admission = application
+        .upload_source(caller("owner"), initial.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    use sha2::{Digest, Sha256};
+    let legacy_fingerprint = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(
+                1_u32,
+                "uploaded_markdown",
+                &initial.document_key,
+                &initial.content,
+                &initial.title,
+                &initial.provenance,
+                initial.extract_entities,
+            ))
+            .unwrap()
+        )
+    );
+    assert_eq!(
+        repo.get_remote_upload_job("owner", &admission.job_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .input
+            .payload_fingerprint,
+        legacy_fingerprint
+    );
+    let before = application
+        .get_uploaded_source(&admission.source_id)
+        .await
+        .unwrap();
+    let chunks = repo
+        .get_source_chunks(&graphrag_db::parse_record_id(&before.id, Some("source")).unwrap())
+        .await
+        .unwrap();
+    let chunk_ids: Vec<_> = chunks.iter().map(|n| n.id.clone()).collect();
+    // Model the historical pilot's enrichment of already uploaded chunks.
+    let mut entity = graphrag_core::Entity::new("Atlas", graphrag_core::EntityType::Project);
+    entity.metadata = serde_json::json!({});
+    let pilot_entity = repo.upsert_entity(entity).await.unwrap();
+    repo.link_note_to_entity(
+        chunks[0].id.as_ref().unwrap(),
+        pilot_entity.id.as_ref().unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut response = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    let mentions: Vec<serde_json::Value> = response.take(0).unwrap();
+    assert!(!mentions.is_empty());
+    assert!(before.extract_entities && before.processing_policy_current);
+    assert_eq!(before.processing_policy_sha256.len(), 64);
+    let lookup = application
+        .lookup_uploaded_source(caller("owner"), &initial.document_key)
+        .await
+        .unwrap();
+    assert_eq!(lookup.id, before.id);
+    assert!(application
+        .lookup_uploaded_source(caller("foreign"), &initial.document_key)
+        .await
+        .is_err());
+    assert!(!application
+        .lookup_uploaded_source(caller("owner"), "../invalid\0key")
+        .await
+        .is_ok());
+    embedding_calls.store(0, Ordering::Relaxed);
+    extraction_calls.store(0, Ordering::Relaxed);
+    let mut registration = initial.clone();
+    registration.request_id = "reviewed-register".into();
+    registration.preserve_unchanged = true;
+    registration
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("collection_id".into(), "fixture".into());
+    let registered = application
+        .upload_source(caller("owner"), registration.clone())
+        .await
+        .unwrap();
+    execute(&application, "epoch").await;
+    let after = application.get_uploaded_source(&before.id).await.unwrap();
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(
+        repo.get_source_chunks(&graphrag_db::parse_record_id(&before.id, Some("source")).unwrap())
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n.id.clone())
+            .collect::<Vec<_>>(),
+        chunk_ids
+    );
+    let mut response = db
+        .query("SELECT * FROM mentions ORDER BY id")
+        .await
+        .unwrap();
+    assert_eq!(
+        response.take::<Vec<serde_json::Value>>(0).unwrap(),
+        mentions
+    );
+    assert_eq!(embedding_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(extraction_calls.load(Ordering::Relaxed), 0);
+    assert!(
+        application
+            .upload_source(caller("owner"), registration.clone())
+            .await
+            .unwrap()
+            .replayed
+    );
+    for (name, drift) in [
+        ("body", "changed"),
+        ("whitespace", "\r\n"),
+        ("extraction", ""),
+    ] {
+        let mut unsafe_registration = registration.clone();
+        unsafe_registration.request_id = format!("guard-{name}");
+        if name == "extraction" {
+            unsafe_registration.extract_entities = false;
+        } else {
+            unsafe_registration.content.push_str(drift);
+        }
+        let job = application
+            .upload_source(caller("owner"), unsafe_registration)
+            .await
+            .unwrap();
+        let execution = application
+            .claim_remote_job("epoch", "worker")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(application
+            .execute_remote_job(execution, ActionCancellation::new())
+            .await
+            .is_err());
+        assert_eq!(
+            application
+                .get_remote_job(caller("owner"), &job.job_id)
+                .await
+                .unwrap()
+                .status,
+            "failed"
+        );
+        let source = application.get_uploaded_source(&before.id).await.unwrap();
+        assert_eq!(source.generation, before.generation);
+        assert_eq!(source.content, initial.content);
+    }
+    // Unrelated legacy unguarded replay identities remain stable.
+    assert!(
+        application
+            .upload_source(caller("owner"), initial)
+            .await
+            .unwrap()
+            .replayed
+    );
+    assert_ne!(registered.job_id, admission.job_id);
 }
 
 struct BlockedEmbedding {
@@ -1215,9 +1390,32 @@ async fn retirement_invalidates_dormant_jobs_and_portable_restore_preserves_the_
             collection_id: "fixture-memory".into(),
             confirmed: true,
         };
-        application
-            .delete_uploaded_source(caller("openclaw"), delete.clone())
+        let preflight = repo.remote_upload_resume_preflight_guard().await;
+        let retirement_app = healthy(&repo);
+        let retirement_request = delete.clone();
+        let retirement = tokio::spawn(async move {
+            retirement_app
+                .delete_uploaded_source(caller("openclaw"), retirement_request)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !retirement.is_finished(),
+            "retirement must wait through resume status/decode/compatibility preflight"
+        );
+        assert_ne!(
+            application
+                .get_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap()
+                .phase,
+            "retired"
+        );
+        drop(preflight);
+        tokio::time::timeout(Duration::from_secs(2), retirement)
             .await
+            .unwrap()
+            .unwrap()
             .unwrap();
         assert!(repo.get_source(&first.source_id).await.unwrap().is_none());
         let restored_db = init_memory().await.unwrap();

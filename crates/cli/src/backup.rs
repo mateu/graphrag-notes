@@ -942,6 +942,7 @@ mod tests {
             title: Some("/Projects/supplied-topic".into()),
             provenance: None,
             extract_entities: false,
+            preserve_unchanged: false,
         };
         let app = application(&repo);
         let admission = app
@@ -1047,6 +1048,7 @@ mod tests {
             title: Some("Uploaded backup".into()),
             source_provenance: serde_json::json!({"uri":"file:///client-only/daily.md","metadata":{"token":"client vocabulary","embedding":"user label"}}),
             extract_entities: false,
+            preserve_unchanged: false,
             processing_options: serde_json::json!({"provider":"fixture","chunk_size":200}),
         };
         let admitted = repo.admit_remote_upload(input.clone()).await.unwrap();
@@ -1238,6 +1240,7 @@ mod tests {
             title: Some("Processing snapshots".into()),
             provenance: None,
             extract_entities: false,
+            preserve_unchanged: false,
         };
         let active_app = application(500);
         let admission = active_app

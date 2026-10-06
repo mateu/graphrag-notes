@@ -318,7 +318,7 @@ def snapshot(database, workspace, after_inventory=None):
         connection.close()
 
 
-def payloads(documents, config, attempt):
+def payloads(documents, config, attempt, source_policies=None):
     tasks = {}
     for document in documents:
         path, raw = document['path'], document['raw']
@@ -336,7 +336,7 @@ def payloads(documents, config, attempt):
             key = base + f'/part-{index:04d}'
             payload = {'document_key': key, 'content': piece.decode('utf-8'),
                        'title': title if len(pieces) == 1 else f'{title} [part {index}/{len(pieces)}]',
-                       'extract_entities': config['extract_entities'],
+                       'extract_entities': (source_policies or {}).get(key, {}).get('extract_entities', config['extract_entities']),
                        'provenance': {'uri': uri,
                                       'label': 'OpenClaw indexed memory',
                                       'metadata': {'host': config['host'], 'agent': config['agent'], 'source_path': path,
@@ -404,7 +404,8 @@ def prepare(state, documents, failures, attempt=None):
         raise ImportFailure('pending_reconciliation_requires_same_plan')
     if state.get('pending'):
         raise ImportFailure('pending_attempt_requires_resume')
-    tasks = payloads(documents, state['config'], attempt or secrets.token_hex(16))
+    attempt = attempt or secrets.token_hex(16)
+    tasks = payloads(documents, state['config'], attempt, state.get('source_policies'))
     registry = state['documents']
     counts = dict.fromkeys(('created', 'changed', 'unchanged', 'failed', 'missing'), 0)
     for key, task in tasks.items():
@@ -424,7 +425,7 @@ def prepare(state, documents, failures, attempt=None):
     missing = sorted(set(registry) - set(tasks))
     counts['missing'] = len(missing)
     state.update(status='running', counts=counts, last_attempt_at=now(), error_code=None,
-                 pending={'tasks': tasks, 'desired_keys': sorted(tasks), 'missing_keys': missing})
+                 pending={'tasks': tasks, 'desired_keys': sorted(tasks), 'missing_keys': missing, 'attempt': attempt})
     return state['pending']
 
 
@@ -457,6 +458,87 @@ def verify_principal(client, principal):
         raise ImportFailure('incompatible_service_status')
     if report.get('instance_id') != principal:
         raise ImportFailure('authenticated_instance_mismatch')
+
+
+def review_existing_policies(client, state, save, args):
+    try:
+        _review_existing_policies(client, state, save, args)
+    except ImportFailure as error:
+        key = state['pending'].get('reviewing_key')
+        if key in state['pending']['tasks']:
+            state['pending']['tasks'][key]['entry']['error_code'] = error.code
+            state['counts']['failed'] = sum(bool(t['entry'].get('error_code')) for t in state['pending']['tasks'].values())
+        state.update(status='failed', error_code=error.code)
+        save()
+        raise
+
+
+def _review_existing_policies(client, state, save, args):
+    """Inspect every prospective admission before the first upload.
+
+    Legacy enriched parts require reviewed policy adoption. A server-side
+    preserve guard makes metadata registration fail rather than replace a
+    graph-bearing generation if source contents/policies change after review.
+    """
+    pending = state['pending']
+    if pending.get('policy_review_complete'):
+        return
+    policies = state.setdefault('source_policies', {})
+    principal = state['config']['instance_id']
+    for key, task in pending['tasks'].items():
+        if task.get('policy_reviewed') or task['entry'].get('admission') or task['action'] == 'unchanged':
+            continue
+        pending['reviewing_key'] = key
+        try:
+            source = retry_call(client, 'get_source', {'document_key': key})
+        except ImportFailure as error:
+            if error.code == 'not_found':
+                if key in state['documents']:
+                    raise ImportFailure('committed_source_mismatch') from None
+                task['policy_reviewed'] = True
+                save()
+                continue
+            if error.code in ('invalid_input', 'validation'):
+                raise ImportFailure('source_policy_service_required') from None
+            raise
+        payload = task['payload']
+        if (not valid_id(source.get('id'), 'source') or source.get('instance_id') != principal
+                or source.get('document_key') != key or source.get('uri') != 'mcp://upload/' + source['id'][7:]
+                or source.get('status') != 'ready' or source.get('generation') != source.get('successful_generation')):
+            raise ImportFailure('existing_source_scope_mismatch')
+        policy_hash = source.get('processing_policy_sha256')
+        if (not isinstance(source.get('extract_entities'), bool) or source.get('processing_policy_current') is not True
+                or not isinstance(policy_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', policy_hash)):
+            raise ImportFailure('existing_processing_policy_mismatch')
+        prior_policy = policies.get(key)
+        if prior_policy and prior_policy != {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash}:
+            raise ImportFailure('registered_processing_policy_mismatch')
+        if key not in state['documents'] and source['extract_entities'] != payload['extract_entities']:
+            if not getattr(args, 'adopt_existing_policy', False):
+                raise ImportFailure('existing_extraction_policy_requires_adoption')
+            existing_provenance = json.loads(json.dumps(source.get('provenance')))
+            desired_provenance = json.loads(json.dumps(payload['provenance']))
+            if not isinstance(existing_provenance, dict) or not isinstance(existing_provenance.get('metadata'), dict):
+                raise ImportFailure('existing_adoption_source_mismatch')
+            existing_provenance['metadata'].pop('collection_id', None)
+            desired_provenance['metadata'].pop('collection_id', None)
+            if (source.get('content') != payload['content'] or source.get('title') != payload['title']
+                    or existing_provenance != desired_provenance):
+                raise ImportFailure('existing_adoption_source_mismatch')
+            payload['extract_entities'] = source['extract_entities']
+        policies[key] = {'extract_entities': source['extract_entities'], 'processing_policy_sha256': policy_hash}
+        # The guard belongs to this initial admission only; semantic content
+        # identities exclude it so a later unchanged run requires no upload.
+        if key not in state['documents'] and source.get('content') == payload['content'] and source.get('title') == payload['title']:
+            payload['preserve_unchanged'] = True
+        semantic = {k: v for k, v in payload.items() if k not in ('request_id', 'preserve_unchanged')}
+        task['payload_hash'] = sha(canonical(semantic))
+        payload['request_id'] = 'ocmem-' + sha(canonical([pending['attempt'], task['payload_hash'], bool(payload.get('preserve_unchanged'))]))
+        task['policy_reviewed'] = True
+        save()
+    pending['policy_review_complete'] = True
+    pending.pop('reviewing_key', None)
+    save()
 
 
 def run_refresh(client, state, save, args):
@@ -628,6 +710,7 @@ def parser():
     parser.add_argument('--credential-env', default='GRAPHRAG_TOKEN')
     parser.add_argument('--part-bytes', type=int, default=49152)
     parser.add_argument('--extract-entities', action='store_true', help='Explicit opt-in; default performs embeddings only.')
+    parser.add_argument('--adopt-existing-policy', action='store_true', help='Explicitly retain an existing compatible extraction policy only when exact owner/source/content matches; new parts keep collection default.')
     parser.add_argument('--dry-run', action='store_true', help='Snapshot and plan only; no credentials, network, or state writes.')
     parser.add_argument('--status', action='store_true', help='Read redacted local refresh evidence; no SQLite/network/provider use.')
     parser.add_argument('--resume', action='store_true', help='Reuse the exact saved snapshot/payloads without reading the source again.')
@@ -749,6 +832,7 @@ def main(argv=None):
                           'obsolete_parts': sum(t['reason'] == 'obsolete_part' for t in plan['targets']),
                           'plan_sha256': plan['plan_sha256']}, args.format)
             else:
+                review_existing_policies(client, state, save, args)
                 run_refresh(client, state, save, args)
                 emit(evidence(state), args.format)
             return 0

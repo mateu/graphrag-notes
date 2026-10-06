@@ -132,6 +132,15 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
             "Uploaded sources are unavailable in this adapter".into(),
         ))
     }
+    async fn lookup_uploaded_source(
+        &self,
+        _caller: CallerIdentity,
+        _key: &str,
+    ) -> ApplicationResult<UploadedSource> {
+        Err(ApplicationError::Compatibility(
+            "Uploaded source lookup is unavailable in this adapter".into(),
+        ))
+    }
     async fn delete_uploaded_source(
         &self,
         _caller: CallerIdentity,

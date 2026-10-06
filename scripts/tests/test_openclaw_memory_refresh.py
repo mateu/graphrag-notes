@@ -72,7 +72,9 @@ class FakeService:
                     'id': admission['source_id'], 'uri': admission['source_uri'], 'instance_id': 'fixture-importer',
                     'document_key': payload['document_key'], 'content': payload['content'], 'title': payload['title'],
                     'provenance': payload['provenance'], 'status': 'ready', 'generation': job['generation'],
-                    'successful_generation': job['generation'], 'revision': m.sha(m.canonical(payload))}
+                    'successful_generation': job['generation'], 'revision': m.sha(m.canonical(payload)),
+                    'extract_entities': payload['extract_entities'], 'processing_policy_sha256': 'a' * 64,
+                    'processing_policy_current': True}
                 job['published'] = True
             complete = not job['failed']
             return {'id': value['id'], 'source_id': admission['source_id'], 'instance_id': 'foreign' if self.wrong_owner else 'fixture-importer',
@@ -83,6 +85,8 @@ class FakeService:
                                'generation': job['generation'], 'note_ids': ['note:' + m.sha(value['id'].encode())],
                                'extracted': payload['extract_entities']} if complete else None}
         if name == 'get_source':
+            if 'document_key' in value:
+                value = {'id': 'source:' + m.sha(value['document_key'].encode())}
             if value['id'] not in self.sources:
                 raise m.ImportFailure('not_found')
             result = json.loads(json.dumps(self.sources[value['id']]))
@@ -148,7 +152,57 @@ class RefreshTests(unittest.TestCase):
 
     def run_refresh(self):
         with patch.object(m.time, 'sleep', lambda _: None):
+            m.review_existing_policies(self.client, self.state, self.save, self.args)
             m.run_refresh(self.client, self.state, self.save, self.args)
+
+    def test_reviewed_legacy_extraction_policy_is_retained_and_changed_upload_uses_it(self):
+        self.config['extract_entities'] = True
+        self.state = m.new_state(self.config)
+        self.prepare(); self.run_refresh()
+        source = next(iter(self.client.sources.values()))
+        source['provenance']['metadata'].pop('collection_id')
+        self.config['extract_entities'] = False
+        self.state = m.new_state(self.config)
+        self.prepare()
+        before_uploads = len(self.client.receipts)
+        with self.assertRaisesRegex(m.ImportFailure, 'existing_extraction_policy_requires_adoption'):
+            self.run_refresh()
+        self.assertEqual(len(self.client.receipts), before_uploads)
+        self.assertEqual(self.state['counts']['failed'], 1)
+        self.args.adopt_existing_policy = True
+        self.run_refresh()
+        registered = next(iter(self.state['documents'].values()))
+        self.assertTrue(self.state['source_policies'][source['document_key']]['extract_entities'])
+        self.assertTrue(registered['entry']['admission'])
+        adopted_payload = self.client.jobs[registered['entry']['admission']['job_id']]['payload']
+        self.assertTrue(adopted_payload['extract_entities'])
+        self.assertTrue(adopted_payload['preserve_unchanged'])
+        uploads = len(self.client.receipts)
+        self.prepare(); self.run_refresh()
+        self.assertEqual(self.state['counts']['unchanged'], 1)
+        self.assertEqual(len(self.client.receipts), uploads)
+        self.write('memory/atlas.md', b'# Atlas\n\nReviewed edited launch')
+        self.prepare(); self.run_refresh()
+        latest = list(self.client.jobs.values())[-1]['payload']
+        self.assertTrue(latest['extract_entities'])
+        self.assertNotIn('preserve_unchanged', latest)
+
+    def test_legacy_adoption_rejects_changed_bytes_owner_and_processing_before_upload(self):
+        self.prepare(); self.run_refresh()
+        original = json.loads(json.dumps(next(iter(self.client.sources.values()))))
+        original['extract_entities'] = True
+        original['provenance']['metadata'].pop('collection_id')
+        self.args.adopt_existing_policy = True
+        for field, value, code in [('content', 'changed since review', 'existing_adoption_source_mismatch'),
+                                   ('instance_id', 'foreign', 'existing_source_scope_mismatch'),
+                                   ('processing_policy_current', False, 'existing_processing_policy_mismatch')]:
+            self.state = m.new_state(self.config)
+            source = json.loads(json.dumps(original)); source[field] = value
+            self.client.sources[source['id']] = source
+            self.prepare(); uploads = len(self.client.receipts)
+            with self.assertRaisesRegex(m.ImportFailure, code):
+                self.run_refresh()
+            self.assertEqual(len(self.client.receipts), uploads)
 
     def test_snapshot_is_read_only_consistent_and_excludes_summaries(self):
         self.write('memory/session.md', b'Excluded indexed session', 'sessions')
