@@ -1538,12 +1538,12 @@ async fn graph_alias_local_binding_preserves_complex_relation_id_ties_at_the_pag
     float_object.insert("kind", 1.0f64);
     float_object.insert("ordinal", 0i64);
     let integer_array = vec![
-        surrealdb::types::Value::from(1i64),
-        surrealdb::types::Value::from(1i64),
+        surrealdb::types::Value::Number(surrealdb::types::Number::Int(1)),
+        surrealdb::types::Value::Number(surrealdb::types::Number::Int(1)),
     ];
     let float_array = vec![
-        surrealdb::types::Value::from(1.0f64),
-        surrealdb::types::Value::from(0i64),
+        surrealdb::types::Value::Number(surrealdb::types::Number::Float(1.0)),
+        surrealdb::types::Value::Number(surrealdb::types::Number::Int(0)),
     ];
     for (integer_key, float_key) in [
         (
@@ -1755,8 +1755,8 @@ async fn graph_alias_local_binding_indexes_actual_nested_queries_and_keeps_nativ
             "entity",
             RecordIdKey::Array(
                 vec![
-                    surrealdb::types::Value::from("fictional"),
-                    surrealdb::types::Value::from(7i64),
+                    surrealdb::types::Value::String("fictional".to_string()),
+                    surrealdb::types::Value::Number(surrealdb::types::Number::Int(7)),
                 ]
                 .into(),
             ),
