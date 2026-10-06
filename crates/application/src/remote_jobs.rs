@@ -97,6 +97,7 @@ pub(crate) fn view(job: RemoteUploadJobStatus) -> ApplicationResult<RemoteJobSta
             | "provider_unavailable"
             | "compatibility"
             | "service_unreachable"
+            | "source_retired"
             | "internal" => code,
             _ => "internal".into(),
         }),

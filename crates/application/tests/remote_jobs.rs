@@ -1143,6 +1143,12 @@ async fn queued_upload_blocks_retirement_and_receipt_failure_rolls_it_back() {
         .await
         .unwrap();
     assert_eq!(after.len(), before.len());
+    let pending = application
+        .get_remote_job(caller("openclaw"), &pending.job_id)
+        .await
+        .unwrap();
+    assert_eq!(pending.phase, "admitted");
+    assert_eq!(pending.error_code, None);
     let receipts: Vec<serde_json::Value> = db
         .query("SELECT * FROM remote_mutation_receipt")
         .await
@@ -1150,6 +1156,125 @@ async fn queued_upload_blocks_retirement_and_receipt_failure_rolls_it_back() {
         .take(0)
         .unwrap();
     assert!(receipts.is_empty());
+}
+
+#[tokio::test]
+async fn retirement_invalidates_dormant_jobs_and_portable_restore_preserves_the_fence() {
+    for terminal in ["failed", "cancelled"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let application = healthy(&repo);
+        let mut original = request("dormant-original");
+        original
+            .provenance
+            .as_mut()
+            .unwrap()
+            .metadata
+            .insert("collection_id".into(), "fixture-memory".into());
+        let first = application
+            .upload_source(caller("openclaw"), original.clone())
+            .await
+            .unwrap();
+        execute(&application, "epoch").await;
+        let mut replacement = original.clone();
+        replacement.request_id = "dormant-replacement".into();
+        replacement.content.push_str("\nDormant replacement text");
+        let dormant = application
+            .upload_source(caller("openclaw"), replacement.clone())
+            .await
+            .unwrap();
+        if terminal == "cancelled" {
+            application
+                .cancel_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap();
+        } else {
+            let execution = application
+                .claim_remote_job("epoch", "fixture-worker")
+                .await
+                .unwrap()
+                .unwrap();
+            application
+                .recover_remote_job(execution, "provider_unavailable".into())
+                .await
+                .unwrap();
+        }
+        let before = application
+            .get_remote_job(caller("openclaw"), &dormant.job_id)
+            .await
+            .unwrap();
+        assert_eq!(before.status, terminal);
+        assert_eq!(before.generation, None);
+        let view = application
+            .get_uploaded_source(&first.source_id)
+            .await
+            .unwrap();
+        let delete = DeleteUploadedSourceRequest {
+            request_id: "retire-dormant".into(),
+            id: first.source_id.clone(),
+            revision: view.revision,
+            collection_id: "fixture-memory".into(),
+            confirmed: true,
+        };
+        application
+            .delete_uploaded_source(caller("openclaw"), delete.clone())
+            .await
+            .unwrap();
+        assert!(repo.get_source(&first.source_id).await.unwrap().is_none());
+        let restored = Repository::new(init_memory().await.unwrap());
+        for table in ["processing_job", "remote_mutation_receipt"] {
+            for row in repo.portable_records_page(table, 0, 100).await.unwrap() {
+                restored.restore_portable_record(table, row).await.unwrap();
+            }
+        }
+        for candidate in [&repo, &restored] {
+            let application = healthy(candidate);
+            let retired = application
+                .get_remote_job(caller("openclaw"), &dormant.job_id)
+                .await
+                .unwrap();
+            assert_eq!(retired.status, terminal);
+            assert_eq!(
+                retired.cancellation_requested,
+                before.cancellation_requested
+            );
+            assert_eq!(retired.phase, "retired");
+            assert_eq!(retired.error_code.as_deref(), Some("source_retired"));
+            assert!(matches!(
+                application
+                    .resume_remote_job(caller("openclaw"), &dormant.job_id)
+                    .await,
+                Err(ApplicationError::RevisionConflict(_))
+            ));
+            assert!(candidate
+                .claim_remote_upload_job("openclaw", &dormant.job_id, "later", "worker")
+                .await
+                .is_err());
+            assert!(application
+                .claim_remote_job("later", "worker")
+                .await
+                .unwrap()
+                .is_none());
+            // Original immutable admissions and deletion receipts still replay.
+            let replay = application
+                .upload_source(caller("openclaw"), replacement.clone())
+                .await
+                .unwrap();
+            assert!(replay.replayed);
+            assert_eq!(replay.job_id, dormant.job_id);
+            assert!(
+                application
+                    .delete_uploaded_source(caller("openclaw"), delete.clone())
+                    .await
+                    .unwrap()
+                    .replayed
+            );
+            assert!(candidate
+                .get_source(&first.source_id)
+                .await
+                .unwrap()
+                .is_none());
+        }
+    }
 }
 
 #[tokio::test]

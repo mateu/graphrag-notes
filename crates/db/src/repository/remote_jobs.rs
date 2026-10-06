@@ -509,6 +509,9 @@ impl Repository {
         let row = self.remote_job_row(instance, &id).await?.ok_or_else(|| {
             DbError::NotFound("remote upload job".into(), record_id_to_string(&id))
         })?;
+        if row.remote_phase == "retired" {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(&id)));
+        }
         if !matches!(row.status.as_str(), "failed" | "cancelled") {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(&id)));
         }
@@ -540,7 +543,7 @@ impl Repository {
         let Some(row) = self.remote_job_row(instance, id).await? else {
             return Ok(None);
         };
-        if row.status != "queued" || row.remote_cancel_requested {
+        if row.status != "queued" || row.remote_cancel_requested || row.remote_phase == "retired" {
             return Ok(None);
         }
         // Decode and validate durable payload before changing ownership. Keep
@@ -682,6 +685,9 @@ impl Repository {
     }
     async fn ensure_remote_source_current(&self, job: &RemoteUploadJob) -> Result<()> {
         let expected_job = record_id_to_string(job.job.id.as_ref().expect("persisted ID"));
+        if job.phase == "retired" {
+            return Err(DbError::RemoteJobSourceConflict(expected_job));
+        }
         if job.source_generation.is_none() {
             // An older unprepared request cannot supersede a newer request
             // that already acquired this logical document. Keep the sequence

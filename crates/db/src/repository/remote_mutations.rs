@@ -529,6 +529,13 @@ fn source_retirement_sql() -> &'static str {
         AND status IN ['queued','running'] LIMIT 1)) != 0 {
         THROW 'remote-mutation-revision-conflict';
     };
+    -- Preserve admission payloads/receipts and terminal statuses. Retirement
+    -- explicitly invalidates dormant executions, including unprepared jobs
+    -- whose missing generation would otherwise allow recreation after delete.
+    UPDATE processing_job SET remote_phase='retired',last_error='source_retired',
+        remote_service_epoch=NONE,remote_worker_token=NONE,updated_at=time::now()
+        WHERE job_type='remote_upload' AND remote_instance_id=$instance
+        AND remote_source_uri=$expected_source_uri AND status IN ['failed','cancelled'];
     LET $owned_notes=(SELECT VALUE id FROM note WHERE source_id=$target
         AND source_generation IS NOT NONE);
     FOR $owned_note IN $owned_notes {

@@ -151,6 +151,13 @@ cannot be selected. A changed plan or source revision stops cleanup. After a
 lost acknowledgement or interruption, rerun the identical reconciliation command
 and hash to recover its receipts. Resume pending cleanup before a newer refresh.
 
+Retirement marks earlier failed/cancelled upload executions for that source with
+the explicit `retired` phase and `source_retired` error category. They retain
+their original terminal status, cancellation flag, input, and admission receipt,
+but cannot be resumed or claimed to recreate removed content. This fence also
+survives portable backup/restore. A genuinely new upload request may deliberately
+create the logical source again.
+
 If cleanup was interrupted, freshness evidence reports `retry.action=reconcile`
 and the original public-safe `retry.plan_sha256`; the human retry gives that
 exact plan command. Normal evidence uses `resume` or `refresh` and a null plan.
