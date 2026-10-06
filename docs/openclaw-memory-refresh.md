@@ -179,13 +179,22 @@ operator runbook for every command below; creating a new collection is not a
 migration. Set `REGISTERED_STATE_DIR` and `REGISTERED_MCP_URL` to those non-secret
 values before running the example.
 
-```sh
+Preview and apply must also match the collection's registered extraction
+default. In Bash or Zsh, keep `EXTRACTION_ARGS=()` for a collection registered
+without `--extract-entities`; use `EXTRACTION_ARGS=(--extract-entities)` if the
+collection was originally registered with that flag. Per-source retained graph
+policies do not imply a true collection default. Both commands below reuse this
+setting and select only the reviewed subset.
+
+```bash
+EXTRACTION_ARGS=() # Use (--extract-entities) for a registered true default.
 python3 scripts/refresh-openclaw-memory.py \
   --database "$HOME/.openclaw/agents/main/agent/openclaw-agent.sqlite" \
   --workspace "$HOME/.openclaw/workspace" \
   --state-dir "$REGISTERED_STATE_DIR" \
   --collection-id clawd-main-memory --source-host clawd --source-agent main \
   --instance-id shiva-importer --server "$REGISTERED_MCP_URL" \
+  "${EXTRACTION_ARGS[@]}" \
   --migrate-policy --selection-file "$HOME/.graphrag/migration/selected.json" \
   --format json
 ```
@@ -207,11 +216,18 @@ Before a real migration, rehearse the exact selection and plan on a freshly
 restored private corpus with vectors and a private copy of collection state.
 Run the same bounded retrieval sample before and after; preserve its baseline.
 Confirm the owner configuration and all plan identities before applying to the
-live corpus. Apply the reviewed digest with the same database/workspace and
-collection arguments, replacing the selection flag with:
+live corpus. Apply the reviewed digest with the same database/workspace,
+collection arguments and registered extraction setting:
 
-```sh
---migrate-policy --yes --plan-sha256 REVIEWED_SHA256 --format json
+```bash
+python3 scripts/refresh-openclaw-memory.py \
+  --database "$HOME/.openclaw/agents/main/agent/openclaw-agent.sqlite" \
+  --workspace "$HOME/.openclaw/workspace" \
+  --state-dir "$REGISTERED_STATE_DIR" \
+  --collection-id clawd-main-memory --source-host clawd --source-agent main \
+  --instance-id shiva-importer --server "$REGISTERED_MCP_URL" \
+  "${EXTRACTION_ARGS[@]}" \
+  --migrate-policy --yes --plan-sha256 REVIEWED_SHA256 --format json
 ```
 
 All selected inputs, owner/provenance/revisions, registry identity and target
