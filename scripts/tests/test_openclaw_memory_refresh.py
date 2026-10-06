@@ -115,7 +115,7 @@ class RefreshTests(unittest.TestCase):
         self.workspace = self.root / 'workspace'
         (self.workspace / 'memory').mkdir(parents=True)
         self.database = self.root / 'indexed.sqlite'
-        with sqlite3.connect(self.database) as connection:
+        with contextlib.closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute('PRAGMA journal_mode=WAL')
             connection.execute('CREATE TABLE memory_index_sources (id INTEGER PRIMARY KEY,path TEXT,source TEXT,hash TEXT,mtime REAL,size INTEGER)')
             connection.execute('CREATE TABLE conversation_summaries (content TEXT)')
@@ -137,7 +137,7 @@ class RefreshTests(unittest.TestCase):
 
     def write(self, path, raw, source='memory'):
         (self.workspace / path).write_bytes(raw)
-        with sqlite3.connect(self.database) as connection:
+        with contextlib.closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute('DELETE FROM memory_index_sources WHERE path=?', (path,))
             connection.execute('INSERT INTO memory_index_sources(path,source,hash,mtime,size) VALUES (?,?,?,?,?)',
                                (path, source, m.sha(raw), 1.0, len(raw)))
@@ -156,7 +156,7 @@ class RefreshTests(unittest.TestCase):
         def during(connection):
             with self.assertRaises(sqlite3.OperationalError):
                 connection.execute('DELETE FROM memory_index_sources')
-            with sqlite3.connect(self.database) as writer:
+            with contextlib.closing(sqlite3.connect(self.database)) as writer, writer:
                 writer.execute("INSERT INTO memory_index_sources(path,source,hash,mtime,size) VALUES ('memory/new.md','memory','unseen',1,1)")
         documents, failures, count = m.snapshot(self.database, self.workspace, during)
         self.assertEqual(count, 1)
@@ -281,7 +281,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_removed_original_and_foreign_collection_preview_is_scoped(self):
         self.prepare(); self.run_refresh()
-        with sqlite3.connect(self.database) as connection:
+        with contextlib.closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute('DELETE FROM memory_index_sources')
         self.prepare(); self.run_refresh()
         self.assertEqual(self.state['counts']['missing'], 1)
@@ -307,7 +307,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_uncertain_cleanup_has_exact_reconciliation_retry_evidence(self):
         self.prepare(); self.run_refresh()
-        with sqlite3.connect(self.database) as connection:
+        with contextlib.closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute('DELETE FROM memory_index_sources')
         self.prepare(); self.run_refresh()
         preview = m.reconciliation_preview(self.client, self.state)
