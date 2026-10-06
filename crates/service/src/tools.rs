@@ -16,8 +16,10 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{io, sync::Arc};
 use tokio::sync::Semaphore;
+use tracing::Instrument;
 
 #[derive(Clone)]
 pub(crate) struct ToolService {
@@ -520,11 +522,28 @@ impl ToolService {
                     since_days: input.since_days,
                     source_uri: input.source_uri,
                 };
+                // A bounded hash correlates private debug phases with a client's
+                // RPC without logging an arbitrary client-supplied request ID.
+                let encoded_id = serde_json::to_vec(&context.id).map_err(|_| {
+                    ErrorData::internal_error("Cannot encode request identity.", None)
+                })?;
+                let rpc_id_sha256 = format!("{:x}", Sha256::digest(encoded_id));
+                let span = tracing::debug_span!("mcp_search", rpc_id_sha256 = %rpc_id_sha256);
                 let cancellation = ActionCancellation::new();
-                let result = tokio::select! {
-                    result = self.application.search(request, cancellation.clone()) => result,
-                    _ = context.ct.cancelled() => { cancellation.cancel(); Err(ApplicationError::Cancelled) }
-                };
+                let result = async {
+                    let started = std::time::Instant::now();
+                    let result = tokio::select! {
+                        result = self.application.search(request, cancellation.clone()) => result,
+                        _ = context.ct.cancelled() => { cancellation.cancel(); Err(ApplicationError::Cancelled) }
+                    };
+                    tracing::debug!(
+                        phase = "application_search",
+                        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                        success = result.is_ok(),
+                        "Retrieval phase completed"
+                    );
+                    result
+                }.instrument(span).await;
                 match result {
                     Ok(records) => match bounded_value(records) {
                         Ok(value) => match serde_json::from_value::<Vec<RecordOutput>>(value) {
