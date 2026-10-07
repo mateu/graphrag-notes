@@ -584,8 +584,7 @@ async fn assert_inventory(db: &DbConnection, count: usize) -> Vec<String> {
     primary
 }
 
-#[tokio::test]
-async fn native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits() {
+async fn native_float_all_scopes_exact_correctness_body() {
     let (db, _) = database("native-float-correctness").await;
     let positive = populate(&db, 160, true).await;
     mirror_idle_fixture(&db).await;
@@ -718,9 +717,7 @@ async fn native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits()
     );
 }
 
-#[tokio::test]
-#[ignore = "root-owned release qualification; no performance CI assertion"]
-async fn native_float_all_scopes_release_qualification() {
+async fn native_float_all_scopes_release_qualification_body() {
     let count: usize = std::env::var("GRAPHRAG_NATIVE_FLOAT_RECORDS")
         .expect("explicit population")
         .parse()
@@ -822,4 +819,81 @@ async fn native_float_all_scopes_release_qualification() {
     emit(
         serde_json::json!({"native_float_qualification":"observations_complete","status":"passed_exactness","completed_attempts":attempts,"timing_acceptance":"must_be_recomputed_from_all_first_and_20_warm_samples","performance_claim":false,"correctness_only":correctness_only,"provider_calls":0}),
     );
+}
+
+// The two scheduler settings share exactly the same fixture and query bodies.
+// These observations are outside query timing. Worker metrics count Tokio
+// scheduler workers, not blocking, RocksDB, Rayon or all operating-system
+// threads, and do not prove that both workers execute a particular query.
+#[derive(Clone, Copy)]
+enum QualificationRuntime {
+    CurrentThread,
+    TwoWorker,
+}
+
+impl QualificationRuntime {
+    fn observe(self, fixture: &str, stage: &str) {
+        let handle = tokio::runtime::Handle::current();
+        let flavor = handle.runtime_flavor();
+        let workers = handle.metrics().num_workers();
+        let (name, expected_flavor, expected_workers) = match self {
+            Self::CurrentThread => (
+                "current_thread",
+                tokio::runtime::RuntimeFlavor::CurrentThread,
+                1,
+            ),
+            Self::TwoWorker => (
+                "multi_thread",
+                tokio::runtime::RuntimeFlavor::MultiThread,
+                2,
+            ),
+        };
+        emit(serde_json::json!({
+            "native_float_runtime": "observed",
+            "schema_version": 1,
+            "runtime": name,
+            "observed_flavor": format!("{flavor:?}"),
+            "observed_workers": workers,
+            "expected_workers": expected_workers,
+            "fixture": fixture,
+            "stage": stage,
+            "query_timing_included": false,
+        }));
+        assert_eq!(flavor, expected_flavor, "observed Tokio runtime flavor");
+        assert_eq!(
+            workers, expected_workers,
+            "observed Tokio scheduler workers"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits() {
+    QualificationRuntime::CurrentThread.observe("correctness", "before_fixture");
+    native_float_all_scopes_exact_correctness_body().await;
+    QualificationRuntime::CurrentThread.observe("correctness", "after_fixture");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits_two_worker_runtime()
+{
+    QualificationRuntime::TwoWorker.observe("correctness", "before_fixture");
+    native_float_all_scopes_exact_correctness_body().await;
+    QualificationRuntime::TwoWorker.observe("correctness", "after_fixture");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "root-owned release qualification; no performance CI assertion"]
+async fn native_float_all_scopes_release_qualification() {
+    QualificationRuntime::CurrentThread.observe("measurement", "before_fixture");
+    native_float_all_scopes_release_qualification_body().await;
+    QualificationRuntime::CurrentThread.observe("measurement", "after_fixture");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "root-owned release qualification; no performance CI assertion"]
+async fn native_float_all_scopes_release_qualification_two_worker_runtime() {
+    QualificationRuntime::TwoWorker.observe("measurement", "before_fixture");
+    native_float_all_scopes_release_qualification_body().await;
+    QualificationRuntime::TwoWorker.observe("measurement", "after_fixture");
 }
