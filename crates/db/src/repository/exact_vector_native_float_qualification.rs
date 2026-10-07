@@ -391,7 +391,9 @@ async fn run_query(
         .await?;
     let sdk_await_ms = started.elapsed().as_secs_f64() * 1000.0;
     let take = std::time::Instant::now();
-    let (stats, rows) = response.take::<Vec<Value>>(0)?;
+    let (stats, rows) = response
+        .take::<Vec<Value>>(0)
+        .ok_or_else(|| DbError::QueryFailed("missing native Float statement result".into()))?;
     let rows = rows?;
     Ok((
         rows,
