@@ -18,6 +18,7 @@ async fn staged_conversion() -> (Repository, SourceEnrichmentPlan) {
         create_only: false,
         expected_source_revision: None,
         policy_migration: None,
+        enrichment: None,
         processing_options: processing_options.clone(),
     };
     let admitted = repo.admit_remote_upload(input).await.unwrap();

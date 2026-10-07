@@ -512,3 +512,398 @@ async fn corrupt_promoted_checkpoint_never_reports_current_applied_graph_policy(
             .is_err());
     }
 }
+
+async fn transport_fixture() -> (
+    Repository,
+    EmbeddedApplication,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    UploadAdmission,
+    ExecuteSourceEnrichment,
+) {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let failure = Arc::new(AtomicUsize::new(0));
+    let app = application(&repo, "transport-policy", calls.clone(), failure.clone());
+    let mut upload = request("transport-vector");
+    upload.extract_entities = false;
+    let source = app.upload_source(caller(), upload).await.unwrap();
+    run(&app).await.unwrap();
+    let view = app.get_uploaded_source(&source.source_id).await.unwrap();
+    let receipt = app
+        .prepare_source_enrichment(
+            caller(),
+            PrepareSourceEnrichment {
+                request_id: "transport-review".into(),
+                source_id: view.id,
+                revision: view.revision,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(repo
+        .get_source(&source.source_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .metadata
+        .get("entity_enrichment_v1")
+        .is_none());
+    (
+        repo,
+        app,
+        calls,
+        failure,
+        source,
+        ExecuteSourceEnrichment {
+            request_id: "transport-review".into(),
+            reviewed: receipt,
+            confirmed: true,
+            rollback_source_revision: None,
+        },
+    )
+}
+#[tokio::test]
+async fn reviewed_transport_owner_confirmation_digest_replay_and_atomic_rollback() {
+    let (repo, app, calls, _, source, request) = transport_fixture().await;
+    let before = rows(&repo, "note").await;
+    let mut wrong = request.clone();
+    wrong.confirmed = false;
+    assert!(app
+        .execute_source_enrichment(caller(), wrong, false)
+        .await
+        .is_err());
+    let mut wrong = request.clone();
+    wrong.reviewed.target_policy_sha256 = "a".repeat(64);
+    assert!(app
+        .execute_source_enrichment(caller(), wrong, false)
+        .await
+        .is_err());
+    assert!(app
+        .execute_source_enrichment(
+            CallerIdentity {
+                instance_id: "foreign".into()
+            },
+            request.clone(),
+            false
+        )
+        .await
+        .is_err());
+    let admitted = app
+        .execute_source_enrichment(caller(), request.clone(), false)
+        .await
+        .unwrap();
+    assert!(
+        app.execute_source_enrichment(caller(), request.clone(), false)
+            .await
+            .unwrap()
+            .replayed
+    );
+    let mut changed = request.clone();
+    changed.reviewed.plan["expected_generation"] = 2.into();
+    let plan = serde_json::from_value(changed.reviewed.plan.clone()).unwrap();
+    changed.reviewed = enrichment_receipt(&plan).unwrap();
+    assert!(app
+        .execute_source_enrichment(caller(), changed, false)
+        .await
+        .is_err());
+    assert!(app
+        .read_source_enrichment_plan(
+            CallerIdentity {
+                instance_id: "foreign".into()
+            },
+            &admitted.job_id
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        app.read_source_enrichment_plan(caller(), &admitted.job_id)
+            .await
+            .unwrap()
+            .plan_sha256,
+        request.reviewed.plan_sha256
+    );
+    run(&app).await.unwrap();
+    let completed = app
+        .get_remote_job(caller(), &admitted.job_id)
+        .await
+        .unwrap();
+    assert_eq!(completed.status, "completed");
+    let view = app.get_uploaded_source(&source.source_id).await.unwrap();
+    assert!(view.extract_entities);
+    assert_eq!(view.generation, 1);
+    assert_eq!(view.extraction_policy_current, Some(true));
+    assert_eq!(rows(&repo, "note").await, before);
+    let count = calls.load(Ordering::SeqCst);
+    assert!(count > 1);
+    assert!(
+        app.execute_source_enrichment(caller(), request.clone(), false)
+            .await
+            .unwrap()
+            .replayed
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), count);
+    // Cancellation after atomic publication cannot relabel committed success.
+    assert_eq!(
+        app.cancel_remote_job(caller(), &admitted.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+    let mut rollback = request.clone();
+    rollback.request_id = "transport-rollback".into();
+    rollback.rollback_source_revision = Some(view.revision.clone());
+    let rollback_job = app
+        .execute_source_enrichment(caller(), rollback.clone(), true)
+        .await
+        .unwrap();
+    run(&app).await.unwrap();
+    assert_eq!(
+        app.get_remote_job(caller(), &rollback_job.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+    let after = app.get_uploaded_source(&source.source_id).await.unwrap();
+    assert!(!after.extract_entities);
+    assert_ne!(after.revision, view.revision);
+    assert_eq!(after.generation, 1);
+    assert_eq!(rows(&repo, "note").await, before);
+    assert!(
+        app.execute_source_enrichment(caller(), rollback, true)
+            .await
+            .unwrap()
+            .replayed
+    );
+}
+#[tokio::test]
+async fn reviewed_transport_partial_failure_restart_requeues_checkpoint_and_fences_old_lease() {
+    let (repo, app, calls, failure, source, request) = transport_fixture().await;
+    failure.store(2, Ordering::SeqCst);
+    let admitted = app
+        .execute_source_enrichment(caller(), request, false)
+        .await
+        .unwrap();
+    let old = app
+        .claim_remote_job("old-epoch", "old-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(app
+        .claim_remote_job("old-epoch", "duplicate")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(app
+        .execute_remote_job(old.clone(), ActionCancellation::new())
+        .await
+        .is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(rows(&repo, "mentions").await.is_empty());
+    assert!(
+        !app.get_uploaded_source(&source.source_id)
+            .await
+            .unwrap()
+            .extract_entities
+    );
+    app.resume_remote_job(caller(), &admitted.job_id)
+        .await
+        .unwrap();
+    let interrupted = app
+        .claim_remote_job("old-epoch", "interrupted")
+        .await
+        .unwrap()
+        .unwrap();
+    // New application/service epoch against persisted datastore, no concurrent old process.
+    let restarted = application(&repo, "transport-policy", calls.clone(), failure.clone());
+    restarted.reconcile_remote_jobs("new-epoch").await.unwrap();
+    let fresh = restarted
+        .claim_remote_job("new-epoch", "fresh")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(app
+        .execute_remote_job(interrupted, ActionCancellation::new())
+        .await
+        .is_err());
+    failure.store(0, Ordering::SeqCst);
+    restarted
+        .execute_remote_job(fresh, ActionCancellation::new())
+        .await
+        .unwrap();
+    let final_job = restarted
+        .get_remote_job(caller(), &admitted.job_id)
+        .await
+        .unwrap();
+    assert_eq!(final_job.status, "completed");
+    assert_eq!(calls.load(Ordering::SeqCst), final_job.total as usize + 1);
+    assert_eq!(
+        restarted
+            .get_uploaded_source(&source.source_id)
+            .await
+            .unwrap()
+            .extraction_policy_current,
+        Some(true)
+    );
+    restarted
+        .recover_remote_job(old, "worker_interrupted".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted
+            .get_remote_job(caller(), &admitted.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+#[tokio::test]
+async fn reviewed_transport_cancel_before_claim_stale_revision_and_changed_policy_fail_closed() {
+    let (repo, app, calls, _, source, request) = transport_fixture().await;
+    let mut stale = request.clone();
+    stale.reviewed.plan["expected_source_revision"] = "a".repeat(64).into();
+    let plan = serde_json::from_value(stale.reviewed.plan.clone()).unwrap();
+    stale.reviewed = enrichment_receipt(&plan).unwrap();
+    assert!(app
+        .execute_source_enrichment(caller(), stale, false)
+        .await
+        .is_err());
+    let admission = app
+        .execute_source_enrichment(caller(), request, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.cancel_remote_job(caller(), &admission.job_id)
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    assert!(app.claim_remote_job("e", "w").await.unwrap().is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let changed = application(
+        &repo,
+        "changed-policy",
+        calls.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    assert!(changed
+        .resume_remote_job(caller(), &admission.job_id)
+        .await
+        .is_err());
+    app.resume_remote_job(caller(), &admission.job_id)
+        .await
+        .unwrap();
+    run(&app).await.unwrap();
+    assert_eq!(
+        app.get_uploaded_source(&source.source_id)
+            .await
+            .unwrap()
+            .extraction_policy_current,
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn reviewed_transport_running_cancellation_keeps_private_stage_and_shared_keys_conflict() {
+    let (repo, app, calls, _, source, request) = transport_fixture().await;
+    let admitted = app
+        .execute_source_enrichment(caller(), request.clone(), false)
+        .await
+        .unwrap();
+    let execution = app
+        .claim_remote_job("cancel-epoch", "cancel-worker")
+        .await
+        .unwrap()
+        .unwrap();
+    let lease = graphrag_db::RemoteJobLease {
+        job_id: graphrag_db::parse_record_id(&execution.job_id, Some("processing_job")).unwrap(),
+        instance_id: execution.instance_id.clone(),
+        service_epoch: execution.service_epoch.clone(),
+        worker_token: execution.worker_token.clone(),
+    };
+    let plan = serde_json::from_value(request.reviewed.plan.clone()).unwrap();
+    repo.begin_source_entity_enrichment_leased(plan, Some(&lease))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.cancel_remote_job(caller(), &admitted.job_id)
+            .await
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert!(app
+        .execute_remote_job(execution.clone(), ActionCancellation::new())
+        .await
+        .is_err());
+    app.recover_remote_job(execution, "cancelled".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        app.get_remote_job(caller(), &admitted.job_id)
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(rows(&repo, "mentions").await.is_empty());
+    assert!(
+        !app.get_uploaded_source(&source.source_id)
+            .await
+            .unwrap()
+            .extract_entities
+    );
+    // Exact reviewed endpoint proposal cannot reuse enrichment's shared request key.
+    let a = repo
+        .create_note(graphrag_core::Note::new("Fictional statement"))
+        .await
+        .unwrap();
+    let b = repo
+        .create_note(graphrag_core::Note::new("Fictional supporting evidence"))
+        .await
+        .unwrap();
+    let ai = graphrag_core::record_id_to_string(a.id.as_ref().unwrap());
+    let bi = graphrag_core::record_id_to_string(b.id.as_ref().unwrap());
+    let ar = repo.inspect_record(&ai, 0).await.unwrap();
+    let br = repo.inspect_record(&bi, 0).await.unwrap();
+    assert!(app
+        .propose_endpoint_relationship(
+            caller(),
+            RemoteEndpointProposalRequest {
+                request_id: request.request_id,
+                from: EndpointProposalEvidence {
+                    id: ai,
+                    revision: ar.revision,
+                    quote: ar.content
+                },
+                to: EndpointProposalEvidence {
+                    id: bi,
+                    revision: br.revision,
+                    quote: br.content
+                },
+                relationship: EndpointRelationship::Supports,
+                rationale: "Fictional manual review".into(),
+                confirmed: true
+            }
+        )
+        .await
+        .is_err());
+    assert!(rows(&repo, "proposed_edge").await.is_empty());
+    app.resume_remote_job(caller(), &admitted.job_id)
+        .await
+        .unwrap();
+    run(&app).await.unwrap();
+    assert_eq!(
+        app.get_remote_job(caller(), &admitted.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+}

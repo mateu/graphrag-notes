@@ -50,7 +50,7 @@ fn job_id(id: &str) -> ApplicationResult<()> {
     Ok(())
 }
 
-fn options(app: &EmbeddedApplication) -> Value {
+pub(crate) fn options(app: &EmbeddedApplication) -> Value {
     let embedding = app.embedder.capabilities();
     let extraction = app.extractor.capabilities();
     // Runtime contains usize::MAX for an unlimited chunk bound. Persist its
@@ -332,6 +332,7 @@ pub(crate) async fn upload(
                     .map(serde_json::to_value)
                     .transpose()
                     .map_err(|error| ApplicationError::Internal(error.to_string()))?,
+                enrichment: None,
                 processing_options,
             })
             .await?
@@ -424,6 +425,10 @@ pub(crate) async fn source(
             && origin_job.source_generation == Some(source.successful_generation)
             && origin_job.job.failed_count == 0
             && origin_job.job.completed_count == origin_job.job.total_count);
+    let reviewed_enrichment_v1 = app
+        .repo
+        .reviewed_source_enrichment_proof(&source, &content)
+        .await?;
     Ok(UploadedSource {
         id: record_id_to_string(
             source
@@ -437,6 +442,10 @@ pub(crate) async fn source(
         content_hash: source.content_hash.clone(),
         generation: source.generation,
         successful_generation: source.successful_generation,
+        graph_policy_epoch: source.metadata["graph_policy_revision"]
+            .as_u64()
+            .unwrap_or(0),
+        reviewed_enrichment_v1,
         retired: source.metadata["remote_upload_retired"] == true
             && source.successful_generation == 0
             && source.content_hash.is_none()
@@ -590,7 +599,12 @@ pub(crate) async fn execute(
     cancellation: ActionCancellation,
 ) -> ApplicationResult<()> {
     let lease = lease(&execution)?;
-    let result = run(app, &lease, &cancellation).await;
+    let job = app.repo.owned_remote_upload_job(&lease).await?;
+    let result = if job.input.enrichment.is_some() {
+        crate::remote_enrichment::execute(app, &execution, cancellation.clone()).await
+    } else {
+        run(app, &lease, &cancellation).await
+    };
     if let Err(error) = &result {
         // Attempt immediate settlement for direct callers. The server retains
         // this fenced execution on every error and retries recovery until a
@@ -851,6 +865,16 @@ impl EmbeddedApplication {
         plan: graphrag_db::SourceEnrichmentPlan,
         cancellation: ActionCancellation,
     ) -> ApplicationResult<graphrag_db::SourceEnrichmentStatus> {
+        self.enrich_uploaded_source_leased(caller, plan, cancellation, None)
+            .await
+    }
+    pub async fn enrich_uploaded_source_leased(
+        &self,
+        caller: CallerIdentity,
+        plan: graphrag_db::SourceEnrichmentPlan,
+        cancellation: ActionCancellation,
+        lease: Option<&RemoteJobLease>,
+    ) -> ApplicationResult<graphrag_db::SourceEnrichmentStatus> {
         let check = || -> ApplicationResult<()> {
             if caller.instance_id != plan.instance_id {
                 return Err(ApplicationError::Validation(
@@ -868,9 +892,12 @@ impl EmbeddedApplication {
         check()?;
         let _worker = tokio::select! { biased; _=cancellation.cancelled()=>return Err(ApplicationError::Cancelled), guard=self.repo.source_entity_enrichment_worker_guard()=>guard };
         check()?;
+        if let Some(owner) = lease {
+            self.repo.owned_remote_upload_job(owner).await?;
+        }
         let staged = self
             .repo
-            .begin_source_entity_enrichment(plan.clone())
+            .begin_source_entity_enrichment_leased(plan.clone(), lease)
             .await?;
         if staged.status == "promoted" {
             return Ok(staged);
@@ -899,14 +926,20 @@ impl EmbeddedApplication {
         .with_cancellation_flag(cancellation.flag());
         for (index, note) in notes.iter().enumerate().skip(staged.completed) {
             check()?;
+            if let Some(owner) = lease {
+                self.repo.owned_remote_upload_job(owner).await?;
+            }
             let entities = librarian.prepare_note_entities(note).await?;
             check()?;
             self.repo
-                .checkpoint_source_entity_enrichment(&plan, index, entities)
+                .checkpoint_source_entity_enrichment_leased(&plan, index, entities, lease)
                 .await?;
         }
         promote_after_final_preflight(check, || async {
-            Ok(self.repo.promote_source_entity_enrichment(&plan).await?)
+            Ok(self
+                .repo
+                .promote_source_entity_enrichment_leased(&plan, lease)
+                .await?)
         })
         .await
     }

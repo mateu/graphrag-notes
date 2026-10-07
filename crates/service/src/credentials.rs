@@ -16,6 +16,8 @@ pub enum Capability {
     Capture,
     /// Create a pending reviewed endpoint proposal; it grants neither acceptance nor rejection.
     Propose,
+    /// Explicit owned-source reviewed conversion only, never default.
+    Enrich,
     Edit,
     Delete,
     Accept,

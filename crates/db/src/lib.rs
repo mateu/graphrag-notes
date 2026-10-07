@@ -16,10 +16,10 @@ pub use repository::{
     InspectedConversation, InspectedMessage, InspectionProvenance, MutationGuard,
     MutationNoteSnapshot, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, RecordInspection, RemoteCaptureInput, RemoteCaptureReceipt,
-    RemoteEndpointProposalInput, RemoteJobAdmission, RemoteJobLease, RemoteMutationEffect,
-    RemoteMutationInput, RemoteUploadInput, RemoteUploadJob, RemoteUploadJobStatus, Repository,
-    SourceDeleteSummary, SourceImportAction, SourceImportPlan, MAX_INSPECTION_NEIGHBORS,
-    MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
+    RemoteEndpointProposalInput, RemoteEnrichmentInput, RemoteJobAdmission, RemoteJobLease,
+    RemoteMutationEffect, RemoteMutationInput, RemoteUploadInput, RemoteUploadJob,
+    RemoteUploadJobStatus, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
+    MAX_INSPECTION_NEIGHBORS, MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
 };
 pub use repository::{
     source_entity_enrichment_metadata_eligible, SourceEnrichmentPlan, SourceEnrichmentStatus,

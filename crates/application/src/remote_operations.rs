@@ -353,6 +353,28 @@ impl RemoteApplicationOperations for EmbeddedApplication {
             .await?;
         capture_response(request.request_id, receipt.result, receipt.replayed)
     }
+    async fn prepare_source_enrichment(
+        &self,
+        caller: CallerIdentity,
+        request: PrepareSourceEnrichment,
+    ) -> ApplicationResult<ReviewedEnrichmentReceipt> {
+        crate::remote_enrichment::prepare(self, caller, request).await
+    }
+    async fn execute_source_enrichment(
+        &self,
+        caller: CallerIdentity,
+        request: ExecuteSourceEnrichment,
+        rollback: bool,
+    ) -> ApplicationResult<UploadAdmission> {
+        crate::remote_enrichment::admit(self, caller, request, rollback).await
+    }
+    async fn read_source_enrichment_plan(
+        &self,
+        caller: CallerIdentity,
+        id: &str,
+    ) -> ApplicationResult<ReviewedEnrichmentReceipt> {
+        crate::remote_enrichment::read_plan(self, caller, id).await
+    }
     async fn upload_source(
         &self,
         caller: CallerIdentity,

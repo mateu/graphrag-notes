@@ -8,8 +8,10 @@ mod inference;
 mod remote_contracts;
 mod remote_endpoint_proposal_contracts;
 mod remote_endpoint_proposals;
+mod remote_enrichment;
 mod remote_job_contracts;
 mod remote_jobs;
+pub use remote_enrichment::*;
 mod remote_mutation_contracts;
 mod remote_mutations;
 mod remote_operations;
@@ -132,6 +134,34 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
         request: RemoteCaptureRequest,
         cancellation: ActionCancellation,
     ) -> ApplicationResult<RemoteCaptureResponse>;
+    async fn prepare_source_enrichment(
+        &self,
+        _caller: CallerIdentity,
+        _request: PrepareSourceEnrichment,
+    ) -> ApplicationResult<ReviewedEnrichmentReceipt> {
+        Err(ApplicationError::Compatibility(
+            "Enrichment unavailable".into(),
+        ))
+    }
+    async fn execute_source_enrichment(
+        &self,
+        _caller: CallerIdentity,
+        _request: ExecuteSourceEnrichment,
+        _rollback: bool,
+    ) -> ApplicationResult<UploadAdmission> {
+        Err(ApplicationError::Compatibility(
+            "Enrichment unavailable".into(),
+        ))
+    }
+    async fn read_source_enrichment_plan(
+        &self,
+        _caller: CallerIdentity,
+        _id: &str,
+    ) -> ApplicationResult<ReviewedEnrichmentReceipt> {
+        Err(ApplicationError::Compatibility(
+            "Enrichment unavailable".into(),
+        ))
+    }
     async fn upload_source(
         &self,
         _caller: CallerIdentity,

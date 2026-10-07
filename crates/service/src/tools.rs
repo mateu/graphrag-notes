@@ -776,13 +776,20 @@ impl ToolService {
             }
             name if matches!(
                 name,
-                "upload_source" | "cancel_job" | "resume_job" | "delete_uploaded_source"
+                "upload_source"
+                    | "cancel_job"
+                    | "resume_job"
+                    | "delete_uploaded_source"
+                    | "execute_source_enrichment"
+                    | "rollback_source_enrichment"
+                    | "cancel_source_enrichment_job"
+                    | "retry_source_enrichment_job"
             ) =>
             {
                 // These short durable mutations never share the provider/capture
                 // semaphore. Explicit cancellation remains reachable while a
                 // worker is preparing or inside a guarded atomic write.
-                let gate = if name == "cancel_job" {
+                let gate = if matches!(name, "cancel_job" | "cancel_source_enrichment_job") {
                     &self.cancellation_gate
                 } else {
                     &self.admission_gate
@@ -814,7 +821,12 @@ impl ToolService {
                     ),
                 }
             }
-            name @ ("get_source" | "get_job" | "list_jobs") => {
+            name @ ("get_source"
+            | "get_job"
+            | "list_jobs"
+            | "prepare_source_enrichment"
+            | "read_source_enrichment_plan"
+            | "get_source_enrichment_job") => {
                 crate::uploads::dispatch(
                     self.application.as_ref(),
                     &principal,

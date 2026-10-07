@@ -17,6 +17,7 @@ fn input(request: &str, body: &str) -> RemoteUploadInput {
         create_only: false,
         expected_source_revision: None,
         policy_migration: None,
+        enrichment: None,
         processing_options: serde_json::json!({"runtime":"{}","embedding":{"provider":"fixture","model":"fixture","cache_identity":"fixture","endpoint_identity":"fixture"},"extraction":{"provider":"fixture","model":"fixture","cache_identity":"fixture","endpoint_identity":"fixture"}}),
     }
 }

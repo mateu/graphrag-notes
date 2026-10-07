@@ -58,6 +58,12 @@ struct Stage {
     status: String,
     prior_origin: serde_json::Value,
     items: Vec<Item>,
+    #[serde(default)]
+    opening_graph_epoch: u64,
+    #[serde(default)]
+    rollback_opening_revision: Option<String>,
+    #[serde(default)]
+    rollback_opening_graph_epoch: Option<u64>,
 }
 fn invalid(message: &str) -> DbError {
     DbError::InvalidRemoteRequest(message.into())
@@ -71,7 +77,7 @@ fn digest_valid(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-fn plan_valid(plan: &SourceEnrichmentPlan) -> Result<()> {
+pub(super) fn plan_valid(plan: &SourceEnrichmentPlan) -> Result<()> {
     for value in [&plan.instance_id, &plan.request_id, &plan.document_key] {
         if value.is_empty()
             || value.len() > 256
@@ -355,10 +361,120 @@ impl Repository {
         }
         Ok(source)
     }
+    /// Current, repository-validated single-source adoption proof; not submitted receipt echo.
+    pub async fn reviewed_source_enrichment_proof(
+        &self,
+        source: &Source,
+        supplied_content: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let Some(raw) = source.metadata.get(KEY) else {
+            return Ok(None);
+        };
+        let saved: Stage = match serde_json::from_value(raw.clone()) {
+            Ok(x) => x,
+            Err(_) => return Ok(None),
+        };
+        if !matches!(saved.status.as_str(), "promoted" | "rolled_back")
+            || stage(source, &saved.plan).is_err()
+        {
+            return Ok(None);
+        }
+        if saved.status == "promoted" {
+            if !self.source_entity_enrichment_current(source).await? {
+                return Ok(None);
+            }
+        } else {
+            self.validate_enrichment_evidence(source, &saved, false)
+                .await?;
+        }
+        let notes = self.source_entity_enrichment_notes(&saved.plan).await?;
+        let mut endpoints = serde_json::Map::new();
+        let epoch = source.metadata["graph_policy_revision"]
+            .as_u64()
+            .ok_or_else(conflict)?;
+        for note in &notes {
+            let id = record_id_to_string(note.id.as_ref().ok_or_else(conflict)?);
+            let inspected = self.inspect_record(&id, 0).await?;
+            if inspected.provenance.graph_policy_revision != Some(epoch)
+                || inspected.content != note.content
+            {
+                return Ok(None);
+            }
+            endpoints.insert(id, serde_json::json!(inspected.revision));
+        }
+        // Fence the exact full snapshots used above, including complete chunk inventory.
+        let mut checks = String::new();
+        for index in 0..notes.len() {
+            checks.push_str(
+                &super::notes::editor_snapshot_guard(false)
+                    .replace("$editor_source", &format!("$notes[{index}].id"))
+                    .replace("$editor_expected", &format!("$notes[{index}]"))
+                    .replace("$editor_matches", &format!("$snapshot_{index}")),
+            );
+        }
+        let ids = notes
+            .iter()
+            .map(|n| n.id.clone().ok_or_else(conflict))
+            .collect::<Result<Vec<_>>>()?;
+        self.db.query(format!("BEGIN TRANSACTION; LET $snapshot=(SELECT VALUE id FROM source WHERE id=$source AND metadata=$metadata AND content=$content AND content_hash=$hash AND title=$title AND generation=$generation AND successful_generation=$generation AND status='ready'); IF array::len($snapshot)!=1 {{ THROW '{FENCE}'; }}; LET $inventory=(SELECT VALUE id FROM note WHERE source_id=$source AND source_generation=$generation); IF array::len($inventory)!=array::len($ids) OR array::len(array::difference($inventory,$ids))!=0 {{ THROW '{FENCE}'; }}; {checks} COMMIT TRANSACTION;"))
+            .bind(("source",source.id.clone())).bind(("metadata",source.metadata.clone())).bind(("content",source.content.clone())).bind(("hash",source.content_hash.clone())).bind(("title",source.title.clone())).bind(("generation",source.generation)).bind(("notes",notes)).bind(("ids",ids)).await?.check()?;
+        let origin = &source.metadata["remote_upload"];
+        let opening_epoch = if saved.status == "promoted" {
+            saved.opening_graph_epoch
+        } else {
+            saved.rollback_opening_graph_epoch.ok_or_else(conflict)?
+        };
+        if opening_epoch.checked_add(1) != Some(epoch) {
+            return Ok(None);
+        }
+        let revision = uploaded_source_revision(source, supplied_content)?;
+        let part = origin["source"]["metadata"]["part"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(1);
+        let parts = origin["source"]["metadata"]["parts"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(1);
+        Ok(Some(
+            serde_json::json!({"operation":if saved.status=="promoted" {"enrich"} else {"rollback"},"source_id":saved.plan.source_id,"document_key":saved.plan.document_key,"owner":saved.plan.instance_id,"source_uri":source.uri,"title":source.title,"provenance":origin["source"],"content_sha256":format!("{:x}",Sha256::digest(supplied_content.as_bytes())),"generation":source.generation,"original_request_id":origin["request_id"],"part":part,"parts":parts,"opening_revision":if saved.status=="promoted" {saved.plan.expected_source_revision} else {saved.rollback_opening_revision.ok_or_else(conflict)?},"final_revision":revision,"opening_graph_epoch":opening_epoch,"final_graph_epoch":epoch,"original_policy_sha256":saved.plan.original_policy_sha256,"applied_policy_sha256":uploaded_processing_policy_sha256(&origin["processing_options"])?,"extraction_enabled":saved.status=="promoted","endpoint_revisions":endpoints}),
+        ))
+    }
     /// Stage only the inspected source's current chunks. No entity/mention/policy changes.
     pub async fn begin_source_entity_enrichment(
         &self,
         plan: SourceEnrichmentPlan,
+    ) -> Result<SourceEnrichmentStatus> {
+        self.begin_source_entity_enrichment_leased(plan, None).await
+    }
+    pub async fn begin_source_entity_enrichment_leased(
+        &self,
+        plan: SourceEnrichmentPlan,
+        lease: Option<&RemoteJobLease>,
+    ) -> Result<SourceEnrichmentStatus> {
+        self.begin_enrichment_internal(plan, lease, false).await
+    }
+    pub async fn preflight_source_entity_enrichment(
+        &self,
+        plan: SourceEnrichmentPlan,
+    ) -> Result<SourceEnrichmentStatus> {
+        self.begin_enrichment_internal(plan, None, true).await
+    }
+    pub async fn inspect_source_entity_enrichment(
+        &self,
+        plan: &SourceEnrichmentPlan,
+    ) -> Result<SourceEnrichmentStatus> {
+        let source = self.enrichment_source(plan).await?;
+        let saved = stage(&source, plan)?;
+        self.validate_enrichment_evidence(&source, &saved, false)
+            .await?;
+        Ok(status(&saved))
+    }
+    async fn begin_enrichment_internal(
+        &self,
+        plan: SourceEnrichmentPlan,
+        lease: Option<&RemoteJobLease>,
+        dry_run: bool,
     ) -> Result<SourceEnrichmentStatus> {
         let _transition = self.remote_job_transition_lock.lock().await;
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
@@ -371,6 +487,11 @@ impl Repository {
                 }
             } else {
                 self.validate_enrichment_evidence(&source, &saved, false)
+                    .await?;
+            }
+            if lease.is_some() && saved.status == "promoted" && !dry_run {
+                let notes = self.source_entity_enrichment_notes(&plan).await?;
+                self.write_enrichment(&source, source.metadata.clone(), "", notes, lease)
                     .await?;
             }
             return Ok(status(&saved));
@@ -438,13 +559,21 @@ impl Repository {
             status: "staged".into(),
             prior_origin: origin.clone(),
             items,
+            opening_graph_epoch: source.metadata["graph_policy_revision"]
+                .as_u64()
+                .unwrap_or(0),
+            rollback_opening_revision: None,
+            rollback_opening_graph_epoch: None,
         };
         let mut metadata = source.metadata.clone();
         if let Some(fields) = metadata.as_object_mut() {
             fields.remove("remote_upload_pending");
         }
         metadata[KEY] = stage_value(&staged)?;
-        self.write_enrichment(&source, metadata, "IF array::len((SELECT VALUE id FROM mentions WHERE in IN $note_ids LIMIT 1)) != 0 { THROW 'source-enrichment-revision-conflict'; };", notes).await?;
+        if dry_run {
+            return Ok(status(&staged));
+        }
+        self.write_enrichment(&source, metadata, "IF array::len((SELECT VALUE id FROM mentions WHERE in IN $note_ids LIMIT 1)) != 0 { THROW 'source-enrichment-revision-conflict'; };", notes, lease).await?;
         Ok(status(&staged))
     }
     /// Exact ordered current chunks for the owner worker; no scan outside this source.
@@ -466,6 +595,16 @@ impl Repository {
         plan: &SourceEnrichmentPlan,
         index: usize,
         entities: Vec<Entity>,
+    ) -> Result<SourceEnrichmentStatus> {
+        self.checkpoint_source_entity_enrichment_leased(plan, index, entities, None)
+            .await
+    }
+    pub async fn checkpoint_source_entity_enrichment_leased(
+        &self,
+        plan: &SourceEnrichmentPlan,
+        index: usize,
+        entities: Vec<Entity>,
+        lease: Option<&RemoteJobLease>,
     ) -> Result<SourceEnrichmentStatus> {
         let _transition = self.remote_job_transition_lock.lock().await;
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
@@ -499,7 +638,7 @@ impl Repository {
         staged.items[index].entities = Some(entities);
         let mut metadata = source.metadata.clone();
         metadata[KEY] = stage_value(&staged)?;
-        self.write_enrichment(&source, metadata, "", vec![note])
+        self.write_enrichment(&source, metadata, "", vec![note], lease)
             .await?;
         Ok(status(&staged))
     }
@@ -518,6 +657,14 @@ impl Repository {
     pub async fn promote_source_entity_enrichment(
         &self,
         plan: &SourceEnrichmentPlan,
+    ) -> Result<SourceEnrichmentStatus> {
+        self.promote_source_entity_enrichment_leased(plan, None)
+            .await
+    }
+    pub async fn promote_source_entity_enrichment_leased(
+        &self,
+        plan: &SourceEnrichmentPlan,
+        lease: Option<&RemoteJobLease>,
     ) -> Result<SourceEnrichmentStatus> {
         let _transition = self.remote_job_transition_lock.lock().await;
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
@@ -560,7 +707,7 @@ impl Repository {
             .unwrap_or(0)
             .checked_add(1)
             .ok_or_else(conflict)?);
-        self.write_enrichment(&source, metadata, &effects, notes)
+        self.write_enrichment(&source, metadata, &effects, notes, lease)
             .await?;
         Ok(status(&staged))
     }
@@ -570,6 +717,15 @@ impl Repository {
         &self,
         plan: &SourceEnrichmentPlan,
         confirmed: bool,
+    ) -> Result<SourceEnrichmentStatus> {
+        self.rollback_source_entity_enrichment_leased(plan, confirmed, None)
+            .await
+    }
+    pub async fn rollback_source_entity_enrichment_leased(
+        &self,
+        plan: &SourceEnrichmentPlan,
+        confirmed: bool,
+        lease: Option<&RemoteJobLease>,
     ) -> Result<SourceEnrichmentStatus> {
         if !confirmed {
             return Err(invalid("rollback requires separate confirmation"));
@@ -581,6 +737,11 @@ impl Repository {
         if staged.status == "rolled_back" {
             self.validate_enrichment_evidence(&source, &staged, false)
                 .await?;
+            if lease.is_some() {
+                let notes = self.source_entity_enrichment_notes(plan).await?;
+                self.write_enrichment(&source, source.metadata.clone(), "", notes, lease)
+                    .await?;
+            }
             return Ok(status(&staged));
         }
         if !matches!(staged.status.as_str(), "staged" | "promoted") {
@@ -613,6 +774,24 @@ impl Repository {
         let mut metadata = source.metadata.clone();
         metadata["remote_upload"] = staged.prior_origin.clone();
         metadata["graph_enrichment_managed"] = serde_json::json!(false);
+        let original_job = self
+            .get_remote_upload_job(
+                &plan.instance_id,
+                source.metadata["remote_upload"]["job_id"]
+                    .as_str()
+                    .ok_or_else(conflict)?,
+            )
+            .await?
+            .ok_or_else(conflict)?;
+        staged.rollback_opening_revision = Some(uploaded_source_revision(
+            &source,
+            &original_job.input.markdown,
+        )?);
+        staged.rollback_opening_graph_epoch = Some(
+            source.metadata["graph_policy_revision"]
+                .as_u64()
+                .unwrap_or(0),
+        );
         staged.status = "rolled_back".into();
         metadata[KEY] = stage_value(&staged)?;
         metadata["graph_policy_revision"] = serde_json::json!(source.metadata
@@ -621,7 +800,7 @@ impl Repository {
             .unwrap_or(0)
             .checked_add(1)
             .ok_or_else(conflict)?);
-        self.write_enrichment(&source, metadata, &effects, notes)
+        self.write_enrichment(&source, metadata, &effects, notes, lease)
             .await?;
         Ok(status(&staged))
     }
@@ -631,6 +810,7 @@ impl Repository {
         metadata: serde_json::Value,
         effects: &str,
         notes: Vec<Note>,
+        lease: Option<&RemoteJobLease>,
     ) -> Result<()> {
         let note_ids = notes
             .iter()
@@ -666,7 +846,21 @@ impl Repository {
                     .replace("$editor_matches", &format!("$note_matches_{index}")),
             );
         }
-        let mut response = self.db.query(format!("BEGIN TRANSACTION; LET $matches = (SELECT VALUE id FROM source WHERE id = $source AND metadata = $expected_metadata AND generation = $generation AND successful_generation = $generation AND status = 'ready' AND content_hash = $hash AND content = $content AND title = $title); IF array::len($matches) != 1 {{ THROW '{FENCE}'; }}; LET $current_notes = (SELECT VALUE id FROM note WHERE source_id = $source AND source_generation = $generation); IF array::len($current_notes) != array::len($all_ids) OR array::len(array::difference($current_notes,$all_ids)) != 0 {{ THROW '{FENCE}'; }}; {guards} {effects} UPDATE $source SET metadata = $metadata; COMMIT TRANSACTION;"))
+        let lease_guard = if lease.is_some() {
+            "LET $owner = (UPDATE $job SET updated_at=time::now() WHERE job_type='remote_upload' AND remote_instance_id=$instance AND status='running' AND remote_service_epoch=$epoch AND remote_worker_token=$worker AND remote_cancel_requested=false AND remote_input.enrichment.plan=$plan RETURN VALUE id); IF array::len($owner)!=1 { THROW 'remote-upload-worker-fence'; }; "
+        } else {
+            ""
+        };
+        let terminal = if lease.is_some() && staged.status != "staged" {
+            "UPDATE $job SET status='completed', remote_phase=$phase, total_count=array::len($all_ids), completed_count=array::len($all_ids), remote_result=$outcome, last_error=NONE, finished_at=time::now(), remote_service_epoch=NONE, remote_worker_token=NONE; "
+        } else if lease.is_some() {
+            "UPDATE $job SET remote_phase='enrichment_staged', total_count=array::len($all_ids), completed_count=$completed; "
+        } else {
+            ""
+        };
+        let outcome = serde_json::json!({"enrichment":status(&staged), "plan":staged.plan});
+        let mut response = self.db.query(format!("BEGIN TRANSACTION; {lease_guard} LET $matches = (SELECT VALUE id FROM source WHERE id = $source AND metadata = $expected_metadata AND generation = $generation AND successful_generation = $generation AND status = 'ready' AND content_hash = $hash AND content = $content AND title = $title); IF array::len($matches) != 1 {{ THROW '{FENCE}'; }}; LET $current_notes = (SELECT VALUE id FROM note WHERE source_id = $source AND source_generation = $generation); IF array::len($current_notes) != array::len($all_ids) OR array::len(array::difference($current_notes,$all_ids)) != 0 {{ THROW '{FENCE}'; }}; {guards} {effects} UPDATE $source SET metadata = $metadata; {terminal} COMMIT TRANSACTION;"))
+            .bind(("job", lease.map(|l|l.job_id.clone()))).bind(("instance",lease.map(|l|l.instance_id.clone()))).bind(("epoch",lease.map(|l|l.service_epoch.clone()))).bind(("worker",lease.map(|l|l.worker_token.clone()))).bind(("plan",serde_json::to_value(&staged.plan).map_err(|_|conflict())?)).bind(("phase",format!("enrichment_{}",staged.status))).bind(("completed",staged.items.iter().filter(|i|i.entities.is_some()).count() as i64)).bind(("outcome",outcome))
             .bind(("source", source.id.clone())).bind(("expected_metadata", source.metadata.clone())).bind(("generation", source.generation))
             .bind(("hash", source.content_hash.clone())).bind(("content", source.content.clone())).bind(("title", source.title.clone()))
             .bind(("metadata", metadata)).bind(("all_ids", all_ids)).bind(("notes", notes)).bind(("note_ids", note_ids)).bind(("entity_batches", entity_batches)).bind(("identity_batches", identity_batches)).await?;
