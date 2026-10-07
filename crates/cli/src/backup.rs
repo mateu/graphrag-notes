@@ -3115,7 +3115,6 @@ mod tests {
                 .unwrap()
         );
         drop(restored);
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // A separate OS process reopens the persisted restored checkpoint and exits.
         let child_path = target.clone();
         let child = tokio::task::spawn_blocking(move || {
@@ -3398,7 +3397,22 @@ mod tests {
             };
             use graphrag_application::*;
             use std::sync::Arc;
-            let repo = Repository::new(init_persistent(PathBuf::from(path)).await.unwrap());
+            // Dropping the SDK client signals an asynchronous router shutdown.
+            // Wait for that lock handoff, not an assumed scheduling delay.
+            let db = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                loop {
+                    match init_persistent(PathBuf::from(&path)).await {
+                        Ok(db) => break db,
+                        Err(graphrag_db::DbError::DatabaseBusy(_)) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        }
+                        Err(error) => panic!("recovery database open failed: {error}"),
+                    }
+                }
+            })
+            .await
+            .expect("parent SDK shutdown must release the recovery database within 30 seconds");
+            let repo = Repository::new(db);
             let embed =
                 Arc::new(DeterministicEmbedder::default().with_identity("fixture", "model"));
             let app = EmbeddedApplication::new(
