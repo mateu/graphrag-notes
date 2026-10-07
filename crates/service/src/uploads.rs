@@ -200,8 +200,18 @@ pub(crate) async fn dispatch(
                 Ok(input) => input,
                 Err(error) => return error,
             };
-            match application.list_remote_jobs(caller, input.limit).await {
-                Ok(result) => success(result),
+            match application
+                .list_remote_jobs(caller.clone(), input.limit)
+                .await
+            {
+                Ok(mut result) => {
+                    if !principal.allows(Capability::Enrich) {
+                        result
+                            .jobs
+                            .retain(|job| job.job_type != "remote_enrichment");
+                    }
+                    success(result)
+                }
                 Err(error) => application_failure(error),
             }
         }
@@ -211,10 +221,10 @@ pub(crate) async fn dispatch(
                 Err(error) => return error,
             };
             if !principal.allows(Capability::Enrich)
-                && application
-                    .read_source_enrichment_plan(caller.clone(), &input.id)
-                    .await
-                    .is_ok()
+                && match application.get_remote_job(caller.clone(), &input.id).await {
+                    Ok(job) => job.job_type == "remote_enrichment",
+                    Err(error) => return application_failure(error),
+                }
             {
                 return failure(
                     "forbidden",

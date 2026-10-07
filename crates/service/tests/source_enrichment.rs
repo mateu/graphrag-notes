@@ -121,7 +121,8 @@ fn error(v: &Value) -> &Value {
 
 #[tokio::test]
 async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durable() {
-    let repo = Repository::new(init_memory().await.unwrap());
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
     let app = application(
         &repo,
         Arc::new(graphrag_agents::DeterministicEmbedder::default()),
@@ -302,9 +303,43 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
             credential.instance_id = "former-enricher".into();
         } else if credential.instance_id == "jobs" {
             credential.instance_id = "enricher".into();
+            credential.capabilities.push(Capability::Enrich);
         }
     }
     std::fs::write(&path, serde_json::to_vec(&credentials).unwrap()).unwrap();
+    let authorized = fixture
+        .tool("jobs", "list_jobs", json!({"limit": 100}))
+        .await;
+    assert_eq!(data(&authorized)["jobs"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        data(&authorized)["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|job| job["job_type"] == "remote_enrichment")
+            .count(),
+        2
+    );
+    // A damaged plan must not make classification fall open through a decode error.
+    db.query("UPDATE processing_job SET remote_input.enrichment = { broken: true } WHERE remote_input.enrichment IS NOT NONE AND remote_input.enrichment IS NOT NULL").await.unwrap().check().unwrap();
+    for credential in &mut credentials.credentials {
+        if credential.instance_id == "enricher" {
+            credential
+                .capabilities
+                .retain(|cap| *cap != Capability::Enrich);
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&credentials).unwrap()).unwrap();
+    let listed = fixture
+        .tool("jobs", "list_jobs", json!({"limit": 100}))
+        .await;
+    let jobs = data(&listed)["jobs"].as_array().unwrap();
+    assert_eq!(
+        jobs.len(),
+        1,
+        "Jobs-only list must omit conversion and rollback: {listed}"
+    );
+    assert_eq!(jobs[0]["id"], upload.job_id);
     for generic in ["get_job", "cancel_job", "resume_job"] {
         assert_eq!(
             error(&fixture.tool("jobs", generic, json!({"id":id})).await),

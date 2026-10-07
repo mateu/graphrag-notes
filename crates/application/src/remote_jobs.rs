@@ -104,7 +104,11 @@ pub(crate) fn view(job: RemoteUploadJobStatus) -> ApplicationResult<RemoteJobSta
                 .as_ref()
                 .ok_or_else(|| ApplicationError::Internal("Job identity missing".into()))?,
         ),
-        job_type: job.job.job_type,
+        job_type: if job.enrichment {
+            "remote_enrichment".into()
+        } else {
+            job.job.job_type
+        },
         instance_id: job.instance_id,
         status: job.job.status,
         phase: job.phase,

@@ -27,7 +27,7 @@ const FENCE: &str = "remote-upload-worker-fence";
 // Status requests must not materialize private extraction checkpoints (up to
 // 16 MiB each) or saved inputs. Project their redaction inside the database,
 // before a caller's bounded list can be deserialized in the service process.
-const STATUS_FIELDS: &str = "id, job_type, source_generation, scope, item_ids, status, total_count, completed_count, failed_count, checkpoint, last_error, created_at, updated_at, finished_at, remote_instance_id, remote_request_id, remote_payload_fingerprint, {} AS remote_input, remote_admission, IF remote_result.policy_migration_stage IS NOT NONE THEN NONE ELSE remote_result END AS remote_result, remote_source_id, remote_source_uri, remote_source_generation, remote_admission_order, remote_phase, remote_migration_contract_version, remote_cancel_requested, remote_service_epoch, remote_worker_token";
+const STATUS_FIELDS: &str = "id, job_type, source_generation, scope, item_ids, status, total_count, completed_count, failed_count, checkpoint, last_error, created_at, updated_at, finished_at, remote_instance_id, remote_request_id, remote_payload_fingerprint, {} AS remote_input, (remote_input.enrichment IS NOT NONE AND remote_input.enrichment IS NOT NULL) AS remote_enrichment_job, remote_admission, IF remote_result.policy_migration_stage IS NOT NONE THEN NONE ELSE remote_result END AS remote_result, remote_source_id, remote_source_uri, remote_source_generation, remote_admission_order, remote_phase, remote_migration_contract_version, remote_cancel_requested, remote_service_epoch, remote_worker_token";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RemoteEnrichmentInput {
@@ -98,6 +98,8 @@ pub struct RemoteUploadJob {
 #[derive(Debug, Clone)]
 pub struct RemoteUploadJobStatus {
     pub job: ProcessingJob,
+    /// Family classification does not require decoding a potentially damaged plan.
+    pub enrichment: bool,
     pub instance_id: String,
     pub source_id: Option<RecordId>,
     pub source_generation: Option<u64>,
@@ -110,6 +112,7 @@ pub struct RemoteUploadJobStatus {
 impl From<RemoteUploadJob> for RemoteUploadJobStatus {
     fn from(job: RemoteUploadJob) -> Self {
         Self {
+            enrichment: job.input.enrichment.is_some(),
             job: job.job,
             instance_id: job.instance_id,
             source_id: job.source_id,
@@ -142,6 +145,7 @@ struct JobRow {
     remote_request_id: String,
     remote_payload_fingerprint: String,
     remote_input: serde_json::Value,
+    remote_enrichment_job: Option<bool>,
     remote_admission: serde_json::Value,
     remote_result: Option<serde_json::Value>,
     remote_source_id: Option<RecordId>,
@@ -205,6 +209,11 @@ impl JobRow {
     fn status(self) -> RemoteUploadJobStatus {
         RemoteUploadJobStatus {
             job: self.processing_job(),
+            enrichment: self.remote_enrichment_job.unwrap_or_else(|| {
+                self.remote_input
+                    .get("enrichment")
+                    .is_some_and(|value| !value.is_null())
+            }),
             instance_id: self.remote_instance_id,
             source_id: self.remote_source_id,
             source_generation: self.remote_source_generation,
