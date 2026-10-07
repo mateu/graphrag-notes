@@ -898,3 +898,6 @@ async fn native_float_all_scopes_release_qualification_two_worker_runtime() {
     native_float_all_scopes_release_qualification_body("-two-worker").await;
     QualificationRuntime::TwoWorker.observe("measurement", "after_fixture");
 }
+
+#[path = "message_recent_stage_diagnostic.rs"]
+mod message_recent_stage_diagnostic;
