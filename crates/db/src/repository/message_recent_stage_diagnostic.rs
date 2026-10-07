@@ -277,17 +277,16 @@ async fn plan(
     let outcome = query
         .await
         .map_err(|error| error.to_string())
-        .and_then(|mut response| {
-            response
-                .take::<serde_json::Value>(0)
-                .map_err(|error| error.to_string())
-        });
+        .and_then(|mut response| response.take::<Value>(0).map_err(|error| error.to_string()));
     match outcome {
-        Ok(raw) => {
+        Ok(native) => {
+            // JSON conversion is for plan traversal only. Retain the exact
+            // native plan too: into_json_value is a best-effort conversion.
+            let raw = native.clone().into_json_value();
             // Retain the raw plan, including embedded plans, before shape or
             // row-count assertions. FULL returns a plan, not verified payload.
             emit(
-                serde_json::json!({"message_recent_stage":"completed","sequence":ordinal,"stage":"plan","variant":variant,"mode":mode,"status":"returned_plan","raw_plan":raw,"timing_sample":false}),
+                serde_json::json!({"message_recent_stage":"completed","sequence":ordinal,"stage":"plan","variant":variant,"mode":mode,"status":"returned_plan","raw_native_plan":exact_value(&native),"raw_plan":raw,"timing_sample":false}),
             );
             let root = plan_root(&raw);
             if full {
