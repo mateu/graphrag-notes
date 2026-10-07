@@ -2878,7 +2878,10 @@ mod tests {
         restore_backup(&archive, &target, false).await.unwrap();
         let restored = Repository::new(init_persistent(&target).await.unwrap());
         let restored_source = restored.get_source(&current.id).await.unwrap().unwrap();
-        assert_eq!(restored_source, staged);
+        assert_eq!(
+            serde_json::to_value(&restored_source).unwrap(),
+            serde_json::to_value(&staged).unwrap()
+        );
         let restored_notes = restored
             .portable_records_page("note", 0, 200)
             .await

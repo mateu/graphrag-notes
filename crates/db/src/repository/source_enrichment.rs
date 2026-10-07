@@ -395,6 +395,9 @@ impl Repository {
         for note in &notes {
             let id = record_id_to_string(note.id.as_ref().ok_or_else(conflict)?);
             let inspected = self.inspect_record(&id, 0).await?;
+            if !inspected.conversations.is_empty() || !inspected.messages.is_empty() {
+                return Ok(None);
+            }
             if inspected.provenance.graph_policy_revision != Some(epoch)
                 || inspected.content != note.content
             {
@@ -416,7 +419,7 @@ impl Repository {
             .iter()
             .map(|n| n.id.clone().ok_or_else(conflict))
             .collect::<Result<Vec<_>>>()?;
-        self.db.query(format!("BEGIN TRANSACTION; LET $snapshot=(SELECT VALUE id FROM source WHERE id=$source AND metadata=$metadata AND content=$content AND content_hash=$hash AND title=$title AND generation=$generation AND successful_generation=$generation AND status='ready'); IF array::len($snapshot)!=1 {{ THROW '{FENCE}'; }}; LET $inventory=(SELECT VALUE id FROM note WHERE source_id=$source AND source_generation=$generation); IF array::len($inventory)!=array::len($ids) OR array::len(array::difference($inventory,$ids))!=0 {{ THROW '{FENCE}'; }}; {checks} COMMIT TRANSACTION;"))
+        self.db.query(format!("BEGIN TRANSACTION; IF array::len((SELECT VALUE id FROM note_from_conversation WHERE in IN $ids LIMIT 1))!=0 OR array::len((SELECT VALUE id FROM note_from_message WHERE in IN $ids LIMIT 1))!=0 {{ THROW '{FENCE}'; }}; LET $snapshot=(SELECT VALUE id FROM source WHERE id=$source AND metadata=$metadata AND content=$content AND content_hash=$hash AND title=$title AND generation=$generation AND successful_generation=$generation AND status='ready'); IF array::len($snapshot)!=1 {{ THROW '{FENCE}'; }}; LET $inventory=(SELECT VALUE id FROM note WHERE source_id=$source AND source_generation=$generation); IF array::len($inventory)!=array::len($ids) OR array::len(array::difference($inventory,$ids))!=0 {{ THROW '{FENCE}'; }}; {checks} COMMIT TRANSACTION;"))
             .bind(("source",source.id.clone())).bind(("metadata",source.metadata.clone())).bind(("content",source.content.clone())).bind(("hash",source.content_hash.clone())).bind(("title",source.title.clone())).bind(("generation",source.generation)).bind(("notes",notes)).bind(("ids",ids)).await?.check()?;
         let origin = &source.metadata["remote_upload"];
         let opening_epoch = if saved.status == "promoted" {
@@ -428,14 +431,23 @@ impl Repository {
             return Ok(None);
         }
         let revision = uploaded_source_revision(source, supplied_content)?;
-        let part = origin["source"]["metadata"]["part"]
-            .as_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(1);
-        let parts = origin["source"]["metadata"]["parts"]
-            .as_str()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(1);
+        fn ordinal(origin: &serde_json::Value, key: &str) -> Option<u64> {
+            let value = &origin["source"]["metadata"][key];
+            if value.is_null() {
+                Some(1)
+            } else {
+                value.as_str()?.parse().ok()
+            }
+        }
+        let Some(part) = ordinal(origin, "part") else {
+            return Ok(None);
+        };
+        let Some(parts) = ordinal(origin, "parts") else {
+            return Ok(None);
+        };
+        if part == 0 || parts == 0 || part > parts {
+            return Ok(None);
+        }
         Ok(Some(
             serde_json::json!({"operation":if saved.status=="promoted" {"enrich"} else {"rollback"},"source_id":saved.plan.source_id,"document_key":saved.plan.document_key,"owner":saved.plan.instance_id,"source_uri":source.uri,"title":source.title,"provenance":origin["source"],"content_sha256":format!("{:x}",Sha256::digest(supplied_content.as_bytes())),"generation":source.generation,"original_request_id":origin["request_id"],"part":part,"parts":parts,"opening_revision":if saved.status=="promoted" {saved.plan.expected_source_revision} else {saved.rollback_opening_revision.ok_or_else(conflict)?},"final_revision":revision,"opening_graph_epoch":opening_epoch,"final_graph_epoch":epoch,"original_policy_sha256":saved.plan.original_policy_sha256,"applied_policy_sha256":uploaded_processing_policy_sha256(&origin["processing_options"])?,"extraction_enabled":saved.status=="promoted","endpoint_revisions":endpoints}),
         ))
