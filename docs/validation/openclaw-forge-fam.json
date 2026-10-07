@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "qualification_date_utc": "2026-10-07",
+  "status": "passed_with_scope_limits",
+  "release": "v0.1.0-rc.5",
+  "database_engine": "SurrealDB",
+  "database_engine_version": "3.2.4",
+  "application_schema_version": 21,
+  "installation": {
+    "clients_only": true,
+    "verified_client_payloads": 109,
+    "verified_plugin_payloads": 13,
+    "native_install": false,
+    "corpus_import": false,
+    "public_sdk_exports_resolved": true
+  },
+  "connection": {
+    "authenticated_supervised_loopback_transport": true,
+    "principals_after": 3,
+    "original_principal_rows_preserved": 2,
+    "new_capabilities": ["read", "capture"],
+    "fam_authority_preserved": true,
+    "fam_binary_config_native_owner_existing_route_models_preserved": true,
+    "forge_original_dotenv_preserved": true,
+    "forge_model_settings_preserved": true,
+    "gateway_watchdog_normal_state_restored": true
+  },
+  "catalog": {
+    "projected_tools": 3,
+    "dispatched_tools": 0
+  },
+  "registered_read_handler": {
+    "temporary_published_registration_harness": true,
+    "conditions": [
+      {"mode": "keyword", "graph": "off", "records": 5, "independent_pinned_reads": 5, "displayed_total_ms": 24},
+      {"mode": "hybrid", "graph": "off", "records": 5, "independent_pinned_reads": 5, "displayed_total_ms": 447},
+      {"mode": "hybrid", "graph": "on", "records": 5, "independent_pinned_reads": 5, "displayed_total_ms": 484}
+    ],
+    "exact_ordered_display_and_full_shared_record_fields": true,
+    "timing_observations_per_condition": 1,
+    "latency_percentiles_claimed": false,
+    "model_timings_claimed": false,
+    "earlier_empty_keyword_result_retained_separately": true
+  },
+  "normal_gateway_agent": {
+    "new_verification_session": true,
+    "provider": "openai",
+    "model": "gpt-6.1-sol",
+    "assistant_attempts": 1,
+    "fallback_used": false,
+    "model_or_thinking_override": false,
+    "graphrag_read_rpc_calls": 2,
+    "search_records": 5,
+    "tool_failures": 0,
+    "independent_protocol_pinned_reads": 1,
+    "full_inspection_exact_match": true,
+    "selected_runtime_event_rows": 9,
+    "complete_mcp_text_json_envelopes": true,
+    "structured_snapshot_depth_truncated": true,
+    "message_snapshot_count_truncated": true,
+    "retained_javascript_tool_orchestration_observed": true,
+    "total_agent_orchestration_call_count": null,
+    "authentication_modality_proven": false
+  },
+  "fictional_capture": {
+    "initial_registered_handler_capture_calls": 1,
+    "explicit_sdk_replay_capture_calls": 1,
+    "revision_bound_reads": 3,
+    "initial_replayed": false,
+    "explicit_replay_replayed": true,
+    "complete_saved_record_and_arguments_preserved": true,
+    "automatic_replay": false,
+    "normal_gateway_agent_or_ui_capture_verified": false
+  },
+  "captured_marker_read": {
+    "registered_conditions": 3,
+    "independent_searches": 3,
+    "independent_pinned_reads": 11,
+    "captured_record_present_in_every_condition": true,
+    "keyword_searchability_verified": true
+  },
+  "limits": {
+    "visible_ui_verified": false,
+    "capture_vector_readiness_verified": false,
+    "capture_entity_extraction_readiness_verified": false,
+    "broader_performance_qualification_claimed": false,
+    "private_queries_record_ids_paths_tokens_or_fingerprints_included": false
+  }
+}
