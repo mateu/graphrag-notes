@@ -27,7 +27,7 @@ const FENCE: &str = "remote-upload-worker-fence";
 // Status requests must not materialize private extraction checkpoints (up to
 // 16 MiB each) or saved inputs. Project their redaction inside the database,
 // before a caller's bounded list can be deserialized in the service process.
-const STATUS_FIELDS: &str = "id, job_type, source_generation, scope, item_ids, status, total_count, completed_count, failed_count, checkpoint, last_error, created_at, updated_at, finished_at, remote_instance_id, remote_request_id, remote_payload_fingerprint, {} AS remote_input, (remote_input.enrichment IS NOT NONE AND remote_input.enrichment IS NOT NULL) AS remote_enrichment_job, remote_admission, IF remote_result.policy_migration_stage IS NOT NONE OR remote_result.unchanged_source_revision IS NOT NONE THEN NONE ELSE remote_result END AS remote_result, remote_source_id, remote_source_uri, remote_source_generation, remote_admission_order, remote_phase, remote_migration_contract_version, remote_cancel_requested, remote_service_epoch, remote_worker_token";
+const STATUS_FIELDS: &str = "id, job_type, source_generation, scope, item_ids, status, total_count, completed_count, failed_count, checkpoint, last_error, created_at, updated_at, finished_at, remote_instance_id, remote_request_id, remote_payload_fingerprint, {} AS remote_input, remote_enrichment_job, remote_admission, IF remote_result.policy_migration_stage IS NOT NONE OR remote_result.unchanged_source_revision IS NOT NONE THEN NONE ELSE remote_result END AS remote_result, remote_source_id, remote_source_uri, remote_source_generation, remote_admission_order, remote_phase, remote_migration_contract_version, remote_cancel_requested, remote_service_epoch, remote_worker_token";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RemoteEnrichmentInput {
@@ -209,11 +209,7 @@ impl JobRow {
     fn status(self) -> RemoteUploadJobStatus {
         RemoteUploadJobStatus {
             job: self.processing_job(),
-            enrichment: self.remote_enrichment_job.unwrap_or_else(|| {
-                self.remote_input
-                    .get("enrichment")
-                    .is_some_and(|value| !value.is_null())
-            }),
+            enrichment: self.remote_enrichment_job != Some(false),
             instance_id: self.remote_instance_id,
             source_id: self.remote_source_id,
             source_generation: self.remote_source_generation,
@@ -230,6 +226,11 @@ impl JobRow {
             serde_json::from_value(self.remote_input).map_err(|error| {
                 DbError::InvalidRemoteRequest(format!("stored upload input shape: {error}"))
             })?;
+        if self.remote_enrichment_job != Some(input.enrichment.is_some()) {
+            return Err(DbError::InvalidRemoteRequest(
+                "stored upload family differs from immutable admission authority".into(),
+            ));
+        }
         if input.policy_migration.is_some() && self.remote_migration_contract_version != Some(1) {
             return Err(DbError::InvalidRemoteRequest(
                 "migration requires its schema20 durable contract marker".into(),
@@ -671,9 +672,10 @@ impl Repository {
         } else {
             "enrich_source"
         };
-        self.db.query(format!("BEGIN TRANSACTION; {journal} LET $prior_orders = (SELECT VALUE remote_admission_order FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND remote_admission_order IS NOT NONE ORDER BY remote_admission_order DESC LIMIT 1); CREATE $id SET job_type = 'remote_upload', status = 'queued', total_count = 0, completed_count = 0, failed_count = 0, item_ids = [], created_at = <datetime>$now, updated_at = <datetime>$now, remote_instance_id = $instance, remote_request_id = $request, remote_payload_fingerprint = $fingerprint, remote_input = $input, remote_admission = $admission, remote_source_uri = $uri, remote_admission_order = IF array::len($prior_orders) = 0 THEN 1 ELSE $prior_orders[0] + 1 END, remote_phase = $phase, remote_migration_contract_version = $migration_contract, remote_cancel_requested = false; COMMIT TRANSACTION;"))
+        self.db.query(format!("BEGIN TRANSACTION; {journal} LET $prior_orders = (SELECT VALUE remote_admission_order FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND remote_admission_order IS NOT NONE ORDER BY remote_admission_order DESC LIMIT 1); CREATE $id SET job_type = 'remote_upload', status = 'queued', total_count = 0, completed_count = 0, failed_count = 0, item_ids = [], created_at = <datetime>$now, updated_at = <datetime>$now, remote_instance_id = $instance, remote_request_id = $request, remote_payload_fingerprint = $fingerprint, remote_input = $input, remote_enrichment_job = $enrichment, remote_admission = $admission, remote_source_uri = $uri, remote_admission_order = IF array::len($prior_orders) = 0 THEN 1 ELSE $prior_orders[0] + 1 END, remote_phase = $phase, remote_migration_contract_version = $migration_contract, remote_cancel_requested = false; COMMIT TRANSACTION;"))
             .bind(("source",source_id)).bind(("receipt",receipt)).bind(("operation",operation)).bind(("id", id)).bind(("now", now.to_rfc3339())).bind(("instance", input.authenticated_instance_id))
             .bind(("migration_contract", input.policy_migration.as_ref().map(|_| 1_i64)))
+            .bind(("enrichment", input.enrichment.is_some()))
             .bind(("phase", if input.enrichment.is_some() { "enrichment_admitted" } else if input.policy_migration.is_some() { "migration_admitted" } else { "admitted" })).bind(("request", input.request_id)).bind(("fingerprint", input.payload_fingerprint))
             .bind(("input", payload)).bind(("admission", result.clone())).bind(("uri", source_uri)).await?.check()?;
         Ok(RemoteJobAdmission {
@@ -746,7 +748,7 @@ impl Repository {
                 "job limit must be 1–200".into(),
             ));
         }
-        let rows: Vec<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND ($include_enrichment OR remote_input.enrichment IS NONE OR remote_input.enrichment IS NULL) ORDER BY updated_at DESC, id ASC LIMIT $limit"))
+        let rows: Vec<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND ($include_enrichment OR remote_enrichment_job = false) ORDER BY updated_at DESC, id ASC LIMIT $limit"))
             .bind(("instance", instance.to_string())).bind(("limit", limit)).bind(("include_enrichment", include_enrichment)).await?.take(0)?;
         Ok(rows.into_iter().map(JobRow::status).collect())
     }
@@ -1667,7 +1669,7 @@ impl Repository {
     pub async fn reconcile_interrupted_remote_uploads(&self, current_epoch: &str) -> Result<usize> {
         identity(current_epoch)?;
         let _gate = self.remote_job_transition_lock.lock().await;
-        let rows: Vec<RecordId> = self.db.query("UPDATE processing_job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE (IF remote_input.enrichment != NONE THEN 'queued' ELSE 'failed' END) END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE 'interrupted' END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'running' AND (remote_service_epoch = NONE OR remote_service_epoch != $epoch) RETURN VALUE id")
+        let rows: Vec<RecordId> = self.db.query("UPDATE processing_job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE (IF remote_enrichment_job = true THEN 'queued' ELSE 'failed' END) END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE 'interrupted' END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'running' AND (remote_service_epoch = NONE OR remote_service_epoch != $epoch) RETURN VALUE id")
             .bind(("epoch", current_epoch.to_string())).await?.take(0)?;
         Ok(rows.len())
     }

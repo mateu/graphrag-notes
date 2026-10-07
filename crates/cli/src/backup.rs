@@ -782,13 +782,21 @@ fn validate_references(ids: &BTreeSet<String>, references: &[(String, String)]) 
 }
 
 async fn restore_records(repo: &Repository, backup_path: &Path) -> Result<()> {
-    let file = File::open(backup_path)?;
-    let reader = BufReader::new(file);
-    for line in reader.lines() {
-        let line = line?;
-        let record: PortableRecord = serde_json::from_str(&line)?;
-        repo.restore_portable_record(&record.table, record.record)
-            .await?;
+    // Schema23 derives a missing durable remote-job family marker from its
+    // immutable mutation receipt. Restore receipts before processing jobs so a
+    // legacy archive can make that determination without retaining records.
+    for processing_jobs in [false, true] {
+        let file = File::open(backup_path)?;
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let line = line?;
+            let record: PortableRecord = serde_json::from_str(&line)?;
+            if (record.table == "processing_job") != processing_jobs {
+                continue;
+            }
+            repo.restore_portable_record(&record.table, record.record)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -2765,7 +2773,7 @@ mod tests {
             .contains("dimension"));
     }
     #[tokio::test]
-    async fn schema22_reviewed_enrichment_backup_reopens_and_recovers_exact_leased_checkpoint() {
+    async fn schema23_reviewed_enrichment_backup_reopens_and_recovers_exact_leased_checkpoint() {
         use graphrag_agents::{
             DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
         };
@@ -3024,10 +3032,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let vectorless_archive = temp.path().join("schema22-vectorless-archive");
+        let vectorless_archive = temp.path().join("schema23-vectorless-archive");
         let vectorless_summary = create_backup(&repo, &vectorless_archive, false)
             .await
             .unwrap();
+        assert_eq!(vectorless_summary.schema_version, 23);
         assert!(!vectorless_summary.includes_embeddings);
         assert_eq!(
             vectorless_summary,
@@ -3047,11 +3056,19 @@ mod tests {
             vectorless_source.metadata["entity_enrichment_v1"]["current_origin"],
             lineage_staged.metadata["entity_enrichment_v1"]["current_origin"]
         );
+        assert!(
+            vectorless
+                .get_remote_upload_job_status("backup-owner", &admitted.job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .enrichment
+        );
         drop(vectorless);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let archive = temp.path().join("schema22-archive");
+        let archive = temp.path().join("schema23-archive");
         let summary = create_backup(&repo, &archive, true).await.unwrap();
-        assert_eq!(summary.schema_version, 22);
+        assert_eq!(summary.schema_version, 23);
         assert!(summary.includes_embeddings);
         assert_eq!(summary, verify_backup(&archive).unwrap());
         assert_eq!(summary.record_counts.get("proposed_edge"), Some(&1));
@@ -3063,6 +3080,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&restored_source).unwrap(),
             serde_json::to_value(&staged).unwrap()
+        );
+        assert!(
+            restored
+                .get_remote_upload_job_status("backup-owner", &admitted.job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .enrichment
         );
         let restored_lineage = restored
             .get_source(&lineage_source.id)
@@ -3097,7 +3122,7 @@ mod tests {
             std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "backup::tests::schema22_recovery_subprocess_worker",
+                    "backup::tests::schema23_recovery_subprocess_worker",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -3114,7 +3139,8 @@ mod tests {
             String::from_utf8_lossy(&child.stdout),
             String::from_utf8_lossy(&child.stderr)
         );
-        let reopened = Repository::new(init_persistent(&target).await.unwrap());
+        let restored_db = init_persistent(&target).await.unwrap();
+        let reopened = Repository::new(restored_db.clone());
         let recovery = app(&reopened);
         assert!(recovery
             .execute_remote_job(worker, ActionCancellation::new())
@@ -3132,6 +3158,7 @@ mod tests {
         assert_eq!(promoted.extraction_policy_current, Some(true));
         assert_eq!(promoted.graph_policy_epoch, 1);
         assert!(promoted.reviewed_enrichment_v1.is_some());
+        let promoted_source = reopened.get_source(&current.id).await.unwrap().unwrap();
         assert!(
             recovery
                 .execute_source_enrichment(caller.clone(), operation.clone(), false)
@@ -3139,6 +3166,92 @@ mod tests {
                 .unwrap()
                 .replayed
         );
+        // Construct a physical schema22 archive from the recovered fixture:
+        // its enrichment input is deliberately gone, while the immutable
+        // journal receipt remains the only authority for its job family.
+        let legacy_fixture_archive = temp.path().join("schema23-legacy-fixture");
+        create_backup(&reopened, &legacy_fixture_archive, true)
+            .await
+            .unwrap();
+        let legacy_fixture_path = temp.path().join("schema22-fixture");
+        restore_backup(&legacy_fixture_archive, &legacy_fixture_path, false)
+            .await
+            .unwrap();
+        let legacy_fixture_db = init_persistent(&legacy_fixture_path).await.unwrap();
+        let original_job =
+            graphrag_db::parse_record_id(&admitted.job_id, Some("processing_job")).unwrap();
+        legacy_fixture_db
+            .query(
+                "REMOVE FIELD remote_enrichment_job ON processing_job; \
+                 UPDATE processing_job UNSET remote_enrichment_job; \
+                 UPDATE $job UNSET remote_input.enrichment; \
+                 DELETE schema_migration WHERE version = 23;",
+            )
+            .bind(("job", original_job))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let legacy_fixture = Repository::new(legacy_fixture_db);
+        let legacy_archive = temp.path().join("schema22-archive");
+        create_backup(&legacy_fixture, &legacy_archive, true)
+            .await
+            .unwrap();
+        let mut legacy_manifest = read_manifest(&legacy_archive).unwrap();
+        legacy_manifest.schema_version = 22;
+        std::fs::remove_file(legacy_archive.join(MANIFEST_FILE)).unwrap();
+        write_manifest(&legacy_archive.join(MANIFEST_FILE), &legacy_manifest).unwrap();
+        assert_eq!(verify_backup(&legacy_archive).unwrap().schema_version, 22);
+        drop(legacy_fixture);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let legacy_target = temp.path().join("restored-schema22");
+        restore_backup(&legacy_archive, &legacy_target, false)
+            .await
+            .unwrap();
+        let legacy = Repository::new(init_persistent(&legacy_target).await.unwrap());
+        assert_eq!(
+            serde_json::to_value(legacy.get_source(&current.id).await.unwrap().unwrap()).unwrap(),
+            serde_json::to_value(&promoted_source).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(
+                legacy
+                    .get_source(&lineage_source.id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap(),
+            serde_json::to_value(&lineage_staged).unwrap()
+        );
+        assert!(legacy
+            .get_remote_upload_job("backup-owner", &uploaded.job_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            legacy
+                .get_remote_upload_job_status("backup-owner", &admitted.job_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .enrichment
+        );
+        assert!(legacy
+            .get_remote_upload_job("backup-owner", &admitted.job_id)
+            .await
+            .is_err());
+        assert!(!legacy
+            .list_remote_upload_job_statuses("backup-owner", 100, false)
+            .await
+            .unwrap()
+            .iter()
+            .any(|job| {
+                job.job
+                    .id
+                    .as_ref()
+                    .is_some_and(|id| record_id_to_string(id) == admitted.job_id)
+            }));
         let restored_lineage = recovery
             .get_uploaded_source(&lineage_source.id)
             .await
@@ -3197,7 +3310,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             recovery
-                .get_remote_job(caller, &lineage_rollback.job_id)
+                .get_remote_job(caller.clone(), &lineage_rollback.job_id)
                 .await
                 .unwrap()
                 .status,
@@ -3210,10 +3323,53 @@ mod tests {
                 .unwrap()
                 .extract_entities
         );
+        let original_job =
+            graphrag_db::parse_record_id(&admitted.job_id, Some("processing_job")).unwrap();
+        assert!(restored_db
+            .query("UPDATE $job SET remote_enrichment_job = false")
+            .bind(("job", original_job.clone()))
+            .await
+            .unwrap()
+            .check()
+            .is_err());
+        restored_db
+            .query("UPDATE $job SET remote_input.enrichment = NONE")
+            .bind(("job", original_job))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let status = recovery
+            .get_remote_job(caller.clone(), &admitted.job_id)
+            .await
+            .unwrap();
+        assert_eq!(status.job_type, "remote_enrichment");
+        assert!(recovery
+            .list_remote_jobs(caller, 10, true)
+            .await
+            .unwrap()
+            .jobs
+            .iter()
+            .any(|job| job.id == admitted.job_id && job.job_type == "remote_enrichment"));
+        assert!(!reopened
+            .list_remote_upload_job_statuses("backup-owner", 100, false)
+            .await
+            .unwrap()
+            .iter()
+            .any(|job| {
+                job.job
+                    .id
+                    .as_ref()
+                    .is_some_and(|id| record_id_to_string(id) == admitted.job_id)
+            }));
+        assert!(reopened
+            .get_remote_upload_job("backup-owner", &admitted.job_id)
+            .await
+            .is_err());
     }
     #[test]
-    #[ignore = "subprocess helper invoked only by schema22 reviewed backup qualification"]
-    fn schema22_recovery_subprocess_worker() {
+    #[ignore = "subprocess helper invoked only by schema23 reviewed backup qualification"]
+    fn schema23_recovery_subprocess_worker() {
         let path = std::env::var_os("GRAPHRAG_SYNTHETIC_RESTART_DB")
             .expect("synthetic test-only database path required");
         tokio::runtime::Runtime::new().unwrap().block_on(async {

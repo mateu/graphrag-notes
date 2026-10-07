@@ -26,6 +26,7 @@ mod v019_entity_identity;
 mod v020_source_policy_migration;
 mod v021_note_search;
 mod v022_source_entity_enrichment;
+mod v023_remote_job_family;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -38,7 +39,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 22;
+pub const LATEST_SCHEMA_VERSION: u32 = 23;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -76,6 +77,7 @@ const MIGRATIONS: &[Migration] = &[
     v020_source_policy_migration::MIGRATION,
     v021_note_search::MIGRATION,
     v022_source_entity_enrichment::MIGRATION,
+    v023_remote_job_family::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -544,6 +546,129 @@ mod tests {
         assert_eq!(
             applied_migrations(&db).await.unwrap().len(),
             LATEST_SCHEMA_VERSION as usize
+        );
+    }
+
+    #[tokio::test]
+    async fn v023_backfills_remote_job_family_from_v022_history_and_journal() {
+        let db = raw_memory_db().await;
+        apply_all(&db).await.unwrap();
+        db.query(
+            "REMOVE FIELD remote_enrichment_job ON processing_job; \
+             DELETE schema_migration WHERE version = 23;",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        assert_eq!(current_version(&db).await.unwrap(), 22);
+        let v022_before = load_applied_migrations(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|migration| migration.version == 22)
+            .unwrap();
+        assert_eq!(
+            v022_before.checksum,
+            "79024f458f630b3ac1bf940be358fac684e31bfedcb994834bf7cd6c9375bfb2"
+        );
+
+        db.query(
+            "CREATE processing_job:ordinary SET job_type = 'remote_upload', status = 'completed', total_count = 1, completed_count = 1, failed_count = 0, remote_instance_id = 'owner', remote_request_id = 'ordinary', remote_payload_fingerprint = 'ordinary', remote_input = {}, remote_admission = {}, remote_source_uri = 'file:///ordinary', remote_phase = 'completed'; \
+             CREATE processing_job:damaged SET job_type = 'remote_upload', status = 'failed', total_count = 1, completed_count = 0, failed_count = 1, remote_instance_id = 'owner', remote_request_id = 'damaged', remote_payload_fingerprint = 'damaged', remote_input = { enrichment: { damaged: true } }, remote_admission = {}, remote_source_uri = 'file:///damaged', remote_phase = 'failed'; \
+             CREATE processing_job:null_input SET job_type = 'remote_upload', status = 'failed', total_count = 1, completed_count = 0, failed_count = 1, remote_instance_id = 'owner', remote_request_id = 'null-input', remote_payload_fingerprint = 'null-input', remote_input = { enrichment: NULL }, remote_admission = {}, remote_source_uri = 'file:///null-input', remote_phase = 'failed'; \
+             CREATE processing_job:missing_input SET job_type = 'remote_upload', status = 'failed', total_count = 1, completed_count = 0, failed_count = 1, remote_instance_id = 'owner', remote_request_id = 'missing-input', remote_payload_fingerprint = 'missing-input', remote_input = {}, remote_admission = {}, remote_source_uri = 'file:///missing-input', remote_phase = 'failed'; \
+             CREATE processing_job:cross_owner SET job_type = 'remote_upload', status = 'completed', total_count = 1, completed_count = 1, failed_count = 0, remote_instance_id = 'owner', remote_request_id = 'cross-owner', remote_payload_fingerprint = 'cross-owner', remote_input = {}, remote_admission = {}, remote_source_uri = 'file:///cross-owner', remote_phase = 'completed'; \
+             CREATE processing_job:other_operation SET job_type = 'remote_upload', status = 'completed', total_count = 1, completed_count = 1, failed_count = 0, remote_instance_id = 'owner', remote_request_id = 'other-operation', remote_payload_fingerprint = 'other-operation', remote_input = {}, remote_admission = {}, remote_source_uri = 'file:///other-operation', remote_phase = 'completed'; \
+             CREATE remote_mutation_receipt:null_input SET instance_id = 'owner', request_id = 'null-input', operation = 'enrich_source', target = source:null_input, payload_fingerprint = 'null-input', payload = {}, result = {}, created_at = time::now(), updated_at = time::now(); \
+             CREATE remote_mutation_receipt:missing_input SET instance_id = 'owner', request_id = 'missing-input', operation = 'rollback_enrichment', target = source:missing_input, payload_fingerprint = 'missing-input', payload = {}, result = {}, created_at = time::now(), updated_at = time::now(); \
+             CREATE remote_mutation_receipt:cross_owner SET instance_id = 'other-owner', request_id = 'cross-owner', operation = 'enrich_source', target = source:cross_owner, payload_fingerprint = 'cross-owner', payload = {}, result = {}, created_at = time::now(), updated_at = time::now(); \
+             CREATE remote_mutation_receipt:other_operation SET instance_id = 'owner', request_id = 'other-operation', operation = 'edit_source', target = source:other_operation, payload_fingerprint = 'other-operation', payload = {}, result = {}, created_at = time::now(), updated_at = time::now();",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        apply_all(&db).await.unwrap();
+        let families: Vec<serde_json::Value> = db
+            .query(
+                "SELECT type::string(id) AS id, remote_enrichment_job FROM processing_job \
+                 WHERE job_type = 'remote_upload' ORDER BY id",
+            )
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(
+            serde_json::Value::Array(families),
+            serde_json::json!([
+                {"id": "processing_job:cross_owner", "remote_enrichment_job": false},
+                {"id": "processing_job:damaged", "remote_enrichment_job": true},
+                {"id": "processing_job:missing_input", "remote_enrichment_job": true},
+                {"id": "processing_job:null_input", "remote_enrichment_job": true},
+                {"id": "processing_job:ordinary", "remote_enrichment_job": false},
+                {"id": "processing_job:other_operation", "remote_enrichment_job": false},
+            ])
+        );
+
+        let repo = Repository::new(db.clone());
+        let ordinary = repo
+            .list_remote_upload_job_statuses("owner", 20, false)
+            .await
+            .unwrap();
+        assert_eq!(ordinary.len(), 3);
+        assert!(ordinary.iter().all(|status| !status.enrichment));
+        let all = repo
+            .list_remote_upload_job_statuses("owner", 20, true)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 6);
+        let mut enrichment_ids = all
+            .iter()
+            .filter(|status| status.enrichment)
+            .map(|status| record_id_to_string(status.job.id.as_ref().unwrap()))
+            .collect::<Vec<_>>();
+        enrichment_ids.sort();
+        assert_eq!(
+            enrichment_ids,
+            vec![
+                "processing_job:damaged",
+                "processing_job:missing_input",
+                "processing_job:null_input",
+            ]
+        );
+
+        assert!(db
+            .query("UPDATE processing_job:ordinary SET remote_enrichment_job = true")
+            .await
+            .unwrap()
+            .check()
+            .is_err());
+        let ordinary_family: Vec<bool> = db
+            .query("SELECT VALUE remote_enrichment_job FROM processing_job:ordinary")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(ordinary_family, vec![false]);
+
+        let history_before_retry = load_applied_migrations(&db).await.unwrap();
+        apply_all(&db).await.unwrap();
+        let history_after_retry = load_applied_migrations(&db).await.unwrap();
+        assert_eq!(history_after_retry.len(), history_before_retry.len());
+        for (before, after) in history_before_retry.iter().zip(&history_after_retry) {
+            assert_eq!(after.version, before.version);
+            assert_eq!(after.name, before.name);
+            assert_eq!(after.checksum, before.checksum);
+        }
+        assert_eq!(
+            history_before_retry
+                .into_iter()
+                .find(|migration| migration.version == 22)
+                .unwrap()
+                .checksum,
+            v022_before.checksum
         );
     }
 

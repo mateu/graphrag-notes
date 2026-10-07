@@ -29,6 +29,30 @@ fn input(instance: &str, request: &str, body: &str) -> RemoteUploadInput {
     }
 }
 
+fn enrichment_input(instance: &str, request_id: &str, body: &str) -> RemoteUploadInput {
+    let mut request = input(instance, request_id, body);
+    let revision = format!("{:x}", Sha256::digest(b"synthetic opening source"));
+    request.extract_entities = true;
+    request.expected_source_revision = Some(revision.clone());
+    request.enrichment = Some(RemoteEnrichmentInput {
+        plan: SourceEnrichmentPlan {
+            source_id: uploaded_source_id(instance, &request.document_key),
+            instance_id: request.authenticated_instance_id.clone(),
+            request_id: request.request_id.clone(),
+            document_key: request.document_key.clone(),
+            expected_source_revision: revision,
+            expected_content_sha256: graphrag_core::normalized_content_hash(&request.markdown),
+            expected_generation: 1,
+            original_policy_sha256: uploaded_processing_policy_sha256(&request.processing_options)
+                .unwrap(),
+            target_processing_options: request.processing_options.clone(),
+            confirmed: true,
+        },
+        rollback: false,
+    });
+    request
+}
+
 async fn admit_claim(
     repo: &Repository,
     input: RemoteUploadInput,
@@ -2216,7 +2240,7 @@ async fn status_list_selects_authorized_family_before_bounded_window_without_sav
     let private = serde_json::json!({"damaged_private_plan":"x".repeat(16 * 1024)});
     for index in 0..500 {
         let admitted = repo
-            .admit_remote_upload(input(
+            .admit_remote_upload(enrichment_input(
                 "owner",
                 &format!("private-enrichment-{index}"),
                 "Private conversion envelope",
@@ -2336,5 +2360,66 @@ async fn restart_counts_identities_and_admission_replay_preserves_private_checkp
             .unwrap()
             .result
             .is_none());
+    }
+}
+
+#[tokio::test]
+async fn damaged_enrichment_heads_are_quarantined_before_claiming_same_document_successor() {
+    for restarted in [false, true] {
+        for mutation in [
+            "SET remote_input.enrichment = { broken: true }",
+            "SET remote_input.enrichment = NULL",
+            "UNSET remote_input.enrichment",
+        ] {
+            let db = init_memory().await.unwrap();
+            let repo = Repository::new(db.clone());
+            let damaged = repo
+                .admit_remote_upload(enrichment_input(
+                    "owner",
+                    "damaged-head",
+                    "Enrichment input",
+                ))
+                .await
+                .unwrap();
+            let damaged_id = damaged.result["job_id"].as_str().unwrap();
+            let successor = repo
+                .admit_remote_upload(input("owner", "next-upload", "Fresh explicit upload"))
+                .await
+                .unwrap();
+            if restarted {
+                repo.claim_remote_upload_job("owner", damaged_id, "old-epoch", "old-worker")
+                    .await
+                    .unwrap();
+            }
+            db.query(format!("UPDATE $id {mutation}"))
+                .bind(("id", job_id(damaged_id).unwrap()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            if restarted {
+                repo.reconcile_interrupted_remote_uploads("new-epoch")
+                    .await
+                    .unwrap();
+            }
+            let claimed = repo
+                .claim_next_remote_upload("new-epoch", "worker")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                claimed.job.id,
+                Some(job_id(successor.result["job_id"].as_str().unwrap()).unwrap())
+            );
+            let quarantined = repo
+                .get_remote_upload_job_status("owner", damaged_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(quarantined.enrichment);
+            assert_eq!(quarantined.job.status, "failed");
+            assert_eq!(quarantined.job.last_error.as_deref(), Some("validation"));
+            assert_eq!(claimed.input.enrichment, None);
+        }
     }
 }

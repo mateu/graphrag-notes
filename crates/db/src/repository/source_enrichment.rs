@@ -954,7 +954,7 @@ impl Repository {
             );
         }
         let lease_guard = if lease.is_some() {
-            "LET $owner = (UPDATE $job SET updated_at=time::now() WHERE job_type='remote_upload' AND remote_instance_id=$instance AND status='running' AND remote_service_epoch=$epoch AND remote_worker_token=$worker AND remote_cancel_requested=false AND remote_input.enrichment.plan=$plan RETURN VALUE id); IF array::len($owner)!=1 { THROW 'remote-upload-worker-fence'; }; "
+            "LET $owner = (UPDATE $job SET updated_at=time::now() WHERE job_type='remote_upload' AND remote_enrichment_job=true AND remote_instance_id=$instance AND status='running' AND remote_service_epoch=$epoch AND remote_worker_token=$worker AND remote_cancel_requested=false AND remote_input.enrichment.plan=$plan RETURN VALUE id); IF array::len($owner)!=1 { THROW 'remote-upload-worker-fence'; }; "
         } else {
             ""
         };

@@ -299,31 +299,24 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
     // Queue a full generic readiness window behind the ordinary upload. Their
     // intentionally damaged conversion envelopes must be classified in the
     // database, without deserializing a plan, before the bounded window.
+    let hidden_template = repo
+        .get_remote_upload_job("enricher", id.as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .input;
     for index in 0..10 {
-        let hidden = app
-            .upload_source(
-                caller.clone(),
-                UploadSourceRequest {
-                    request_id: format!("damaged-enrichment-{index}"),
-                    document_key: format!("damaged-enrichment-document-{index}"),
-                    content: format!("# Damaged conversion {index}\n\nFixture only."),
-                    title: None,
-                    provenance: None,
-                    extract_entities: false,
-                    preserve_unchanged: false,
-                    create_only: false,
-                    expected_source_revision: None,
-                    policy_migration: None,
-                },
-            )
-            .await
-            .unwrap();
+        let mut hidden_input = hidden_template.clone();
+        hidden_input.request_id = format!("damaged-enrichment-{index}");
+        hidden_input.payload_fingerprint =
+            format!("{:x}", Sha256::digest(hidden_input.request_id.as_bytes()));
+        let hidden = repo.admit_remote_upload(hidden_input).await.unwrap();
         db.query(
             "UPDATE $job SET status = 'failed', remote_input.enrichment = { broken: true }, updated_at = time::now()",
         )
         .bind((
             "job",
-            graphrag_db::parse_record_id(&hidden.job_id, Some("processing_job")).unwrap(),
+            graphrag_db::parse_record_id(hidden.result["job_id"].as_str().unwrap(), Some("processing_job")).unwrap(),
         ))
         .await
         .unwrap()
@@ -410,6 +403,41 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
         assert_eq!(
             error(&fixture.tool("jobs", generic, json!({"id":id})).await),
             "forbidden"
+        );
+    }
+    for mutation in [
+        "SET remote_input.enrichment = NULL",
+        "UNSET remote_input.enrichment",
+    ] {
+        db.query(format!(
+            "UPDATE processing_job {mutation} WHERE remote_instance_id = 'enricher' AND id != $ordinary"
+        ))
+        .bind(("ordinary", graphrag_db::parse_record_id(&upload.job_id, Some("processing_job")).unwrap()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let list = fixture
+            .tool("jobs", "list_jobs", json!({"limit": 100}))
+            .await;
+        assert_eq!(
+            data(&list)["jobs"],
+            ordinary_jobs,
+            "Missing/null saved input must not erase durable enrichment authority"
+        );
+        let status = fixture.tool("jobs", "service_status", json!({})).await;
+        assert_eq!(data(&status)["jobs"], ordinary_readiness);
+        for generic in ["get_job", "cancel_job", "resume_job"] {
+            assert_eq!(
+                error(&fixture.tool("jobs", generic, json!({"id":id})).await),
+                "forbidden"
+            );
+        }
+        assert!(
+            repo.get_remote_upload_job("enricher", id.as_str().unwrap())
+                .await
+                .is_err(),
+            "Missing enrichment input must not decode as an executable ordinary upload"
         );
     }
     fixture.stop().await;
