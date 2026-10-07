@@ -6,11 +6,13 @@ This is a controlled runtime follow-up to the [historical native-Float qualifica
 
 ## Controlled source and correctness
 
-Compiled source `59edb35669e6b6c06520977449a35b04266006ae`, optimized immutable test binary SHA-256 `f93567ddc7cdacfce318a04ec7ff2e05fab90bc5d1470985cb6b60190c0a7312`. Both arms use the same binary, SurrealDB 3.2.4, system allocation, Rust 1.97.1, Tokio 1.53.1 and JSON float-roundtrip parsing. The source change factors the original ordinary/measurement bodies into shared async helpers and adds explicit wrappers. Those shared body bytes, queries, arithmetic, data, indexes, filters and timing boundaries remain unchanged. Production code, manifests, dependencies, concurrency and defaults are unchanged.
+Compiled source `59edb35669e6b6c06520977449a35b04266006ae`, optimized immutable test binary SHA-256 `f93567ddc7cdacfce318a04ec7ff2e05fab90bc5d1470985cb6b60190c0a7312`. Both measured arms use the same binary, SurrealDB 3.2.4, system allocation, Rust 1.97.1, Tokio 1.53.1 and JSON float-roundtrip parsing. That measured source factors the original ordinary/measurement bodies into shared async helpers and adds explicit wrappers, retaining the original shared body bytes, queries, arithmetic, data, indexes, filters and timing boundaries. Production code, manifests, dependencies, concurrency and defaults are unchanged.
+
+After measurement, review found that selecting both runtime wrappers with one fresh RocksDB root reused the same database directory. The fixture now accepts a startup-only database label/suffix: current-thread keeps the original names and two-worker adds `-two-worker`, for both correctness and measurement wrappers. This changes the helper signatures and database-opening statements; the final helper bodies are not byte-identical to the measured source. SQL, data, keys, arithmetic, assertions, query timing and sample schedules stay unchanged. The compiled source/binary and full-sample JSON above remain the original measured artifacts; the directory-isolation fix has no new timing result. Native combined-wrapper validation is pending.
 
 Ordinary correctness passed once for each Memory/RocksDB × current-thread/two-worker combination, four separate children with one selected test and no failures. The fixture covers notes, messages and conversation summaries; complete ordered payloads, native F64 and serving F32 distance bits; native numeric/string/UUID/object/array keys and numeric key kinds; selected invalid/nonfinite Float cases, limits 1/5/50, source/time filters and source promotion. The unchanged static mirror is populated once and then used with exact native COSINE pool selection and one-statement primary hydration. It does not implement production mirror maintenance.
 
-Each wrapper asserts and emits its observed Tokio runtime flavor and scheduler worker count before DB creation and after its unchanged body, outside timed queries. The current-thread arm observes one scheduler worker; the multithread arm observes exactly two. These counts do not describe total native, blocking, Rayon or OS threads or prove that a particular request ran on both workers. The normal CLI uses a multithread runtime without this fixed worker count, so this is not a reproduction of its live default.
+Each wrapper asserts and emits its observed Tokio runtime flavor and scheduler worker count before DB creation and after its shared body, outside timed queries. The current-thread arm observes one scheduler worker; the multithread arm observes exactly two. These counts do not describe total native, blocking, Rayon or OS threads or prove that a particular request ran on both workers. The normal CLI uses a multithread runtime without this fixed worker count, so this is not a reproduction of its live default.
 
 The measured artifact was Mach-O arm64 on macOS 27.0.1 (build 26A434), with 48 GiB RAM and 18 physical / 18 logical CPU cores. These are reproducibility facts; they do not establish scheduling or maintenance attribution.
 
@@ -113,7 +115,7 @@ Root retained an exclusive owned timing-window declaration: builds, correctness/
 
 ## Reproduction and deferred scope
 
-The two ordinary correctness wrappers are nonignored, while both hardware-sensitive measurement wrappers are ignored by default. Each uses one unchanged shared body. These exact selectors run one child at a time:
+The two ordinary correctness wrappers are nonignored, while both hardware-sensitive measurement wrappers are ignored by default. Each pair uses one shared body with distinct runtime startup database names. These exact selectors run one child at a time:
 
 ```text
 repository::exact_vector_native_float_qualification::native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits
@@ -123,6 +125,8 @@ repository::exact_vector_native_float_qualification::native_float_all_scopes_rel
 ```
 
 Use `cargo test --locked --release -p graphrag-db --lib SELECTOR -- --exact --nocapture --test-threads=1`, adding `--ignored` for a measurement selector. Set `GRAPHRAG_NATIVE_FLOAT_RECORDS` to 1024 or 4096 and `GRAPHRAG_NATIVE_FLOAT_ORDER` to baseline_first or mirror_first. For RocksDB, supply `GRAPHRAG_NATIVE_FLOAT_ROCKS_ROOT` as a fresh owned role root; omit it for Memory. Keep one compiled binary and the declared counterbalanced 16-role schedule. Preserve raw logs, attempt ledgers, all samples and exit/cleanup receipts; no retry or correctness-only run can substitute for a measured role.
+
+The ordinary current-thread directory is `native-float-correctness`; two-worker uses `native-float-correctness-two-worker`. Measurement directories are `native-float-POPULATION-ORDER` and `native-float-POPULATION-ORDER-two-worker`. Both wrappers may therefore be selected together on a fresh root, without reusing an existing database. Separate child roles remain required for the matched timing schedule above.
 
 The [rejected query-norm SQL screen](native-float-qualification-106.md#separate-query-norm-sql-screen-correctness-rejection) remains rejected and unchanged. This follow-up adds no new query-norm outcome and does not treat its source-supported pool/tie explanation as complete specific-row causality.
 

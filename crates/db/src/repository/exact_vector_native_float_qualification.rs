@@ -584,8 +584,8 @@ async fn assert_inventory(db: &DbConnection, count: usize) -> Vec<String> {
     primary
 }
 
-async fn native_float_all_scopes_exact_correctness_body() {
-    let (db, _) = database("native-float-correctness").await;
+async fn native_float_all_scopes_exact_correctness_body(database_label: &str) {
+    let (db, _) = database(database_label).await;
     let positive = populate(&db, 160, true).await;
     mirror_idle_fixture(&db).await;
     let before = assert_inventory(&db, 160).await;
@@ -717,7 +717,7 @@ async fn native_float_all_scopes_exact_correctness_body() {
     );
 }
 
-async fn native_float_all_scopes_release_qualification_body() {
+async fn native_float_all_scopes_release_qualification_body(database_suffix: &str) {
     let count: usize = std::env::var("GRAPHRAG_NATIVE_FLOAT_RECORDS")
         .expect("explicit population")
         .parse()
@@ -733,7 +733,7 @@ async fn native_float_all_scopes_release_qualification_body() {
             true
         });
     let observations = if correctness_only { 1 } else { 21 };
-    let (db, backend) = database(&format!("native-float-{count}-{order}")).await;
+    let (db, backend) = database(&format!("native-float-{count}-{order}{database_suffix}")).await;
     let embedding = populate(&db, count, false).await;
     mirror_idle_fixture(&db).await;
     let inventory = assert_inventory(&db, count).await;
@@ -821,7 +821,8 @@ async fn native_float_all_scopes_release_qualification_body() {
     );
 }
 
-// The two scheduler settings share exactly the same fixture and query bodies.
+// The two scheduler settings share the same fixture and query bodies, with
+// distinct startup database labels so both wrappers can use one fresh root.
 // These observations are outside query timing. Worker metrics count Tokio
 // scheduler workers, not blocking, RocksDB, Rayon or all operating-system
 // threads, and do not prove that both workers execute a particular query.
@@ -870,7 +871,7 @@ impl QualificationRuntime {
 #[tokio::test(flavor = "current_thread")]
 async fn native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits() {
     QualificationRuntime::CurrentThread.observe("correctness", "before_fixture");
-    native_float_all_scopes_exact_correctness_body().await;
+    native_float_all_scopes_exact_correctness_body("native-float-correctness").await;
     QualificationRuntime::CurrentThread.observe("correctness", "after_fixture");
 }
 
@@ -878,7 +879,7 @@ async fn native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits()
 async fn native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits_two_worker_runtime()
 {
     QualificationRuntime::TwoWorker.observe("correctness", "before_fixture");
-    native_float_all_scopes_exact_correctness_body().await;
+    native_float_all_scopes_exact_correctness_body("native-float-correctness-two-worker").await;
     QualificationRuntime::TwoWorker.observe("correctness", "after_fixture");
 }
 
@@ -886,7 +887,7 @@ async fn native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits_t
 #[ignore = "root-owned release qualification; no performance CI assertion"]
 async fn native_float_all_scopes_release_qualification() {
     QualificationRuntime::CurrentThread.observe("measurement", "before_fixture");
-    native_float_all_scopes_release_qualification_body().await;
+    native_float_all_scopes_release_qualification_body("").await;
     QualificationRuntime::CurrentThread.observe("measurement", "after_fixture");
 }
 
@@ -894,6 +895,6 @@ async fn native_float_all_scopes_release_qualification() {
 #[ignore = "root-owned release qualification; no performance CI assertion"]
 async fn native_float_all_scopes_release_qualification_two_worker_runtime() {
     QualificationRuntime::TwoWorker.observe("measurement", "before_fixture");
-    native_float_all_scopes_release_qualification_body().await;
+    native_float_all_scopes_release_qualification_body("-two-worker").await;
     QualificationRuntime::TwoWorker.observe("measurement", "after_fixture");
 }
