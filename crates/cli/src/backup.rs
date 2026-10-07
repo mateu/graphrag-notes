@@ -2900,26 +2900,30 @@ mod tests {
         );
         drop(restored);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        // Reopen a fresh persistent restore, recover automatically, reject original worker.
+        // A separate OS process reopens the persisted restored checkpoint and exits.
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backup::tests::schema22_recovery_subprocess_worker",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("GRAPHRAG_SYNTHETIC_RESTART_DB", &target)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "child recovery stdout={} stderr={}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
         let reopened = Repository::new(init_persistent(&target).await.unwrap());
         let recovery = app(&reopened);
-        recovery
-            .reconcile_remote_jobs("restart-epoch")
-            .await
-            .unwrap();
         assert!(recovery
             .execute_remote_job(worker, ActionCancellation::new())
             .await
             .is_err());
-        let worker = recovery
-            .claim_remote_job("restart-epoch", "restart-worker")
-            .await
-            .unwrap()
-            .unwrap();
-        recovery
-            .execute_remote_job(worker, ActionCancellation::new())
-            .await
-            .unwrap();
         assert_eq!(
             recovery
                 .get_remote_job(caller.clone(), &admitted.job_id)
@@ -2973,5 +2977,42 @@ mod tests {
             rolled.reviewed_enrichment_v1.unwrap()["operation"],
             "rollback"
         );
+    }
+    #[test]
+    #[ignore = "subprocess helper invoked only by schema22 reviewed backup qualification"]
+    fn schema22_recovery_subprocess_worker() {
+        let path = std::env::var_os("GRAPHRAG_SYNTHETIC_RESTART_DB")
+            .expect("synthetic test-only database path required");
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            use graphrag_agents::{
+                DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
+            };
+            use graphrag_application::*;
+            use std::sync::Arc;
+            let repo = Repository::new(init_persistent(PathBuf::from(path)).await.unwrap());
+            let embed = Arc::new(DeterministicEmbedder::default());
+            let app = EmbeddedApplication::new(
+                repo.clone(),
+                SearchAgent::new(repo.clone(), embed.clone()),
+                embed,
+                Arc::new(FixtureEntityExtractor::default()),
+                LibrarianRuntimeConfig {
+                    min_chunk_size: 1,
+                    target_chunk_size: 80,
+                    max_chunk_size: 120,
+                    skip_entity_extraction: true,
+                    ..Default::default()
+                },
+            );
+            app.reconcile_remote_jobs("restart-epoch").await.unwrap();
+            let worker = app
+                .claim_remote_job("restart-epoch", "restart-worker")
+                .await
+                .unwrap()
+                .unwrap();
+            app.execute_remote_job(worker, ActionCancellation::new())
+                .await
+                .unwrap();
+        });
     }
 }
