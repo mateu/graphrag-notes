@@ -166,14 +166,29 @@ Atlas uses bounded retry evidence.
         ),
     ] {
         let path = format!("memory/2026-10-07-{slug}.md");
-        // ASCII-only synthetic bytes: identical to staged importer's UTF-8 splitting.
+        // This fixture is ASCII, non-whitespace text. Match split_utf8's
+        // newline preference exactly, without changing any service readback.
+        assert!(raw.is_ascii());
         let chunks: Vec<&str> = if raw.len() <= 65536 {
             vec![&raw]
         } else {
-            raw.as_bytes()
-                .chunks(49152)
-                .map(|v| std::str::from_utf8(v).unwrap())
-                .collect()
+            let mut chunks = Vec::new();
+            let mut offset = 0;
+            while offset < raw.len() {
+                let mut cut = (offset + 49152).min(raw.len());
+                if cut < raw.len() {
+                    if let Some(newline) = raw.as_bytes()[offset + 24576..cut]
+                        .iter()
+                        .rposition(|b| *b == b'\n')
+                    {
+                        cut = offset + 24576 + newline + 1;
+                    }
+                }
+                chunks.push(&raw[offset..cut]);
+                offset = cut;
+            }
+            assert_eq!(chunks.concat(), raw);
+            chunks
         };
         let mut parts = Vec::new();
         for (index, content) in chunks.iter().enumerate() {
