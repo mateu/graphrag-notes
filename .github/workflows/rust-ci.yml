@@ -7,8 +7,8 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    # Dependency advisories are useful, but should never make a normal PR
-    # depend on registry/network availability.
+    # Full unit/offline coverage is nightly; dependency advisories stay weekly.
+    - cron: "23 3 * * *"
     - cron: "23 4 * * 1"
 
 permissions:
@@ -27,6 +27,7 @@ env:
 jobs:
   format:
     name: format
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +45,7 @@ jobs:
 
   clippy:
     name: clippy
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +60,7 @@ jobs:
 
   msrv:
     name: msrv (Rust 1.97.1)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +75,7 @@ jobs:
 
   offline-integration:
     name: unit and offline integration
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '23 3 * * *')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +94,7 @@ jobs:
 
   persistent-round-trip:
     name: persistent DB, migrations, and data round trip
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,6 +115,7 @@ jobs:
 
   retrieval-regression:
     name: retrieval regression baseline
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +128,7 @@ jobs:
 
   dependency-audit:
     name: scheduled dependency and security audit
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '23 4 * * 1')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
