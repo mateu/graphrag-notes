@@ -13,6 +13,7 @@ use std::sync::{
 use std::time::Duration;
 use surrealdb::types::ToSql;
 use tokio::sync::Notify;
+use tracing::Instrument;
 
 fn caller() -> CallerIdentity {
     CallerIdentity {
@@ -131,6 +132,53 @@ async fn run(app: &EmbeddedApplication) -> ApplicationResult<RemoteJobExecution>
     app.execute_remote_job(execution.clone(), ActionCancellation::new())
         .await?;
     Ok(execution)
+}
+// The opt-in subscriber accepts only static probe fields and uses libtest's
+// captured writer. Passing tests stay quiet; failed tests retain the boundary
+// events. No engine tracing or raw error/identity fields are enabled here.
+fn enable_migration_conflict_probe() {
+    if std::env::var("GRAPHRAG_MIGRATION_CONFLICT_PROBE").as_deref() == Ok("1") {
+        tracing_subscriber::fmt()
+            .with_env_filter("graphrag_migration_probe=info")
+            .with_ansi(false)
+            .without_time()
+            .with_test_writer()
+            .try_init()
+            .expect("isolated migration probe subscriber");
+    }
+}
+fn probe_fixture_result<T>(
+    operation: &'static str,
+    stage: &'static str,
+    result: &ApplicationResult<T>,
+) {
+    if std::env::var("GRAPHRAG_MIGRATION_CONFLICT_PROBE").as_deref() == Ok("1") {
+        let (outcome, error_class) = match result {
+            Ok(_) => ("passed", "none"),
+            Err(error) => ("failed", error.code()),
+        };
+        tracing::info!(target: "graphrag_migration_probe", operation, stage, outcome, error_class);
+    }
+}
+async fn run_probe(
+    app: &EmbeddedApplication,
+    stage: &'static str,
+) -> ApplicationResult<RemoteJobExecution> {
+    async {
+        let claimed = app
+            .claim_remote_job("fixture-epoch", "fixture-worker")
+            .await;
+        probe_fixture_result("fixture.claim", stage, &claimed);
+        let execution = claimed?.expect("queued job");
+        let executed = app
+            .execute_remote_job(execution.clone(), ActionCancellation::new())
+            .await;
+        probe_fixture_result("fixture.execute", stage, &executed);
+        executed?;
+        Ok(execution)
+    }
+    .instrument(tracing::info_span!(target: "graphrag_migration_probe", "fixture_attempt", stage))
+    .await
 }
 async fn raw(repo: &Repository, table: &str) -> Vec<serde_json::Value> {
     repo.portable_records_page(table, 0, 1000).await.unwrap()
@@ -341,9 +389,11 @@ async fn migration_failure_restore_and_resume_preserve_last_good_and_private_exa
     assert_eq!(done.completed as usize, chunks.len());
     assert!(done.result.unwrap().get("policy_migration_stage").is_none());
     let entities = raw(&restored, "entity").await;
-    assert!(entities.iter().any(|e| e["metadata"]["aliases"]
-        .as_array()
-        .is_some_and(|aliases| aliases.contains(&serde_json::json!("current-policy")))));
+    assert!(entities.iter().any(|e| {
+        e["metadata"]["aliases"]
+            .as_array()
+            .is_some_and(|aliases| aliases.contains(&serde_json::json!("current-policy")))
+    }));
     let replay = resumed.upload_source(caller(), input).await.unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.job_id, admitted.job_id);
@@ -610,6 +660,7 @@ async fn cancelled_and_interrupted_migration_resume_exact_private_checkpoint() {
 #[tokio::test]
 async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_exposing_partial_graph(
 ) {
+    enable_migration_conflict_probe();
     let db = init_memory().await.unwrap();
     let repo = Repository::new(db.clone());
     let old = application(
@@ -622,7 +673,7 @@ async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_e
         .upload_source(caller(), request("original"))
         .await
         .unwrap();
-    run(&old).await.unwrap();
+    run_probe(&old, "seed").await.unwrap();
     let source_id = parse_record_id(&original.source_id, Some("source")).unwrap();
     let chunks = repo.get_source_chunks(&source_id).await.unwrap();
     let old_id = chunks[0].id.as_ref().unwrap().clone();
@@ -701,7 +752,7 @@ async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_e
     .unwrap()
     .check()
     .unwrap();
-    assert!(run(&current).await.is_err());
+    assert!(run_probe(&current, "dependency_copy_fault").await.is_err());
     assert_eq!(raw(&repo, "mentions").await, old_mentions);
     assert_eq!(raw(&repo, "entity").await, old_entities);
     for note in &old_notes {
@@ -738,7 +789,9 @@ async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_e
         .resume_remote_job(caller(), &admitted.job_id)
         .await
         .unwrap();
-    assert!(run(&resumed).await.is_err());
+    assert!(run_probe(&resumed, "visibility_promotion_fault")
+        .await
+        .is_err());
     assert_eq!(raw(&repo, "mentions").await, old_mentions);
     assert_eq!(raw(&repo, "entity").await, old_entities);
     assert_eq!(no_provider_calls.load(Ordering::SeqCst), 0);
@@ -778,7 +831,7 @@ async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_e
         .resume_remote_job(caller(), &admitted.job_id)
         .await
         .unwrap();
-    assert!(run(&resumed).await.is_err());
+    assert!(run_probe(&resumed, "proposal_audit_fault").await.is_err());
     assert_eq!(no_provider_calls.load(Ordering::SeqCst), 0);
     let promoted = resumed
         .get_remote_job(caller(), &admitted.job_id)
@@ -801,7 +854,7 @@ async fn migration_promotion_and_cleanup_faults_replay_without_reextracting_or_e
         .resume_remote_job(caller(), &admitted.job_id)
         .await
         .unwrap();
-    run(&resumed).await.unwrap();
+    run_probe(&resumed, "final_promoted_cleanup").await.unwrap();
     assert_eq!(no_provider_calls.load(Ordering::SeqCst), 0);
     assert_eq!(
         resumed

@@ -18,6 +18,7 @@ mod ids;
 mod inspection;
 mod jobs;
 mod metadata;
+mod migration_probe;
 mod models;
 mod notes;
 mod portable;
@@ -42,6 +43,7 @@ pub use jobs::{
     InferenceCacheEntry, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, ReindexItem,
 };
+use migration_probe::{migration_probe, migration_probe_result, migration_statement_errors};
 pub use models::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };

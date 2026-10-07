@@ -80,6 +80,10 @@ jobs:
         with:
           shared-key: quality-gates-v1
       - name: Run deterministic workspace tests (cargo test --workspace --locked)
+        # Only the fictional policy-migration fixture installs the safe
+        # dedicated subscriber; libtest hides captured output on success.
+        env:
+          GRAPHRAG_MIGRATION_CONFLICT_PROBE: "1"
         run: cargo test --workspace --locked
       - name: Validate the combined daily workflow with isolated provider doubles
         run: python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline

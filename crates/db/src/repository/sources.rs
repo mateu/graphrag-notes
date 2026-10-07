@@ -325,21 +325,37 @@ impl Repository {
             .as_ref()
             .ok_or_else(|| DbError::CreateFailed("source id".into()))?
             .clone();
-        let summary = self
-            .source_delete_summary(&source_id, Some(source.generation), true)
-            .await?;
-        self.promote_file_import_locked(source).await?;
+        let summary = migration_probe(
+            "cleanup",
+            "summary_read",
+            self.source_delete_summary(&source_id, Some(source.generation), true),
+        )
+        .await?;
+        migration_probe(
+            "cleanup",
+            "promote_source",
+            self.promote_file_import_locked(source),
+        )
+        .await?;
         // Proposal-backed edges are staged copy-on-write with their new note
         // endpoints. Once promotion makes those endpoints authoritative,
         // retarget the accepted proposal before deleting the old generation so
         // its audit row and undo path follow the replacement edge.
-        self.retarget_reconciled_proposals(&source_id, source.generation)
-            .await?;
+        migration_probe(
+            "cleanup",
+            "retarget_proposals",
+            self.retarget_reconciled_proposals(&source_id, source.generation),
+        )
+        .await?;
         // Do this only after durable promotion. A failure here can leave old
         // records behind, but cannot leave the corpus with no visible complete
         // generation; visibility selects `successful_generation`.
-        self.delete_source_notes_locked(&source_id, Some(source.generation), true)
-            .await?;
+        migration_probe(
+            "cleanup",
+            "delete_old_notes",
+            self.delete_source_notes_locked(&source_id, Some(source.generation), true),
+        )
+        .await?;
         Ok(summary)
     }
 
@@ -370,7 +386,7 @@ impl Repository {
                 struct UpdatedRow {
                     id: RecordId,
                 }
-                let updated: Option<UpdatedRow> = self
+                let mut response = migration_probe("cleanup.retarget", "sdk_await", self
                     .db
                     .query(
                         "UPDATE $proposal SET in = $from, out = $to, dedupe_key = $dedupe_key, resulting_edge_id = $edge, updated_at = time::now() WHERE status = 'accepted' RETURN AFTER",
@@ -379,9 +395,9 @@ impl Repository {
                     .bind(("from", from_id))
                     .bind(("to", to_id))
                     .bind(("dedupe_key", dedupe_key))
-                    .bind(("edge", edge.id.clone()))
-                    .await?
-                    .take(0)?;
+                    .bind(("edge", edge.id.clone()))).await?;
+                let updated: Option<UpdatedRow> =
+                    migration_probe_result("cleanup.retarget", "response_take", response.take(0))?;
                 if updated.is_none() {
                     let proposal = self.get_edge_proposal(proposal_id).await?.ok_or_else(|| {
                         DbError::NotFound(
@@ -558,13 +574,17 @@ impl Repository {
             .as_ref()
             .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
         let content = source_content_value(source)?;
-        self.db
-            .query("UPDATE $id MERGE $source")
-            .bind(("id", id.clone()))
-            .bind(("source", content))
-            .await?
-            .check()?;
-        self.db
+        let response = migration_probe(
+            "source.replace",
+            "merge_sdk_await",
+            self.db
+                .query("UPDATE $id MERGE $source")
+                .bind(("id", id.clone()))
+                .bind(("source", content)),
+        )
+        .await?;
+        migration_probe_result("source.replace", "merge_response_check", response.check())?;
+        let response = migration_probe("source.replace", "timestamps_sdk_await", self.db
             .query(
                 "UPDATE $id SET updated_at = <datetime>$updated_at, \
                  last_error = $last_error, \
@@ -576,9 +596,12 @@ impl Repository {
             .bind((
                 "last_ingested_at",
                 source.last_ingested_at.map(|time| time.to_rfc3339()),
-            ))
-            .await?
-            .check()?;
+            ))).await?;
+        migration_probe_result(
+            "source.replace",
+            "timestamps_response_check",
+            response.check(),
+        )?;
         Ok(())
     }
 
@@ -594,8 +617,18 @@ impl Repository {
         let notes = self
             .source_owned_note_ids(source_id, generation, older_than_generation)
             .await?;
-        self.supersede_proposals_for_removed_notes(&notes).await?;
-        self.delete_notes_and_dependents(&notes).await?;
+        migration_probe(
+            "cleanup.delete",
+            "supersede_proposals",
+            self.supersede_proposals_for_removed_notes(&notes),
+        )
+        .await?;
+        migration_probe(
+            "cleanup.delete",
+            "delete_dependents",
+            self.delete_notes_and_dependents(&notes),
+        )
+        .await?;
         Ok(summary)
     }
 
@@ -605,9 +638,12 @@ impl Repository {
     /// cascade runs.
     pub(crate) async fn delete_notes_and_dependents(&self, notes: &[RecordId]) -> Result<()> {
         for note_id in notes {
-            self.db
-                .query(
-                    "DELETE supports WHERE in = $note OR out = $note; \
+            let response = migration_probe(
+                "cleanup.delete_dependents",
+                "eight_statement_sdk_await",
+                self.db
+                    .query(
+                        "DELETE supports WHERE in = $note OR out = $note; \
                      DELETE contradicts WHERE in = $note OR out = $note; \
                      DELETE derived_from WHERE in = $note OR out = $note; \
                      DELETE related_to WHERE in = $note OR out = $note; \
@@ -615,10 +651,15 @@ impl Repository {
                      DELETE note_from_conversation WHERE in = $note; \
                      DELETE note_from_message WHERE in = $note; \
                      DELETE $note;",
-                )
-                .bind(("note", note_id.clone()))
-                .await?
-                .check()?;
+                    )
+                    .bind(("note", note_id.clone())),
+            )
+            .await?;
+            migration_probe_result(
+                "cleanup.delete_dependents",
+                "eight_statement_response_check",
+                response.check(),
+            )?;
         }
         Ok(())
     }
