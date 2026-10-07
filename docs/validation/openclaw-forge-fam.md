@@ -1,6 +1,6 @@
 # Forge OpenClaw connection to Fam
 
-The 2026-10-07 UTC qualification connected Forge OpenClaw to the existing Fam GraphRAG service using published `v0.1.0-rc.5`, SurrealDB `3.2.4`, and application schema `21`. Forge received the clients-only installation: all 109 published client payloads matched, and all 13 plugin payloads were copied and verified. No native GraphRAG installation or corpus import occurred on Forge.
+The 2026-10-07 UTC qualification connected Forge OpenClaw to the existing Fam GraphRAG service using the [published `v0.1.0-rc.5` prerelease](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.5), SurrealDB `3.2.4`, and application schema `21`. The [release record](../releases/0.1.0-rc.5.md) distinguishes completed publication/deployment from remaining platform and latency gates. Forge received the clients-only installation: all 109 published client payloads matched, and all 13 plugin payloads were copied and verified. No native GraphRAG installation or corpus import occurred on Forge.
 
 The connection uses an authenticated, supervised SSH reverse forward terminating on Forge loopback. A dedicated principal has read and capture capabilities. Enrollment added one row while preserving both original principal rows and the existing Fam authority ledger. The accepted Fam binary, configuration, native owner, existing Clawd route, and selected model settings remained unchanged.
 
