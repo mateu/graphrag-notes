@@ -6,6 +6,8 @@
 mod chats;
 #[cfg(test)]
 mod exact_vector_diagnostic_tests;
+#[cfg(test)]
+mod exact_vector_native_float_qualification;
 mod folder_sync;
 #[cfg(test)]
 mod fulltext_projection_tests;
