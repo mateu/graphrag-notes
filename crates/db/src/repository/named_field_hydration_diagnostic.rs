@@ -466,8 +466,9 @@ async fn edges(db: &DbConnection, sequence: &mut usize) {
             // These two cases expressly compare original hydration behavior;
             // a missing canonical row or unused computed error is not a proof
             // that the mirror mechanism is production-equivalent to baseline.
-            let required_dto_error =
-                edge == 2 || (matches!(scope, Scope::Message) && (edge == 4 || edge == 5));
+            let required_dto_error = edge == 1
+                || edge == 2
+                || (matches!(scope, Scope::Message) && (edge == 4 || edge == 5));
             verify_case(
                 scope,
                 case,
@@ -475,7 +476,7 @@ async fn edges(db: &DbConnection, sequence: &mut usize) {
                 edge != 7 && edge != 8,
                 !required_dto_error && edge != 7 && edge != 8,
             );
-            if edge == 2 || (matches!(scope, Scope::Message) && (edge == 4 || edge == 5)) {
+            if required_dto_error {
                 assert!(
                     outcomes
                         .iter()
