@@ -110,7 +110,7 @@ fn key(n: usize) -> RecordIdKey {
             value.insert("ordinal", n as i64);
             RecordIdKey::Object(value)
         }
-        _ => RecordIdKey::Array(Array(vec![
+        _ => RecordIdKey::Array(Array::from(vec![
             if n % 6 == 4 {
                 Value::Number(Number::Float(1.0))
             } else {
@@ -426,7 +426,7 @@ async fn assert_public_contract(
             .unwrap()
             .with_timezone(&Utc)
     });
-    let raw = Value::Array(Array(rows.to_vec()));
+    let raw = Value::Array(Array::from(rows.to_vec()));
     let (expected, actual, bits) = match scope {
         Scope::Note => {
             let expected = Vec::<SearchResult>::from_value(raw).unwrap();
