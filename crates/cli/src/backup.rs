@@ -2378,6 +2378,8 @@ mod tests {
         assert_eq!(restored.record_counts, created.record_counts);
         assert!(target.is_dir());
 
+        // Allow final embedded-session cleanup tasks to release native locks.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let reopened = Repository::new(init_persistent(&target).await.unwrap());
         assert_eq!(
             count_repository_records(&reopened).await.unwrap(),
@@ -2902,17 +2904,22 @@ mod tests {
         drop(restored);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // A separate OS process reopens the persisted restored checkpoint and exits.
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "backup::tests::schema22_recovery_subprocess_worker",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env("GRAPHRAG_SYNTHETIC_RESTART_DB", &target)
-            .output()
-            .unwrap();
+        let child_path = target.clone();
+        let child = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backup::tests::schema22_recovery_subprocess_worker",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("GRAPHRAG_SYNTHETIC_RESTART_DB", &child_path)
+                .output()
+                .unwrap()
+        })
+        .await
+        .unwrap();
         assert!(
             child.status.success(),
             "child recovery stdout={} stderr={}",
