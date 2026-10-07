@@ -26,7 +26,7 @@ fn needed(scope: Scope) -> &'static str {
     }
 }
 
-fn named_sql(scope: Scope, limit: usize) -> String {
+pub(super) fn named_sql(scope: Scope, limit: usize) -> String {
     let original = scope.mirror_sql(limit);
     let marker = "record_id.* AS row";
     assert_eq!(original.matches(marker).count(), 1);
@@ -36,7 +36,7 @@ fn named_sql(scope: Scope, limit: usize) -> String {
     named
 }
 
-fn dto(scope: Scope, rows: &[Value]) -> std::result::Result<serde_json::Value, String> {
+pub(super) fn dto(scope: Scope, rows: &[Value]) -> std::result::Result<serde_json::Value, String> {
     let value = Value::Array(Array::from(rows.to_vec()));
     match scope {
         Scope::Note => Vec::<SearchResult>::from_value(value)
@@ -165,7 +165,7 @@ async fn observe(
     result
 }
 
-async fn mirror_inventory(db: &DbConnection, count: usize) -> Vec<String> {
+pub(super) async fn mirror_inventory(db: &DbConnection, count: usize) -> Vec<String> {
     // Same bounded native inventory pattern; original sibling stays private.
     let mut inventories = Vec::new();
     for scope in SCOPES {
@@ -497,9 +497,9 @@ async fn edges(db: &DbConnection, sequence: &mut usize) {
     }
 }
 
-async fn correctness() {
-    QualificationRuntime::CurrentThread.observe("named_hydration_correctness", "before_fixture");
-    let (db, backend) = database("named-hydration-correctness-current-thread").await;
+async fn correctness(runtime: QualificationRuntime, canonical_label: &str, edge_label: &str) {
+    runtime.observe("named_hydration_correctness", "before_fixture");
+    let (db, backend) = database(canonical_label).await;
     let positive = populate(&db, 160, true).await;
     mirror_idle_fixture(&db).await;
     let primary = assert_inventory(&db, 160).await;
@@ -649,14 +649,14 @@ async fn correctness() {
     assert_eq!(mirrors, mirror_inventory(&db, 160).await);
     // Corruption controls are a separate fresh fixture, not a mutation of the
     // untouched historical correctness snapshot or a production coherence test.
-    let (edge_db, _) = database("named-hydration-payload-edges-current-thread").await;
+    let (edge_db, _) = database(edge_label).await;
     populate(&edge_db, 160, true).await;
     mirror_idle_fixture(&edge_db).await;
     edges(&edge_db, &mut sequence).await;
     assert_eq!(cases, 317);
     assert_eq!(public_contracts, 317);
     assert_eq!(sequence, 1047);
-    QualificationRuntime::CurrentThread.observe("named_hydration_correctness", "after_fixture");
+    runtime.observe("named_hydration_correctness", "after_fixture");
     emit(
         serde_json::json!({"named_hydration_correctness":"complete","backend":backend,"historical_query_vectors_successful":["finite_positive","zero","negative_zero","dimension_two","empty","negative_NaN","positive_infinity"],"cases_per_historical_vector":45,"coherent_KNN_cases_B_M_D_successful_rows_and_DTO_exact":317,"native_key_hydration_cases_B_M_D_exact":3,"six_native_key_forms_per_scope":6,"payload_edge_cases_M_D_payload_DTO_or_error_exact":27,"declared_attempt_pairs":1047,"plain_plans":3,"full_plan_executions":3,"outside_ledger_public_contract_queries":317,"inventory_tables_unchanged":["note","message","conversation","native_float_note_probe","native_float_message_probe","native_float_conversation_probe"],"intentional_Source_successful_generation_promotion":true,"entire_database_unchanged_claim":false,"timing_samples":0,"production_coherence_or_adoption":false,"provider_calls":0}),
     );
@@ -787,7 +787,23 @@ async fn pilot() {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "root-owned fictional named-field exactness; no production adoption"]
 async fn named_field_all_scopes_exact_current_thread() {
-    correctness().await;
+    correctness(
+        QualificationRuntime::CurrentThread,
+        "named-hydration-correctness-current-thread",
+        "named-hydration-payload-edges-current-thread",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "root-owned fictional named-field exactness; no production adoption"]
+async fn named_field_all_scopes_exact_two_worker() {
+    correctness(
+        QualificationRuntime::TwoWorker,
+        "named-hydration-correctness-two-worker",
+        "named-hydration-payload-edges-two-worker",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -904,3 +904,6 @@ mod message_recent_stage_diagnostic;
 
 #[path = "named_field_hydration_diagnostic.rs"]
 mod named_field_hydration_diagnostic;
+
+#[path = "named_field_hydration_wide_qualification.rs"]
+mod named_field_hydration_wide_qualification;
