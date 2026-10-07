@@ -168,6 +168,15 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
             .any(|t| t["name"] == "execute_source_enrichment"));
         assert_eq!(error(&fixture.tool(name,"prepare_source_enrichment",json!({"request_id":"review","source_id":source.id,"revision":source.revision})).await),"forbidden");
     }
+    for args in [
+        json!({"id":source.id}),
+        json!({"document_key":source.document_key}),
+    ] {
+        assert_eq!(
+            error(&fixture.tool("reader", "get_source", args).await),
+            "not_found"
+        );
+    }
     let list = fixture.rpc("enricher", "tools/list", json!({})).await;
     assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 7);
     assert_eq!(
@@ -284,5 +293,23 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
     })
     .await
     .unwrap();
+    // Rotate a Jobs-only bearer onto the same owner: generic aliases cannot bypass enrich.
+    let path = fixture._temp.path().join("credentials.json");
+    let mut credentials: CredentialFile =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for credential in &mut credentials.credentials {
+        if credential.instance_id == "enricher" {
+            credential.instance_id = "former-enricher".into();
+        } else if credential.instance_id == "jobs" {
+            credential.instance_id = "enricher".into();
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&credentials).unwrap()).unwrap();
+    for generic in ["get_job", "cancel_job", "resume_job"] {
+        assert_eq!(
+            error(&fixture.tool("jobs", generic, json!({"id":id})).await),
+            "forbidden"
+        );
+    }
     fixture.stop().await;
 }

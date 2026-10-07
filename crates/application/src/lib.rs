@@ -171,6 +171,20 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
             "Uploaded jobs are unavailable in this adapter".into(),
         ))
     }
+    /// Authenticated transport lookup; the unscoped sibling is trusted-internal only.
+    async fn get_owned_uploaded_source(
+        &self,
+        caller: CallerIdentity,
+        id: &str,
+    ) -> ApplicationResult<UploadedSource> {
+        let source = self.get_uploaded_source(id).await?;
+        if source.instance_id != caller.instance_id {
+            return Err(ApplicationError::NotFound(
+                "This instance has no uploaded source with that ID".into(),
+            ));
+        }
+        Ok(source)
+    }
     async fn get_uploaded_source(&self, _id: &str) -> ApplicationResult<UploadedSource> {
         Err(ApplicationError::Compatibility(
             "Uploaded sources are unavailable in this adapter".into(),

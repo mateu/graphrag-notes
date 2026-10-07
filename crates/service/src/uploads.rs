@@ -120,12 +120,16 @@ pub(crate) async fn dispatch(
             }
             let result = match name {
                 "cancel_source_enrichment_job" => {
-                    application.cancel_remote_job(caller, &input.id).await
+                    application
+                        .cancel_remote_job(caller.clone(), &input.id)
+                        .await
                 }
                 "retry_source_enrichment_job" => {
-                    application.resume_remote_job(caller, &input.id).await
+                    application
+                        .resume_remote_job(caller.clone(), &input.id)
+                        .await
                 }
-                _ => application.get_remote_job(caller, &input.id).await,
+                _ => application.get_remote_job(caller.clone(), &input.id).await,
             };
             match result {
                 Ok(mut job) => {
@@ -175,7 +179,7 @@ pub(crate) async fn dispatch(
                 Err(error) => return error,
             };
             let result = match (input.id, input.document_key) {
-                (Some(id), None) => application.get_uploaded_source(&id).await,
+                (Some(id), None) => application.get_owned_uploaded_source(caller, &id).await,
                 (None, Some(key)) => application.lookup_uploaded_source(caller, &key).await,
                 _ => {
                     return failure(
@@ -218,9 +222,17 @@ pub(crate) async fn dispatch(
                 );
             }
             let result = match name {
-                "get_job" => application.get_remote_job(caller, &input.id).await,
-                "cancel_job" => application.cancel_remote_job(caller, &input.id).await,
-                _ => application.resume_remote_job(caller, &input.id).await,
+                "get_job" => application.get_remote_job(caller.clone(), &input.id).await,
+                "cancel_job" => {
+                    application
+                        .cancel_remote_job(caller.clone(), &input.id)
+                        .await
+                }
+                _ => {
+                    application
+                        .resume_remote_job(caller.clone(), &input.id)
+                        .await
+                }
             };
             match result {
                 Ok(result) => success(result),
