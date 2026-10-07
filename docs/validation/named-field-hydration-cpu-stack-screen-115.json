@@ -1,0 +1,1960 @@
+{
+  "compiled_artifact": "same unchanged artifact as corrected wider qualification",
+  "debug_info": 0,
+  "engine": "SurrealDB 3.2.4",
+  "execution_limits": {
+    "automatic_retries": false,
+    "native_deadline_seconds": 300,
+    "sampler_deadline_seconds": 45,
+    "stdout_physical_write_cap": null,
+    "stdout_post_completion_read_bound_bytes": 33554432
+  },
+  "issues_106_and_115_remain_open": true,
+  "limits": [
+    "Counts are sampled stack observations, not exclusive CPU time, CPU shares or elapsed-time fractions.",
+    "All target-process threads are included, including waiting and background threads.",
+    "B/M/D references and queries run alongside between-call decoding, DTO conversion, hashing, assertions and logging; no baseline-only or per-arm attribution is supported.",
+    "Different family-presence counts overlap on reconstructed stacks and must not be added.",
+    "Marker receipt cursors are watcher observations, not query execution timestamps or per-stack arm assignments.",
+    "The optimized debug0 artifact may inline or omit separate cosine and magnitude symbols; missing names do not establish absence of work or norm-specific cost.",
+    "Profiler overhead and normal desktop/shared-service background activity make these instrumented timings unsuitable for performance qualification or causal attribution.",
+    "These captures do not establish a scalar-cache benefit, production adoption or issue closure."
+  ],
+  "performance_acceptance": false,
+  "production_adoption": false,
+  "production_changes": false,
+  "profiled_timing_is_qualification": false,
+  "provider_calls": 0,
+  "release_profile": true,
+  "roles": [
+    {
+      "all_thread_stack_observation_denominator": 507000,
+      "all_thread_terminal_frame_family_counts": {
+        "KnnTopK_or_generic_Distance_compute": 989,
+        "allocation_or_memory_operations": 8184,
+        "clone_or_drop": 3555,
+        "generic_Number_arithmetic": 1878,
+        "hashing_or_JSON_serialization": 414,
+        "indexed_vector_or_priority_queue": 559,
+        "other_engine_expression_or_value_work": 451,
+        "other_resolved": 1415,
+        "revisioned_record_value_decoding": 3676,
+        "unresolved": 716,
+        "wait_or_event_syscall": 485163
+      },
+      "backend": "memory",
+      "both_owned_groups_cleanup_verified": true,
+      "call_graph_node_count": 5159,
+      "controller_status": "failed_header_path_validation_retained_unchanged",
+      "embedding_dimensions": 1024,
+      "native_exit_code": 0,
+      "native_failed": 0,
+      "native_observed_launch_to_exit_seconds": 58.186726792017,
+      "native_passed": 1,
+      "native_replayed": false,
+      "observed_marker_context": {
+        "category_indices_observed": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "counts": [
+          {
+            "count": 229,
+            "marker": "named_hydration_wide_attempt",
+            "value": "completed",
+            "variant": "B"
+          },
+          {
+            "count": 230,
+            "marker": "named_hydration_wide_attempt",
+            "value": "completed",
+            "variant": "D"
+          },
+          {
+            "count": 230,
+            "marker": "named_hydration_wide_attempt",
+            "value": "completed",
+            "variant": "M"
+          },
+          {
+            "count": 230,
+            "marker": "named_hydration_wide_attempt",
+            "value": "started",
+            "variant": "B"
+          },
+          {
+            "count": 230,
+            "marker": "named_hydration_wide_attempt",
+            "value": "started",
+            "variant": "D"
+          },
+          {
+            "count": 230,
+            "marker": "named_hydration_wide_attempt",
+            "value": "started",
+            "variant": "M"
+          },
+          {
+            "count": 10,
+            "marker": "named_hydration_wide_category",
+            "value": "completed",
+            "variant": null
+          },
+          {
+            "count": 11,
+            "marker": "named_hydration_wide_reference",
+            "value": "completed",
+            "variant": "B"
+          },
+          {
+            "count": 11,
+            "marker": "named_hydration_wide_reference",
+            "value": "completed",
+            "variant": "D"
+          },
+          {
+            "count": 11,
+            "marker": "named_hydration_wide_reference",
+            "value": "completed",
+            "variant": "M"
+          },
+          {
+            "count": 11,
+            "marker": "named_hydration_wide_reference",
+            "value": "started",
+            "variant": "B"
+          },
+          {
+            "count": 11,
+            "marker": "named_hydration_wide_reference",
+            "value": "started",
+            "variant": "D"
+          },
+          {
+            "count": 11,
+            "marker": "named_hydration_wide_reference",
+            "value": "started",
+            "variant": "M"
+          }
+        ],
+        "entries_in_inclusive_receipt_cursor_span": 1455,
+        "receipt_times_are_not_execution_times": true,
+        "sampler_exit_cursor_event_index": 1456,
+        "sampler_launch_cursor_event_index": 2,
+        "stacks_cannot_be_assigned_to_arm_or_query_from_these_markers": true
+      },
+      "order": "baseline_first",
+      "per_thread": [
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 0
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": true,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 989,
+            "allocation_or_memory_operations": 8182,
+            "clone_or_drop": 3550,
+            "generic_Number_arithmetic": 1878,
+            "hashing_or_JSON_serialization": 414,
+            "indexed_vector_or_priority_queue": 559,
+            "other_engine_expression_or_value_work": 449,
+            "other_resolved": 1377,
+            "revisioned_record_value_decoding": 3676,
+            "unresolved": 2,
+            "wait_or_event_syscall": 49
+          },
+          "thread_index_in_report": 1
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 2
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 3
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 4
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 5
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 6
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 7
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 8
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 9
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 10
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 11
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 12
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 13
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 14
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 15
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 16
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 17
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 18
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21125
+          },
+          "thread_index_in_report": 19
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 1,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21124
+          },
+          "thread_index_in_report": 20
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 4,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 3,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 714,
+            "wait_or_event_syscall": 20404
+          },
+          "thread_index_in_report": 21
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 1,
+            "clone_or_drop": 1,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 32,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21091
+          },
+          "thread_index_in_report": 22
+        },
+        {
+          "denominator": 21125,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 1,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 2,
+            "other_resolved": 2,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 21120
+          },
+          "thread_index_in_report": 23
+        }
+      ],
+      "population_per_scope": 1024,
+      "retained_named_symbol_facts": {
+        "KnnTopK_poll_and_generic_Distance_compute_observed": true,
+        "generic_Number_add_or_multiply_observed": true,
+        "indexed_vector_dot_observed_separately": true,
+        "missing_cosine_or_magnitude_symbol_is_not_absence_of_work": true,
+        "named_cosine_symbol_observed": false,
+        "named_magnitude_symbol_observed": false,
+        "revisioned_record_and_value_decode_observed": true
+      },
+      "role_categories": 18,
+      "role_instrumented_calls": 1134,
+      "role_marker_events": 2398,
+      "role_runtime_events": 2,
+      "role_unmeasured_reference_pairs": 54,
+      "runtime": "current_thread",
+      "sampled_thread_count": 24,
+      "sampler_exit_code": 0,
+      "sampler_observed_launch_to_exit_seconds": 30.57408241601661,
+      "sampler_requested_seconds": 30,
+      "sampling_requested_interval_ms": 1,
+      "selected_test_thread_stack_family_presence_nonadditive": {
+        "counts": {
+          "KnnTopK_or_generic_Distance_compute": 4628,
+          "allocation_or_memory_operations": 8502,
+          "clone_or_drop": 3953,
+          "generic_Number_arithmetic": 1878,
+          "hashing_or_JSON_serialization": 494,
+          "indexed_vector_or_priority_queue": 640,
+          "other_engine_expression_or_value_work": 19473,
+          "other_resolved": 20936,
+          "revisioned_record_value_decoding": 11913,
+          "unresolved": 191,
+          "wait_or_event_syscall": 49
+        },
+        "denominator": 21125
+      },
+      "selected_test_thread_terminal_frame_family_counts": {
+        "KnnTopK_or_generic_Distance_compute": 989,
+        "allocation_or_memory_operations": 8182,
+        "clone_or_drop": 3550,
+        "generic_Number_arithmetic": 1878,
+        "hashing_or_JSON_serialization": 414,
+        "indexed_vector_or_priority_queue": 559,
+        "other_engine_expression_or_value_work": 449,
+        "other_resolved": 1377,
+        "revisioned_record_value_decoding": 3676,
+        "unresolved": 2,
+        "wait_or_event_syscall": 49
+      },
+      "separate_retained_target_and_protocol_recovery_accepted": true,
+      "thread_stack_observations_per_thread": 21125,
+      "top_of_stack_table_reconciliation": {
+        "below_threshold_observations_recovered_from_tree": 440,
+        "reported_observations": 506560,
+        "reported_rows": 110,
+        "threshold_at_least": 5
+      },
+      "unresolved": {
+        "all_thread_terminal_observations": 716,
+        "below_threshold_terminal_unresolved_observations": 2,
+        "call_graph_node_rows": 285,
+        "selected_test_stacks_with_unresolved_ancestor_or_terminal_frame": 191,
+        "selected_test_terminal_observations": 2
+      },
+      "workers": 1
+    },
+    {
+      "all_thread_stack_observation_denominator": 1230032,
+      "all_thread_terminal_frame_family_counts": {
+        "KnnTopK_or_generic_Distance_compute": 920,
+        "allocation_or_memory_operations": 7839,
+        "clone_or_drop": 3070,
+        "generic_Number_arithmetic": 1713,
+        "hashing_or_JSON_serialization": 352,
+        "indexed_vector_or_priority_queue": 465,
+        "other_engine_expression_or_value_work": 348,
+        "other_resolved": 1516,
+        "revisioned_record_value_decoding": 4745,
+        "unresolved": 1,
+        "wait_or_event_syscall": 1209063
+      },
+      "backend": "rocksdb",
+      "both_owned_groups_cleanup_verified": true,
+      "call_graph_node_count": 5642,
+      "controller_status": "one_Rocks_role_profiled_observations_complete",
+      "embedding_dimensions": 1024,
+      "native_exit_code": 0,
+      "native_failed": 0,
+      "native_observed_launch_to_exit_seconds": 67.84463083406445,
+      "native_passed": 1,
+      "native_replayed": false,
+      "observed_marker_context": {
+        "category_indices_observed": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "counts": [
+          {
+            "count": 205,
+            "marker": "named_hydration_wide_attempt",
+            "value": "completed",
+            "variant": "B"
+          },
+          {
+            "count": 204,
+            "marker": "named_hydration_wide_attempt",
+            "value": "completed",
+            "variant": "D"
+          },
+          {
+            "count": 204,
+            "marker": "named_hydration_wide_attempt",
+            "value": "completed",
+            "variant": "M"
+          },
+          {
+            "count": 205,
+            "marker": "named_hydration_wide_attempt",
+            "value": "started",
+            "variant": "B"
+          },
+          {
+            "count": 204,
+            "marker": "named_hydration_wide_attempt",
+            "value": "started",
+            "variant": "D"
+          },
+          {
+            "count": 205,
+            "marker": "named_hydration_wide_attempt",
+            "value": "started",
+            "variant": "M"
+          },
+          {
+            "count": 9,
+            "marker": "named_hydration_wide_category",
+            "value": "completed",
+            "variant": null
+          },
+          {
+            "count": 10,
+            "marker": "named_hydration_wide_reference",
+            "value": "completed",
+            "variant": "B"
+          },
+          {
+            "count": 10,
+            "marker": "named_hydration_wide_reference",
+            "value": "completed",
+            "variant": "D"
+          },
+          {
+            "count": 10,
+            "marker": "named_hydration_wide_reference",
+            "value": "completed",
+            "variant": "M"
+          },
+          {
+            "count": 10,
+            "marker": "named_hydration_wide_reference",
+            "value": "started",
+            "variant": "B"
+          },
+          {
+            "count": 10,
+            "marker": "named_hydration_wide_reference",
+            "value": "started",
+            "variant": "D"
+          },
+          {
+            "count": 10,
+            "marker": "named_hydration_wide_reference",
+            "value": "started",
+            "variant": "M"
+          }
+        ],
+        "entries_in_inclusive_receipt_cursor_span": 1296,
+        "receipt_times_are_not_execution_times": true,
+        "sampler_exit_cursor_event_index": 1297,
+        "sampler_launch_cursor_event_index": 2,
+        "stacks_cannot_be_assigned_to_arm_or_query_from_these_markers": true
+      },
+      "order": "baseline_first",
+      "per_thread": [
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 0
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": true,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 920,
+            "allocation_or_memory_operations": 7828,
+            "clone_or_drop": 3070,
+            "generic_Number_arithmetic": 1713,
+            "hashing_or_JSON_serialization": 352,
+            "indexed_vector_or_priority_queue": 465,
+            "other_engine_expression_or_value_work": 347,
+            "other_resolved": 1351,
+            "revisioned_record_value_decoding": 4745,
+            "unresolved": 1,
+            "wait_or_event_syscall": 56
+          },
+          "thread_index_in_report": 1
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 2
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 3
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 4
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 5
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 6
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 7
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 8
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 9
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 10
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 11
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 12
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 13
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 14
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 15
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 16
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 17
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 18
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 19
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 20
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 21
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 22
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 23
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 24
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 25
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 26
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 27
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 28
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 29
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 30
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 31
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 32
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 33
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 34
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 35
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 36
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 3,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 25,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20820
+          },
+          "thread_index_in_report": 37
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 38
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 39
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 40
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 41
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 42
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 43
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 44
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 45
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 46
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 1,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20847
+          },
+          "thread_index_in_report": 47
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 48
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 49
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 50
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 51
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 52
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 53
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 54
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 8,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 103,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20737
+          },
+          "thread_index_in_report": 55
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 0,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20848
+          },
+          "thread_index_in_report": 56
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 0,
+            "other_resolved": 2,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20846
+          },
+          "thread_index_in_report": 57
+        },
+        {
+          "denominator": 20848,
+          "selected_test_thread": false,
+          "terminal_frame_family_counts": {
+            "KnnTopK_or_generic_Distance_compute": 0,
+            "allocation_or_memory_operations": 0,
+            "clone_or_drop": 0,
+            "generic_Number_arithmetic": 0,
+            "hashing_or_JSON_serialization": 0,
+            "indexed_vector_or_priority_queue": 0,
+            "other_engine_expression_or_value_work": 1,
+            "other_resolved": 34,
+            "revisioned_record_value_decoding": 0,
+            "unresolved": 0,
+            "wait_or_event_syscall": 20813
+          },
+          "thread_index_in_report": 58
+        }
+      ],
+      "population_per_scope": 1024,
+      "retained_named_symbol_facts": {
+        "KnnTopK_poll_and_generic_Distance_compute_observed": true,
+        "generic_Number_add_or_multiply_observed": true,
+        "indexed_vector_dot_observed_separately": true,
+        "missing_cosine_or_magnitude_symbol_is_not_absence_of_work": true,
+        "named_cosine_symbol_observed": false,
+        "named_magnitude_symbol_observed": false,
+        "revisioned_record_and_value_decode_observed": true
+      },
+      "role_categories": 18,
+      "role_instrumented_calls": 1134,
+      "role_marker_events": 2398,
+      "role_runtime_events": 2,
+      "role_unmeasured_reference_pairs": 54,
+      "runtime": "current_thread",
+      "sampled_thread_count": 59,
+      "sampler_exit_code": 0,
+      "sampler_observed_launch_to_exit_seconds": 31.033861749921925,
+      "sampler_requested_seconds": 30,
+      "sampling_requested_interval_ms": 1,
+      "selected_test_thread_stack_family_presence_nonadditive": {
+        "counts": {
+          "KnnTopK_or_generic_Distance_compute": 4258,
+          "allocation_or_memory_operations": 8081,
+          "clone_or_drop": 3393,
+          "generic_Number_arithmetic": 1713,
+          "hashing_or_JSON_serialization": 428,
+          "indexed_vector_or_priority_queue": 545,
+          "other_engine_expression_or_value_work": 19446,
+          "other_resolved": 20656,
+          "revisioned_record_value_decoding": 12734,
+          "unresolved": 195,
+          "wait_or_event_syscall": 56
+        },
+        "denominator": 20848
+      },
+      "selected_test_thread_terminal_frame_family_counts": {
+        "KnnTopK_or_generic_Distance_compute": 920,
+        "allocation_or_memory_operations": 7828,
+        "clone_or_drop": 3070,
+        "generic_Number_arithmetic": 1713,
+        "hashing_or_JSON_serialization": 352,
+        "indexed_vector_or_priority_queue": 465,
+        "other_engine_expression_or_value_work": 347,
+        "other_resolved": 1351,
+        "revisioned_record_value_decoding": 4745,
+        "unresolved": 1,
+        "wait_or_event_syscall": 56
+      },
+      "separate_retained_target_and_protocol_recovery_accepted": false,
+      "thread_stack_observations_per_thread": 20848,
+      "top_of_stack_table_reconciliation": {
+        "below_threshold_observations_recovered_from_tree": 541,
+        "reported_observations": 1229491,
+        "reported_rows": 98,
+        "threshold_at_least": 5
+      },
+      "unresolved": {
+        "all_thread_terminal_observations": 1,
+        "below_threshold_terminal_unresolved_observations": 1,
+        "call_graph_node_rows": 304,
+        "selected_test_stacks_with_unresolved_ancestor_or_terminal_frame": 195,
+        "selected_test_terminal_observations": 1
+      },
+      "workers": 1
+    }
+  ],
+  "schema_version": 1,
+  "stack_presence_count_method": "For each terminal observation count each family present anywhere on its reconstructed stack once; distinct families overlap and are not additive.",
+  "status": "two_separate_captured_roles_interpreted_without_performance_qualification",
+  "symbol_family_precedence": [
+    "unresolved",
+    "wait_or_event_syscall",
+    "allocation_or_memory_operations",
+    "revisioned_record_value_decoding",
+    "generic_Number_arithmetic",
+    "KnnTopK_or_generic_Distance_compute",
+    "indexed_vector_or_priority_queue",
+    "clone_or_drop",
+    "hashing_or_JSON_serialization",
+    "other_engine_expression_or_value_work",
+    "other_resolved"
+  ],
+  "system_allocator": true,
+  "terminal_count_method": "Subtract immediate child counts from each printed call-tree node; nonnegative residuals reconcile to each thread root under one broad symbol-family precedence.",
+  "workload": {
+    "arms": {
+      "B": "production native exact query over the canonical tables",
+      "D": "experimental native-Float mirror with named-field hydration",
+      "M": "experimental native-Float mirror with wildcard hydration"
+    },
+    "filters": [
+      "all",
+      "recent",
+      "source"
+    ],
+    "first_measured_after_all_three_references_not_cold": true,
+    "limits": [
+      5,
+      50
+    ],
+    "measured_observations_per_arm_per_category": 21,
+    "scopes": [
+      "notes",
+      "messages",
+      "conversations"
+    ],
+    "unmeasured_reference_order_each_category": [
+      "B",
+      "M",
+      "D"
+    ]
+  }
+}
