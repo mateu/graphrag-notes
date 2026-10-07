@@ -901,3 +901,6 @@ async fn native_float_all_scopes_release_qualification_two_worker_runtime() {
 
 #[path = "message_recent_stage_diagnostic.rs"]
 mod message_recent_stage_diagnostic;
+
+#[path = "named_field_hydration_diagnostic.rs"]
+mod named_field_hydration_diagnostic;
