@@ -136,7 +136,8 @@ pub(crate) async fn dispatch(
                     if let Some(result) = job.result.as_mut() {
                         result["reviewed"] = serde_json::to_value(receipt.clone()).unwrap();
                         match application
-                            .get_uploaded_source(
+                            .get_owned_uploaded_source(
+                                caller.clone(),
                                 receipt.plan["source_id"].as_str().unwrap_or_default(),
                             )
                             .await
