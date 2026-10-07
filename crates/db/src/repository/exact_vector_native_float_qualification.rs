@@ -561,16 +561,24 @@ async fn assert_inventory(db: &DbConnection, count: usize) -> Vec<String> {
             seen += rows.len();
         }
         assert_eq!(seen, count);
-        let mirror_count: Vec<i64> = db
+        let mirror_count: Vec<Value> = db
             .query(format!(
-                "SELECT VALUE count() FROM {} GROUP ALL",
+                "SELECT count() AS count FROM {} GROUP ALL",
                 scope.mirror()
             ))
             .await
             .unwrap()
             .take(0)
             .unwrap();
-        assert_eq!(mirror_count, vec![count as i64], "no extra mirror rows");
+        assert_eq!(mirror_count.len(), 1, "exactly one mirror count row");
+        let Value::Object(row) = &mirror_count[0] else {
+            panic!("expected native mirror count object")
+        };
+        assert_eq!(
+            row.get("count"),
+            Some(&Value::Number(Number::Int(count as i64))),
+            "no extra mirror rows"
+        );
         primary.push(format!("{:x}", digest.finalize()));
     }
     primary
