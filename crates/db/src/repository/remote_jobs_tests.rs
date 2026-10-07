@@ -375,6 +375,284 @@ async fn chunk_staging_is_atomic_and_hidden_until_promotion() {
 }
 
 #[tokio::test]
+async fn initial_upload_persists_exact_authoritative_origin_without_pending_metadata() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let mut request = input("owner", "origin-first", "Original Atlas");
+    request.source_provenance["metadata"] =
+        serde_json::json!({"collection":"fixture","attribution":{"label":"initial"}});
+    let (admission, lease) = admit_claim(&repo, request.clone(), "epoch", "worker").await;
+    let source = repo.begin_remote_upload_generation(&lease).await.unwrap();
+    let expected_origin = serde_json::json!({
+        "instance_id": request.authenticated_instance_id,
+        "document_key": request.document_key,
+        "request_id": request.request_id,
+        "source": request.source_provenance,
+        "job_id": record_id_to_string(&lease.job_id),
+        "processing_options": request.processing_options,
+        "extract_entities": request.extract_entities,
+    });
+    let unrelated = serde_json::json!({
+        "owner_annotations":{"nested":{"keep":true},"labels":["retained"]},
+        "fixture_version":7,
+    });
+    let mut preparing_metadata = unrelated.clone();
+    preparing_metadata["remote_upload_pending"] = expected_origin.clone();
+    repo.db
+        .query("UPDATE $source SET metadata = $metadata")
+        .bind(("source", source.id.clone().unwrap()))
+        .bind(("metadata", preparing_metadata.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let reader = Repository::new(repo.db.clone());
+    let preparing = reader
+        .get_source(&source.uri.clone().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(preparing.metadata, preparing_metadata);
+    assert_eq!(preparing.successful_generation, 0);
+    assert!(reader
+        .get_source_chunks(source.id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+
+    complete(&repo, &lease, &request.markdown).await;
+    let reloaded = reader
+        .get_source(&source.uri.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut expected_metadata = unrelated;
+    expected_metadata["remote_upload"] = expected_origin;
+    assert_eq!(reloaded.metadata, expected_metadata);
+    assert!(reloaded.metadata.get("remote_upload_pending").is_none());
+    assert_eq!(reloaded.generation, 1);
+    assert_eq!(reloaded.successful_generation, 1);
+    assert_eq!(reloaded.status, SourceIngestionStatus::Ready);
+    let chunks = reader
+        .get_source_chunks(reloaded.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].content, request.markdown);
+    let inspection = reader
+        .inspect_record(&record_id_to_string(chunks[0].id.as_ref().unwrap()), 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        inspection.provenance.source,
+        Some(request.source_provenance.clone())
+    );
+    assert_eq!(inspection.provenance.instance_id.as_deref(), Some("owner"));
+
+    let persisted_job = reader
+        .get_remote_upload_job("owner", &record_id_to_string(&lease.job_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted_job.input, request);
+    assert_eq!(persisted_job.admission, admission.result);
+    assert_eq!(persisted_job.job.status, "completed");
+    assert_eq!(persisted_job.source_generation, Some(1));
+    assert_eq!(
+        persisted_job.result,
+        Some(serde_json::json!({"status":"completed"}))
+    );
+    let receipt = reader
+        .find_remote_upload_admission("owner", &request.request_id, &request.payload_fingerprint)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.result, admission.result);
+}
+
+#[tokio::test]
+async fn changed_upload_promotes_exact_new_origin_and_removes_nested_optional_policy() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let mut original = input("owner", "origin-old", "Original Atlas");
+    original.source_provenance["metadata"] =
+        serde_json::json!({"collection":"fixture","optional_attribution":"old"});
+    original.processing_options["embedding"] = serde_json::json!({
+        "provider":"fixture","model":"fixture","cache_identity":"fixture",
+        "endpoint_identity":"fixture","dimension":"3",
+    });
+    let (old_admission, old_lease) =
+        admit_claim(&repo, original.clone(), "epoch", "old-worker").await;
+    let source = repo
+        .begin_remote_upload_generation(&old_lease)
+        .await
+        .unwrap();
+    let unrelated = serde_json::json!({
+        "owner_annotations":{"nested":{"keep":true},"labels":["retained"]},
+        "fixture_version":7,
+    });
+    let mut seeded_metadata = source.metadata;
+    seeded_metadata["owner_annotations"] = unrelated["owner_annotations"].clone();
+    seeded_metadata["fixture_version"] = unrelated["fixture_version"].clone();
+    repo.db
+        .query("UPDATE $source SET metadata = $metadata")
+        .bind(("source", source.id.clone().unwrap()))
+        .bind(("metadata", seeded_metadata))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let old_completed = complete(&repo, &old_lease, &original.markdown).await;
+    let reader = Repository::new(repo.db.clone());
+    let old_source = reader
+        .get_source(&old_completed.source_uri)
+        .await
+        .unwrap()
+        .unwrap();
+    let old_origin = serde_json::json!({
+        "instance_id": original.authenticated_instance_id,
+        "document_key": original.document_key,
+        "request_id": original.request_id,
+        "source": original.source_provenance,
+        "job_id": record_id_to_string(&old_lease.job_id),
+        "processing_options": original.processing_options,
+        "extract_entities": original.extract_entities,
+    });
+    let mut old_metadata = unrelated.clone();
+    old_metadata["remote_upload"] = old_origin.clone();
+    assert_eq!(old_source.metadata, old_metadata);
+    let old_inspection = reader
+        .inspect_record(&old_completed.job.item_ids[0], 0)
+        .await
+        .unwrap();
+
+    let mut changed = input("owner", "origin-new", "Changed Atlas");
+    changed.source_provenance = serde_json::json!({
+        "uri":"file:///client/atlas.md","label":"replacement",
+        "metadata":{"collection":"fixture"},
+    });
+    changed.processing_options = original.processing_options.clone();
+    changed.processing_options["embedding"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dimension");
+    let (new_admission, new_lease) =
+        admit_claim(&repo, changed.clone(), "epoch", "new-worker").await;
+    repo.begin_remote_upload_generation(&new_lease)
+        .await
+        .unwrap();
+    let staged = repo
+        .stage_remote_upload_notes(&new_lease, vec![Note::new(&changed.markdown)])
+        .await
+        .unwrap();
+    let new_origin = serde_json::json!({
+        "instance_id": changed.authenticated_instance_id,
+        "document_key": changed.document_key,
+        "request_id": changed.request_id,
+        "source": changed.source_provenance,
+        "job_id": record_id_to_string(&new_lease.job_id),
+        "processing_options": changed.processing_options,
+        "extract_entities": changed.extract_entities,
+    });
+    let preparing = reader
+        .get_source(&old_completed.source_uri)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut preparing_metadata = old_metadata;
+    preparing_metadata["remote_upload_pending"] = new_origin.clone();
+    assert_eq!(preparing.metadata, preparing_metadata);
+    assert_eq!(preparing.generation, 2);
+    assert_eq!(preparing.successful_generation, 1);
+    assert_eq!(preparing.status, SourceIngestionStatus::Pending);
+    let visible = reader
+        .get_source_chunks(old_completed.source_id.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].content, original.markdown);
+    assert_eq!(
+        record_id_to_string(visible[0].id.as_ref().unwrap()),
+        old_completed.job.item_ids[0]
+    );
+    assert_eq!(
+        reader
+            .inspect_record(&old_completed.job.item_ids[0], 0)
+            .await
+            .unwrap()
+            .provenance,
+        old_inspection.provenance
+    );
+    assert!(reader
+        .inspect_record(&staged.job.item_ids[0], 0)
+        .await
+        .is_err());
+
+    complete(&repo, &new_lease, &changed.markdown).await;
+    let promoted = reader
+        .get_source(&old_completed.source_uri)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut promoted_metadata = unrelated;
+    promoted_metadata["remote_upload"] = new_origin;
+    assert_eq!(promoted.metadata, promoted_metadata);
+    assert!(promoted.metadata.get("remote_upload_pending").is_none());
+    assert!(promoted.metadata["remote_upload"]["source"]["metadata"]
+        .get("optional_attribution")
+        .is_none());
+    assert!(
+        promoted.metadata["remote_upload"]["processing_options"]["embedding"]
+            .get("dimension")
+            .is_none()
+    );
+    assert_eq!(promoted.generation, 2);
+    assert_eq!(promoted.successful_generation, 2);
+    assert_eq!(promoted.status, SourceIngestionStatus::Ready);
+    let visible = reader
+        .get_source_chunks(promoted.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].content, changed.markdown);
+    assert_eq!(
+        record_id_to_string(visible[0].id.as_ref().unwrap()),
+        staged.job.item_ids[0]
+    );
+    let new_inspection = reader
+        .inspect_record(&staged.job.item_ids[0], 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        new_inspection.provenance.source,
+        Some(changed.source_provenance.clone())
+    );
+
+    for (request, admission, lease, generation) in [
+        (&original, &old_admission, &old_lease, 1),
+        (&changed, &new_admission, &new_lease, 2),
+    ] {
+        let persisted_job = reader
+            .get_remote_upload_job("owner", &record_id_to_string(&lease.job_id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&persisted_job.input, request);
+        assert_eq!(persisted_job.admission, admission.result);
+        assert_eq!(persisted_job.job.status, "completed");
+        assert_eq!(persisted_job.source_generation, Some(generation));
+        let receipt = reader
+            .find_remote_upload_admission(
+                "owner",
+                &request.request_id,
+                &request.payload_fingerprint,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.result, admission.result);
+    }
+}
+
+#[tokio::test]
 async fn failed_refresh_preserves_old_content_and_origin_and_new_attempt_invalidates_old_resume() {
     let repo = Repository::new(init_memory().await.unwrap());
     let (_, original) = admit_claim(
