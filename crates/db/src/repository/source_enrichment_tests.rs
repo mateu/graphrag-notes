@@ -431,7 +431,7 @@ async fn transactional_failure_rolls_back_policy_entity_and_mention_writes() {
     metadata[KEY] = stage_value(&staged).unwrap();
     let effects=format!("LET $note = $notes[0].id; LET $replacement_entities=$entity_batches[0]; LET $replacement_entity_names=$identity_batches[0]; {} {} THROW 'injected promotion failure';",super::super::notes::replacement_entities_transaction(),super::super::notes::replacement_mentions_transaction("$note"));
     assert!(repo
-        .write_enrichment(&source, metadata, &effects, notes)
+        .write_enrichment(&source, metadata, &effects, notes, None)
         .await
         .is_err());
     assert_eq!(rows(&repo, "source").await, before);

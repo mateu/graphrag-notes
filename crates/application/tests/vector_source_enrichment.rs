@@ -873,7 +873,7 @@ async fn reviewed_transport_running_cancellation_keeps_private_stage_and_shared_
     let ar = repo.inspect_record(&ai, 0).await.unwrap();
     let br = repo.inspect_record(&bi, 0).await.unwrap();
     assert!(app
-        .propose_endpoint_relationship(
+        .propose_endpoint_remote(
             caller(),
             RemoteEndpointProposalRequest {
                 request_id: request.request_id,

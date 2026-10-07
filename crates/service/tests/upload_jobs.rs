@@ -286,7 +286,7 @@ async fn same_document_uploads_queue_while_another_document_completes() {
     assert_eq!(data(&second_done)["result"]["generation"], 2);
     assert_eq!(data(&second_done)["result"]["source_id"], source_id);
     let source = fixture
-        .call(READER, "get_source", json!({"id":source_id}))
+        .call(OWNER, "get_source", json!({"id":source_id}))
         .await;
     assert_eq!(data(&source)["generation"], 2);
     assert_eq!(data(&source)["successful_generation"], 2);
@@ -368,7 +368,7 @@ async fn admitted_jobs_outlive_their_http_action_and_cancel_during_provider_work
     assert_eq!(
         data(
             &fixture
-                .call(READER, "get_source", json!({"id":source}))
+                .call(OWNER, "get_source", json!({"id":source}))
                 .await
         )["content"],
         upload("disconnect")["content"]

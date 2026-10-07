@@ -2846,7 +2846,7 @@ mod tests {
         let ar = repo.inspect_record(&ai, 0).await.unwrap();
         let br = repo.inspect_record(&bi, 0).await.unwrap();
         application
-            .propose_endpoint_relationship(
+            .propose_endpoint_remote(
                 caller.clone(),
                 RemoteEndpointProposalRequest {
                     request_id: "backup-proposal".into(),
