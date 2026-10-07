@@ -372,6 +372,134 @@ async fn rollback_refuses_foreign_mentions_or_relationship_dependents() {
         .await
         .is_err());
 }
+
+async fn proposal_for_enrichment_note(
+    repo: &Repository,
+    note: &Note,
+    suffix: &str,
+) -> ProposedEdge {
+    let other = repo
+        .create_note(Note::new(format!("Independent reviewed endpoint {suffix}")))
+        .await
+        .unwrap();
+    repo.upsert_edge_proposal(EdgeProposalDraft {
+        from_id: note.id.clone().unwrap(),
+        to_id: other.id.unwrap(),
+        edge_type: EdgeType::Supports,
+        confidence: 1.0,
+        reason: format!("Reviewed rollback dependency {suffix}"),
+        generator: "test-reviewed-proposal".into(),
+        generator_version: Some("1".into()),
+        model: None,
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn rollback_separates_terminal_proposal_audit_from_active_graph_dependencies() {
+    // The five persisted states are intentionally split by dependency semantics:
+    // pending/accepting/accepted and unknown values are active; only
+    // rejected/superseded remain audit rows.
+    for status in ["pending", "accepting", "accepted", "unknown_future_state"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+        let plan = plan(&source, "Atlas");
+        let notes = prepared(&repo, &plan).await;
+        repo.promote_source_entity_enrichment(&plan).await.unwrap();
+        let proposal = proposal_for_enrichment_note(&repo, &notes[0], status).await;
+        if status == "accepted" {
+            repo.accept_edge_proposal(
+                proposal.id.as_ref().unwrap(),
+                Some("reviewer".into()),
+                Some("materialized rollback dependency".into()),
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(rows(&repo, "supports").await.len(), 1);
+        } else if status == "accepting" || status == "unknown_future_state" {
+            repo.db
+                .query("UPDATE $proposal SET status=$status,updated_at=time::now()")
+                .bind(("proposal", proposal.id.clone()))
+                .bind(("status", status))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        let source_before = rows(&repo, "source").await;
+        let notes_before = rows(&repo, "note").await;
+        let mentions_before = rows(&repo, "mentions").await;
+        let jobs_before = rows(&repo, "processing_job").await;
+        assert!(
+            repo.rollback_source_entity_enrichment(&plan, true)
+                .await
+                .is_err(),
+            "active proposal status {status} must block rollback"
+        );
+        assert_eq!(
+            rows(&repo, "source").await,
+            source_before,
+            "{status} source"
+        );
+        assert_eq!(rows(&repo, "note").await, notes_before, "{status} notes");
+        assert_eq!(
+            rows(&repo, "mentions").await,
+            mentions_before,
+            "{status} mentions"
+        );
+        assert_eq!(
+            rows(&repo, "processing_job").await,
+            jobs_before,
+            "{status} jobs"
+        );
+    }
+
+    for status in ["rejected", "superseded"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+        let plan = plan(&source, "Atlas");
+        let notes = prepared(&repo, &plan).await;
+        // This reviewed proposal exists before enrichment publication. Its later
+        // supersession must retain the audit record without retaining a graph
+        // dependency that prevents policy rollback.
+        let proposal = proposal_for_enrichment_note(&repo, &notes[0], status).await;
+        repo.reject_edge_proposal(
+            proposal.id.as_ref().unwrap(),
+            Some("reviewer".into()),
+            Some("reviewed before promotion".into()),
+        )
+        .await
+        .unwrap();
+        if status == "superseded" {
+            repo.db
+                .query("UPDATE $proposal SET status='superseded',superseded_at=time::now(),supersession_reason='reviewed proposal superseded before promotion',updated_at=time::now()")
+                .bind(("proposal", proposal.id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        repo.promote_source_entity_enrichment(&plan).await.unwrap();
+        let result = repo
+            .rollback_source_entity_enrichment(&plan, true)
+            .await
+            .unwrap();
+        assert_eq!(result.status, "rolled_back");
+        let retained = repo
+            .get_edge_proposal(proposal.id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.status.to_string(), status);
+        assert!(
+            retained.reviewed_at.is_some(),
+            "{status} audit review retained"
+        );
+        assert_eq!(rows(&repo, "mentions").await.len(), 0);
+    }
+}
 #[tokio::test]
 async fn source_replacement_invalidates_conversion_and_removes_previous_mentions() {
     let repo = Repository::new(init_memory().await.unwrap());

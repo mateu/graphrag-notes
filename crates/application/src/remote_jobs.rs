@@ -416,13 +416,10 @@ pub(crate) async fn source(
     let extract_entities = origin["extract_entities"]
         .as_bool()
         .unwrap_or(origin_job.input.extract_entities);
-    let applied_options = if enriched {
-        &origin["processing_options"]
-    } else {
-        &origin_job.input.processing_options
-    };
+    let applied_options = &origin["processing_options"];
     let extraction_complete = enriched
-        || (origin_job.input.extract_entities
+        || (source.metadata.get("entity_enrichment_v1").is_none()
+            && origin_job.input.extract_entities
             && (origin_job.job.status == "completed" || origin_job.phase == "migration_promoted")
             && source.successful_generation == source.generation
             && source.status == graphrag_core::SourceIngestionStatus::Ready

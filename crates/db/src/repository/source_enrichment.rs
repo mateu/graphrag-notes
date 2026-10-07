@@ -57,6 +57,9 @@ struct Stage {
     plan: SourceEnrichmentPlan,
     status: String,
     prior_origin: serde_json::Value,
+    /// Latest acknowledged unchanged capture; prior_origin remains immutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    current_origin: Option<serde_json::Value>,
     items: Vec<Item>,
     #[serde(default)]
     opening_graph_epoch: u64,
@@ -207,10 +210,22 @@ fn saved_stage(source: &Source) -> Result<Stage> {
     {
         return Err(conflict());
     }
-    let mut expected_origin = result.prior_origin.clone();
+    let current_origin = result
+        .current_origin
+        .as_ref()
+        .unwrap_or(&result.prior_origin);
+    if current_origin["instance_id"] != plan.instance_id
+        || current_origin["document_key"] != plan.document_key
+    {
+        return Err(conflict());
+    }
+    let mut expected_origin = current_origin.clone();
     if result.status == "promoted" {
         expected_origin["extract_entities"] = serde_json::json!(true);
         expected_origin["processing_options"] = result.plan.target_processing_options.clone();
+    } else {
+        expected_origin["extract_entities"] = serde_json::json!(false);
+        expected_origin["processing_options"] = result.prior_origin["processing_options"].clone();
     }
     if source.metadata["remote_upload"] != expected_origin {
         return Err(conflict());
@@ -224,11 +239,7 @@ fn stage(source: &Source, plan: &SourceEnrichmentPlan) -> Result<Stage> {
     }
     Ok(result)
 }
-/// Validate saved lineage for staged, promoted, and compensated unchanged uploads.
-pub(super) fn source_entity_enrichment_origin_current(source: &Source) -> bool {
-    let Ok(decoded) = saved_stage(source) else {
-        return false;
-    };
+fn origin_current(source: &Source, decoded: &Stage) -> bool {
     source.source_type == SourceType::Markdown
         && decoded.plan.expected_generation == source.generation
         && source.generation == source.successful_generation
@@ -296,12 +307,75 @@ impl Repository {
             .await
             .is_ok())
     }
+    /// Rebind only the active capture snapshot, never the reviewed opening lineage.
+    pub(super) async fn rebind_unchanged_enrichment_origin(
+        &self,
+        source: &Source,
+        origin: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let mut saved = self.validated_enrichment_origin(source).await?;
+        if origin["instance_id"] != saved.plan.instance_id
+            || origin["document_key"] != saved.plan.document_key
+            || origin["extract_entities"] != source.metadata["remote_upload"]["extract_entities"]
+            || origin["processing_options"]
+                != source.metadata["remote_upload"]["processing_options"]
+        {
+            return Err(conflict());
+        }
+        saved.current_origin = Some(origin.clone());
+        stage_value(&saved)
+    }
+    pub(super) async fn validate_source_entity_enrichment_origin(
+        &self,
+        source: &Source,
+    ) -> Result<()> {
+        self.validated_enrichment_origin(source).await.map(|_| ())
+    }
+    async fn validated_enrichment_origin(&self, source: &Source) -> Result<Stage> {
+        let saved = saved_stage(source)?;
+        if !origin_current(source, &saved) {
+            return Err(conflict());
+        }
+        self.validate_enrichment_evidence(source, &saved, saved.status == "promoted")
+            .await?;
+        Ok(saved)
+    }
     async fn validate_enrichment_evidence(
         &self,
         source: &Source,
         staged: &Stage,
         published: bool,
     ) -> Result<()> {
+        if let Some(origin) = &staged.current_origin {
+            let latest = self
+                .get_remote_upload_job(
+                    &staged.plan.instance_id,
+                    origin["job_id"].as_str().ok_or_else(conflict)?,
+                )
+                .await?
+                .ok_or_else(conflict)?;
+            if latest.input.enrichment.is_some()
+                || latest.source_id != source.id
+                || latest.source_generation != Some(staged.plan.expected_generation)
+                || source.uri.as_deref() != Some(latest.source_uri.as_str())
+                || latest.job.scope.as_deref() != Some("unchanged")
+                || !matches!(latest.phase.as_str(), "promoted" | "completed")
+                || latest.request_id != origin["request_id"]
+                || latest.input.document_key != staged.plan.document_key
+                || latest.input.source_provenance != origin["source"]
+                || latest.input.title != source.title
+                || graphrag_core::normalized_content_hash(&latest.input.markdown)
+                    != staged.plan.expected_content_sha256
+                || !uploaded_processing_compatible(
+                    &latest.input.processing_options,
+                    &staged.plan.target_processing_options,
+                    false,
+                    false,
+                )
+            {
+                return Err(conflict());
+            }
+        }
         let mut notes = Vec::new();
         let mut checks = String::new();
         for (index, item) in staged.items.iter().enumerate() {
@@ -459,7 +533,7 @@ impl Repository {
             return Ok(None);
         }
         Ok(Some(
-            serde_json::json!({"operation":if saved.status=="promoted" {"enrich"} else {"rollback"},"source_id":saved.plan.source_id,"document_key":saved.plan.document_key,"owner":saved.plan.instance_id,"source_uri":source.uri,"title":source.title,"provenance":origin["source"],"content_sha256":format!("{:x}",Sha256::digest(supplied_content.as_bytes())),"generation":source.generation,"original_request_id":origin["request_id"],"part":part,"parts":parts,"opening_revision":if saved.status=="promoted" {saved.plan.expected_source_revision} else {saved.rollback_opening_revision.ok_or_else(conflict)?},"final_revision":revision,"opening_graph_epoch":opening_epoch,"final_graph_epoch":epoch,"original_policy_sha256":saved.plan.original_policy_sha256,"applied_policy_sha256":uploaded_processing_policy_sha256(&origin["processing_options"])?,"extraction_enabled":saved.status=="promoted","endpoint_revisions":endpoints}),
+            serde_json::json!({"operation":if saved.status=="promoted" {"enrich"} else {"rollback"},"source_id":saved.plan.source_id,"document_key":saved.plan.document_key,"owner":saved.plan.instance_id,"source_uri":source.uri,"title":source.title,"provenance":origin["source"],"content_sha256":format!("{:x}",Sha256::digest(supplied_content.as_bytes())),"generation":source.generation,"original_request_id":saved.prior_origin["request_id"],"part":part,"parts":parts,"opening_revision":if saved.status=="promoted" {saved.plan.expected_source_revision} else {saved.rollback_opening_revision.ok_or_else(conflict)?},"final_revision":revision,"opening_graph_epoch":opening_epoch,"final_graph_epoch":epoch,"original_policy_sha256":saved.plan.original_policy_sha256,"applied_policy_sha256":uploaded_processing_policy_sha256(&origin["processing_options"])?,"extraction_enabled":saved.status=="promoted","endpoint_revisions":endpoints}),
         ))
     }
     /// Stage only the inspected source's current chunks. No entity/mention/policy changes.
@@ -580,6 +654,7 @@ impl Repository {
             plan,
             status: "staged".into(),
             prior_origin: origin.clone(),
+            current_origin: None,
             items,
             opening_graph_epoch: source.metadata["graph_policy_revision"]
                 .as_u64()
@@ -722,6 +797,9 @@ impl Repository {
         metadata["remote_upload"]["extract_entities"] = serde_json::json!(true);
         metadata["graph_enrichment_managed"] = serde_json::json!(true);
         metadata["remote_upload"]["processing_options"] = plan.target_processing_options.clone();
+        if staged.current_origin.is_some() {
+            staged.current_origin = Some(metadata["remote_upload"].clone());
+        }
         metadata[KEY] = stage_value(&staged)?;
         metadata["graph_policy_revision"] = serde_json::json!(source.metadata
             ["graph_policy_revision"]
@@ -777,15 +855,13 @@ impl Repository {
         for item in &staged.items {
             notes.push(self.enrichment_note(item, plan).await?);
         }
-        for table in [
-            "supports",
-            "contradicts",
-            "derived_from",
-            "related_to",
-            "proposed_edge",
-        ] {
+        // Relationship rows are always live dependencies. Proposal records are
+        // audit history once explicitly rejected or superseded; every other
+        // (including future/unknown) state remains fail-closed.
+        for table in ["supports", "contradicts", "derived_from", "related_to"] {
             effects.push_str(&format!("IF array::len((SELECT VALUE id FROM {table} WHERE in IN $note_ids OR out IN $note_ids LIMIT 1)) != 0 {{ THROW '{FENCE}'; }}; "));
         }
+        effects.push_str(&format!("IF array::len((SELECT VALUE id FROM proposed_edge WHERE status != 'rejected' AND status != 'superseded' AND (in IN $note_ids OR out IN $note_ids) LIMIT 1)) != 0 {{ THROW '{FENCE}'; }}; "));
         if staged.status == "promoted" {
             for (index, item) in staged.items.iter().enumerate() {
                 let count = item.entities.as_ref().ok_or_else(conflict)?.len();
@@ -794,7 +870,16 @@ impl Repository {
             effects.push_str("DELETE mentions WHERE in IN $note_ids; ");
         }
         let mut metadata = source.metadata.clone();
-        metadata["remote_upload"] = staged.prior_origin.clone();
+        metadata["remote_upload"] = staged
+            .current_origin
+            .clone()
+            .unwrap_or_else(|| staged.prior_origin.clone());
+        metadata["remote_upload"]["extract_entities"] = serde_json::json!(false);
+        metadata["remote_upload"]["processing_options"] =
+            staged.prior_origin["processing_options"].clone();
+        if staged.current_origin.is_some() {
+            staged.current_origin = Some(metadata["remote_upload"].clone());
+        }
         metadata["graph_enrichment_managed"] = serde_json::json!(false);
         let original_job = self
             .get_remote_upload_job(

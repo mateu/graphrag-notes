@@ -121,8 +121,14 @@ fn request(id: &str) -> UploadSourceRequest {
     }
 }
 async fn run(app: &EmbeddedApplication) -> ApplicationResult<RemoteJobExecution> {
+    run_in_epoch(app, "fixture-epoch").await
+}
+async fn run_in_epoch(
+    app: &EmbeddedApplication,
+    epoch: &str,
+) -> ApplicationResult<RemoteJobExecution> {
     let execution = app
-        .claim_remote_job("fixture-epoch", "fixture-worker")
+        .claim_remote_job(epoch, "fixture-worker")
         .await?
         .expect("queued job");
     app.execute_remote_job(execution.clone(), ActionCancellation::new())
@@ -228,7 +234,7 @@ async fn provider_failure_resumes_without_claiming_graph_freshness_and_sync_can_
 async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollback() {
     let repo = Repository::new(init_memory().await.unwrap());
     let calls = Arc::new(AtomicUsize::new(0));
-    let app = application(
+    let vector_app = application(
         &repo,
         "fixture-policy",
         calls.clone(),
@@ -236,9 +242,30 @@ async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollb
     );
     let mut input = request("direct-origin");
     input.extract_entities = false;
-    let admission = app.upload_source(caller(), input.clone()).await.unwrap();
-    run(&app).await.unwrap();
-    let plan = conversion_plan(&repo, &app, &admission.source_id).await;
+    let admission = vector_app
+        .upload_source(caller(), input.clone())
+        .await
+        .unwrap();
+    run(&vector_app).await.unwrap();
+    let app = application(
+        &repo,
+        "conversion-policy",
+        calls.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let opening = app.get_uploaded_source(&admission.source_id).await.unwrap();
+    let reviewed = app
+        .prepare_source_enrichment(
+            caller(),
+            PrepareSourceEnrichment {
+                request_id: "reviewed-conversion".into(),
+                source_id: opening.id,
+                revision: opening.revision,
+            },
+        )
+        .await
+        .unwrap();
+    let plan: graphrag_db::SourceEnrichmentPlan = serde_json::from_value(reviewed.plan).unwrap();
     repo.begin_source_entity_enrichment(plan.clone())
         .await
         .unwrap();
@@ -250,8 +277,11 @@ async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollb
     let mut staged_unchanged = input.clone();
     staged_unchanged.request_id = "direct-origin-staged-unchanged".into();
     staged_unchanged.preserve_unchanged = true;
-    let staged_upload = app.upload_source(caller(), staged_unchanged).await.unwrap();
-    run(&app).await.unwrap();
+    let staged_upload = vector_app
+        .upload_source(caller(), staged_unchanged)
+        .await
+        .unwrap();
+    run(&vector_app).await.unwrap();
     assert_eq!(
         app.get_remote_job(caller(), &staged_upload.job_id)
             .await
@@ -265,8 +295,8 @@ async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollb
             .await
             .unwrap()
             .unwrap()
-            .metadata,
-        staged_source.metadata
+            .metadata["entity_enrichment_v1"]["prior_origin"],
+        staged_source.metadata["entity_enrichment_v1"]["prior_origin"]
     );
     assert_eq!(
         repo.inspect_source_entity_enrichment(&plan)
@@ -285,7 +315,6 @@ async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollb
         .await
         .unwrap()
         .unwrap();
-    let promoted_origin = promoted_source.metadata["remote_upload"].clone();
     let prior_origin = promoted_source.metadata["entity_enrichment_v1"]["prior_origin"].clone();
     let promoted_notes = rows(&repo, "note").await;
     let inference_calls = calls.load(Ordering::SeqCst);
@@ -326,8 +355,8 @@ async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollb
         promoted_source.successful_generation
     );
     assert_eq!(
-        after_unchanged_source.metadata["remote_upload"],
-        promoted_origin
+        after_unchanged_source.metadata["remote_upload"]["job_id"],
+        unchanged_admission.job_id
     );
     assert_eq!(
         after_unchanged_source.metadata["entity_enrichment_v1"]["prior_origin"],
@@ -335,7 +364,14 @@ async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollb
     );
     assert_eq!(rows(&repo, "note").await, promoted_notes);
     assert_eq!(calls.load(Ordering::SeqCst), inference_calls);
-    assert_eq!(after_unchanged.latest_upload_request_id, input.request_id);
+    assert_eq!(
+        after_unchanged.latest_upload_request_id,
+        "direct-origin-unchanged"
+    );
+    assert_eq!(
+        after_unchanged.reviewed_enrichment_v1.as_ref().unwrap()["original_request_id"],
+        input.request_id
+    );
     assert_eq!(
         after_unchanged.reviewed_enrichment_v1.as_ref().unwrap()["operation"],
         "enrich"
@@ -359,14 +395,25 @@ async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollb
     );
     assert!(!rolled_back.extract_entities);
     assert_eq!(rolled_back.extraction_policy_current, None);
+    assert_eq!(
+        rolled_back.processing_policy_sha256,
+        plan.original_policy_sha256
+    );
+    assert_ne!(
+        rolled_back.processing_policy_sha256,
+        rolled_back.configured_processing_policy_sha256
+    );
     assert_eq!(rows(&repo, "note").await, promoted_notes);
 
     let mut after_rollback = input.clone();
     after_rollback.request_id = "direct-origin-after-rollback".into();
     after_rollback.preserve_unchanged = true;
     after_rollback.expected_source_revision = Some(rolled_back.revision.clone());
-    let after_rollback_admission = app.upload_source(caller(), after_rollback).await.unwrap();
-    run(&app).await.unwrap();
+    let after_rollback_admission = vector_app
+        .upload_source(caller(), after_rollback)
+        .await
+        .unwrap();
+    run(&vector_app).await.unwrap();
     let after_rollback_job = app
         .get_remote_job(caller(), &after_rollback_admission.job_id)
         .await
@@ -386,10 +433,20 @@ async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollb
         final_source.successful_generation,
         promoted_source.successful_generation
     );
-    assert_eq!(final_source.metadata["remote_upload"], prior_origin);
+    assert_eq!(
+        final_source.metadata["entity_enrichment_v1"]["prior_origin"],
+        prior_origin
+    );
+    assert_eq!(
+        final_view.processing_policy_sha256,
+        plan.original_policy_sha256
+    );
     assert_eq!(rows(&repo, "note").await, promoted_notes);
     assert_eq!(calls.load(Ordering::SeqCst), inference_calls);
-    assert_eq!(final_view.latest_upload_request_id, input.request_id);
+    assert_eq!(
+        final_view.latest_upload_request_id,
+        "direct-origin-after-rollback"
+    );
     assert_eq!(
         final_view.reviewed_enrichment_v1.as_ref().unwrap()["operation"],
         "rollback"
@@ -1229,4 +1286,272 @@ async fn reviewed_transport_rejects_direct_conversion_identity_reuse_for_rollbac
     assert!(replay.replayed);
     assert_eq!(replay.job_id, admitted.job_id);
     assert_eq!(replay.source_id, admitted.source_id);
+}
+
+async fn lineage_fixture(
+    state: &str,
+) -> (
+    Repository,
+    EmbeddedApplication,
+    Arc<AtomicUsize>,
+    UploadAdmission,
+    graphrag_db::SourceEnrichmentPlan,
+) {
+    let (repo, app, calls, _, source, operation) = transport_fixture().await;
+    let plan: graphrag_db::SourceEnrichmentPlan =
+        serde_json::from_value(operation.reviewed.plan).unwrap();
+    repo.begin_source_entity_enrichment(plan.clone())
+        .await
+        .unwrap();
+    if state != "staged" {
+        app.enrich_uploaded_source(caller(), plan.clone(), ActionCancellation::new())
+            .await
+            .unwrap();
+    }
+    if state == "rolled_back" {
+        repo.rollback_source_entity_enrichment(&plan, true)
+            .await
+            .unwrap();
+    }
+    (repo, app, calls, source, plan)
+}
+
+#[tokio::test]
+async fn reviewed_unchanged_refresh_preserves_latest_input_and_immutable_lineage() {
+    for state in ["staged", "promoted", "rolled_back"] {
+        let (repo, app, calls, source, plan) = lineage_fixture(state).await;
+        let before = repo.get_source(&source.source_id).await.unwrap().unwrap();
+        let notes = rows(&repo, "note").await;
+        let calls_before = calls.load(Ordering::SeqCst);
+        let mut capture = request("initial");
+        capture.extract_entities = state == "promoted";
+        for variant in ["line_endings", "host", "collection"] {
+            let mut refresh = capture;
+            refresh.request_id = format!("{state}-{variant}");
+            match variant {
+                "line_endings" => refresh.content = refresh.content.replace('\n', "\r\n"),
+                "host" => {
+                    refresh
+                        .provenance
+                        .as_mut()
+                        .unwrap()
+                        .metadata
+                        .insert("host".into(), "different-host".into());
+                }
+                _ => {
+                    refresh
+                        .provenance
+                        .as_mut()
+                        .unwrap()
+                        .metadata
+                        .insert("collection_id".into(), "different-collection".into());
+                }
+            }
+            let expected_content = refresh.content.clone();
+            let expected_provenance =
+                serde_json::to_value(refresh.provenance.as_ref().unwrap()).unwrap();
+            let admitted = app.upload_source(caller(), refresh.clone()).await.unwrap();
+            run(&app).await.unwrap();
+            assert_eq!(
+                app.get_remote_job(caller(), &admitted.job_id)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()["action"],
+                "unchanged"
+            );
+            let current = app.get_uploaded_source(&source.source_id).await.unwrap();
+            assert_eq!(current.content, expected_content, "{state}/{variant}");
+            assert_eq!(current.provenance, expected_provenance, "{state}/{variant}");
+            let saved = repo.get_source(&source.source_id).await.unwrap().unwrap();
+            assert_eq!(saved.content, before.content);
+            assert_eq!(saved.generation, before.generation);
+            assert_eq!(
+                saved.metadata["entity_enrichment_v1"]["prior_origin"],
+                before.metadata["entity_enrichment_v1"]["prior_origin"]
+            );
+            assert_eq!(
+                repo.inspect_source_entity_enrichment(&plan)
+                    .await
+                    .unwrap()
+                    .status,
+                state
+            );
+            assert_eq!(rows(&repo, "note").await, notes, "{state}/{variant}");
+            capture = refresh;
+        }
+        let final_state = if state == "promoted" {
+            let current = app.get_uploaded_source(&source.source_id).await.unwrap();
+            repo.rollback_source_entity_enrichment(&plan, true)
+                .await
+                .unwrap();
+            let rolled = app.get_uploaded_source(&source.source_id).await.unwrap();
+            assert_eq!(rolled.content, current.content);
+            assert_eq!(rolled.provenance, current.provenance);
+            assert_eq!(
+                rolled.latest_upload_request_id,
+                current.latest_upload_request_id
+            );
+            assert_eq!(rolled.processing_policy_sha256, plan.original_policy_sha256);
+            assert_eq!(
+                rolled.reviewed_enrichment_v1.as_ref().unwrap()["original_request_id"],
+                "transport-vector"
+            );
+            "rolled_back"
+        } else {
+            state
+        };
+        let mut exact = request(&format!("{state}-exact"));
+        exact.extract_entities = final_state == "promoted";
+        let admitted = app.upload_source(caller(), exact).await.unwrap();
+        run(&app).await.unwrap();
+        assert_eq!(
+            app.get_remote_job(caller(), &admitted.job_id)
+                .await
+                .unwrap()
+                .result
+                .unwrap()["action"],
+            "unchanged"
+        );
+        assert_eq!(
+            repo.inspect_source_entity_enrichment(&plan)
+                .await
+                .unwrap()
+                .status,
+            final_state
+        );
+        assert_eq!(
+            app.get_uploaded_source(&source.source_id)
+                .await
+                .unwrap()
+                .latest_upload_request_id,
+            format!("{state}-exact")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), calls_before);
+    }
+}
+
+#[tokio::test]
+async fn reviewed_unchanged_recovery_is_fenced_across_policy_epoch_transitions() {
+    for (opening, successor) in [
+        ("staged", "promoted"),
+        ("staged", "rolled_back"),
+        ("promoted", "rolled_back"),
+    ] {
+        for interruption in ["cancelled", "interrupted", "restart"] {
+            let (repo, app, calls, source, plan) = lineage_fixture(opening).await;
+            let mut exact = request(&format!("{opening}-{successor}-{interruption}"));
+            exact.extract_entities = opening == "promoted";
+            let admitted = app.upload_source(caller(), exact).await.unwrap();
+            let execution = app
+                .claim_remote_job("epoch", "worker")
+                .await
+                .unwrap()
+                .unwrap();
+            let lease = graphrag_db::RemoteJobLease {
+                job_id: graphrag_db::parse_record_id(&execution.job_id, Some("processing_job"))
+                    .unwrap(),
+                instance_id: execution.instance_id.clone(),
+                service_epoch: execution.service_epoch.clone(),
+                worker_token: execution.worker_token.clone(),
+            };
+            repo.begin_remote_upload_generation(&lease).await.unwrap();
+            if interruption == "cancelled" {
+                app.cancel_remote_job(caller(), &admitted.job_id)
+                    .await
+                    .unwrap();
+                repo.finish_remote_upload_job(
+                    &lease,
+                    graphrag_db::ProcessingJobStatus::Cancelled,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            } else if interruption == "interrupted" {
+                repo.recover_remote_upload_job(&lease, "worker_interrupted")
+                    .await
+                    .unwrap();
+            }
+            if opening == "staged" {
+                app.enrich_uploaded_source(caller(), plan.clone(), ActionCancellation::new())
+                    .await
+                    .unwrap();
+            }
+            if successor == "rolled_back" {
+                repo.rollback_source_entity_enrichment(&plan, true)
+                    .await
+                    .unwrap();
+            }
+            let calls_after_transition = calls.load(Ordering::SeqCst);
+            let current = app.get_uploaded_source(&source.source_id).await.unwrap();
+            assert_eq!(
+                current.extraction_policy_current,
+                (successor == "promoted").then_some(true)
+            );
+            assert_eq!(
+                current.reviewed_enrichment_v1.as_ref().unwrap()["operation"],
+                if successor == "promoted" {
+                    "enrich"
+                } else {
+                    "rollback"
+                }
+            );
+            if interruption == "restart" {
+                app.reconcile_remote_jobs("new-epoch").await.unwrap();
+                assert_eq!(
+                    app.get_remote_job(caller(), &admitted.job_id)
+                        .await
+                        .unwrap()
+                        .status,
+                    "failed"
+                );
+            }
+            assert!(
+                app.resume_remote_job(caller(), &admitted.job_id)
+                    .await
+                    .is_err(),
+                "{opening}/{successor}/{interruption}"
+            );
+            assert_eq!(
+                app.get_uploaded_source(&source.source_id)
+                    .await
+                    .unwrap()
+                    .revision,
+                current.revision
+            );
+            let mut fresh = request(&format!("{opening}-{successor}-{interruption}-fresh"));
+            fresh.extract_entities = successor == "promoted";
+            fresh.preserve_unchanged = true;
+            let fresh_admission = app.upload_source(caller(), fresh).await.unwrap();
+            run_in_epoch(
+                &app,
+                if interruption == "restart" {
+                    "new-epoch"
+                } else {
+                    "fixture-epoch"
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                app.get_remote_job(caller(), &fresh_admission.job_id)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()["action"],
+                "unchanged"
+            );
+            let fresh_view = app.get_uploaded_source(&source.source_id).await.unwrap();
+            assert_eq!(
+                fresh_view.extraction_policy_current,
+                current.extraction_policy_current
+            );
+            assert_eq!(
+                fresh_view.reviewed_enrichment_v1.as_ref().unwrap()["operation"],
+                current.reviewed_enrichment_v1.as_ref().unwrap()["operation"]
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), calls_after_transition);
+        }
+    }
 }

@@ -39,6 +39,12 @@ fn default_limit() -> usize {
     20
 }
 
+/// The application maps the database's non-decoding family classification into
+/// `job_type`, so damaged saved enrichment plans remain hidden without decoding.
+pub(crate) fn job_visible(principal: &Principal, job: &RemoteJobStatus) -> bool {
+    job.job_type != "remote_enrichment" || principal.allows(Capability::Enrich)
+}
+
 pub(crate) fn catalog() -> Vec<(Capability, Tool)> {
     let mut tools = vec![
         (Capability::Upload, definition::<UploadSourceRequest, UploadAdmission>("upload_source", "Upload supplied UTF-8 Markdown (at most 65536 bytes) under an opaque document_key scoped to this authenticated instance. No path is read or URL fetched. Reuse identical payload/request_id after a lost response; processing belongs to the returned durable job.", false)),
@@ -205,11 +211,7 @@ pub(crate) async fn dispatch(
                 .await
             {
                 Ok(mut result) => {
-                    if !principal.allows(Capability::Enrich) {
-                        result
-                            .jobs
-                            .retain(|job| job.job_type != "remote_enrichment");
-                    }
+                    result.jobs.retain(|job| job_visible(principal, job));
                     success(result)
                 }
                 Err(error) => application_failure(error),
@@ -220,30 +222,23 @@ pub(crate) async fn dispatch(
                 Ok(input) => input,
                 Err(error) => return error,
             };
-            if !principal.allows(Capability::Enrich)
-                && match application.get_remote_job(caller.clone(), &input.id).await {
-                    Ok(job) => job.job_type == "remote_enrichment",
-                    Err(error) => return application_failure(error),
-                }
-            {
+            let job = match application.get_remote_job(caller.clone(), &input.id).await {
+                Ok(job) => job,
+                Err(error) => return application_failure(error),
+            };
+            if !job_visible(principal, &job) {
                 return failure(
                     "forbidden",
                     "Enrichment control requires explicit enrich capability",
                     false,
                 );
             }
+            if name == "get_job" {
+                return success(job);
+            }
             let result = match name {
-                "get_job" => application.get_remote_job(caller.clone(), &input.id).await,
-                "cancel_job" => {
-                    application
-                        .cancel_remote_job(caller.clone(), &input.id)
-                        .await
-                }
-                _ => {
-                    application
-                        .resume_remote_job(caller.clone(), &input.id)
-                        .await
-                }
+                "cancel_job" => application.cancel_remote_job(caller, &input.id).await,
+                _ => application.resume_remote_job(caller, &input.id).await,
             };
             match result {
                 Ok(result) => success(result),

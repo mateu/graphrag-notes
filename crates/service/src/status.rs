@@ -41,14 +41,17 @@ pub(crate) async fn report(
         )
         .await
         {
-            // Defense in depth: adapter output must still belong to this principal.
-            let owned: Vec<_> = list
+            // Defense in depth: adapter output must still belong to this
+            // principal. Family visibility is applied before sampling and
+            // aggregation, so hidden failures cannot affect readiness.
+            let mut sampled = 0;
+            for job in list
                 .jobs
                 .into_iter()
                 .filter(|job| job.instance_id == principal.instance_id)
+                .filter(|job| crate::uploads::job_visible(principal, job))
                 .take(JOB_SAMPLE_LIMIT)
-                .collect();
-            for job in &owned {
+            {
                 let status = match job.status.as_str() {
                     "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted" => {
                         job.status.as_str()
@@ -56,8 +59,9 @@ pub(crate) async fn report(
                     _ => "unknown",
                 };
                 *jobs.counts.entry(status.into()).or_default() += 1;
+                sampled += 1;
             }
-            jobs.sampled = owned.len();
+            jobs.sampled = sampled;
             jobs.readiness = Readiness::new(
                 ReadinessState::Ready,
                 "Bounded recent job sample for this principal only.",

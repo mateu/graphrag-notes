@@ -96,8 +96,10 @@ impl Fixture {
     }
     async fn rpc(&self, name: &str, method: &str, params: Value) -> Value {
         let response = self.request(name, method, params).send().await.unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        response.json().await.unwrap()
+        let status = response.status();
+        let body = response.text().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+        serde_json::from_str(&body).unwrap()
     }
     async fn tool(&self, name: &str, tool: &str, args: Value) -> Value {
         self.rpc(name, "tools/call", json!({"name":tool,"arguments":args}))
@@ -294,7 +296,8 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
     })
     .await
     .unwrap();
-    // Rotate a Jobs-only bearer onto the same owner: generic aliases cannot bypass enrich.
+    // Rotate a Jobs+Read+Enrich bearer onto the same owner to retain all three
+    // durable job families before enrichment authority is revoked.
     let path = fixture._temp.path().join("credentials.json");
     let mut credentials: CredentialFile =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -303,7 +306,9 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
             credential.instance_id = "former-enricher".into();
         } else if credential.instance_id == "jobs" {
             credential.instance_id = "enricher".into();
-            credential.capabilities.push(Capability::Enrich);
+            credential
+                .capabilities
+                .extend([Capability::Read, Capability::Enrich]);
         }
     }
     std::fs::write(&path, serde_json::to_vec(&credentials).unwrap()).unwrap();
@@ -320,8 +325,20 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
             .count(),
         2
     );
-    // A damaged plan must not make classification fall open through a decode error.
-    db.query("UPDATE processing_job SET remote_input.enrichment = { broken: true } WHERE remote_input.enrichment IS NOT NONE AND remote_input.enrichment IS NOT NULL").await.unwrap().check().unwrap();
+    let authorized_readiness = fixture.tool("jobs", "service_status", json!({})).await;
+    assert_eq!(data(&authorized_readiness)["jobs"]["sampled"], 3);
+    assert_eq!(
+        data(&authorized_readiness)["jobs"]["counts"]["completed"],
+        3
+    );
+    assert_eq!(
+        data(&authorized_readiness)["jobs"]["readiness"]["state"],
+        "ready"
+    );
+    // Preserve a hostile terminal outcome before capability revocation: neither
+    // damage to saved enrichment input nor a failed conversion may leak into
+    // generic Jobs observability.
+    db.query("UPDATE processing_job SET status = 'failed', remote_input.enrichment = { broken: true } WHERE remote_input.enrichment IS NOT NONE AND remote_input.enrichment IS NOT NULL").await.unwrap().check().unwrap();
     for credential in &mut credentials.credentials {
         if credential.instance_id == "enricher" {
             credential
@@ -340,6 +357,11 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
         "Jobs-only list must omit conversion and rollback: {listed}"
     );
     assert_eq!(jobs[0]["id"], upload.job_id);
+    let readiness = fixture.tool("jobs", "service_status", json!({})).await;
+    assert_eq!(data(&readiness)["jobs"]["sampled"], 1);
+    assert_eq!(data(&readiness)["jobs"]["counts"]["completed"], 1);
+    assert!(data(&readiness)["jobs"]["counts"]["failed"].is_null());
+    assert_eq!(data(&readiness)["jobs"]["readiness"]["state"], "ready");
     for generic in ["get_job", "cancel_job", "resume_job"] {
         assert_eq!(
             error(&fixture.tool("jobs", generic, json!({"id":id})).await),
