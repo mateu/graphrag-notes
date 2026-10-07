@@ -75,6 +75,160 @@ async fn execute(app: &EmbeddedApplication, epoch: &str) -> RemoteJobExecution {
     execution
 }
 
+struct LastGoodUpload {
+    source: graphrag_core::Source,
+    chunks: serde_json::Value,
+    job: graphrag_db::RemoteUploadJob,
+}
+
+async fn last_good_upload(
+    db: &graphrag_db::DbConnection,
+    repo: &Repository,
+    request_id: &str,
+) -> LastGoodUpload {
+    let application = healthy(repo);
+    let mut input = request(request_id);
+    input
+        .provenance
+        .as_mut()
+        .unwrap()
+        .metadata
+        .insert("obsolete_origin".into(), "old-only".into());
+    let admission = application
+        .upload_source(caller("openclaw"), input)
+        .await
+        .unwrap();
+    execute(&application, "last-good-service").await;
+    let job = repo
+        .get_remote_upload_job("openclaw", &admission.job_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.job.status, "completed");
+    let source = repo.get_source(&job.source_uri).await.unwrap().unwrap();
+    // Unrelated nested metadata must survive both failed attempts and promotion.
+    db.query("UPDATE $source SET metadata.fixture_preserved = $metadata")
+        .bind(("source", source.id.clone().unwrap()))
+        .bind((
+            "metadata",
+            serde_json::json!({"nested": {"keep": "last-good"}, "enabled": false}),
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let source = repo.get_source(&job.source_uri).await.unwrap().unwrap();
+    assert_eq!(source.generation, source.successful_generation);
+    assert!(source.successful_generation > 0);
+    let chunks = serde_json::to_value(
+        repo.get_source_chunks(source.id.as_ref().unwrap())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!chunks.as_array().unwrap().is_empty());
+    LastGoodUpload {
+        source,
+        chunks,
+        job,
+    }
+}
+
+async fn assert_admission_unchanged(repo: &Repository, snapshot: &graphrag_db::RemoteUploadJob) {
+    let current = repo
+        .get_remote_upload_job(
+            &snapshot.instance_id,
+            &graphrag_core::record_id_to_string(snapshot.job.id.as_ref().unwrap()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.input, snapshot.input);
+    assert_eq!(current.admission, snapshot.admission);
+    assert_eq!(current.request_id, snapshot.request_id);
+    assert_eq!(current.source_uri, snapshot.source_uri);
+}
+
+async fn assert_refresh_pending(
+    repo: &Repository,
+    good: &LastGoodUpload,
+    admission: &graphrag_db::RemoteUploadJob,
+) -> serde_json::Value {
+    let source = repo
+        .get_source(&admission.source_uri)
+        .await
+        .unwrap()
+        .unwrap();
+    let pending = serde_json::json!({
+        "instance_id": admission.instance_id,
+        "document_key": admission.input.document_key,
+        "request_id": admission.request_id,
+        "source": admission.input.source_provenance,
+        "job_id": graphrag_core::record_id_to_string(admission.job.id.as_ref().unwrap()),
+        "processing_options": admission.input.processing_options,
+        "extract_entities": admission.input.extract_entities,
+    });
+    let mut expected_metadata = good.source.metadata.clone();
+    expected_metadata["remote_upload_pending"] = pending.clone();
+    assert_eq!(source.metadata, expected_metadata);
+    assert_eq!(source.id, good.source.id);
+    assert_eq!(source.generation, good.source.generation + 1);
+    assert_eq!(
+        source.successful_generation,
+        good.source.successful_generation
+    );
+    assert_eq!(source.status, graphrag_core::SourceIngestionStatus::Pending);
+    assert_eq!(
+        serde_json::to_value(
+            repo.get_source_chunks(source.id.as_ref().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap(),
+        good.chunks
+    );
+    assert_admission_unchanged(repo, &good.job).await;
+    assert_admission_unchanged(repo, admission).await;
+    pending
+}
+
+async fn assert_refresh_promoted(
+    repo: &Repository,
+    good: &LastGoodUpload,
+    admission: &graphrag_db::RemoteUploadJob,
+    pending: serde_json::Value,
+) {
+    // Fetch the persisted Source again: an in-memory promotion is insufficient.
+    let source = repo
+        .get_source(&admission.source_uri)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut expected_metadata = good.source.metadata.clone();
+    expected_metadata
+        .as_object_mut()
+        .unwrap()
+        .remove("remote_upload_pending");
+    expected_metadata["remote_upload"] = pending;
+    assert!(source.metadata.get("remote_upload_pending").is_none());
+    assert_eq!(source.metadata, expected_metadata);
+    assert_eq!(source.id, good.source.id);
+    assert_eq!(source.generation, good.source.generation + 1);
+    assert_eq!(source.successful_generation, source.generation);
+    assert_eq!(source.status, graphrag_core::SourceIngestionStatus::Ready);
+    let chunks = repo
+        .get_source_chunks(source.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert!(!chunks.is_empty());
+    assert!(chunks
+        .iter()
+        .all(|note| note.source_generation == Some(source.successful_generation)));
+    assert_ne!(serde_json::to_value(chunks).unwrap(), good.chunks);
+    assert_admission_unchanged(repo, &good.job).await;
+    assert_admission_unchanged(repo, admission).await;
+}
+
 struct EndpointEmbedder {
     endpoint: String,
     calls: Arc<AtomicUsize>,
@@ -391,29 +545,41 @@ async fn quarantined_malformed_input_remains_readable_only_to_its_owner() {
 
 #[tokio::test]
 async fn admission_retry_is_stable_and_provider_failure_preserves_input_for_resume() {
-    let repo = Repository::new(init_memory().await.unwrap());
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let good = last_good_upload(&db, &repo, "before-provider-failure").await;
     let offline = app(
         &repo,
         Arc::new(DeterministicEmbedder::default().unhealthy()),
         Arc::new(FixtureEntityExtractor::default()),
     );
+    let mut input = request("upload-1");
+    input
+        .content
+        .push_str("\n\nUpdated after the last good upload.");
     let admission = offline
-        .upload_source(caller("openclaw"), request("upload-1"))
+        .upload_source(caller("openclaw"), input.clone())
         .await
         .unwrap();
+    let saved_input = repo
+        .get_remote_upload_job("openclaw", &admission.job_id)
+        .await
+        .unwrap()
+        .unwrap();
     let replay = offline
-        .upload_source(caller("openclaw"), request("upload-1"))
+        .upload_source(caller("openclaw"), input.clone())
         .await
         .unwrap();
     assert!(replay.replayed);
     assert_eq!(admission.job_id, replay.job_id);
     assert_eq!(admission.source_id, replay.source_id);
-    let mut changed = request("upload-1");
+    let mut changed = input.clone();
     changed.content.push_str(" changed");
     assert!(matches!(
         offline.upload_source(caller("openclaw"), changed).await,
         Err(ApplicationError::RevisionConflict(_))
     ));
+    assert_admission_unchanged(&repo, &saved_input).await;
     let execution = offline
         .claim_remote_job("epoch-a", "worker-a")
         .await
@@ -431,6 +597,7 @@ async fn admission_retry_is_stable_and_provider_failure_preserves_input_for_resu
         .unwrap();
     assert_eq!(failed.status, "failed");
     assert_eq!(failed.phase, "preparing");
+    let pending = assert_refresh_pending(&repo, &good, &saved_input).await;
     assert!(offline
         .get_remote_job(caller("hermes"), &admission.job_id)
         .await
@@ -450,6 +617,7 @@ async fn admission_retry_is_stable_and_provider_failure_preserves_input_for_resu
         .await
         .unwrap();
     assert_eq!(done.status, "completed");
+    assert_refresh_promoted(&repo, &good, &saved_input, pending).await;
     assert!(!done.result.as_ref().unwrap()["note_ids"]
         .as_array()
         .unwrap()
@@ -458,7 +626,7 @@ async fn admission_retry_is_stable_and_provider_failure_preserves_input_for_resu
         .get_uploaded_source(&admission.source_id)
         .await
         .unwrap();
-    assert_eq!(source.content, request("upload-1").content);
+    assert_eq!(source.content, input.content);
     assert_eq!(
         source.provenance["uri"],
         "file:///never-read/client-only.md"
@@ -982,7 +1150,9 @@ impl Embedder for BlockedEmbedding {
 
 #[tokio::test]
 async fn explicit_cancel_of_blocked_preparation_is_resumable_without_duplicating_notes() {
-    let repo = Repository::new(init_memory().await.unwrap());
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let good = last_good_upload(&db, &repo, "before-cancelled-preparation").await;
     let provider = Arc::new(BlockedEmbedding {
         started: Notify::new(),
     });
@@ -991,9 +1161,18 @@ async fn explicit_cancel_of_blocked_preparation_is_resumable_without_duplicating
         provider.clone(),
         Arc::new(FixtureEntityExtractor::default()),
     ));
+    let mut input = request("cancel-work");
+    input
+        .content
+        .push_str("\n\nUpdated after cancelled preparation.");
     let saved = application
-        .upload_source(caller("openclaw"), request("cancel-work"))
+        .upload_source(caller("openclaw"), input)
         .await
+        .unwrap();
+    let saved_input = repo
+        .get_remote_upload_job("openclaw", &saved.job_id)
+        .await
+        .unwrap()
         .unwrap();
     let execution = application
         .claim_remote_job("epoch", "worker")
@@ -1007,6 +1186,7 @@ async fn explicit_cancel_of_blocked_preparation_is_resumable_without_duplicating
     tokio::time::timeout(Duration::from_secs(5), provider.started.notified())
         .await
         .unwrap();
+    let pending = assert_refresh_pending(&repo, &good, &saved_input).await;
     application
         .cancel_remote_job(caller("openclaw"), &saved.job_id)
         .await
@@ -1027,7 +1207,11 @@ async fn explicit_cancel_of_blocked_preparation_is_resumable_without_duplicating
             .status,
         "cancelled"
     );
-    assert_eq!(repo.get_stats().await.unwrap().note_count, 0);
+    assert_eq!(
+        assert_refresh_pending(&repo, &good, &saved_input).await,
+        pending
+    );
+    assert_eq!(repo.get_stats().await.unwrap().note_count, 1);
     let restarted = healthy(&repo);
     restarted
         .resume_remote_job(caller("openclaw"), &saved.job_id)
@@ -1043,21 +1227,44 @@ async fn explicit_cancel_of_blocked_preparation_is_resumable_without_duplicating
         "completed"
     );
     assert_eq!(repo.get_stats().await.unwrap().note_count, 1);
+    assert_refresh_promoted(&repo, &good, &saved_input, pending).await;
 }
 
 #[tokio::test]
 async fn startup_reconciles_only_interrupted_jobs_and_old_worker_cannot_publish() {
-    let repo = Repository::new(init_memory().await.unwrap());
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let good = last_good_upload(&db, &repo, "before-interrupted-preparation").await;
     let application = healthy(&repo);
+    let mut input = request("restart-work");
+    input
+        .content
+        .push_str("\n\nUpdated after startup interruption.");
     let saved = application
-        .upload_source(caller("openclaw"), request("restart-work"))
+        .upload_source(caller("openclaw"), input)
         .await
+        .unwrap();
+    let saved_input = repo
+        .get_remote_upload_job("openclaw", &saved.job_id)
+        .await
+        .unwrap()
         .unwrap();
     let stale = application
         .claim_remote_job("old-service", "worker")
         .await
         .unwrap()
         .unwrap();
+    // Persist the preparation boundary that survives a stopped worker, without
+    // spawning another worker or changing the stale execution's authority.
+    repo.begin_remote_upload_generation(&graphrag_db::RemoteJobLease {
+        job_id: graphrag_db::parse_record_id(&stale.job_id, Some("processing_job")).unwrap(),
+        instance_id: stale.instance_id.clone(),
+        service_epoch: stale.service_epoch.clone(),
+        worker_token: stale.worker_token.clone(),
+    })
+    .await
+    .unwrap();
+    let pending = assert_refresh_pending(&repo, &good, &saved_input).await;
     application
         .reconcile_remote_jobs("new-service")
         .await
@@ -1068,12 +1275,20 @@ async fn startup_reconciles_only_interrupted_jobs_and_old_worker_cannot_publish(
         .unwrap();
     assert_eq!(job.status, "failed");
     assert_eq!(job.error_code.as_deref(), Some("interrupted"));
+    assert_eq!(
+        assert_refresh_pending(&repo, &good, &saved_input).await,
+        pending
+    );
     assert!(matches!(
         application
             .execute_remote_job(stale, ActionCancellation::new())
             .await,
         Err(ApplicationError::RevisionConflict(_))
     ));
+    assert_eq!(
+        assert_refresh_pending(&repo, &good, &saved_input).await,
+        pending
+    );
     application
         .resume_remote_job(caller("openclaw"), &saved.job_id)
         .await
@@ -1091,6 +1306,7 @@ async fn startup_reconciles_only_interrupted_jobs_and_old_worker_cannot_publish(
             .status,
         "completed"
     );
+    assert_refresh_promoted(&repo, &good, &saved_input, pending).await;
 }
 
 #[tokio::test]

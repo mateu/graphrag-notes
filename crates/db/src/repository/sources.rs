@@ -573,17 +573,32 @@ impl Repository {
             .id
             .as_ref()
             .ok_or_else(|| DbError::CreateFailed("source id".into()))?;
-        let content = source_content_value(source)?;
+        let serde_json::Value::Object(content) = source_content_value(source)? else {
+            return Err(DbError::QueryFailed(
+                "source did not serialize as an object".into(),
+            ));
+        };
+        // Replace each supplied top-level field in one mutation. MERGE recurses
+        // into metadata, retaining removed staging keys and obsolete policy
+        // fields after promotion. Omitted optional fields and unrelated stored
+        // fields keep their existing values, as with the previous MERGE.
+        let source_patch = content
+            .into_iter()
+            .map(|(field, value)| {
+                let path = format!("/{}", field.replace('~', "~0").replace('/', "~1"));
+                serde_json::json!({"op": "replace", "path": path, "value": value})
+            })
+            .collect::<Vec<_>>();
         let response = migration_probe(
             "source.replace",
-            "merge_sdk_await",
+            "patch_sdk_await",
             self.db
-                .query("UPDATE $id MERGE $source")
+                .query("UPDATE $id PATCH $source_patch")
                 .bind(("id", id.clone()))
-                .bind(("source", content)),
+                .bind(("source_patch", source_patch)),
         )
         .await?;
-        migration_probe_result("source.replace", "merge_response_check", response.check())?;
+        migration_probe_result("source.replace", "patch_response_check", response.check())?;
         let response = migration_probe("source.replace", "timestamps_sdk_await", self.db
             .query(
                 "UPDATE $id SET updated_at = <datetime>$updated_at, \
