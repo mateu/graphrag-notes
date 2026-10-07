@@ -33,15 +33,18 @@ impl ProbeError for DbError {
     }
 }
 
+fn probe_enabled() -> bool {
+    tracing::enabled!(target: "graphrag_migration_probe", tracing::Level::INFO)
+        && std::env::var("GRAPHRAG_MIGRATION_CONFLICT_PROBE").as_deref() == Ok("1")
+}
+
 fn emit(
     operation: &'static str,
     stage: &'static str,
     outcome: &'static str,
     error_class: &'static str,
 ) {
-    if tracing::enabled!(target: "graphrag_migration_probe", tracing::Level::INFO)
-        && std::env::var("GRAPHRAG_MIGRATION_CONFLICT_PROBE").as_deref() == Ok("1")
-    {
+    if probe_enabled() {
         tracing::info!(target: "graphrag_migration_probe", operation, stage, outcome, error_class);
     }
 }
@@ -71,6 +74,9 @@ pub(super) fn migration_statement_errors(
     operation: &'static str,
     errors: &std::collections::HashMap<usize, surrealdb::Error>,
 ) {
+    if !probe_enabled() {
+        return;
+    }
     const STAGES: [&str; 32] = [
         "statement_0",
         "statement_1",
