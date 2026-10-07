@@ -176,7 +176,7 @@ async fn symmetric_reverse_pair_and_simultaneous_replay_do_not_duplicate_effects
     assert_ne!(left.replayed, right.replayed);
     assert_eq!(left.outcome, right.outcome);
     let card = app.proposal(&left.outcome.id).await.unwrap();
-    let mut ordered = vec![a, b];
+    let mut ordered = [a, b];
     ordered.sort();
     assert_eq!(card.from.id, ordered[0]);
     assert_eq!(card.to.id, ordered[1]);
