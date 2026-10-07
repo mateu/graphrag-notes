@@ -99,11 +99,16 @@ clients for explicit retained extraction-policy migration and the measured
 note-search and OpenClaw connection improvements. Its guide records the
 separate validation and publication gates; rc.3 assets remain immutable.
 
-The [rc.5 preparation](docs/releases/0.1.0-rc.5.md) retains the system allocator
-on every official target and records actual compiler feature provenance. The
-ARM allocator experiment failed its full-corpus gate and was rejected. Integrated
-graph qualification, review, publication and rollout remain pending; #106 and
-#115 stay open. Library and CLI defaults remain unchanged.
+The [published rc.5 prerelease](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.5)
+(2026-10-07 UTC) includes the Apple Silicon native build and matching portable
+clients. Its [release record](docs/releases/0.1.0-rc.5.md) binds the source and
+artifact identities, system allocator, portable precision fix and qualified
+graph change. Shiva and [Fam deployment](https://github.com/mateu/graphrag-notes/issues/118)
+completed; [Forge OpenClaw qualification](https://github.com/mateu/graphrag-notes/blob/main/docs/validation/openclaw-forge-fam.md)
+records the client checks and their limits. The ARM allocator experiment was
+rejected. The separate whole-workload latency comparison retains its failures;
+#106 and #115 stay open, and native Intel/Linux acceptance remains under #66.
+Library and CLI defaults remain unchanged.
 
 
 ## Architecture
