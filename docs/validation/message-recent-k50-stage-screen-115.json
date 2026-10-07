@@ -1,0 +1,4590 @@
+{
+  "additional_public_contract_queries": 8,
+  "compiled_binary_sha256": "fbd149c569045761db3a920da3cca442d2cc1e56d4b769832e187ba214727071",
+  "compiled_source_commit": "3695cc9de6fabb89e60c5154ab79272e481a1f5a",
+  "declared_started_completed_pairs": 72,
+  "engine": "3.2.4",
+  "fixture": {
+    "dimensions": 1024,
+    "eligible_identical_vector_rows": 75,
+    "eligible_messages": 797,
+    "limit": 50,
+    "population_per_scope": 1024,
+    "scopes_populated": 3
+  },
+  "limits": [
+    "selected_child_inclusive_instrumented_poll_metrics",
+    "no_CPU_or_full_await_attribution",
+    "no_nested_duration_sum_or_P_plus_H_arithmetic",
+    "no_latency_or_coherence_adoption",
+    "106_and_115_remain_open"
+  ],
+  "operator_plans": {
+    "FULL_plan_count": 16,
+    "correctness_acceptance": false,
+    "performance_acceptance": false,
+    "plain_plan_count": 16,
+    "plans": [
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 2
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_current_thread",
+        "variant": "B"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 10,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_current_thread",
+        "variant": "M"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 6,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_current_thread",
+        "variant": "P"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 2
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "expr": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SourceExpr",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SourceExpr",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_current_thread",
+        "variant": "H"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 2
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 2,
+                "output_batches": 2,
+                "output_rows": 2
+              },
+              "metrics_object_nodes": 2,
+              "operator": "Compute",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 126667,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1801417,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8994375,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8991542,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8984875,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8966625,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 23628208,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_current_thread",
+        "variant": "B"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "SelectProject",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 102501,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 4582458,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 237333,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1587333,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 72249,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8900542,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8897833,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8891459,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8872334,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 17640376,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 10,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_current_thread",
+        "variant": "M"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Compute",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 71667,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8969540,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8967543,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8962959,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8945375,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 17453459,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 6,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_current_thread",
+        "variant": "P"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 2
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 2,
+                "output_batches": 2,
+                "output_rows": 2
+              },
+              "metrics_object_nodes": 2,
+              "operator": "SelectProject",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "expr": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SourceExpr",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 107041,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 4226459,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 6750,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 426959,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 238875,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1554209,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 15501,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SourceExpr",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_current_thread",
+        "variant": "H"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 2
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_current_thread",
+        "variant": "B"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 10,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_current_thread",
+        "variant": "M"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 6,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_current_thread",
+        "variant": "P"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 2
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "expr": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SourceExpr",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SourceExpr",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_current_thread",
+        "variant": "H"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 2
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 2,
+                "output_batches": 2,
+                "output_rows": 2
+              },
+              "metrics_object_nodes": 2,
+              "operator": "Compute",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 114458,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1875583,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9069375,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9066418,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9058000,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9033791,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 23838043,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_current_thread",
+        "variant": "B"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "SelectProject",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 103250,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 4688375,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 258042,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1909041,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 78625,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9054416,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9051916,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9046417,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9028416,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 18156582,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 10,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_current_thread",
+        "variant": "M"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Compute",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 76542,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9157750,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9156210,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9149416,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9133334,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 18226750,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 6,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_current_thread",
+        "variant": "P"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 2
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 2,
+                "output_batches": 2,
+                "output_rows": 2
+              },
+              "metrics_object_nodes": 2,
+              "operator": "SelectProject",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "expr": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SourceExpr",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 105501,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 4531333,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 5083,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 419376,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 219667,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 2136583,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 16167,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SourceExpr",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_current_thread",
+        "variant": "H"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 2
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_two_worker",
+        "variant": "B"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 10,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_two_worker",
+        "variant": "M"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 6,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_two_worker",
+        "variant": "P"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 2
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "expr": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SourceExpr",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SourceExpr",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_two_worker",
+        "variant": "H"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 2
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 2,
+                "output_batches": 2,
+                "output_rows": 2
+              },
+              "metrics_object_nodes": 2,
+              "operator": "Compute",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 124666,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1749250,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9122793,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9119457,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9113459,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9095084,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 23180124,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_two_worker",
+        "variant": "B"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "SelectProject",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 98792,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 4656917,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 238668,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1592374,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 82751,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9265541,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9262291,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9253792,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9231957,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 18048583,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 10,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_two_worker",
+        "variant": "M"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Compute",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 77542,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9095167,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9092625,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9086625,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9064376,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 18327875,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 6,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_two_worker",
+        "variant": "P"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 2
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 2,
+                "output_batches": 2,
+                "output_rows": 2
+              },
+              "metrics_object_nodes": 2,
+              "operator": "SelectProject",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "expr": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SourceExpr",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 105958,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 4318041,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 2542,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 422584,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 238416,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1525292,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 28792,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SourceExpr",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "memory_two_worker",
+        "variant": "H"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 2
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_two_worker",
+        "variant": "B"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 10,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_two_worker",
+        "variant": "M"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Limit",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 6,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_two_worker",
+        "variant": "P"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": false,
+          "mode": "plain",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 2
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SelectProject",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "expr": 1
+              },
+              "metric_field_presence": {},
+              "metrics_object_nodes": 0,
+              "operator": "SourceExpr",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": null,
+              "metrics_object_present": false,
+              "operator": "SourceExpr",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_two_worker",
+        "variant": "H"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 2
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 2,
+                "output_batches": 2,
+                "output_rows": 2
+              },
+              "metrics_object_nodes": 2,
+              "operator": "Compute",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 113457,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1873334,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9044500,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9041749,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9034375,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9018835,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 23392040,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_two_worker",
+        "variant": "B"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "SelectProject",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 112749,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 4733959,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 220126,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 2060500,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 74500,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9103001,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9100958,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9096960,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9081999,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 18724833,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 10,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_two_worker",
+        "variant": "M"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Compute",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "dimension": 1,
+                "distance": 1,
+                "field": 1,
+                "k": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "KnnTopK",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "limit": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "Limit",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SelectProject",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "predicate": 1,
+                "table": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "TableScan",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 73167,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9003417,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Limit",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 9001292,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8992499,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 8977418,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "KnnTopK",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 18454375,
+                "output_batches": 3,
+                "output_rows": 797
+              },
+              "metrics_object_present": true,
+              "operator": "TableScan",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 6,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_two_worker",
+        "variant": "P"
+      },
+      {
+        "coverage": {
+          "displayed_embedded_roots": 0,
+          "elapsed_scope": "inclusive_instrumented_poll_not_CPU_or_full_await",
+          "elapsed_values_published": true,
+          "mode": "full",
+          "operators": [
+            {
+              "attribute_field_presence": {
+                "fields": 3
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 3,
+                "output_batches": 3,
+                "output_rows": 3
+              },
+              "metrics_object_nodes": 3,
+              "operator": "Compute",
+              "selected_child_nodes": 3
+            },
+            {
+              "attribute_field_presence": {
+                "projections": 2
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 2,
+                "output_batches": 2,
+                "output_rows": 2
+              },
+              "metrics_object_nodes": 2,
+              "operator": "SelectProject",
+              "selected_child_nodes": 2
+            },
+            {
+              "attribute_field_presence": {},
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SortByKey",
+              "selected_child_nodes": 1
+            },
+            {
+              "attribute_field_presence": {
+                "expr": 1
+              },
+              "metric_field_presence": {
+                "elapsed_ns": 1,
+                "output_batches": 1,
+                "output_rows": 1
+              },
+              "metrics_object_nodes": 1,
+              "operator": "SourceExpr",
+              "selected_child_nodes": 1
+            }
+          ],
+          "performance_acceptance": false,
+          "projection": "selected_child_coverage_and_FULL_integer_metrics",
+          "selected_child_metric_nodes": [
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 105000,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 4242125,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 2958,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SortByKey",
+              "path": "root/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 385375,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 220958,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SelectProject",
+              "path": "root/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 1981125,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "Compute",
+              "path": "root/children/0/children/0/children/0/children/0/children/0"
+            },
+            {
+              "full_integer_metrics": {
+                "elapsed_ns": 18791,
+                "output_batches": 1,
+                "output_rows": 50
+              },
+              "metrics_object_present": true,
+              "operator": "SourceExpr",
+              "path": "root/children/0/children/0/children/0/children/0/children/0/children/0"
+            }
+          ],
+          "selected_child_nodes": 7,
+          "zero_or_field_presence_proves_enablement": false
+        },
+        "role": "rocks_two_worker",
+        "variant": "H"
+      }
+    ],
+    "projection": "complete_declared_fictional_plan_set",
+    "role_count": 4
+  },
+  "performance_acceptance": false,
+  "production_changes": false,
+  "profile": "release_test",
+  "provider_calls": 0,
+  "retained_initial_attempt": {
+    "outcome": "SDK_QueryResult_compile_error_before_fixture_execution",
+    "source_commit": "67df5bdf4c1568905c6701ce262ef69b70830f65"
+  },
+  "role_count": 4,
+  "roles": [
+    {
+      "additional_public_contract_queries": 2,
+      "backend": "memory",
+      "cleanup_verified": true,
+      "exit_code": 0,
+      "failed": 0,
+      "fixture_reads": 2,
+      "full_inventories_before_after": true,
+      "full_ordered_payload_and_bits_exact": true,
+      "full_plan_executions": 4,
+      "normal_stage_results": 8,
+      "passed": 1,
+      "plain_plans": 4,
+      "runtime": "current_thread",
+      "runtime_events": 2,
+      "started_completed_pairs": 18,
+      "timing_samples": 0,
+      "workers": 1
+    },
+    {
+      "additional_public_contract_queries": 2,
+      "backend": "rocksdb",
+      "cleanup_verified": true,
+      "exit_code": 0,
+      "failed": 0,
+      "fixture_reads": 2,
+      "full_inventories_before_after": true,
+      "full_ordered_payload_and_bits_exact": true,
+      "full_plan_executions": 4,
+      "normal_stage_results": 8,
+      "passed": 1,
+      "plain_plans": 4,
+      "runtime": "current_thread",
+      "runtime_events": 2,
+      "started_completed_pairs": 18,
+      "timing_samples": 0,
+      "workers": 1
+    },
+    {
+      "additional_public_contract_queries": 2,
+      "backend": "memory",
+      "cleanup_verified": true,
+      "exit_code": 0,
+      "failed": 0,
+      "fixture_reads": 2,
+      "full_inventories_before_after": true,
+      "full_ordered_payload_and_bits_exact": true,
+      "full_plan_executions": 4,
+      "normal_stage_results": 8,
+      "passed": 1,
+      "plain_plans": 4,
+      "runtime": "multi_thread",
+      "runtime_events": 2,
+      "started_completed_pairs": 18,
+      "timing_samples": 0,
+      "workers": 2
+    },
+    {
+      "additional_public_contract_queries": 2,
+      "backend": "rocksdb",
+      "cleanup_verified": true,
+      "exit_code": 0,
+      "failed": 0,
+      "fixture_reads": 2,
+      "full_inventories_before_after": true,
+      "full_ordered_payload_and_bits_exact": true,
+      "full_plan_executions": 4,
+      "normal_stage_results": 8,
+      "passed": 1,
+      "plain_plans": 4,
+      "runtime": "multi_thread",
+      "runtime_events": 2,
+      "started_completed_pairs": 18,
+      "timing_samples": 0,
+      "workers": 2
+    }
+  ],
+  "schema_version": 1,
+  "scope": "fictional_correctness_and_instrumented_plan_screen",
+  "stdout_read_bound_bytes": 33554432,
+  "tests_failed": 0,
+  "tests_passed": 4,
+  "timing_samples": 0,
+  "toolchain": "1.97.1"
+}
