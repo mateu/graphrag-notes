@@ -1930,7 +1930,7 @@ async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
     assert_eq!(damaged.job.last_error.as_deref(), Some("validation"));
     assert!(damaged.job.finished_at.is_some());
     let jobs = restored
-        .list_remote_upload_job_statuses("owner", 10)
+        .list_remote_upload_job_statuses("owner", 10, true)
         .await
         .unwrap();
     assert_eq!(jobs.len(), 2);
@@ -1951,7 +1951,7 @@ async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
         .unwrap()
         .is_none());
     let other_jobs = restored
-        .list_remote_upload_job_statuses("other-owner", 10)
+        .list_remote_upload_job_statuses("other-owner", 10, true)
         .await
         .unwrap();
     assert_eq!(other_jobs.len(), 1);
@@ -1994,7 +1994,7 @@ async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
     for limit in [0, 201] {
         assert!(matches!(
             restored
-                .list_remote_upload_job_statuses("owner", limit)
+                .list_remote_upload_job_statuses("owner", limit, true)
                 .await,
             Err(DbError::InvalidRemoteRequest(_))
         ));
@@ -2149,7 +2149,7 @@ async fn status_query_redacts_private_checkpoints_and_saved_input_before_materia
         .iter()
         .all(|row| row["remote_result"]["policy_migration_stage"].is_null()));
     let statuses = repo
-        .list_remote_upload_job_statuses("owner", 100)
+        .list_remote_upload_job_statuses("owner", 100, true)
         .await
         .unwrap();
     assert_eq!(statuses.len(), 2);
@@ -2202,6 +2202,56 @@ async fn status_query_redacts_private_checkpoints_and_saved_input_before_materia
     }
     let saved: Vec<serde_json::Value> = db.query("SELECT remote_result FROM processing_job WHERE remote_request_id = 'private-checkpoint'").await.unwrap().take(0).unwrap();
     assert_eq!(saved[0]["remote_result"], private);
+}
+
+#[tokio::test]
+async fn status_list_selects_authorized_family_before_bounded_window_without_saved_input_deserialization(
+) {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let ordinary = repo
+        .admit_remote_upload(input("owner", "ordinary", "Ordinary owned upload"))
+        .await
+        .unwrap();
+    let private = serde_json::json!({"damaged_private_plan":"x".repeat(16 * 1024)});
+    for index in 0..500 {
+        let admitted = repo
+            .admit_remote_upload(input(
+                "owner",
+                &format!("private-enrichment-{index}"),
+                "Private conversion envelope",
+            ))
+            .await
+            .unwrap();
+        db.query(
+            "UPDATE $id SET status = 'failed', remote_input.enrichment = $private, updated_at = time::now()",
+        )
+        .bind((
+            "id",
+            job_id(admitted.result["job_id"].as_str().unwrap()).unwrap(),
+        ))
+        .bind(("private", private.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    }
+    let authorized = repo
+        .list_remote_upload_job_statuses("owner", 10, true)
+        .await
+        .unwrap();
+    assert_eq!(authorized.len(), 10);
+    assert!(authorized.iter().all(|job| job.enrichment));
+    let ordinary_only = repo
+        .list_remote_upload_job_statuses("owner", 10, false)
+        .await
+        .unwrap();
+    assert_eq!(ordinary_only.len(), 1);
+    assert!(!ordinary_only[0].enrichment);
+    assert_eq!(
+        ordinary_only[0].job.id,
+        Some(job_id(ordinary.result["job_id"].as_str().unwrap()).unwrap())
+    );
 }
 
 #[tokio::test]

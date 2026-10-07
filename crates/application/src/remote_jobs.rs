@@ -128,9 +128,10 @@ pub(crate) fn view(job: RemoteUploadJobStatus) -> ApplicationResult<RemoteJobSta
         completed: job.job.completed_count.max(0) as u64,
         failed: job.job.failed_count.max(0) as u64,
         checkpoint: job.job.checkpoint,
-        result: job
-            .result
-            .filter(|result| result.get("policy_migration_stage").is_none()),
+        result: job.result.filter(|result| {
+            result.get("policy_migration_stage").is_none()
+                && result.get("unchanged_source_revision").is_none()
+        }),
         error_code: job.job.last_error.map(|code| match code.as_str() {
             "interrupted"
             | "worker_interrupted"
@@ -510,6 +511,7 @@ pub(crate) async fn list(
     app: &EmbeddedApplication,
     caller: CallerIdentity,
     limit: usize,
+    include_enrichment: bool,
 ) -> ApplicationResult<RemoteJobList> {
     if !(1..=MAX_REMOTE_JOB_LIST).contains(&limit) {
         return Err(ApplicationError::Validation(
@@ -519,7 +521,7 @@ pub(crate) async fn list(
     Ok(RemoteJobList {
         jobs: app
             .repo
-            .list_remote_upload_job_statuses(&caller.instance_id, limit)
+            .list_remote_upload_job_statuses(&caller.instance_id, limit, include_enrichment)
             .await?
             .into_iter()
             .map(view)

@@ -221,6 +221,7 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
         &self,
         _caller: CallerIdentity,
         _limit: usize,
+        _include_enrichment: bool,
     ) -> ApplicationResult<RemoteJobList> {
         Err(ApplicationError::Compatibility(
             "Uploaded jobs are unavailable in this adapter".into(),

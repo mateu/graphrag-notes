@@ -425,8 +425,9 @@ impl RemoteApplicationOperations for EmbeddedApplication {
         &self,
         caller: CallerIdentity,
         limit: usize,
+        include_enrichment: bool,
     ) -> ApplicationResult<RemoteJobList> {
-        crate::remote_jobs::list(self, caller, limit).await
+        crate::remote_jobs::list(self, caller, limit, include_enrichment).await
     }
     async fn cancel_remote_job(
         &self,

@@ -1555,3 +1555,68 @@ async fn reviewed_unchanged_recovery_is_fenced_across_policy_epoch_transitions()
         }
     }
 }
+
+#[tokio::test]
+async fn same_policy_unchanged_resume_preserves_capture_and_redacts_private_checkpoint() {
+    for state in ["staged", "promoted", "rolled_back"] {
+        for interruption in ["cancelled", "interrupted"] {
+            let (repo, app, calls, source, _) = lineage_fixture(state).await;
+            let mut capture = request(&format!("{state}-{interruption}-resume"));
+            capture.extract_entities = state == "promoted";
+            let admitted = app.upload_source(caller(), capture).await.unwrap();
+            let execution = app
+                .claim_remote_job("epoch", "worker")
+                .await
+                .unwrap()
+                .unwrap();
+            let lease = graphrag_db::RemoteJobLease {
+                job_id: graphrag_db::parse_record_id(&execution.job_id, Some("processing_job"))
+                    .unwrap(),
+                instance_id: execution.instance_id.clone(),
+                service_epoch: execution.service_epoch.clone(),
+                worker_token: execution.worker_token.clone(),
+            };
+            repo.begin_remote_upload_generation(&lease).await.unwrap();
+            if interruption == "cancelled" {
+                app.cancel_remote_job(caller(), &admitted.job_id)
+                    .await
+                    .unwrap();
+                repo.finish_remote_upload_job(
+                    &lease,
+                    graphrag_db::ProcessingJobStatus::Cancelled,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            } else {
+                repo.recover_remote_upload_job(&lease, "worker_interrupted")
+                    .await
+                    .unwrap();
+            }
+            let committed = app.get_uploaded_source(&source.source_id).await.unwrap();
+            let notes = rows(&repo, "note").await;
+            let calls_before = calls.load(Ordering::SeqCst);
+            let resumed = app
+                .resume_remote_job(caller(), &admitted.job_id)
+                .await
+                .unwrap();
+            assert!(
+                resumed.result.is_none(),
+                "Successful resume must not expose a private capture checkpoint: {resumed:?}"
+            );
+            run(&app).await.unwrap();
+            let completed = app
+                .get_remote_job(caller(), &admitted.job_id)
+                .await
+                .unwrap();
+            assert_eq!(completed.result.as_ref().unwrap()["action"], "unchanged");
+            assert_eq!(
+                app.get_uploaded_source(&source.source_id).await.unwrap(),
+                committed
+            );
+            assert_eq!(rows(&repo, "note").await, notes);
+            assert_eq!(calls.load(Ordering::SeqCst), calls_before);
+        }
+    }
+}

@@ -207,7 +207,11 @@ pub(crate) async fn dispatch(
                 Err(error) => return error,
             };
             match application
-                .list_remote_jobs(caller.clone(), input.limit)
+                .list_remote_jobs(
+                    caller.clone(),
+                    input.limit,
+                    principal.allows(Capability::Enrich),
+                )
                 .await
             {
                 Ok(mut result) => {

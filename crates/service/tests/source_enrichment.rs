@@ -296,6 +296,40 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
     })
     .await
     .unwrap();
+    // Queue a full generic readiness window behind the ordinary upload. Their
+    // intentionally damaged conversion envelopes must be classified in the
+    // database, without deserializing a plan, before the bounded window.
+    for index in 0..10 {
+        let hidden = app
+            .upload_source(
+                caller.clone(),
+                UploadSourceRequest {
+                    request_id: format!("damaged-enrichment-{index}"),
+                    document_key: format!("damaged-enrichment-document-{index}"),
+                    content: format!("# Damaged conversion {index}\n\nFixture only."),
+                    title: None,
+                    provenance: None,
+                    extract_entities: false,
+                    preserve_unchanged: false,
+                    create_only: false,
+                    expected_source_revision: None,
+                    policy_migration: None,
+                },
+            )
+            .await
+            .unwrap();
+        db.query(
+            "UPDATE $job SET status = 'failed', remote_input.enrichment = { broken: true }, updated_at = time::now()",
+        )
+        .bind((
+            "job",
+            graphrag_db::parse_record_id(&hidden.job_id, Some("processing_job")).unwrap(),
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    }
     // Rotate a Jobs+Read+Enrich bearer onto the same owner to retain all three
     // durable job families before enrichment authority is revoked.
     let path = fixture._temp.path().join("credentials.json");
@@ -315,7 +349,7 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
     let authorized = fixture
         .tool("jobs", "list_jobs", json!({"limit": 100}))
         .await;
-    assert_eq!(data(&authorized)["jobs"].as_array().unwrap().len(), 3);
+    assert_eq!(data(&authorized)["jobs"].as_array().unwrap().len(), 13);
     assert_eq!(
         data(&authorized)["jobs"]
             .as_array()
@@ -323,22 +357,17 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
             .iter()
             .filter(|job| job["job_type"] == "remote_enrichment")
             .count(),
-        2
+        12
     );
     let authorized_readiness = fixture.tool("jobs", "service_status", json!({})).await;
-    assert_eq!(data(&authorized_readiness)["jobs"]["sampled"], 3);
-    assert_eq!(
-        data(&authorized_readiness)["jobs"]["counts"]["completed"],
-        3
-    );
+    assert_eq!(data(&authorized_readiness)["jobs"]["sampled"], 10);
+    assert_eq!(data(&authorized_readiness)["jobs"]["counts"]["failed"], 10);
     assert_eq!(
         data(&authorized_readiness)["jobs"]["readiness"]["state"],
-        "ready"
+        "partial"
     );
-    // Preserve a hostile terminal outcome before capability revocation: neither
-    // damage to saved enrichment input nor a failed conversion may leak into
-    // generic Jobs observability.
-    db.query("UPDATE processing_job SET status = 'failed', remote_input.enrichment = { broken: true } WHERE remote_input.enrichment IS NOT NONE AND remote_input.enrichment IS NOT NULL").await.unwrap().check().unwrap();
+    // Revocation must select the ordinary family before sampling: the hidden
+    // newer failures cannot displace the older owned ordinary success.
     for credential in &mut credentials.credentials {
         if credential.instance_id == "enricher" {
             credential
@@ -362,6 +391,21 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
     assert_eq!(data(&readiness)["jobs"]["counts"]["completed"], 1);
     assert!(data(&readiness)["jobs"]["counts"]["failed"].is_null());
     assert_eq!(data(&readiness)["jobs"]["readiness"]["state"], "ready");
+    let ordinary_jobs = data(&listed)["jobs"].clone();
+    let ordinary_readiness = data(&readiness)["jobs"].clone();
+    db.query(
+        "UPDATE processing_job SET remote_phase = 'hidden-update', updated_at = time::now() WHERE remote_input.enrichment IS NOT NONE AND remote_input.enrichment IS NOT NULL",
+    )
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    let relisted = fixture
+        .tool("jobs", "list_jobs", json!({"limit": 100}))
+        .await;
+    assert_eq!(data(&relisted)["jobs"], ordinary_jobs);
+    let rereadiness = fixture.tool("jobs", "service_status", json!({})).await;
+    assert_eq!(data(&rereadiness)["jobs"], ordinary_readiness);
     for generic in ["get_job", "cancel_job", "resume_job"] {
         assert_eq!(
             error(&fixture.tool("jobs", generic, json!({"id":id})).await),

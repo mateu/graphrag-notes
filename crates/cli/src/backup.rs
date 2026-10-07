@@ -382,6 +382,11 @@ fn opaque_client_fields(
                     "/metadata/entity_enrichment_v1/prior_origin",
                     "processing_options",
                 ),
+                ("/metadata/entity_enrichment_v1/current_origin", "source"),
+                (
+                    "/metadata/entity_enrichment_v1/current_origin",
+                    "processing_options",
+                ),
             ]
         }
         "source"
@@ -2264,6 +2269,48 @@ mod tests {
         assert_eq!(secret_shape, serde_json::json!({"nested": {}}));
     }
 
+    #[test]
+    fn current_upload_origin_is_opaque_across_vector_export_modes() {
+        let original = serde_json::json!({
+            "id": "source:current-origin",
+            "source_type": "markdown",
+            "uri": "mcp://upload/current-origin",
+            "metadata": {
+                "entity_enrichment_v1": {
+                    "current_origin": {
+                        "source": {
+                            "uri": "file:///caller/provenance.md",
+                            "embedding": "caller embedding label",
+                            "credential": "caller credential string",
+                            "token": "caller token string"
+                        },
+                        "processing_options": {
+                            "embedding": {
+                                "provider": "caller provider",
+                                "model": "caller model"
+                            },
+                            "credential": "caller processing credential",
+                            "token": "caller processing token"
+                        }
+                    }
+                }
+            }
+        });
+
+        for include_embeddings in [false, true] {
+            let mut exported = original.clone();
+            sanitize_portable_record("source", &mut exported, include_embeddings);
+            assert_eq!(
+                exported["metadata"]["entity_enrichment_v1"]["current_origin"],
+                original["metadata"]["entity_enrichment_v1"]["current_origin"],
+                "current capture provenance must remain caller data"
+            );
+            let manifest =
+                PortableBackupManifest::new(migrations::latest_version(), include_embeddings);
+            validate_record_embeddings("source", &exported, &manifest).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn export_paginates_a_large_fixture_without_changing_counts() {
         let temp = tempdir().unwrap();
@@ -2754,17 +2801,18 @@ mod tests {
         let caller = CallerIdentity {
             instance_id: "backup-owner".into(),
         };
+        let content = format!(
+            "# Atlas A\n\n{}\n\n# Atlas B\n\n{}",
+            "Alpha fiction. ".repeat(20),
+            "Beta fiction. ".repeat(20)
+        );
         let uploaded = application
             .upload_source(
                 caller.clone(),
                 UploadSourceRequest {
                     request_id: "backup-vector".into(),
                     document_key: "synthetic".into(),
-                    content: format!(
-                        "# Atlas A\n\n{}\n\n# Atlas B\n\n{}",
-                        "Alpha fiction. ".repeat(20),
-                        "Beta fiction. ".repeat(20)
-                    ),
+                    content,
                     title: Some("synthetic only".into()),
                     provenance: None,
                     extract_entities: false,
@@ -2834,6 +2882,112 @@ mod tests {
             staged.metadata["entity_enrichment_v1"]["items"][0]["entities"],
             serde_json::json!([])
         );
+        // A second document avoids the primary conversion's serialized lease.
+        // Its real completed unchanged capture becomes the lineage the archive
+        // must preserve while the primary checkpoint remains resumable.
+        let lineage_content = "# Lineage\n\nA separate durable capture.".to_string();
+        let lineage_upload = application
+            .upload_source(
+                caller.clone(),
+                UploadSourceRequest {
+                    request_id: "backup-lineage-upload".into(),
+                    document_key: "lineage".into(),
+                    content: lineage_content.clone(),
+                    title: Some("lineage".into()),
+                    provenance: None,
+                    extract_entities: false,
+                    preserve_unchanged: false,
+                    create_only: false,
+                    expected_source_revision: None,
+                    policy_migration: None,
+                },
+            )
+            .await
+            .unwrap();
+        let lineage_worker = application
+            .claim_remote_job("backup-epoch", "lineage-upload-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        application
+            .execute_remote_job(lineage_worker, ActionCancellation::new())
+            .await
+            .unwrap();
+        let lineage_source = application
+            .get_uploaded_source(&lineage_upload.source_id)
+            .await
+            .unwrap();
+        let lineage_reviewed = application
+            .prepare_source_enrichment(
+                caller.clone(),
+                PrepareSourceEnrichment {
+                    request_id: "backup-lineage-review".into(),
+                    source_id: lineage_source.id.clone(),
+                    revision: lineage_source.revision,
+                },
+            )
+            .await
+            .unwrap();
+        let lineage_operation = ExecuteSourceEnrichment {
+            request_id: "backup-lineage-review".into(),
+            reviewed: lineage_reviewed,
+            confirmed: true,
+            rollback_source_revision: None,
+        };
+        let _lineage_conversion = application
+            .execute_source_enrichment(caller.clone(), lineage_operation.clone(), false)
+            .await
+            .unwrap();
+        let lineage_worker = application
+            .claim_remote_job("backup-epoch", "lineage-conversion-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        application
+            .execute_remote_job(lineage_worker, ActionCancellation::new())
+            .await
+            .unwrap();
+        let lineage_unchanged = application
+            .upload_source(
+                caller.clone(),
+                UploadSourceRequest {
+                    request_id: "backup-lineage-unchanged".into(),
+                    document_key: "lineage".into(),
+                    content: lineage_content,
+                    title: Some("lineage".into()),
+                    provenance: None,
+                    extract_entities: true,
+                    preserve_unchanged: false,
+                    create_only: false,
+                    expected_source_revision: None,
+                    policy_migration: None,
+                },
+            )
+            .await
+            .unwrap();
+        let lineage_worker = application
+            .claim_remote_job("backup-epoch", "lineage-unchanged-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        application
+            .execute_remote_job(lineage_worker, ActionCancellation::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            application
+                .get_remote_job(caller.clone(), &lineage_unchanged.job_id)
+                .await
+                .unwrap()
+                .result
+                .unwrap()["action"],
+            "unchanged"
+        );
+        let lineage_staged = repo.get_source(&lineage_source.id).await.unwrap().unwrap();
+        assert_eq!(
+            lineage_staged.metadata["entity_enrichment_v1"]["current_origin"],
+            lineage_staged.metadata["remote_upload"]
+        );
         let notes_before = repo.portable_records_page("note", 0, 200).await.unwrap();
         // An unrelated real pending reviewed proposal and receipt must survive.
         let a = repo
@@ -2870,6 +3024,31 @@ mod tests {
             )
             .await
             .unwrap();
+        let vectorless_archive = temp.path().join("schema22-vectorless-archive");
+        let vectorless_summary = create_backup(&repo, &vectorless_archive, false)
+            .await
+            .unwrap();
+        assert!(!vectorless_summary.includes_embeddings);
+        assert_eq!(
+            vectorless_summary,
+            verify_backup(&vectorless_archive).unwrap()
+        );
+        let vectorless_target = temp.path().join("restored-vectorless");
+        restore_backup(&vectorless_archive, &vectorless_target, false)
+            .await
+            .unwrap();
+        let vectorless = Repository::new(init_persistent(&vectorless_target).await.unwrap());
+        let vectorless_source = vectorless
+            .get_source(&lineage_source.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            vectorless_source.metadata["entity_enrichment_v1"]["current_origin"],
+            lineage_staged.metadata["entity_enrichment_v1"]["current_origin"]
+        );
+        drop(vectorless);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let archive = temp.path().join("schema22-archive");
         let summary = create_backup(&repo, &archive, true).await.unwrap();
         assert_eq!(summary.schema_version, 22);
@@ -2884,6 +3063,15 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&restored_source).unwrap(),
             serde_json::to_value(&staged).unwrap()
+        );
+        let restored_lineage = restored
+            .get_source(&lineage_source.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored_lineage).unwrap(),
+            serde_json::to_value(&lineage_staged).unwrap()
         );
         let restored_notes = restored
             .portable_records_page("note", 0, 200)
@@ -2951,6 +3139,12 @@ mod tests {
                 .unwrap()
                 .replayed
         );
+        let restored_lineage = recovery
+            .get_uploaded_source(&lineage_source.id)
+            .await
+            .unwrap();
+        assert!(restored_lineage.extract_entities);
+        assert!(restored_lineage.reviewed_enrichment_v1.is_some());
         let second = temp.path().join("promoted-archive");
         create_backup(&reopened, &second, true).await.unwrap();
         verify_backup(&second).unwrap();
@@ -2972,7 +3166,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             recovery
-                .get_remote_job(caller, &rollback.job_id)
+                .get_remote_job(caller.clone(), &rollback.job_id)
                 .await
                 .unwrap()
                 .status,
@@ -2984,6 +3178,37 @@ mod tests {
         assert_eq!(
             rolled.reviewed_enrichment_v1.unwrap()["operation"],
             "rollback"
+        );
+        let mut lineage_rollback = lineage_operation;
+        lineage_rollback.request_id = "backup-lineage-rollback".into();
+        lineage_rollback.rollback_source_revision = Some(restored_lineage.revision);
+        let lineage_rollback = recovery
+            .execute_source_enrichment(caller.clone(), lineage_rollback, true)
+            .await
+            .unwrap();
+        let lineage_worker = recovery
+            .claim_remote_job("restart-epoch", "lineage-rollback-worker")
+            .await
+            .unwrap()
+            .unwrap();
+        recovery
+            .execute_remote_job(lineage_worker, ActionCancellation::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            recovery
+                .get_remote_job(caller, &lineage_rollback.job_id)
+                .await
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert!(
+            !recovery
+                .get_uploaded_source(&lineage_source.id)
+                .await
+                .unwrap()
+                .extract_entities
         );
     }
     #[test]

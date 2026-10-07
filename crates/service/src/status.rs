@@ -37,7 +37,11 @@ pub(crate) async fn report(
         };
         if let Ok(Ok(list)) = tokio::time::timeout(
             Duration::from_secs(1),
-            application.list_remote_jobs(caller, JOB_SAMPLE_LIMIT),
+            application.list_remote_jobs(
+                caller,
+                JOB_SAMPLE_LIMIT,
+                principal.allows(Capability::Enrich),
+            ),
         )
         .await
         {

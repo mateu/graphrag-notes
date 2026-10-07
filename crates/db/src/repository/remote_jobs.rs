@@ -738,6 +738,7 @@ impl Repository {
         &self,
         instance: &str,
         limit: usize,
+        include_enrichment: bool,
     ) -> Result<Vec<RemoteUploadJobStatus>> {
         identity(instance)?;
         if !(1..=200).contains(&limit) {
@@ -745,8 +746,8 @@ impl Repository {
                 "job limit must be 1–200".into(),
             ));
         }
-        let rows: Vec<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance ORDER BY updated_at DESC, id ASC LIMIT $limit"))
-            .bind(("instance", instance.to_string())).bind(("limit", limit)).await?.take(0)?;
+        let rows: Vec<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND ($include_enrichment OR remote_input.enrichment IS NONE OR remote_input.enrichment IS NULL) ORDER BY updated_at DESC, id ASC LIMIT $limit"))
+            .bind(("instance", instance.to_string())).bind(("limit", limit)).bind(("include_enrichment", include_enrichment)).await?.take(0)?;
         Ok(rows.into_iter().map(JobRow::status).collect())
     }
 

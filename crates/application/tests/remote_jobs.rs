@@ -507,7 +507,7 @@ async fn quarantined_malformed_input_remains_readable_only_to_its_owner() {
     assert_eq!(quarantined.status, "failed");
     assert_eq!(quarantined.error_code.as_deref(), Some("validation"));
     let listed = application
-        .list_remote_jobs(caller("owner"), 10)
+        .list_remote_jobs(caller("owner"), 10, true)
         .await
         .unwrap();
     assert_eq!(listed.jobs.len(), 1);
@@ -536,7 +536,7 @@ async fn quarantined_malformed_input_remains_readable_only_to_its_owner() {
         Err(ApplicationError::NotFound(_))
     ));
     assert!(application
-        .list_remote_jobs(caller("foreign"), 10)
+        .list_remote_jobs(caller("foreign"), 10, true)
         .await
         .unwrap()
         .jobs
@@ -1329,11 +1329,11 @@ async fn invalid_upload_shapes_and_job_kinds_are_rejected_before_admission_or_tr
         .await
         .is_err());
     assert!(application
-        .list_remote_jobs(caller("openclaw"), 101)
+        .list_remote_jobs(caller("openclaw"), 101, true)
         .await
         .is_err());
     assert!(application
-        .list_remote_jobs(caller("openclaw"), 100)
+        .list_remote_jobs(caller("openclaw"), 100, true)
         .await
         .unwrap()
         .jobs
@@ -1507,7 +1507,7 @@ async fn incompatible_resume_and_excess_chunk_input_fail_before_claim_or_inferen
     ));
     assert_eq!(
         original
-            .list_remote_jobs(caller("openclaw"), 100)
+            .list_remote_jobs(caller("openclaw"), 100, true)
             .await
             .unwrap()
             .jobs

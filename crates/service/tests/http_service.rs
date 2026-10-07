@@ -180,7 +180,9 @@ impl RemoteApplicationOperations for TestApplication {
         &self,
         caller: CallerIdentity,
         limit: usize,
+        include_enrichment: bool,
     ) -> ApplicationResult<RemoteJobList> {
+        assert!(!include_enrichment);
         self.job_reads.fetch_add(1, Ordering::SeqCst);
         assert_eq!(limit, 10);
         let job = |instance_id: String| RemoteJobStatus {
