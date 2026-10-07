@@ -139,7 +139,7 @@ async fn conversion_plan(
     let job = repo
         .get_remote_upload_job(
             &caller().instance_id,
-            &repo.get_source(source_id).await.unwrap().unwrap().metadata["remote_upload"]["job_id"]
+            repo.get_source(source_id).await.unwrap().unwrap().metadata["remote_upload"]["job_id"]
                 .as_str()
                 .unwrap(),
         )
