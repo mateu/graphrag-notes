@@ -3199,6 +3199,26 @@ mod tests {
             .unwrap();
         let mut legacy_manifest = read_manifest(&legacy_archive).unwrap();
         legacy_manifest.schema_version = 22;
+        // Valid archives need not retain exporter table order. Put every
+        // markerless job before its receipt, including the damaged conversion.
+        let legacy_payload = legacy_archive.join(&legacy_manifest.payload.path);
+        let original = std::fs::read_to_string(&legacy_payload).unwrap();
+        let mut lines: Vec<_> = original
+            .lines()
+            .map(|line| {
+                let record: PortableRecord = serde_json::from_str(line).unwrap();
+                (record.table == "processing_job", line)
+            })
+            .collect();
+        lines.sort_by_key(|(processing_job, _)| !processing_job);
+        let mut reordered = String::with_capacity(original.len());
+        for (_, line) in lines {
+            reordered.push_str(line);
+            reordered.push('\n');
+        }
+        std::fs::write(&legacy_payload, &reordered).unwrap();
+        legacy_manifest.payload.bytes = reordered.len() as u64;
+        legacy_manifest.payload.sha256 = format!("{:x}", Sha256::digest(reordered.as_bytes()));
         std::fs::remove_file(legacy_archive.join(MANIFEST_FILE)).unwrap();
         write_manifest(&legacy_archive.join(MANIFEST_FILE), &legacy_manifest).unwrap();
         assert_eq!(verify_backup(&legacy_archive).unwrap().schema_version, 22);
