@@ -70,7 +70,9 @@ async fn wide(runtime: QualificationRuntime, database_label: &str) {
         "variants":VARIANTS,
         "categories":18,
         "observations_per_variant_per_category":21,
-        "declared_unmeasured_B_references":18,
+        "declared_unmeasured_references":54,
+        "declared_unmeasured_references_per_variant":18,
+        "unmeasured_reference_variant_order":VARIANTS,
         "planned_measured_attempt_pairs":1134,
         "outside_ledger_public_contract_queries":0,
         "new_binary_correctness_prerequisites_required":true,
@@ -102,6 +104,7 @@ async fn wide(runtime: QualificationRuntime, database_label: &str) {
                     "category_index":category_index,
                     "reference_index":reference_index,
                     "scope":scope.table(),"filter":filter,"limit":limit,
+                    "reference_offset":0,
                     "variant":"B","sql":sqls[0],"timing_sample":false,
                 }));
                 let reference = match run_query(
@@ -121,6 +124,7 @@ async fn wide(runtime: QualificationRuntime, database_label: &str) {
                             "schema_version":1,"category_index":category_index,
                             "reference_index":reference_index,
                             "scope":scope.table(),"filter":filter,"limit":limit,
+                            "reference_offset":0,
                             "variant":"B","status":"query_error",
                             "error":error.to_string(),"timing_sample":false,
                             "automatic_retry":false,
@@ -140,6 +144,7 @@ async fn wide(runtime: QualificationRuntime, database_label: &str) {
                     "schema_version":1,"category_index":category_index,
                     "reference_index":reference_index,
                     "scope":scope.table(),"filter":filter,"limit":limit,
+                    "reference_offset":0,
                     "variant":"B","status":"rows","rows":reference.len(),
                     "rows_equal_limit":reference.len() == limit,
                     "full_typed_payload":reference.iter().map(exact_value).collect::<Vec<_>>(),
@@ -153,6 +158,13 @@ async fn wide(runtime: QualificationRuntime, database_label: &str) {
                     "public_DTO_error":reference_dto.as_ref().err(),
                     "timing_sample":false,
                     "one_full_native_payload_only_no_duplicate_DTO_body":true,
+                    "full_native_payload_retained":true,
+                    "full_rows_exact":true,
+                    "ordered_native_keys_and_raw_distance_Numbers_exact":true,
+                    "native_f64_distance_bits_exact":shape,
+                    "serving_f32_distance_bits_exact":shape,
+                    "public_DTO_exact":dto_success,
+                    "full_payload_DTO_key_Number_F64_F32_exact":shape && dto_success,
                 }));
                 assert!(
                     shape && dto_success,
@@ -162,6 +174,102 @@ async fn wide(runtime: QualificationRuntime, database_label: &str) {
                 let reference_f64 = reference_f64.unwrap();
                 let reference_f32 = reference_f32.unwrap();
                 references += 1;
+                // Give every query variant one declared untimed execution
+                // before any measured sample. Keep only B's successful full
+                // body; M/D retain exact metadata and full bodies on mismatch.
+                for (variant, sql) in sqls.iter().enumerate().skip(1) {
+                    let reference_index = references;
+                    emit(serde_json::json!({
+                        "named_hydration_wide_reference":"started",
+                        "schema_version":1,"category_index":category_index,
+                        "reference_index":reference_index,"reference_offset":variant,
+                        "scope":scope.table(),"filter":filter,"limit":limit,
+                        "variant":VARIANTS[variant],"sql":sql,
+                        "timing_sample":false,
+                    }));
+                    let rows = match run_query(
+                        &db,
+                        sql.clone(),
+                        &embedding,
+                        limit,
+                        since.clone(),
+                        source.clone(),
+                    )
+                    .await
+                    {
+                        Ok((rows, _)) => rows,
+                        Err(error) => {
+                            emit(serde_json::json!({
+                                "named_hydration_wide_reference":"completed",
+                                "schema_version":1,"category_index":category_index,
+                                "reference_index":reference_index,"reference_offset":variant,
+                                "scope":scope.table(),"filter":filter,"limit":limit,
+                                "variant":VARIANTS[variant],"status":"query_error",
+                                "error":error.to_string(),"timing_sample":false,
+                                "automatic_retry":false,
+                            }));
+                            panic!("retained failed untimed variant reference; no retry");
+                        }
+                    };
+                    let shape = canonical_distance_shape(scope, &rows, limit);
+                    let actual_hash = fingerprint(&rows);
+                    let actual_identities = identities(&rows);
+                    let actual_f64 = shape.then(|| distance_bits(&rows, false));
+                    let actual_f32 = shape.then(|| distance_bits(&rows, true));
+                    let actual_dto = dto(scope, &rows);
+                    let full_exact = actual_hash == reference_hash;
+                    let key_number_exact = actual_identities == reference_identities;
+                    let f64_exact = actual_f64.as_ref() == Some(&reference_f64);
+                    let f32_exact = actual_f32.as_ref() == Some(&reference_f32);
+                    let dto_exact = actual_dto.as_ref() == Ok(&reference_dto);
+                    let exact = shape
+                        && full_exact
+                        && key_number_exact
+                        && f64_exact
+                        && f32_exact
+                        && dto_exact;
+                    emit(serde_json::json!({
+                        "named_hydration_wide_reference":"completed",
+                        "schema_version":1,"category_index":category_index,
+                        "reference_index":reference_index,"reference_offset":variant,
+                        "scope":scope.table(),"filter":filter,"limit":limit,
+                        "variant":VARIANTS[variant],"status":"rows","rows":rows.len(),
+                        "rows_equal_limit":rows.len() == limit,
+                        "full_typed_payload_sha256":actual_hash,
+                        "ordered_native_ids_and_raw_distance_Numbers":actual_identities,
+                        "canonical_native_keys_and_distance_shape_valid":shape,
+                        "native_f64_distance_bits":actual_f64,
+                        "serving_f32_distance_bits":actual_f32,
+                        "successful_public_DTO":actual_dto.is_ok(),
+                        "public_DTO_sha256":actual_dto.as_ref().ok().map(public_dto_hash),
+                        "public_DTO_error":actual_dto.as_ref().err(),
+                        "full_rows_exact":full_exact,
+                        "ordered_native_keys_and_raw_distance_Numbers_exact":key_number_exact,
+                        "native_f64_distance_bits_exact":f64_exact,
+                        "serving_f32_distance_bits_exact":f32_exact,
+                        "public_DTO_exact":dto_exact,
+                        "full_payload_DTO_key_Number_F64_F32_exact":exact,
+                        "timing_sample":false,
+                        "one_full_native_payload_only_no_duplicate_DTO_body":true,
+                        "full_native_payload_retained":false,
+                    }));
+                    if !exact {
+                        emit(serde_json::json!({
+                            "named_hydration_wide_reference_failure":"retained",
+                            "category_index":category_index,"reference_index":reference_index,
+                            "reference_offset":variant,"variant":VARIANTS[variant],
+                            "full_actual":rows.iter().map(exact_value).collect::<Vec<_>>(),
+                            "full_reference":reference.iter().map(exact_value).collect::<Vec<_>>(),
+                            "public_DTO_error":actual_dto.as_ref().err(),
+                            "automatic_retry":false,
+                        }));
+                    }
+                    assert!(
+                        exact,
+                        "retained untimed variant reference payload/DTO/key/Number/bit mismatch"
+                    );
+                    references += 1;
+                }
                 let mut samples: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
                 for sample_index in 0..21 {
                     // Every variant appears seven times in every call slot.
@@ -279,7 +387,7 @@ async fn wide(runtime: QualificationRuntime, database_label: &str) {
         }
     }
     assert_eq!(attempts, 1134);
-    assert_eq!(references, 18);
+    assert_eq!(references, 54);
     assert_eq!(categories, 18);
     let primary_after = assert_inventory(&db, count).await;
     let mirrors_after = mirror_inventory(&db, count).await;
@@ -295,15 +403,17 @@ async fn wide(runtime: QualificationRuntime, database_label: &str) {
         "backend":backend,"population_per_scope":count,
         "order":order,"order_offset":order_offset,
         "categories":categories,"completed_measured_attempt_pairs":attempts,
-        "completed_unmeasured_B_references":references,
+        "completed_unmeasured_references":references,
+        "completed_unmeasured_references_per_variant":categories,
+        "unmeasured_reference_variant_order":VARIANTS,
         "observations_per_variant_per_category":21,
         "primary_full_row_sha256_after":primary_after,
         "mirror_full_row_sha256_after":mirrors_after,
-        "full_native_payload_DTO_key_Number_F64_F32_exact_every_measured_call":true,
+        "full_native_payload_DTO_key_Number_F64_F32_exact_every_reference_and_measured_call":true,
         "successful_public_DTO_every_reference_and_measured_call":true,
         "exact_K_rows_every_reference_and_measured_call":true,
         "finite_numeric_native_and_serving_distances_every_reference_and_measured_call":true,
-        "first_is_measured_after_one_B_reference_per_category_not_cold_or_first_use":true,
+        "first_is_measured_after_three_B_M_D_references_per_category_not_cold_or_first_use":true,
         "between_call_full_fingerprint_DTO_key_bit_work_declared":true,
         "outside_ledger_public_contract_queries":0,
         "M_comparisons_descriptive_only":true,
