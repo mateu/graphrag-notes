@@ -1,0 +1,1585 @@
+{
+  "actual_controller_status": "four_role_observations_complete",
+  "aggregate_native_counts": {
+    "full_plan_executions": 6,
+    "libtest_failed": 0,
+    "libtest_passed": 4,
+    "outside_ledger_public_contract_queries": 636,
+    "plain_plans": 6,
+    "provider_calls": 0,
+    "runtime_bracket_events": 8,
+    "started_completed_pairs": 2226,
+    "successful_coherent_cases": 634,
+    "timed_calls": 126
+  },
+  "compiled": {
+    "binary_sha256": "8b8671e81420969e35c89e014ef0177d58fb1d5723101999868b764b5c7312a2",
+    "build_receipt_sha256": "24de8ba27e53d39cc5c2f207f14eb8d2c5f6eff746d02d03ab66be6a7c702a38",
+    "compiler_messages_sha256": "c73a775ca2dace0ea3c32417e19817b74fc2a81fb3ec460ecaffb91841e6ae66",
+    "controller_sha256": "c102c157cd83d02ef0c3709a20f7fd8ee5d4e8ce454a25d4ad43a9c16ae11ae8",
+    "engine": "3.2.4",
+    "features": [
+      "default",
+      "rocksdb"
+    ],
+    "source_commit": "a08b3f60654bd6ee6c51e67fe8793df8b6970275",
+    "toolchain": "1.97.1"
+  },
+  "completed_role_timing_samples": 126,
+  "decision": "consider_wider_qualification_only",
+  "focused_pilot": {
+    "K": 50,
+    "backend_runs": 1,
+    "dimension": 1024,
+    "filter": "recent",
+    "first_measured_then_warm_samples": 20,
+    "normal_desktop_and_shared_services_active": true,
+    "population_per_scope": 1024,
+    "runtime": "current_thread",
+    "samples_per_variant_per_backend": 21,
+    "scope": "message",
+    "untimed_references_per_backend": 3,
+    "variant_order": "B/M/D, M/D/B, D/B/M repeated seven times",
+    "wider_matrix_or_multi_thread_performance_qualified": false,
+    "workers": 1
+  },
+  "limits": {
+    "first_label": "first measured after declared untimed references",
+    "native_Value_take_is_not_public_DTO_conversion": true,
+    "no_automatic_replay": true,
+    "no_cold_or_first_use_claim": true,
+    "performance_adoption_release_deployment_closure": false,
+    "phase_metrics_are_same_call_inclusive_elapsed_not_CPU": true,
+    "production_mirror_atomic_coherence_readthrough_restore_gates_remain_open": true,
+    "reference_stdout_fingerprint_DTO_key_bit_checks_are_between_call_workload": true,
+    "timed_interval": "inherited run_query await including native Value take",
+    "warm_median": "mean of sorted indices9 and10 of20 warm values",
+    "warm_p95": "sorted index18 of20 warm values"
+  },
+  "observations_complete": true,
+  "partial_failed_pilot_timing_samples_unknown": false,
+  "partial_failed_role_counts_are_not_inferred_from_missing_parsed_evidence": true,
+  "performance_acceptance": false,
+  "pilot_continuation_passed": true,
+  "planned_timing_samples": 126,
+  "production_coherence_or_adoption": false,
+  "qualification_date_utc": "2026-10-07",
+  "retained_failed_first_attempt": {
+    "SQL_pilot_order_quantiles_or_continuation_rule_changed": false,
+    "automatic_retry": false,
+    "baseline_native_success_and_317_successful_DTO_gates_preserved": true,
+    "cause": "fixture required successful Option decoding for explicit NULL; SDK Option accepts NONE and delegates NULL to the contained type",
+    "completed_coherent_success_cases_before_failure": 317,
+    "correction": "require equal DTO errors for the explicit NULL controls in all three scopes",
+    "failure_control": "explicit NULL in optional DTO fields",
+    "full_B_M_D_native_payload_key_Number_F64_F32_and_DTO_error_identity": true,
+    "projection": {
+      "actual_controller_status": "failed",
+      "compiled": {
+        "binary_sha256": "0f67ad58226cffa375582eb36abc54d8b7e29faccbc7ec156b07fe38e5bcdaf2",
+        "build_receipt_sha256": "ab6bf1204b5d000625cce307a8bf814f5251ec2126fcfaa2dda8df6bb38b2a22",
+        "compiler_messages_sha256": "e7ede72093510d98d618eb603ac4639ddd4dc7ee129128b2507ae77b6ebf1383",
+        "controller_sha256": "dd2a528241cb22e9ebf3d7ddf7c50833d2d969e5b79e7586170e5236f665dbb6",
+        "engine": "3.2.4",
+        "features": [
+          "default",
+          "rocksdb"
+        ],
+        "source_commit": "afbce37b273f5dc70abd740057686e23be7938ba",
+        "toolchain": "1.97.1"
+      },
+      "completed_role_timing_samples": 0,
+      "decision": "incomplete_no_continuation_decision",
+      "limits": {
+        "first_label": "first measured after declared untimed references",
+        "native_Value_take_is_not_public_DTO_conversion": true,
+        "no_automatic_replay": true,
+        "no_cold_or_first_use_claim": true,
+        "performance_adoption_release_deployment_closure": false,
+        "phase_metrics_are_same_call_inclusive_elapsed_not_CPU": true,
+        "production_mirror_atomic_coherence_readthrough_restore_gates_remain_open": true,
+        "reference_stdout_fingerprint_DTO_key_bit_checks_are_between_call_workload": true,
+        "timed_interval": "inherited run_query await including native Value take",
+        "warm_median": "mean of sorted indices9 and10 of20 warm values",
+        "warm_p95": "sorted index18 of20 warm values"
+      },
+      "observations_complete": false,
+      "partial_failed_pilot_timing_samples_unknown": false,
+      "partial_failed_role_counts_are_not_inferred_from_missing_parsed_evidence": true,
+      "performance_acceptance": false,
+      "pilot_continuation_passed": null,
+      "planned_timing_samples": 126,
+      "production_coherence_or_adoption": false,
+      "roles": [
+        {
+          "backend": "memory",
+          "cleanup_verified": true,
+          "exit_code": 101,
+          "kind": "correctness",
+          "native_test_failed": null,
+          "native_test_passed": null,
+          "observed_timing_samples": 0,
+          "role": "memory-correctness",
+          "runtime": "current_thread",
+          "status": "failed",
+          "workers": 1
+        },
+        {
+          "backend": "rocksdb",
+          "kind": "correctness",
+          "native_test_failed": null,
+          "native_test_passed": null,
+          "observed_timing_samples": null,
+          "role": "rocksdb-correctness",
+          "status": "not_started"
+        },
+        {
+          "backend": "memory",
+          "kind": "pilot",
+          "native_test_failed": null,
+          "native_test_passed": null,
+          "observed_timing_samples": null,
+          "role": "memory-pilot",
+          "status": "not_started"
+        },
+        {
+          "backend": "rocksdb",
+          "kind": "pilot",
+          "native_test_failed": null,
+          "native_test_passed": null,
+          "observed_timing_samples": null,
+          "role": "rocksdb-pilot",
+          "status": "not_started"
+        }
+      ],
+      "schema_version": 1,
+      "screen": "named_field_hydration_focused_current_thread",
+      "selected_rule": {
+        "M_comparisons": "descriptive",
+        "backends": [
+          "memory",
+          "rocksdb"
+        ],
+        "comparison": "D_vs_B",
+        "first_measured_after_three_references": "no_larger",
+        "median": "mean_of_sorted_indices_9_and_10",
+        "percentile": "nearest_rank_95_of_20",
+        "performance_acceptance": false,
+        "permits": "consider_wider_qualification_only",
+        "production_coherence_or_adoption": false,
+        "runtime": "current_thread",
+        "schema_version": 1,
+        "warm_max": "no_larger",
+        "warm_median": "strictly_lower",
+        "warm_p95": "strictly_lower",
+        "warm_samples": 20,
+        "workers": 1
+      }
+    },
+    "timing_samples": 0
+  },
+  "roles": [
+    {
+      "backend": "memory",
+      "cleanup_verified": true,
+      "correctness": {
+        "cases_per_historical_vector": 45,
+        "deliberate_Source_successful_generation_promotion": true,
+        "entire_database_unchanged_claim": false,
+        "full_plan_executions": 3,
+        "intentional_payload_edge_cases": 27,
+        "inventory_unchanged_scope": "three canonical tables plus three mirrors",
+        "libtest_failure_count_is_separate_from_intentional_query_and_DTO_errors": true,
+        "native_key_forms_per_scope": 6,
+        "native_key_hydration_cases": 3,
+        "observed_intentional_control_query_errors": 9,
+        "plain_plans": 3,
+        "public_contract_queries": 317,
+        "successful_coherent_KNN_cases": 317,
+        "successful_historical_vectors": [
+          "finite_positive",
+          "zero",
+          "negative_zero",
+          "dimension_two",
+          "empty",
+          "negative_NaN",
+          "positive_infinity"
+        ]
+      },
+      "exit_code": 0,
+      "kind": "correctness",
+      "native_test_failed": 0,
+      "native_test_passed": 1,
+      "observed_timing_samples": 0,
+      "role": "memory-correctness",
+      "runtime": "current_thread",
+      "runtime_events": 2,
+      "started_completed_pairs": 1047,
+      "status": "passed_correctness",
+      "workers": 1
+    },
+    {
+      "backend": "rocksdb",
+      "cleanup_verified": true,
+      "correctness": {
+        "cases_per_historical_vector": 45,
+        "deliberate_Source_successful_generation_promotion": true,
+        "entire_database_unchanged_claim": false,
+        "full_plan_executions": 3,
+        "intentional_payload_edge_cases": 27,
+        "inventory_unchanged_scope": "three canonical tables plus three mirrors",
+        "libtest_failure_count_is_separate_from_intentional_query_and_DTO_errors": true,
+        "native_key_forms_per_scope": 6,
+        "native_key_hydration_cases": 3,
+        "observed_intentional_control_query_errors": 9,
+        "plain_plans": 3,
+        "public_contract_queries": 317,
+        "successful_coherent_KNN_cases": 317,
+        "successful_historical_vectors": [
+          "finite_positive",
+          "zero",
+          "negative_zero",
+          "dimension_two",
+          "empty",
+          "negative_NaN",
+          "positive_infinity"
+        ]
+      },
+      "exit_code": 0,
+      "kind": "correctness",
+      "native_test_failed": 0,
+      "native_test_passed": 1,
+      "observed_timing_samples": 0,
+      "role": "rocksdb-correctness",
+      "runtime": "current_thread",
+      "runtime_events": 2,
+      "started_completed_pairs": 1047,
+      "status": "passed_correctness",
+      "workers": 1
+    },
+    {
+      "backend": "memory",
+      "cleanup_verified": true,
+      "exit_code": 0,
+      "kind": "pilot",
+      "native_test_failed": 0,
+      "native_test_passed": 1,
+      "observed_timing_samples": 63,
+      "pilot": {
+        "D_vs_B_selected_rule": {
+          "first_measured_no_higher": true,
+          "warm_max_no_higher": true,
+          "warm_median_strictly_lower": true,
+          "warm_p95_strictly_lower": true
+        },
+        "D_vs_M_descriptive_only": {
+          "first_measured_no_higher": true,
+          "warm_max_no_higher": true,
+          "warm_median_strictly_lower": true,
+          "warm_p95_strictly_lower": true
+        },
+        "M_is_an_experimental_control_not_an_additional_pass_gate": true,
+        "M_vs_B_descriptive_only": {
+          "first_measured_no_higher": false,
+          "warm_max_no_higher": false,
+          "warm_median_strictly_lower": true,
+          "warm_p95_strictly_lower": false
+        },
+        "continuation_rule_passed": true,
+        "elapsed_first_and_20_warm_ms": {
+          "B": [
+            47.661083,
+            50.54325,
+            52.120292,
+            50.067875,
+            49.840208,
+            51.51925,
+            55.78620900000001,
+            52.510667,
+            54.282790999999996,
+            51.365874999999996,
+            55.364542,
+            53.945750000000004,
+            56.421667,
+            57.728916999999996,
+            55.480624999999996,
+            56.850958,
+            34.105542,
+            33.840041,
+            34.725334,
+            35.069333,
+            34.940709
+          ],
+          "D": [
+            45.349084,
+            47.096792,
+            46.236875,
+            46.466667,
+            48.304333,
+            48.888334,
+            49.826665999999996,
+            49.602792,
+            51.139375,
+            51.666875000000005,
+            51.632833000000005,
+            49.861916,
+            57.304417,
+            56.047833,
+            53.565374999999996,
+            45.852458,
+            31.959208000000004,
+            31.757042,
+            31.553209,
+            31.365,
+            32.320542
+          ],
+          "M": [
+            47.951458,
+            49.570417,
+            49.552541999999995,
+            50.071167,
+            50.789708000000005,
+            52.886625,
+            54.601167,
+            52.324166999999996,
+            50.616125,
+            54.878375,
+            52.043333,
+            55.770583,
+            56.336,
+            58.361291,
+            56.596125,
+            60.154084,
+            34.896167,
+            34.403041,
+            34.651042,
+            34.402916999999995,
+            36.566083
+          ]
+        },
+        "same_call_phases": {
+          "B": [
+            {
+              "elapsed_ms": 47.661083,
+              "engine_execution_ms": 41.236458,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 0,
+              "sdk_await_ms": 47.659375,
+              "sequence": 3
+            },
+            {
+              "elapsed_ms": 50.54325,
+              "engine_execution_ms": 42.384917,
+              "native_Value_take_ms": 0.00041600000000000003,
+              "sample_index": 1,
+              "sdk_await_ms": 50.541667,
+              "sequence": 8
+            },
+            {
+              "elapsed_ms": 52.120292,
+              "engine_execution_ms": 43.62075,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 2,
+              "sdk_await_ms": 52.119040999999996,
+              "sequence": 10
+            },
+            {
+              "elapsed_ms": 50.067875,
+              "engine_execution_ms": 42.25625,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 3,
+              "sdk_await_ms": 50.067042,
+              "sequence": 12
+            },
+            {
+              "elapsed_ms": 49.840208,
+              "engine_execution_ms": 42.362875,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 4,
+              "sdk_await_ms": 49.838959,
+              "sequence": 17
+            },
+            {
+              "elapsed_ms": 51.51925,
+              "engine_execution_ms": 43.115334,
+              "native_Value_take_ms": 0.00029099999999999997,
+              "sample_index": 5,
+              "sdk_await_ms": 51.518084,
+              "sequence": 19
+            },
+            {
+              "elapsed_ms": 55.78620900000001,
+              "engine_execution_ms": 45.567249999999994,
+              "native_Value_take_ms": 0.0006670000000000001,
+              "sample_index": 6,
+              "sdk_await_ms": 55.78475,
+              "sequence": 21
+            },
+            {
+              "elapsed_ms": 52.510667,
+              "engine_execution_ms": 43.741625,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 7,
+              "sdk_await_ms": 52.509417,
+              "sequence": 26
+            },
+            {
+              "elapsed_ms": 54.282790999999996,
+              "engine_execution_ms": 44.020333,
+              "native_Value_take_ms": 0.00033299999999999996,
+              "sample_index": 8,
+              "sdk_await_ms": 54.281792,
+              "sequence": 28
+            },
+            {
+              "elapsed_ms": 51.365874999999996,
+              "engine_execution_ms": 43.679959,
+              "native_Value_take_ms": 0.00045900000000000004,
+              "sample_index": 9,
+              "sdk_await_ms": 51.364915999999994,
+              "sequence": 30
+            },
+            {
+              "elapsed_ms": 55.364542,
+              "engine_execution_ms": 44.833375000000004,
+              "native_Value_take_ms": 0.000292,
+              "sample_index": 10,
+              "sdk_await_ms": 55.363542,
+              "sequence": 35
+            },
+            {
+              "elapsed_ms": 53.945750000000004,
+              "engine_execution_ms": 43.905,
+              "native_Value_take_ms": 0.000292,
+              "sample_index": 11,
+              "sdk_await_ms": 53.94475,
+              "sequence": 37
+            },
+            {
+              "elapsed_ms": 56.421667,
+              "engine_execution_ms": 46.362334,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 12,
+              "sdk_await_ms": 56.420542,
+              "sequence": 39
+            },
+            {
+              "elapsed_ms": 57.728916999999996,
+              "engine_execution_ms": 45.986082999999994,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 13,
+              "sdk_await_ms": 57.727542,
+              "sequence": 44
+            },
+            {
+              "elapsed_ms": 55.480624999999996,
+              "engine_execution_ms": 45.121874999999996,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 14,
+              "sdk_await_ms": 55.4795,
+              "sequence": 46
+            },
+            {
+              "elapsed_ms": 56.850958,
+              "engine_execution_ms": 45.35675,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 15,
+              "sdk_await_ms": 56.849583,
+              "sequence": 48
+            },
+            {
+              "elapsed_ms": 34.105542,
+              "engine_execution_ms": 33.959208999999994,
+              "native_Value_take_ms": 0.000417,
+              "sample_index": 16,
+              "sdk_await_ms": 34.104124999999996,
+              "sequence": 53
+            },
+            {
+              "elapsed_ms": 33.840041,
+              "engine_execution_ms": 33.698625,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 17,
+              "sdk_await_ms": 33.839167,
+              "sequence": 55
+            },
+            {
+              "elapsed_ms": 34.725334,
+              "engine_execution_ms": 34.579542,
+              "native_Value_take_ms": 0.000584,
+              "sample_index": 18,
+              "sdk_await_ms": 34.723957999999996,
+              "sequence": 57
+            },
+            {
+              "elapsed_ms": 35.069333,
+              "engine_execution_ms": 34.921708,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 19,
+              "sdk_await_ms": 35.067959,
+              "sequence": 62
+            },
+            {
+              "elapsed_ms": 34.940709,
+              "engine_execution_ms": 34.776125,
+              "native_Value_take_ms": 0.000417,
+              "sample_index": 20,
+              "sdk_await_ms": 34.938542000000005,
+              "sequence": 64
+            }
+          ],
+          "D": [
+            {
+              "elapsed_ms": 45.349084,
+              "engine_execution_ms": 38.418375,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 0,
+              "sdk_await_ms": 45.348084,
+              "sequence": 5
+            },
+            {
+              "elapsed_ms": 47.096792,
+              "engine_execution_ms": 39.404792,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 1,
+              "sdk_await_ms": 47.095709,
+              "sequence": 7
+            },
+            {
+              "elapsed_ms": 46.236875,
+              "engine_execution_ms": 38.855374999999995,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 2,
+              "sdk_await_ms": 46.235625,
+              "sequence": 9
+            },
+            {
+              "elapsed_ms": 46.466667,
+              "engine_execution_ms": 38.78575,
+              "native_Value_take_ms": 0.00020800000000000001,
+              "sample_index": 3,
+              "sdk_await_ms": 46.465832999999996,
+              "sequence": 14
+            },
+            {
+              "elapsed_ms": 48.304333,
+              "engine_execution_ms": 39.683375,
+              "native_Value_take_ms": 0.00020800000000000001,
+              "sample_index": 4,
+              "sdk_await_ms": 48.303582999999996,
+              "sequence": 16
+            },
+            {
+              "elapsed_ms": 48.888334,
+              "engine_execution_ms": 40.194959000000004,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 5,
+              "sdk_await_ms": 48.887541999999996,
+              "sequence": 18
+            },
+            {
+              "elapsed_ms": 49.826665999999996,
+              "engine_execution_ms": 40.52675,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 6,
+              "sdk_await_ms": 49.825584,
+              "sequence": 23
+            },
+            {
+              "elapsed_ms": 49.602792,
+              "engine_execution_ms": 40.692083,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 7,
+              "sdk_await_ms": 49.601791999999996,
+              "sequence": 25
+            },
+            {
+              "elapsed_ms": 51.139375,
+              "engine_execution_ms": 41.555167,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 8,
+              "sdk_await_ms": 51.138542,
+              "sequence": 27
+            },
+            {
+              "elapsed_ms": 51.666875000000005,
+              "engine_execution_ms": 41.426208,
+              "native_Value_take_ms": 0.000334,
+              "sample_index": 9,
+              "sdk_await_ms": 51.666042000000004,
+              "sequence": 32
+            },
+            {
+              "elapsed_ms": 51.632833000000005,
+              "engine_execution_ms": 41.4015,
+              "native_Value_take_ms": 0.000417,
+              "sample_index": 10,
+              "sdk_await_ms": 51.63175,
+              "sequence": 34
+            },
+            {
+              "elapsed_ms": 49.861916,
+              "engine_execution_ms": 41.235459,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 11,
+              "sdk_await_ms": 49.860792000000004,
+              "sequence": 36
+            },
+            {
+              "elapsed_ms": 57.304417,
+              "engine_execution_ms": 44.971166,
+              "native_Value_take_ms": 0.000417,
+              "sample_index": 12,
+              "sdk_await_ms": 57.30375,
+              "sequence": 41
+            },
+            {
+              "elapsed_ms": 56.047833,
+              "engine_execution_ms": 43.917333,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 13,
+              "sdk_await_ms": 56.047041,
+              "sequence": 43
+            },
+            {
+              "elapsed_ms": 53.565374999999996,
+              "engine_execution_ms": 42.296917,
+              "native_Value_take_ms": 0.00033299999999999996,
+              "sample_index": 14,
+              "sdk_await_ms": 53.564542,
+              "sequence": 45
+            },
+            {
+              "elapsed_ms": 45.852458,
+              "engine_execution_ms": 31.499667000000002,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 15,
+              "sdk_await_ms": 45.851458,
+              "sequence": 50
+            },
+            {
+              "elapsed_ms": 31.959208000000004,
+              "engine_execution_ms": 31.731665999999997,
+              "native_Value_take_ms": 0.000583,
+              "sample_index": 16,
+              "sdk_await_ms": 31.957959000000002,
+              "sequence": 52
+            },
+            {
+              "elapsed_ms": 31.757042,
+              "engine_execution_ms": 31.532334000000002,
+              "native_Value_take_ms": 0.000125,
+              "sample_index": 17,
+              "sdk_await_ms": 31.756375000000002,
+              "sequence": 54
+            },
+            {
+              "elapsed_ms": 31.553209,
+              "engine_execution_ms": 31.337583000000002,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 18,
+              "sdk_await_ms": 31.552249999999997,
+              "sequence": 59
+            },
+            {
+              "elapsed_ms": 31.365,
+              "engine_execution_ms": 31.158959,
+              "native_Value_take_ms": 0.000209,
+              "sample_index": 19,
+              "sdk_await_ms": 31.364417,
+              "sequence": 61
+            },
+            {
+              "elapsed_ms": 32.320542,
+              "engine_execution_ms": 32.088625,
+              "native_Value_take_ms": 0.000292,
+              "sample_index": 20,
+              "sdk_await_ms": 32.319792,
+              "sequence": 63
+            }
+          ],
+          "M": [
+            {
+              "elapsed_ms": 47.951458,
+              "engine_execution_ms": 41.078917,
+              "native_Value_take_ms": 0.00075,
+              "sample_index": 0,
+              "sdk_await_ms": 47.950208,
+              "sequence": 4
+            },
+            {
+              "elapsed_ms": 49.570417,
+              "engine_execution_ms": 42.422625,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 1,
+              "sdk_await_ms": 49.569416,
+              "sequence": 6
+            },
+            {
+              "elapsed_ms": 49.552541999999995,
+              "engine_execution_ms": 41.774875,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 2,
+              "sdk_await_ms": 49.551542,
+              "sequence": 11
+            },
+            {
+              "elapsed_ms": 50.071167,
+              "engine_execution_ms": 42.8405,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 3,
+              "sdk_await_ms": 50.070249999999994,
+              "sequence": 13
+            },
+            {
+              "elapsed_ms": 50.789708000000005,
+              "engine_execution_ms": 42.559958,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 4,
+              "sdk_await_ms": 50.788792,
+              "sequence": 15
+            },
+            {
+              "elapsed_ms": 52.886625,
+              "engine_execution_ms": 44.501917,
+              "native_Value_take_ms": 0.000292,
+              "sample_index": 5,
+              "sdk_await_ms": 52.88575,
+              "sequence": 20
+            },
+            {
+              "elapsed_ms": 54.601167,
+              "engine_execution_ms": 44.945875,
+              "native_Value_take_ms": 0.0007080000000000001,
+              "sample_index": 6,
+              "sdk_await_ms": 54.599875,
+              "sequence": 22
+            },
+            {
+              "elapsed_ms": 52.324166999999996,
+              "engine_execution_ms": 43.390499999999996,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 7,
+              "sdk_await_ms": 52.323292,
+              "sequence": 24
+            },
+            {
+              "elapsed_ms": 50.616125,
+              "engine_execution_ms": 42.140875,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 8,
+              "sdk_await_ms": 50.615209,
+              "sequence": 29
+            },
+            {
+              "elapsed_ms": 54.878375,
+              "engine_execution_ms": 45.016124999999995,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 9,
+              "sdk_await_ms": 54.877500000000005,
+              "sequence": 31
+            },
+            {
+              "elapsed_ms": 52.043333,
+              "engine_execution_ms": 42.950500000000005,
+              "native_Value_take_ms": 0.00041600000000000003,
+              "sample_index": 10,
+              "sdk_await_ms": 52.042375,
+              "sequence": 33
+            },
+            {
+              "elapsed_ms": 55.770583,
+              "engine_execution_ms": 45.138208999999996,
+              "native_Value_take_ms": 0.00029099999999999997,
+              "sample_index": 11,
+              "sdk_await_ms": 55.769917,
+              "sequence": 38
+            },
+            {
+              "elapsed_ms": 56.336,
+              "engine_execution_ms": 46.508333,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 12,
+              "sdk_await_ms": 56.334959,
+              "sequence": 40
+            },
+            {
+              "elapsed_ms": 58.361291,
+              "engine_execution_ms": 47.088541,
+              "native_Value_take_ms": 0.00020800000000000001,
+              "sample_index": 13,
+              "sdk_await_ms": 58.360625,
+              "sequence": 42
+            },
+            {
+              "elapsed_ms": 56.596125,
+              "engine_execution_ms": 45.583625000000005,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 14,
+              "sdk_await_ms": 56.595417000000005,
+              "sequence": 47
+            },
+            {
+              "elapsed_ms": 60.154084,
+              "engine_execution_ms": 49.791333,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 15,
+              "sdk_await_ms": 60.153167,
+              "sequence": 49
+            },
+            {
+              "elapsed_ms": 34.896167,
+              "engine_execution_ms": 34.679833,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 16,
+              "sdk_await_ms": 34.895416999999995,
+              "sequence": 51
+            },
+            {
+              "elapsed_ms": 34.403041,
+              "engine_execution_ms": 34.194042,
+              "native_Value_take_ms": 0.000166,
+              "sample_index": 17,
+              "sdk_await_ms": 34.402459,
+              "sequence": 56
+            },
+            {
+              "elapsed_ms": 34.651042,
+              "engine_execution_ms": 34.419084000000005,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 18,
+              "sdk_await_ms": 34.650042,
+              "sequence": 58
+            },
+            {
+              "elapsed_ms": 34.402916999999995,
+              "engine_execution_ms": 34.183167,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 19,
+              "sdk_await_ms": 34.402167,
+              "sequence": 60
+            },
+            {
+              "elapsed_ms": 36.566083,
+              "engine_execution_ms": 36.309625,
+              "native_Value_take_ms": 0.000583,
+              "sample_index": 20,
+              "sdk_await_ms": 36.564874999999994,
+              "sequence": 65
+            }
+          ]
+        },
+        "summaries": {
+          "B": {
+            "first_measured_after_declared_untimed_references_ms": 47.661083,
+            "warm_max_ms": 57.728916999999996,
+            "warm_median_ms": 51.819771,
+            "warm_min_ms": 33.840041,
+            "warm_n": 20,
+            "warm_p95_ms": 56.850958
+          },
+          "D": {
+            "first_measured_after_declared_untimed_references_ms": 45.349084,
+            "warm_max_ms": 57.304417,
+            "warm_median_ms": 48.5963335,
+            "warm_min_ms": 31.365,
+            "warm_n": 20,
+            "warm_p95_ms": 56.047833
+          },
+          "M": {
+            "first_measured_after_declared_untimed_references_ms": 47.951458,
+            "warm_max_ms": 60.154084,
+            "warm_median_ms": 51.416520500000004,
+            "warm_min_ms": 34.402916999999995,
+            "warm_n": 20,
+            "warm_p95_ms": 58.361291
+          }
+        },
+        "timed_calls": 63,
+        "untimed_references": 3
+      },
+      "role": "memory-pilot",
+      "runtime": "current_thread",
+      "runtime_events": 2,
+      "started_completed_pairs": 66,
+      "status": "pilot_observations_complete",
+      "workers": 1
+    },
+    {
+      "backend": "rocksdb",
+      "cleanup_verified": true,
+      "exit_code": 0,
+      "kind": "pilot",
+      "native_test_failed": 0,
+      "native_test_passed": 1,
+      "observed_timing_samples": 63,
+      "pilot": {
+        "D_vs_B_selected_rule": {
+          "first_measured_no_higher": true,
+          "warm_max_no_higher": true,
+          "warm_median_strictly_lower": true,
+          "warm_p95_strictly_lower": true
+        },
+        "D_vs_M_descriptive_only": {
+          "first_measured_no_higher": true,
+          "warm_max_no_higher": true,
+          "warm_median_strictly_lower": true,
+          "warm_p95_strictly_lower": true
+        },
+        "M_is_an_experimental_control_not_an_additional_pass_gate": true,
+        "M_vs_B_descriptive_only": {
+          "first_measured_no_higher": true,
+          "warm_max_no_higher": true,
+          "warm_median_strictly_lower": false,
+          "warm_p95_strictly_lower": true
+        },
+        "continuation_rule_passed": true,
+        "elapsed_first_and_20_warm_ms": {
+          "B": [
+            52.429625,
+            59.565042,
+            72.080792,
+            59.451916,
+            50.426709,
+            54.654208000000004,
+            56.715291,
+            56.798666999999995,
+            56.834959,
+            59.242125,
+            58.031208,
+            72.63125,
+            35.582542000000004,
+            34.379082999999994,
+            35.972083000000005,
+            34.26191600000001,
+            36.413792,
+            38.70725,
+            46.892666,
+            35.806958,
+            35.164417
+          ],
+          "D": [
+            50.270125,
+            55.042708000000005,
+            60.751084,
+            53.227375,
+            51.387042,
+            52.78175,
+            54.277333,
+            53.210958000000005,
+            54.270584,
+            56.396125,
+            55.744459000000006,
+            56.792958,
+            32.003458,
+            32.052291,
+            32.443125,
+            32.210459,
+            34.204458,
+            34.564666,
+            32.761334000000005,
+            33.571584,
+            32.620917
+          ],
+          "M": [
+            51.173458,
+            56.15875,
+            70.55525,
+            58.27575,
+            56.477417,
+            56.203916,
+            56.025708,
+            56.528083,
+            57.626459,
+            62.819,
+            58.857541,
+            51.566833,
+            36.05275,
+            35.59675,
+            35.736292000000006,
+            35.297458,
+            36.694834,
+            45.191416999999994,
+            35.959291,
+            35.219083,
+            35.465125
+          ]
+        },
+        "same_call_phases": {
+          "B": [
+            {
+              "elapsed_ms": 52.429625,
+              "engine_execution_ms": 43.327083,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 0,
+              "sdk_await_ms": 52.4285,
+              "sequence": 3
+            },
+            {
+              "elapsed_ms": 59.565042,
+              "engine_execution_ms": 49.073792,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 1,
+              "sdk_await_ms": 59.563875,
+              "sequence": 8
+            },
+            {
+              "elapsed_ms": 72.080792,
+              "engine_execution_ms": 58.470542,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 2,
+              "sdk_await_ms": 72.079958,
+              "sequence": 10
+            },
+            {
+              "elapsed_ms": 59.451916,
+              "engine_execution_ms": 48.264458000000005,
+              "native_Value_take_ms": 0.000417,
+              "sample_index": 3,
+              "sdk_await_ms": 59.450917,
+              "sequence": 12
+            },
+            {
+              "elapsed_ms": 50.426709,
+              "engine_execution_ms": 44.185165999999995,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 4,
+              "sdk_await_ms": 50.425625000000004,
+              "sequence": 17
+            },
+            {
+              "elapsed_ms": 54.654208000000004,
+              "engine_execution_ms": 44.616625,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 5,
+              "sdk_await_ms": 54.653417000000005,
+              "sequence": 19
+            },
+            {
+              "elapsed_ms": 56.715291,
+              "engine_execution_ms": 45.815709000000005,
+              "native_Value_take_ms": 0.000709,
+              "sample_index": 6,
+              "sdk_await_ms": 56.714124999999996,
+              "sequence": 21
+            },
+            {
+              "elapsed_ms": 56.798666999999995,
+              "engine_execution_ms": 45.529459,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 7,
+              "sdk_await_ms": 56.797792,
+              "sequence": 26
+            },
+            {
+              "elapsed_ms": 56.834959,
+              "engine_execution_ms": 46.517999999999994,
+              "native_Value_take_ms": 0.0006670000000000001,
+              "sample_index": 8,
+              "sdk_await_ms": 56.833625,
+              "sequence": 28
+            },
+            {
+              "elapsed_ms": 59.242125,
+              "engine_execution_ms": 47.610541999999995,
+              "native_Value_take_ms": 0.0007080000000000001,
+              "sample_index": 9,
+              "sdk_await_ms": 59.240833,
+              "sequence": 30
+            },
+            {
+              "elapsed_ms": 58.031208,
+              "engine_execution_ms": 46.786417,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 10,
+              "sdk_await_ms": 58.030291999999996,
+              "sequence": 35
+            },
+            {
+              "elapsed_ms": 72.63125,
+              "engine_execution_ms": 36.815833,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 11,
+              "sdk_await_ms": 72.62995799999999,
+              "sequence": 37
+            },
+            {
+              "elapsed_ms": 35.582542000000004,
+              "engine_execution_ms": 35.381084,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 12,
+              "sdk_await_ms": 35.581584,
+              "sequence": 39
+            },
+            {
+              "elapsed_ms": 34.379082999999994,
+              "engine_execution_ms": 34.211,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 13,
+              "sdk_await_ms": 34.37825,
+              "sequence": 44
+            },
+            {
+              "elapsed_ms": 35.972083000000005,
+              "engine_execution_ms": 35.757208,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 14,
+              "sdk_await_ms": 35.971125,
+              "sequence": 46
+            },
+            {
+              "elapsed_ms": 34.26191600000001,
+              "engine_execution_ms": 34.052583,
+              "native_Value_take_ms": 0.000209,
+              "sample_index": 15,
+              "sdk_await_ms": 34.26125,
+              "sequence": 48
+            },
+            {
+              "elapsed_ms": 36.413792,
+              "engine_execution_ms": 36.171625,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 16,
+              "sdk_await_ms": 36.412791999999996,
+              "sequence": 53
+            },
+            {
+              "elapsed_ms": 38.70725,
+              "engine_execution_ms": 38.448583,
+              "native_Value_take_ms": 0.000541,
+              "sample_index": 17,
+              "sdk_await_ms": 38.706042000000004,
+              "sequence": 55
+            },
+            {
+              "elapsed_ms": 46.892666,
+              "engine_execution_ms": 46.632625,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 18,
+              "sdk_await_ms": 46.891416,
+              "sequence": 57
+            },
+            {
+              "elapsed_ms": 35.806958,
+              "engine_execution_ms": 35.600834,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 19,
+              "sdk_await_ms": 35.805958,
+              "sequence": 62
+            },
+            {
+              "elapsed_ms": 35.164417,
+              "engine_execution_ms": 34.964292,
+              "native_Value_take_ms": 0.00033299999999999996,
+              "sample_index": 20,
+              "sdk_await_ms": 35.163541,
+              "sequence": 64
+            }
+          ],
+          "D": [
+            {
+              "elapsed_ms": 50.270125,
+              "engine_execution_ms": 41.080875000000006,
+              "native_Value_take_ms": 0.000584,
+              "sample_index": 0,
+              "sdk_await_ms": 50.268959,
+              "sequence": 5
+            },
+            {
+              "elapsed_ms": 55.042708000000005,
+              "engine_execution_ms": 44.214875,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 1,
+              "sdk_await_ms": 55.0415,
+              "sequence": 7
+            },
+            {
+              "elapsed_ms": 60.751084,
+              "engine_execution_ms": 49.522999999999996,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 2,
+              "sdk_await_ms": 60.749708,
+              "sequence": 9
+            },
+            {
+              "elapsed_ms": 53.227375,
+              "engine_execution_ms": 42.464,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 3,
+              "sdk_await_ms": 53.22625,
+              "sequence": 14
+            },
+            {
+              "elapsed_ms": 51.387042,
+              "engine_execution_ms": 41.884541,
+              "native_Value_take_ms": 0.0006670000000000001,
+              "sample_index": 4,
+              "sdk_await_ms": 51.385708,
+              "sequence": 16
+            },
+            {
+              "elapsed_ms": 52.78175,
+              "engine_execution_ms": 43.086333999999994,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 5,
+              "sdk_await_ms": 52.780916999999995,
+              "sequence": 18
+            },
+            {
+              "elapsed_ms": 54.277333,
+              "engine_execution_ms": 42.795,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 6,
+              "sdk_await_ms": 54.2765,
+              "sequence": 23
+            },
+            {
+              "elapsed_ms": 53.210958000000005,
+              "engine_execution_ms": 43.287583999999995,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 7,
+              "sdk_await_ms": 53.209834,
+              "sequence": 25
+            },
+            {
+              "elapsed_ms": 54.270584,
+              "engine_execution_ms": 42.596250000000005,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 8,
+              "sdk_await_ms": 54.269708,
+              "sequence": 27
+            },
+            {
+              "elapsed_ms": 56.396125,
+              "engine_execution_ms": 43.6765,
+              "native_Value_take_ms": 0.000417,
+              "sample_index": 9,
+              "sdk_await_ms": 56.395125,
+              "sequence": 32
+            },
+            {
+              "elapsed_ms": 55.744459000000006,
+              "engine_execution_ms": 43.821,
+              "native_Value_take_ms": 0.0007080000000000001,
+              "sample_index": 10,
+              "sdk_await_ms": 55.743292,
+              "sequence": 34
+            },
+            {
+              "elapsed_ms": 56.792958,
+              "engine_execution_ms": 44.664834,
+              "native_Value_take_ms": 0.000417,
+              "sample_index": 11,
+              "sdk_await_ms": 56.792083,
+              "sequence": 36
+            },
+            {
+              "elapsed_ms": 32.003458,
+              "engine_execution_ms": 31.746791,
+              "native_Value_take_ms": 0.000334,
+              "sample_index": 12,
+              "sdk_await_ms": 32.002792,
+              "sequence": 41
+            },
+            {
+              "elapsed_ms": 32.052291,
+              "engine_execution_ms": 31.804,
+              "native_Value_take_ms": 0.00029099999999999997,
+              "sample_index": 13,
+              "sdk_await_ms": 32.051584,
+              "sequence": 43
+            },
+            {
+              "elapsed_ms": 32.443125,
+              "engine_execution_ms": 32.176542000000005,
+              "native_Value_take_ms": 0.0005,
+              "sample_index": 14,
+              "sdk_await_ms": 32.442125000000004,
+              "sequence": 45
+            },
+            {
+              "elapsed_ms": 32.210459,
+              "engine_execution_ms": 31.943709000000002,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 15,
+              "sdk_await_ms": 32.20975,
+              "sequence": 50
+            },
+            {
+              "elapsed_ms": 34.204458,
+              "engine_execution_ms": 33.900166000000006,
+              "native_Value_take_ms": 0.00045900000000000004,
+              "sample_index": 16,
+              "sdk_await_ms": 34.203542000000006,
+              "sequence": 52
+            },
+            {
+              "elapsed_ms": 34.564666,
+              "engine_execution_ms": 34.2055,
+              "native_Value_take_ms": 0.0006670000000000001,
+              "sample_index": 17,
+              "sdk_await_ms": 34.563292000000004,
+              "sequence": 54
+            },
+            {
+              "elapsed_ms": 32.761334000000005,
+              "engine_execution_ms": 32.468333,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 18,
+              "sdk_await_ms": 32.760208999999996,
+              "sequence": 59
+            },
+            {
+              "elapsed_ms": 33.571584,
+              "engine_execution_ms": 33.271583,
+              "native_Value_take_ms": 0.00075,
+              "sample_index": 19,
+              "sdk_await_ms": 33.570333,
+              "sequence": 61
+            },
+            {
+              "elapsed_ms": 32.620917,
+              "engine_execution_ms": 32.34725,
+              "native_Value_take_ms": 0.000209,
+              "sample_index": 20,
+              "sdk_await_ms": 32.620166999999995,
+              "sequence": 63
+            }
+          ],
+          "M": [
+            {
+              "elapsed_ms": 51.173458,
+              "engine_execution_ms": 43.455875,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 0,
+              "sdk_await_ms": 51.172625,
+              "sequence": 4
+            },
+            {
+              "elapsed_ms": 56.15875,
+              "engine_execution_ms": 47.275083,
+              "native_Value_take_ms": 0.000458,
+              "sample_index": 1,
+              "sdk_await_ms": 56.15775,
+              "sequence": 6
+            },
+            {
+              "elapsed_ms": 70.55525,
+              "engine_execution_ms": 53.174958000000004,
+              "native_Value_take_ms": 0.00075,
+              "sample_index": 2,
+              "sdk_await_ms": 70.553542,
+              "sequence": 11
+            },
+            {
+              "elapsed_ms": 58.27575,
+              "engine_execution_ms": 46.65987500000001,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 3,
+              "sdk_await_ms": 58.274417,
+              "sequence": 13
+            },
+            {
+              "elapsed_ms": 56.477417,
+              "engine_execution_ms": 45.536459,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 4,
+              "sdk_await_ms": 56.476083,
+              "sequence": 15
+            },
+            {
+              "elapsed_ms": 56.203916,
+              "engine_execution_ms": 45.670625,
+              "native_Value_take_ms": 0.000542,
+              "sample_index": 5,
+              "sdk_await_ms": 56.202542,
+              "sequence": 20
+            },
+            {
+              "elapsed_ms": 56.025708,
+              "engine_execution_ms": 45.893417,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 6,
+              "sdk_await_ms": 56.024625,
+              "sequence": 22
+            },
+            {
+              "elapsed_ms": 56.528083,
+              "engine_execution_ms": 46.289375,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 7,
+              "sdk_await_ms": 56.526917000000005,
+              "sequence": 24
+            },
+            {
+              "elapsed_ms": 57.626459,
+              "engine_execution_ms": 45.793416,
+              "native_Value_take_ms": 0.00029099999999999997,
+              "sample_index": 8,
+              "sdk_await_ms": 57.625625,
+              "sequence": 29
+            },
+            {
+              "elapsed_ms": 62.819,
+              "engine_execution_ms": 49.48075,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 9,
+              "sdk_await_ms": 62.817792,
+              "sequence": 31
+            },
+            {
+              "elapsed_ms": 58.857541,
+              "engine_execution_ms": 47.070916999999994,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 10,
+              "sdk_await_ms": 58.85675,
+              "sequence": 33
+            },
+            {
+              "elapsed_ms": 51.566833,
+              "engine_execution_ms": 36.302542,
+              "native_Value_take_ms": 0.000625,
+              "sample_index": 11,
+              "sdk_await_ms": 51.565542,
+              "sequence": 38
+            },
+            {
+              "elapsed_ms": 36.05275,
+              "engine_execution_ms": 35.764792,
+              "native_Value_take_ms": 0.000792,
+              "sample_index": 12,
+              "sdk_await_ms": 36.051416,
+              "sequence": 40
+            },
+            {
+              "elapsed_ms": 35.59675,
+              "engine_execution_ms": 35.349875000000004,
+              "native_Value_take_ms": 0.000292,
+              "sample_index": 13,
+              "sdk_await_ms": 35.596000000000004,
+              "sequence": 42
+            },
+            {
+              "elapsed_ms": 35.736292000000006,
+              "engine_execution_ms": 35.450791,
+              "native_Value_take_ms": 0.00045900000000000004,
+              "sample_index": 14,
+              "sdk_await_ms": 35.73525,
+              "sequence": 47
+            },
+            {
+              "elapsed_ms": 35.297458,
+              "engine_execution_ms": 35.021625,
+              "native_Value_take_ms": 0.000292,
+              "sample_index": 15,
+              "sdk_await_ms": 35.296667,
+              "sequence": 49
+            },
+            {
+              "elapsed_ms": 36.694834,
+              "engine_execution_ms": 36.380333,
+              "native_Value_take_ms": 0.000375,
+              "sample_index": 16,
+              "sdk_await_ms": 36.694041,
+              "sequence": 51
+            },
+            {
+              "elapsed_ms": 45.191416999999994,
+              "engine_execution_ms": 44.841208,
+              "native_Value_take_ms": 0.000417,
+              "sample_index": 17,
+              "sdk_await_ms": 45.1905,
+              "sequence": 56
+            },
+            {
+              "elapsed_ms": 35.959291,
+              "engine_execution_ms": 35.640209,
+              "native_Value_take_ms": 0.00075,
+              "sample_index": 18,
+              "sdk_await_ms": 35.958083,
+              "sequence": 58
+            },
+            {
+              "elapsed_ms": 35.219083,
+              "engine_execution_ms": 34.949833,
+              "native_Value_take_ms": 0.00033299999999999996,
+              "sample_index": 19,
+              "sdk_await_ms": 35.218292,
+              "sequence": 60
+            },
+            {
+              "elapsed_ms": 35.465125,
+              "engine_execution_ms": 35.182790999999995,
+              "native_Value_take_ms": 0.00025,
+              "sample_index": 20,
+              "sdk_await_ms": 35.464417,
+              "sequence": 65
+            }
+          ]
+        },
+        "summaries": {
+          "B": {
+            "first_measured_after_declared_untimed_references_ms": 52.429625,
+            "warm_max_ms": 72.63125,
+            "warm_median_ms": 52.5404585,
+            "warm_min_ms": 34.26191600000001,
+            "warm_n": 20,
+            "warm_p95_ms": 72.080792
+          },
+          "D": {
+            "first_measured_after_declared_untimed_references_ms": 50.270125,
+            "warm_max_ms": 60.751084,
+            "warm_median_ms": 52.084396,
+            "warm_min_ms": 32.003458,
+            "warm_n": 20,
+            "warm_p95_ms": 56.792958
+          },
+          "M": {
+            "first_measured_after_declared_untimed_references_ms": 51.173458,
+            "warm_max_ms": 70.55525,
+            "warm_median_ms": 53.796270500000006,
+            "warm_min_ms": 35.219083,
+            "warm_n": 20,
+            "warm_p95_ms": 62.819
+          }
+        },
+        "timed_calls": 63,
+        "untimed_references": 3
+      },
+      "role": "rocksdb-pilot",
+      "runtime": "current_thread",
+      "runtime_events": 2,
+      "started_completed_pairs": 66,
+      "status": "pilot_observations_complete",
+      "workers": 1
+    }
+  ],
+  "schema_version": 1,
+  "screen": "named_field_hydration_focused_current_thread",
+  "selected_rule": {
+    "M_comparisons": "descriptive",
+    "backends": [
+      "memory",
+      "rocksdb"
+    ],
+    "comparison": "D_vs_B",
+    "first_measured_after_three_references": "no_larger",
+    "median": "mean_of_sorted_indices_9_and_10",
+    "percentile": "nearest_rank_95_of_20",
+    "performance_acceptance": false,
+    "permits": "consider_wider_qualification_only",
+    "production_coherence_or_adoption": false,
+    "runtime": "current_thread",
+    "schema_version": 1,
+    "warm_max": "no_larger",
+    "warm_median": "strictly_lower",
+    "warm_p95": "strictly_lower",
+    "warm_samples": 20,
+    "workers": 1
+  },
+  "variants": {
+    "B": "unchanged production baseline",
+    "D": "same mirror query with bounded named-field hydration",
+    "M": "unchanged experimental mirror wildcard hydration"
+  }
+}
