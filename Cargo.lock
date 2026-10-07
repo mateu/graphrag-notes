@@ -1734,6 +1734,8 @@ dependencies = [
  "surrealdb",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "url",
 ]
 

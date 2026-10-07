@@ -219,10 +219,10 @@ impl Repository {
             scopes.push((new_id.clone(), self.note_extraction_scope(&old).await?));
         }
         let result = serde_json::json!({"policy_migration_stage":{"version":1,"batches":[]}});
-        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} FOR $item IN $scopes {{ LET $target = $item[0]; UPDATE $target SET extraction_scope = $item[1]; }}; UPDATE $job SET remote_phase = 'migration_extracting', completed_count = 0, checkpoint = NONE, remote_result = $result; COMMIT TRANSACTION;", guard_sql()))
+        let mut response = migration_probe("migration.prepare_scopes", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} FOR $item IN $scopes {{ LET $target = $item[0]; UPDATE $target SET extraction_scope = $item[1]; }}; UPDATE $job SET remote_phase = 'migration_extracting', completed_count = 0, checkpoint = NONE, remote_result = $result; COMMIT TRANSACTION;", guard_sql()))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
-            .bind(("scopes", scopes)).bind(("result", result)).await?;
-        check_write(response.take_errors(), lease)?;
+            .bind(("scopes", scopes)).bind(("result", result))).await?;
+        check_write(response.take_errors(), lease, "migration.prepare_scopes")?;
         self.owned_remote_upload(lease, true).await
     }
 
@@ -285,10 +285,10 @@ impl Repository {
                 "prepared migration graph exceeds 16 MiB".into(),
             ));
         }
-        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} UPDATE $job SET completed_count += 1, checkpoint = $checkpoint, remote_result = $result; COMMIT TRANSACTION;", guard_sql()))
+        let mut response = migration_probe("migration.checkpoint", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} UPDATE $job SET completed_count += 1, checkpoint = $checkpoint, remote_result = $result; COMMIT TRANSACTION;", guard_sql()))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
-            .bind(("checkpoint", job.job.item_ids[index].clone())).bind(("result", result)).await?;
-        check_write(response.take_errors(), lease)?;
+            .bind(("checkpoint", job.job.item_ids[index].clone())).bind(("result", result))).await?;
+        check_write(response.take_errors(), lease, "migration.checkpoint")?;
         self.owned_remote_upload(lease, true).await
     }
 
@@ -388,11 +388,15 @@ impl Repository {
             .iter()
             .map(|id| parse_record_id(id, Some("note")))
             .collect::<Result<Vec<_>>>()?;
-        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} LET $owned_notes = (SELECT VALUE id FROM note WHERE id IN $notes AND source_id = $source AND source_generation = $generation); IF array::len($owned_notes) != array::len($notes) {{ THROW '{FENCE}'; }}; DELETE supports WHERE in IN $notes OR out IN $notes; DELETE contradicts WHERE in IN $notes OR out IN $notes; DELETE derived_from WHERE in IN $notes OR out IN $notes; DELETE related_to WHERE in IN $notes OR out IN $notes; DELETE note_from_conversation WHERE in IN $notes; DELETE note_from_message WHERE in IN $notes; COMMIT TRANSACTION;", guard_sql()))
+        let mut response = migration_probe("migration.clear_hidden_dependents", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} LET $owned_notes = (SELECT VALUE id FROM note WHERE id IN $notes AND source_id = $source AND source_generation = $generation); IF array::len($owned_notes) != array::len($notes) {{ THROW '{FENCE}'; }}; DELETE supports WHERE in IN $notes OR out IN $notes; DELETE contradicts WHERE in IN $notes OR out IN $notes; DELETE derived_from WHERE in IN $notes OR out IN $notes; DELETE related_to WHERE in IN $notes OR out IN $notes; DELETE note_from_conversation WHERE in IN $notes; DELETE note_from_message WHERE in IN $notes; COMMIT TRANSACTION;", guard_sql()))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
             .bind(("source", job.source_id.clone())).bind(("generation", job.source_generation))
-            .bind(("notes", hidden_notes)).await?;
-        check_write(response.take_errors(), lease)?;
+            .bind(("notes", hidden_notes))).await?;
+        check_write(
+            response.take_errors(),
+            lease,
+            "migration.clear_hidden_dependents",
+        )?;
         // Live manual relationships are then copied under the lifecycle fence.
         // Old mentions never overwrite the explicitly refreshed graph.
         self.copy_note_dependents_to_successors_with_options_locked(successors, false, false)
@@ -403,10 +407,14 @@ impl Repository {
             .and_then(|value| value.remove("remote_upload_pending"))
             .ok_or_else(|| DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id)))?;
         metadata["remote_upload"] = origin;
-        let mut response = self.db.query(format!("BEGIN TRANSACTION; {} FOR $batch IN $batches {{ LET $note = $batch.note; LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; LET $replacement_entities = $batch.entities; LET $replacement_entity_names = $batch.entity_names; {} DELETE mentions WHERE in = $note; {} IF $batch.scope != NONE {{ UPDATE $note SET extraction_scope = $batch.scope; }}; }}; UPDATE $source SET successful_generation = $generation, status = 'ready', last_error = NONE, metadata = $metadata, updated_at = time::now(), last_ingested_at = time::now(); UPDATE $job SET remote_phase = 'migration_promoted'; COMMIT TRANSACTION;", guard_sql(), super::super::notes::replacement_entities_transaction(), super::super::notes::replacement_mentions_transaction("$note")))
+        let mut response = migration_probe("migration.promote_visibility", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} FOR $batch IN $batches {{ LET $note = $batch.note; LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; LET $replacement_entities = $batch.entities; LET $replacement_entity_names = $batch.entity_names; {} DELETE mentions WHERE in = $note; {} IF $batch.scope != NONE {{ UPDATE $note SET extraction_scope = $batch.scope; }}; }}; UPDATE $source SET successful_generation = $generation, status = 'ready', last_error = NONE, metadata = $metadata, updated_at = time::now(), last_ingested_at = time::now(); UPDATE $job SET remote_phase = 'migration_promoted'; COMMIT TRANSACTION;", guard_sql(), super::super::notes::replacement_entities_transaction(), super::super::notes::replacement_mentions_transaction("$note")))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
-            .bind(("source", job.source_id)).bind(("generation", job.source_generation)).bind(("metadata", metadata)).bind(("batches", batches)).await?;
-        check_write(response.take_errors(), lease)?;
+            .bind(("source", job.source_id)).bind(("generation", job.source_generation)).bind(("metadata", metadata)).bind(("batches", batches))).await?;
+        check_write(
+            response.take_errors(),
+            lease,
+            "migration.promote_visibility",
+        )?;
         // Keep proposal acceptance/undo excluded until audit retargeting and
         // old-generation cleanup have observed the new visibility. If cleanup
         // fails, the durable promoted phase retries this boundary on resume.
