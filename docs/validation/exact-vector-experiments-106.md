@@ -6,6 +6,8 @@ These provider-free experiments investigate [#106](https://github.com/mateu/grap
 
 The [sanitized final page-matrix data](exact-vector-experiments-106.json) retains all 1,008 measured calls, first observations, 20 warm observations per group, unfavorable maxima, same-call phases and actual bounds. It contains fictional population counts and timing data, without queries, record IDs, content, configuration or credentials. Earlier raw fictional experiments remain in the isolated evidence archive; their rejected designs and operating limits are summarized below.
 
+The later [three-scope native-Float qualification](native-float-qualification-106.md) retains all 6,048 calls under the precision-capable 3.2.4 baseline. Its exact results pass, but only 122 of 144 conditions pass the full first/median/p95/maximum gate; the static mirror is not adopted. The same report records the separate query-norm SQL screen's correctness rejection before timing.
+
 ## Existing execution and measured alternatives
 
 The locked engine is SurrealDB 3.2.4. Actual `EXPLAIN FULL` plans with the existing HNSW index retained show a table scan and exact KNN top-k for the explicit `COSINE` operator. The scan reads complete stored records; narrowing the returned fields does not eliminate decoding the primary embedding arrays and note bodies. Final primary-record hydration is already bounded by the candidate limit.
