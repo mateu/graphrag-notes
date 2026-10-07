@@ -1696,7 +1696,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "graphrag-agents"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1720,7 +1720,7 @@ dependencies = [
 
 [[package]]
 name = "graphrag-application"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "graphrag-cli"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "graphrag-config"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 dependencies = [
  "dirs",
  "glob",
@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "graphrag-core"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 dependencies = [
  "chrono",
  "serde",
@@ -1800,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "graphrag-db"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 dependencies = [
  "chrono",
  "ciborium",
@@ -1819,7 +1819,7 @@ dependencies = [
 
 [[package]]
 name = "graphrag-service"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 dependencies = [
  "async-trait",
  "axum",

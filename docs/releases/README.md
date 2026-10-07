@@ -1,6 +1,6 @@
 # Release preparation and provenance
 
-Workspace package, local lockfile package, binary and tag versions must agree exactly. The performance and retained-policy follow-up candidate uses `0.1.0-rc.4` / `v0.1.0-rc.4`. The published rc.3 remains the immutable shared daily-use reliability checkpoint; neither candidate renames the old roadmap's v0.2 target. Publish the candidate only after review and merge, as a prerelease with `latest=false`. Never move an existing tag, overwrite an output directory, replace an existing release or upload with a clobber flag.
+Workspace package, local lockfile package, binary and tag versions must agree exactly. Release preparation uses `0.1.0-rc.5` / `v0.1.0-rc.5`. Published rc.3 and rc.4 assets remain immutable; this candidate does not rename the old roadmap's v0.2 target. Publish the candidate only after review and merge, as a prerelease with `latest=false`. Never move an existing tag, overwrite an output directory, replace an existing release or upload with a clobber flag.
 
 Python 3.11+ provides the packaging and offline checks without additional Python packages. Native inspection also uses Git, Rust, `file`, and `otool`/`sw_vers` on macOS or `ldd`/`readelf` on Linux. Packaging runs only version/help commands, with a temporary HOME and unavailable inference endpoints. It does not open the user's database, start providers, install models, run Cargo or publish anything.
 
@@ -14,15 +14,22 @@ export CARGO_BUILD_JOBS=2 RUSTC_WRAPPER=''
 export OPENSSL_STATIC=1 OPENSSL_DIR=/opt/homebrew/opt/openssl@3
 export LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib
 export MACOSX_DEPLOYMENT_TARGET=15.0
-cargo build --locked --release -p graphrag-cli --bin graphrag
+set -o pipefail
+cargo build --locked --release -p graphrag-cli --bin graphrag \
+  --message-format=json-render-diagnostics | tee /absolute/private/cargo-build.jsonl
 python3 scripts/package-release.py record-build \
-  --tag v0.1.0-rc.4 --expected-commit BUILD_COMMIT_SHA \
+  --tag v0.1.0-rc.5 --expected-commit BUILD_COMMIT_SHA \
   --target aarch64-apple-darwin \
   --binary "$CARGO_TARGET_DIR/release/graphrag" \
+  --cargo-messages /absolute/private/cargo-build.jsonl \
   --output /absolute/private/native-build.json
 ```
 
+For rc.5, all official targets retain the system allocator. The optional ARM allocator experiment was rejected by its controlled full-corpus gate and is preserved in [the outcome report](../validation/allocator-115-rejected.json). Experimental allocator features/dependencies are absent from the release source; old measured commits and seals remain historical evidence. Native Intel/Linux walkthroughs remain separate gates.
+
 Use a complete commit SHA and a fresh build-record filename. `record-build` rejects dirty or untracked compiled inputs, a mismatched version/toolchain/architecture, missing features, a wrong deployment target, or non-system runtime libraries. Docs and validation scripts can still be prepared while building. Seal only the binary produced by the recorded locked build, after that build exits successfully.
+
+Since rc.5, sealing requires the retained successful Cargo JSON log. It checks the actual CLI, DB and pinned SurrealDB compiler artifacts, release profile, exact feature sets, and the compiler executable hash against the selected binary (including an immutable copy). `BUILDINFO.cargo_features` records normalized versions/features, target, log hash and sealed binary hash; private package IDs and build paths are omitted. Packaging reparses the identical retained log and compares that proof with the seal. It does not require a mutable Cargo cache artifact to remain present. Assembly checks the system-allocator policy again for every target and rejects unexpected allocator features or packages. These checks establish build identity; they do not establish latency acceptance.
 
 The compiled-input identity includes workspace manifests/lock/toolchain, `.cargo` configuration and workspace crate sources/manifests/build scripts. Final documentation or integration-test commits may advance the release commit without rebuilding only when this identity remains identical. Binary bytes must still match the sealed build hash. Packaging rechecks the recorded build commit/tree/timestamp, package versions and toolchain against Git and the validated compiled inputs. It rereads architecture, runtime libraries and deployment requirements from the binary, compares those facts and the current version/help results with the sealed record, and rejects inconsistent records. Git provenance documents this relationship; it does not promise bit-identical compiler outputs across different machines or SDKs.
 
@@ -32,12 +39,13 @@ Commit the reviewed sources before packaging. The final checkout must be clean, 
 
 ```bash
 python3 scripts/package-release.py package \
-  --tag v0.1.0-rc.4 --expected-commit FINAL_COMMIT_SHA \
+  --tag v0.1.0-rc.5 --expected-commit FINAL_COMMIT_SHA \
   --binary "$CARGO_TARGET_DIR/release/graphrag" \
   --build-record /absolute/private/native-build.json \
+  --cargo-messages /absolute/private/cargo-build.jsonl \
   --output /absolute/private/preflight-assets
 bash scripts/verify-local-release.sh \
-  /absolute/private/preflight-assets 0.1.0-rc.4 \
+  /absolute/private/preflight-assets 0.1.0-rc.5 \
   /absolute/private/local-install.json
 ```
 
@@ -76,6 +84,6 @@ The tests use temporary Git repositories, executable fixtures and native-tool fi
 
 ## GitHub workflow
 
-Stable `v*` tags without a prerelease suffix build the complete macOS ARM, macOS Intel and Linux x86_64 matrix. Candidate tags require explicit dispatch; dispatch can prepare full-matrix artifacts without publishing. Native jobs validate package/lock/tag consistency, build locked binaries, record native runtime facts and create the same deterministic packages. Assembly keeps each target's metadata separate, verifies hashes/provenance and produces one checksum manifest. The platform-neutral `clients.tar.gz`, `CLIENTINFO.json` and `CLIENTINFO.identity` must match across native jobs and are included once in the assembled output. Native BUILDINFO binds the same client archive/hash and public payloads. A Linux client can use the tagged installer with `--version 0.1.0-rc.4 --clients-only`; it installs matching scripts/docs without implying a native Linux executable is published.
+Stable `v*` tags without a prerelease suffix build the complete macOS ARM, macOS Intel and Linux x86_64 matrix. Candidate tags require explicit dispatch; dispatch can prepare full-matrix artifacts without publishing. Native jobs validate package/lock/tag consistency, build locked binaries, record native runtime facts and create the same deterministic packages. Assembly keeps each target's metadata separate, verifies hashes/provenance and produces one checksum manifest. The platform-neutral `clients.tar.gz`, `CLIENTINFO.json` and `CLIENTINFO.identity` must match across native jobs and are included once in the assembled output. Native BUILDINFO binds the same client archive/hash and public payloads. A Linux client can use the tagged installer with `--version 0.1.0-rc.5 --clients-only`; it installs matching scripts/docs without implying a native Linux executable is published.
 
-The release workflow does not replace the normal source quality gates or a documented live walkthrough. BUILDINFO keeps any validation absent from that job explicit. The rc.4 candidate can be built and packaged locally for Apple Silicon while Intel/Linux native release validation remains tracked in [#66](https://github.com/mateu/graphrag-notes/issues/66). Publication uses an existing verified tag; `gh release create` fails if that release already exists.
+The release workflow does not replace the normal source quality gates or a documented live walkthrough. BUILDINFO keeps any validation absent from that job explicit. The rc.5 candidate can be built and packaged locally for Apple Silicon while Intel/Linux native release validation remains tracked in [#66](https://github.com/mateu/graphrag-notes/issues/66). Publication uses an existing verified tag; `gh release create` fails if that release already exists.

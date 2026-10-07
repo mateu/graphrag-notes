@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -110,6 +111,193 @@ class ReleaseTests(unittest.TestCase):
         return argparse.Namespace(repo=self.repo, tag=self.tag, expected_commit=self.commit_id,
                                   binary=self.binary, output=self.root / output, build_record=self.build_record,
                                   validation_file=None, require_gates=False, **kwargs)
+
+    def cargo_rows(self, target):
+        versions_features = {
+            "graphrag-cli": (self.version, []),
+            "graphrag-db": (self.version, ["default", "rocksdb"]),
+            "surrealdb": ("3.2.4", ["kv-mem", "kv-rocksdb"]),
+            "surrealdb-core": ("3.2.4", ["kv-mem", "kv-rocksdb"]),
+            "surrealdb-types": ("3.2.4", ["default"]),
+        }
+        rows = []
+        for name, (version, features) in versions_features.items():
+            rows.append({"reason": "compiler-artifact", "package_id": f"registry+https://fixture.invalid#index#{name}@{version}",
+                         "target": {"kind": ["bin"] if name == "graphrag-cli" else ["lib"],
+                                    "name": "graphrag" if name == "graphrag-cli" else name.replace("-", "_")},
+                         "features": features, "profile": {"opt_level": "3", "test": False,
+                                                              "debug_assertions": False, "overflow_checks": False},
+                         "executable": str(self.binary) if name == "graphrag-cli" else None})
+        return rows + [{"reason": "build-finished", "success": True}]
+
+    def write_cargo_rows(self, rows, name="cargo.jsonl"):
+        path = self.root / name
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        return path
+
+    def rc5_build(self):
+        old = self.version
+        self.version, self.tag = "0.1.0-rc.5", "v0.1.0-rc.5"
+        for path in (self.repo / "Cargo.toml", self.repo / "Cargo.lock", self.binary):
+            path.write_text(path.read_text().replace(old, self.version))
+        self.commit()
+        self.build_record = self.root / "rc5-build.json"
+        messages = self.write_cargo_rows(self.cargo_rows(self.target))
+        args = argparse.Namespace(repo=self.repo, tag=self.tag, expected_commit=self.commit_id,
+                                 binary=self.binary, output=self.build_record, target=self.target, cargo_messages=messages)
+        with patch.object(release, "native_facts", return_value=self.facts):
+            release.record_build(args)
+        return messages
+
+    def test_compiler_feature_proof_follows_actual_target_packages_and_omits_private_paths(self):
+        for target in release.TARGETS:
+            messages = self.write_cargo_rows(self.cargo_rows(target))
+            proof = release.cargo_feature_proof(messages, self.binary, target, self.version)
+            self.assertEqual(proof["binary_sha256"], release.sha256(self.binary))
+            self.assertEqual(proof["cargo_messages_sha256"], release.sha256(messages))
+            self.assertEqual(proof["allocator"], "system")
+            self.assertNotIn(str(self.root), json.dumps(proof))
+            self.assertNotIn("fixture.invalid", json.dumps(proof))
+
+    def test_compiler_executable_bytes_must_match_but_allow_an_immutable_copy(self):
+        messages = self.write_cargo_rows(self.cargo_rows(self.target))
+        copied = self.root / "immutable-copy"
+        copied.write_bytes(self.binary.read_bytes())
+        release.cargo_feature_proof(messages, copied, self.target, self.version)
+        copied.write_bytes(b"different executable bytes\n")
+        with self.assertRaisesRegex(release.ReleaseError, "executable differs"):
+            release.cargo_feature_proof(messages, copied, self.target, self.version)
+
+    def test_compiler_failed_missing_duplicate_debug_and_allocator_drift_are_rejected(self):
+        target = "aarch64-apple-darwin"
+        original = self.cargo_rows(target)
+        mutations = []
+        rows = deepcopy(original); rows[-1]["success"] = False; mutations.append(rows)
+        mutations.append(deepcopy(original[:-1]))
+        mutations.append(deepcopy(original + [original[-1]]))
+        mutations.append(deepcopy(original + [original[0]]))
+        for field, value in (("opt_level", "0"), ("test", True), ("debug_assertions", True), ("overflow_checks", True)):
+            rows = deepcopy(original); rows[0]["profile"][field] = value; mutations.append(rows)
+        for index in range(len(original) - 1):
+            rows = deepcopy(original); rows.pop(index); mutations.append(rows)
+        for index, features in ((0, ["allocator"]), (1, ["allocator", "default", "rocksdb"]),
+                                (2, ["allocator", "kv-mem", "kv-rocksdb"]),
+                                (3, ["allocator", "kv-mem", "kv-rocksdb"])):
+            rows = deepcopy(original); rows[index]["features"] = features; mutations.append(rows)
+        rows = deepcopy(original); rows[2]["package_id"] = rows[2]["package_id"].replace("3.2.4", "3.3.0"); mutations.append(rows)
+        rows = deepcopy(original); rows.append({"reason": "compiler-message", "message": {"level": "error"}}); mutations.append(rows)
+        for index, rows in enumerate(mutations):
+            with self.subTest(index=index), self.assertRaises(release.ReleaseError):
+                release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
+        for target in release.TARGETS:
+            rows = self.cargo_rows(target); rows[0]["features"] = ["allocator"]
+            with self.assertRaises(release.ReleaseError):
+                release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
+            for name, version in (("mimalloc", "0.1.52"), ("libmimalloc-sys", "0.1.49"),
+                                  ("tikv-jemallocator", "0.6.1"), ("tikv-jemalloc-sys", "0.6.1")):
+                rows = self.cargo_rows(target)
+                unwanted = deepcopy(rows[1])
+                unwanted.update(package_id=f"registry+https://fixture.invalid#index#{name}@{version}",
+                                target={"kind": ["lib"], "name": name.replace("-", "_")}, features=[])
+                rows.insert(-1, unwanted)
+                with self.assertRaises(release.ReleaseError):
+                    release.cargo_feature_proof(self.write_cargo_rows(rows), self.binary, target, self.version)
+
+    def test_rc5_rechecks_sealed_compiler_log_without_depending_on_mutable_cache(self):
+        messages = self.rc5_build()
+        # Record-time verification saw the actual executable. Packaging can use
+        # an immutable copy after a later build replaces that cache path.
+        copied = self.root / "sealed-graphrag"
+        copied.write_bytes(self.binary.read_bytes()); copied.chmod(0o755)
+        rows = [json.loads(line) for line in messages.read_text().splitlines()]
+        rows[0]["executable"] = str(self.root / "cargo-cache-artifact")
+        cache = Path(rows[0]["executable"]); cache.write_bytes(self.binary.read_bytes())
+        messages = self.write_cargo_rows(rows)
+        self.build_record = self.root / "copied-build.json"
+        args = argparse.Namespace(repo=self.repo, tag=self.tag, expected_commit=self.commit_id,
+                                 binary=copied, output=self.build_record, target=self.target, cargo_messages=messages)
+        with patch.object(release, "native_facts", return_value=self.facts):
+            release.record_build(args)
+        self.binary = copied
+        cache.write_bytes(b"later unrelated build\n")
+        info = release.package(self.package_args(cargo_messages=messages))
+        self.assertEqual(info["cargo_features"], json.loads(self.build_record.read_text())["cargo_features"])
+        assembled = release.assemble(argparse.Namespace(input=self.root, output=self.root / "assembly",
+                                                        tag=self.tag, targets=[self.target]))
+        self.assertEqual(assembled["targets"], [self.target])
+        messages.write_text(messages.read_text() + "\n")
+        with self.assertRaisesRegex(release.ReleaseError, "sealed build record"):
+            release.package(self.package_args("changed-log", cargo_messages=messages))
+        self.assertFalse((self.root / "changed-log").exists())
+
+    def test_rc5_missing_feature_log_forged_seal_and_assembly_policy_are_rejected(self):
+        messages = self.rc5_build()
+        with self.assertRaisesRegex(release.ReleaseError, "retained Cargo"):
+            release.package(self.package_args("missing-log"))
+        args = argparse.Namespace(repo=self.repo, tag=self.tag, expected_commit=self.commit_id,
+                                 binary=self.binary, output=self.root / "missing-build.json", target=self.target)
+        with patch.object(release, "native_facts", return_value=self.facts), self.assertRaisesRegex(release.ReleaseError, "retained Cargo"):
+            release.record_build(args)
+        original = json.loads(self.build_record.read_text())
+        altered = deepcopy(original); altered["cargo_features"]["cargo_messages_sha256"] = "0" * 64
+        self.build_record.write_text(json.dumps(altered))
+        with self.assertRaisesRegex(release.ReleaseError, "sealed build record"):
+            release.package(self.package_args("forged-seal", cargo_messages=messages))
+        self.build_record.write_text(json.dumps(original))
+        release.package(self.package_args("native", cargo_messages=messages))
+        info_path = self.root / "native/BUILDINFO.json"
+        info = json.loads(info_path.read_text()); del info["cargo_features"]
+        info_path.write_text(json.dumps(info))
+        with self.assertRaisesRegex(release.ReleaseError, "compiler feature proof"):
+            release.assemble(argparse.Namespace(input=self.root, output=self.root / "bad-assembly",
+                                               tag=self.tag, targets=[self.target]))
+
+    def test_concurrent_assembly_metadata_replacement_cannot_bypass_feature_policy(self):
+        messages = self.rc5_build()
+        release.package(self.package_args("native", cargo_messages=messages))
+        folder = self.root / "native"
+        info_path = folder / "BUILDINFO.json"
+        original = json.loads(info_path.read_bytes())
+        validate = release.validate_feature_proof
+        replaced = False
+
+        def replace_metadata_after_validation(proof, target, version, binary_hash):
+            nonlocal replaced
+            validate(proof, target, version, binary_hash)
+            if not replaced:
+                replaced = True
+                altered = deepcopy(original)
+                del altered["cargo_features"]
+                # Simulate a consistent replacement of metadata, flat identity,
+                # and checksums between the initial read and assembly copying.
+                info_path.write_text(json.dumps(altered, sort_keys=True) + "\n")
+                (folder / "BUILDINFO.identity").write_bytes(release.release_identity(altered, release.sha256(info_path)))
+                lines = (folder / "SHA256SUMS").read_text().splitlines()
+                updated = []
+                for line in lines:
+                    _, name = line.split("  ")
+                    updated.append(release.sha256(folder / name) + "  " + name + "\n")
+                (folder / "SHA256SUMS").write_text("".join(updated))
+
+        args = argparse.Namespace(input=self.root, output=self.root / "raced-assembly", tag=self.tag, targets=[self.target])
+        with patch.object(release, "validate_feature_proof", side_effect=replace_metadata_after_validation):
+            with self.assertRaisesRegex(release.ReleaseError, "metadata checksum"):
+                release.assemble(args)
+        self.assertTrue(replaced)
+        self.assertFalse(args.output.exists())
+
+    def test_release_sources_keep_system_allocator_and_original_defaults(self):
+        import tomllib
+        source = SCRIPT.parents[1]
+        db = tomllib.loads((source / "crates/db/Cargo.toml").read_text())["features"]
+        cli = tomllib.loads((source / "crates/cli/Cargo.toml").read_text()).get("features", {})
+        self.assertEqual(db["default"], ["rocksdb"])
+        self.assertNotIn("allocator", db)
+        self.assertEqual(cli.get("default", []), [])
+        self.assertNotIn("allocator", cli)
+        lock = tomllib.loads((source / "Cargo.lock").read_text())
+        names = {row["name"] for row in lock["package"]}
+        self.assertFalse(names & {"mimalloc", "libmimalloc-sys", "tikv-jemallocator", "tikv-jemalloc-sys"})
 
     def test_version_lock_tag_commit_and_clean_source_checks(self):
         source = release.validate_source(self.repo, self.tag, self.commit_id)
@@ -709,6 +897,123 @@ for path in sys.argv[2:]:
                                   str(self.root / "failed-install.json")], capture_output=True, text=True)
         self.assertNotEqual(failure.returncode, 0)
         self.assertIn("archive checksum does not match", failure.stderr)
+
+
+class WorkflowInvocationTests(unittest.TestCase):
+    """Run the actual workflow shell with fake Cargo/packaging interfaces."""
+
+    @staticmethod
+    def workflow_run(name):
+        path = SCRIPT.parent.parent / ".github/workflows/release.yml"
+        lines = path.read_text().splitlines()
+        start = lines.index(f"      - name: {name}")
+        while lines[start] != "        run: |":
+            start += 1
+        block = []
+        for line in lines[start + 1:]:
+            if line and not line.startswith("          "):
+                break
+            block.append(line[10:] if line else "")
+        return "\n".join(block) + "\n"
+
+    def select_policy(self, root, version):
+        (root / "Cargo.toml").write_text(f'[workspace.package]\nversion="{version}"\n')
+        output = root / "outputs"
+        env = {**os.environ, "GITHUB_OUTPUT": str(output)}
+        result = subprocess.run(["bash", "-e", "-c", self.workflow_run("Select the checked-out release interface")],
+                                cwd=root, env=env, capture_output=True, text=True)
+        return result, output.read_text().strip().split("=", 1)[1] if output.exists() else None
+
+    def invocation_fixture(self, root, version, target):
+        result, policy = self.select_policy(root, version)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tools = root / "fake-tools"
+        tools.mkdir()
+        log = root / "calls.jsonl"
+        runner = root / "runner"
+        runner.mkdir()
+        # The checked-out historical Cargo/package interfaces reject new flags.
+        # These probes execute no actual Cargo, binary, installation or native tool.
+        probe = r'''import json, os, pathlib, sys
+kind = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+modern = os.environ["EXPECTED_MODERN"] == "true"
+with pathlib.Path(os.environ["CALL_LOG"]).open("a") as stream:
+    stream.write(json.dumps({"command": kind, "args": args}) + "\n")
+assert all(args), "empty argument"
+if kind == "cargo":
+    assert "--features" not in args, "experimental allocator is forbidden"
+    print(json.dumps({"reason": "build-finished", "success": True}))
+else:
+    assert args[:2] in (["scripts/package-release.py", "record-build"], ["scripts/package-release.py", "package"])
+    assert ("--cargo-messages" in args) == modern, "cargo-messages unavailable or missing"
+    if modern:
+        log = pathlib.Path(args[args.index("--cargo-messages") + 1])
+        assert log == pathlib.Path(os.environ["RUNNER_TEMP"]) / ("cargo-" + os.environ["BUILD_TARGET"] + ".jsonl")
+        assert log.is_file()
+'''
+        for command in ("cargo", "python3"):
+            script = tools / command
+            script.write_text(f"#!{sys.executable}\n" + probe)
+            script.chmod(0o755)
+        return {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                "BUILD_TARGET": target, "BUILD_FEATURES": "allocator",
+                "COMPILER_FEATURE_PROOF": policy, "EXPECTED_MODERN": "true" if version != "0.1.0-rc.4" else "false",
+                "CALL_LOG": str(log), "RUNNER_TEMP": str(runner), "RELEASE_TAG": "v" + version,
+                "RELEASE_COMMIT": "a" * 40}, log
+
+    def test_checked_out_policy_matches_release_contract(self):
+        cases = [(f"0.1.0-rc.{n}", n >= 5) for n in range(1, 7)]
+        cases += [("0.1.0-rc.12", True), ("0.1.0", True), ("0.2.0-rc.1", True), ("0.0.9", False)]
+        for version, expected in cases:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temp:
+                result, policy = self.select_policy(Path(temp), version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(policy, str(expected).lower())
+                self.assertEqual(release.requires_feature_proof(version), expected)
+        with tempfile.TemporaryDirectory() as temp:
+            result, policy = self.select_policy(Path(temp), "invalid")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIsNone(policy)
+
+    def test_historical_and_current_real_workflow_invocations(self):
+        steps = ["Build locked CLI", "Seal exact native binary and check version, help, and runtime dependencies",
+                 "Package binary with starter notes"]
+        for version in ("0.1.0-rc.4", "0.1.0-rc.5"):
+            for target in release.TARGETS:
+                with self.subTest(version=version, target=target), tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    env, log = self.invocation_fixture(root, version, target)
+                    for name in steps:
+                        result = subprocess.run(["bash", "-e", "-c", self.workflow_run(name)], cwd=root,
+                                                env=env, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = [json.loads(line) for line in log.read_text().splitlines()]
+                    self.assertEqual(len(calls), 3)
+                    self.assertEqual([item["command"] for item in calls], ["cargo", "python3", "python3"])
+
+    def test_historical_arm_ungated_feature_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            env, _ = self.invocation_fixture(root, "0.1.0-rc.4", "aarch64-apple-darwin")
+            former = self.workflow_run("Build locked CLI").replace(
+                "cargo build --locked", "cargo build --features allocator --locked", 1)
+            result = subprocess.run(["bash", "-e", "-c", former], cwd=root,
+                                    env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("experimental allocator is forbidden", result.stderr)
+
+    def test_historical_packaging_ungated_messages_are_rejected(self):
+        for name in ("Seal exact native binary and check version, help, and runtime dependencies",
+                     "Package binary with starter notes"):
+            with self.subTest(step=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                env, _ = self.invocation_fixture(root, "0.1.0-rc.4", "x86_64-unknown-linux-gnu")
+                env["COMPILER_FEATURE_PROOF"] = "true"
+                result = subprocess.run(["bash", "-e", "-c", self.workflow_run(name)], cwd=root,
+                                        env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cargo-messages unavailable or missing", result.stderr)
 
 
 if __name__ == "__main__":

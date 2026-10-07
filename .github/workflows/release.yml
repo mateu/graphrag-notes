@@ -42,6 +42,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
       commit: ${{ steps.version.outputs.commit }}
+      compiler_features: ${{ steps.compatibility.outputs.compiler_features }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,6 +58,25 @@ jobs:
           python3 scripts/package-release.py validate-source \
             --tag "$RELEASE_TAG" --expected-commit "$(git rev-parse HEAD)" \
             --require-tag --github-output "$GITHUB_OUTPUT"
+      - name: Select the checked-out release interface
+        id: compatibility
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          version = tomllib.loads(Path("Cargo.toml").read_text())["workspace"]["package"]["version"]
+          match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-(.*))?", version)
+          if match is None:
+              raise SystemExit("invalid checked-out release version")
+          numbers = tuple(int(match[i]) for i in (1, 2, 3))
+          modern = numbers > (0, 1, 0) or (numbers == (0, 1, 0) and (
+              match[4] is None or match[4] not in {"rc.1", "rc.2", "rc.3", "rc.4"}))
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write(f"compiler_features={str(modern).lower()}\n")
+          PY
 
   build:
     needs: validate
@@ -104,27 +124,43 @@ jobs:
       - name: Build locked CLI
         env:
           BUILD_TARGET: ${{ matrix.target }}
-        run: cargo build --locked --release -p graphrag-cli --bin graphrag --target "$BUILD_TARGET"
+        run: |
+          set -o pipefail
+          cargo build --locked --release -p graphrag-cli --bin graphrag \
+            --target "$BUILD_TARGET" --message-format=json-render-diagnostics \
+            | tee "$RUNNER_TEMP/cargo-$BUILD_TARGET.jsonl"
       - name: Seal exact native binary and check version, help, and runtime dependencies
         env:
           BUILD_TARGET: ${{ matrix.target }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          COMPILER_FEATURE_PROOF: ${{ needs.validate.outputs.compiler_features }}
         run: |
+          flags=()
+          if [[ "$COMPILER_FEATURE_PROOF" == true ]]; then
+            flags+=(--cargo-messages "$RUNNER_TEMP/cargo-$BUILD_TARGET.jsonl")
+          fi
           python3 scripts/package-release.py record-build \
             --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" \
             --target "$BUILD_TARGET" --binary "target/$BUILD_TARGET/release/graphrag" \
+            "${flags[@]}" \
             --output "$RUNNER_TEMP/native-$BUILD_TARGET.json"
       - name: Package binary with starter notes
         env:
           BUILD_TARGET: ${{ matrix.target }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          COMPILER_FEATURE_PROOF: ${{ needs.validate.outputs.compiler_features }}
         run: |
+          flags=()
+          if [[ "$COMPILER_FEATURE_PROOF" == true ]]; then
+            flags+=(--cargo-messages "$RUNNER_TEMP/cargo-$BUILD_TARGET.jsonl")
+          fi
           python3 scripts/package-release.py package \
             --tag "$RELEASE_TAG" --expected-commit "$RELEASE_COMMIT" \
             --binary "target/$BUILD_TARGET/release/graphrag" \
-            --build-record "$RUNNER_TEMP/native-$BUILD_TARGET.json" --output dist
+            --build-record "$RUNNER_TEMP/native-$BUILD_TARGET.json" \
+            "${flags[@]}" --output dist
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
