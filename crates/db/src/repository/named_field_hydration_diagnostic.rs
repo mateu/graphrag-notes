@@ -349,7 +349,7 @@ async fn edges(db: &DbConnection, sequence: &mut usize) {
             body.insert("message_index", 1_i64);
             body.insert("role", "user");
             let timestamp = Datetime::from(Utc.with_ymd_and_hms(2030, 1, 3, 0, 0, 0).unwrap());
-            body.insert("created_at", timestamp.clone());
+            body.insert("created_at", timestamp);
             body.insert("updated_at", timestamp);
             body.insert("conversation_id", RecordId::new("conversation", key(1)));
             if edge == 0 || edge == 1 {
