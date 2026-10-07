@@ -11,10 +11,34 @@ use graphrag_db::{
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 /// Frozen upload journal identity; unrelated local API changes never invalidate retries.
 const REMOTE_UPLOAD_PAYLOAD_VERSION: u32 = 1;
+
+/// Runs the final preflight and then enters the non-cancellable publication region.
+///
+/// Source-enrichment cancellation is cooperative. Once the preflight succeeds, the
+/// repository promotion is allowed to finish so a committed graph-policy epoch is
+/// reported as success rather than being misreported as a cancelled conversion.
+/// A caller whose future is interrupted while publication is in flight must inspect
+/// the persisted enrichment status and retry or explicitly roll back; it cannot
+/// infer whether the transaction committed from the dropped future.
+async fn promote_after_final_preflight<T, P, F, Fut>(
+    preflight: P,
+    promote: F,
+) -> ApplicationResult<T>
+where
+    P: FnOnce() -> ApplicationResult<()>,
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ApplicationResult<T>>,
+{
+    preflight()?;
+    // This is entry into non-cancellable publication, not the datastore commit. Do not add a cancellation check below
+    // it: cancellation arriving now must not turn a committed promotion into a
+    // misleading cancelled outcome.
+    promote().await
+}
 
 fn job_id(id: &str) -> ApplicationResult<()> {
     if id.len() > 512 || id.chars().any(char::is_control) || !id.starts_with("processing_job:") {
@@ -383,7 +407,7 @@ pub(crate) async fn source(
     // spans. The public source contract returns the exact latest supplied input.
     let content = origin_job.input.markdown;
     let revision = graphrag_db::uploaded_source_revision(&source, &content)?;
-    let enriched = graphrag_db::source_entity_enrichment_current(&source);
+    let enriched = app.repo.source_entity_enrichment_current(&source).await?;
     let extract_entities = origin["extract_entities"]
         .as_bool()
         .unwrap_or(origin_job.input.extract_entities);
@@ -881,7 +905,13 @@ impl EmbeddedApplication {
                 .checkpoint_source_entity_enrichment(&plan, index, entities)
                 .await?;
         }
-        check()?;
-        Ok(self.repo.promote_source_entity_enrichment(&plan).await?)
+        promote_after_final_preflight(check, || async {
+            Ok(self.repo.promote_source_entity_enrichment(&plan).await?)
+        })
+        .await
     }
 }
+
+#[cfg(test)]
+#[path = "enrichment_publication_tests.rs"]
+mod enrichment_publication_tests;

@@ -22,7 +22,7 @@ pub use repository::{
     MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
 };
 pub use repository::{
-    source_entity_enrichment_current, SourceEnrichmentPlan, SourceEnrichmentStatus,
+    source_entity_enrichment_metadata_eligible, SourceEnrichmentPlan, SourceEnrichmentStatus,
 };
 
 use std::ops::Deref;

@@ -433,3 +433,82 @@ async fn enriched_source_replacement_stages_failed_extraction_and_requires_fresh
     assert_eq!(latest.successful_generation, 3);
     assert_eq!(latest.extraction_policy_current, Some(true));
 }
+
+#[tokio::test]
+async fn corrupt_promoted_checkpoint_never_reports_current_applied_graph_policy() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let app = application(
+        &repo,
+        "fixture-policy",
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let mut input = request("vector-only-currency");
+    input.extract_entities = false;
+    let admission = app.upload_source(caller(), input).await.unwrap();
+    run(&app).await.unwrap();
+    let plan = conversion_plan(&repo, &app, &admission.source_id).await;
+    app.enrich_uploaded_source(caller(), plan.clone(), ActionCancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        app.get_uploaded_source(&admission.source_id)
+            .await
+            .unwrap()
+            .extraction_policy_current,
+        Some(true)
+    );
+    let saved = repo
+        .get_source(&admission.source_id)
+        .await
+        .unwrap()
+        .unwrap();
+    for case in 0..6 {
+        let mut metadata = saved.metadata.clone();
+        let stage = &mut metadata["entity_enrichment_v1"];
+        match case {
+            0 => stage["plan"]["source_id"] = "source:transplanted".into(),
+            1 => {
+                stage["items"][0]["entities"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("identity_key");
+            }
+            2 => {
+                let e = stage["items"][0]["entities"][0].clone();
+                stage["items"][0]["entities"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(e);
+            }
+            3 => {
+                stage["items"][0]["entities"][0]["metadata"]["extraction"]["scope"] =
+                    "source:other:chunk:foreign".into()
+            }
+            4 => stage["items"][0]["id"] = "note:foreign".into(),
+            _ => {
+                stage["items"].as_array_mut().unwrap().pop();
+            }
+        }
+        db.query("UPDATE $source SET metadata=$metadata")
+            .bind(("source", saved.id.clone()))
+            .bind(("metadata", metadata))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let current = app.get_uploaded_source(&admission.source_id).await.unwrap();
+        assert!(current.extract_entities); // historical applied flag, not freshness
+        assert!(!current.processing_policy_current, "case {case}");
+        assert_eq!(
+            current.extraction_policy_current,
+            Some(false),
+            "case {case}"
+        );
+        assert!(app
+            .enrich_uploaded_source(caller(), plan.clone(), ActionCancellation::new())
+            .await
+            .is_err());
+    }
+}

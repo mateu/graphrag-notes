@@ -29,7 +29,7 @@ mod remote_mutations;
 mod source_enrichment;
 mod sources;
 pub use source_enrichment::{
-    source_entity_enrichment_current, SourceEnrichmentPlan, SourceEnrichmentStatus,
+    source_entity_enrichment_metadata_eligible, SourceEnrichmentPlan, SourceEnrichmentStatus,
 };
 mod stats;
 #[cfg(test)]

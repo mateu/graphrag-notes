@@ -135,6 +135,31 @@ fn stage_shape(value: &Stage) -> Result<()> {
             return Err(conflict());
         }
         if let Some(entities) = &item.entities {
+            let mut entity_ids = HashSet::new();
+            for entity in entities {
+                let scope = entity.metadata["extraction"]["scope"]
+                    .as_str()
+                    .ok_or_else(conflict)?;
+                let identity =
+                    serde_json::json!([scope, entity.entity_type, entity.canonical_name])
+                        .to_string();
+                let key = format!(
+                    "extracted-v1:{}",
+                    graphrag_core::normalized_content_hash(&identity)
+                );
+                if entity.identity_key.as_deref() != Some(key.as_str())
+                    || !entity_ids.insert(key)
+                    || entity.name.trim().is_empty()
+                    || entity.name.chars().count() > 80
+                    || entity.name.chars().any(char::is_control)
+                    || (!matches!(
+                        entity.entity_type,
+                        graphrag_core::EntityType::Person | graphrag_core::EntityType::Project
+                    ) && scope != value.plan.source_id)
+                {
+                    return Err(conflict());
+                }
+            }
             if entities.len() > 128
                 || entities.iter().any(|e| {
                     e.id.is_some()
@@ -150,16 +175,31 @@ fn stage_shape(value: &Stage) -> Result<()> {
     Ok(())
 }
 fn stage(source: &Source, plan: &SourceEnrichmentPlan) -> Result<Stage> {
-    let result: Stage =
-        serde_json::from_value(source.metadata[KEY].clone()).map_err(|_| conflict())?;
-    stage_shape(&result)?;
-    if result.plan != *plan {
+    if source.id.as_ref().map(record_id_to_string).as_deref() != Some(plan.source_id.as_str()) {
         return Err(conflict());
     }
     if serde_json::to_vec(&source.metadata[KEY])
         .map_err(|_| conflict())?
         .len()
         > MAX_STAGE_BYTES
+    {
+        return Err(conflict());
+    }
+    let result: Stage =
+        serde_json::from_value(source.metadata[KEY].clone()).map_err(|_| conflict())?;
+    stage_shape(&result)?;
+    if result.plan != *plan
+        || result.prior_origin["extract_entities"] != false
+        || result.prior_origin["instance_id"] != plan.instance_id
+        || result.prior_origin["document_key"] != plan.document_key
+        || uploaded_processing_policy_sha256(&result.prior_origin["processing_options"])?
+            != plan.original_policy_sha256
+        || !uploaded_processing_compatible(
+            &result.prior_origin["processing_options"],
+            &plan.target_processing_options,
+            false,
+            false,
+        )
     {
         return Err(conflict());
     }
@@ -193,26 +233,98 @@ fn stage_value(stage: &Stage) -> Result<serde_json::Value> {
     }
     Ok(value)
 }
-/// Only a completed published graph for the exact currently visible generation is fresh.
-pub fn source_entity_enrichment_current(source: &Source) -> bool {
+/// Metadata-only eligibility, not a graph freshness proof. Public readback must also
+/// call Repository::source_entity_enrichment_current to validate datastore evidence.
+pub fn source_entity_enrichment_metadata_eligible(source: &Source) -> bool {
+    let Ok(bytes) = serde_json::to_vec(&source.metadata[KEY]) else {
+        return false;
+    };
+    if bytes.len() > MAX_STAGE_BYTES {
+        return false;
+    }
     let Ok(decoded) = serde_json::from_value::<Stage>(source.metadata[KEY].clone()) else {
         return false;
     };
-    if stage_shape(&decoded).is_err() {
+    if stage(source, &decoded.plan).is_err() {
         return false;
     }
-    source.metadata[KEY]["version"] == 1
-        && source.metadata[KEY]["status"] == "promoted"
-        && source.metadata[KEY]["plan"]["expected_generation"] == source.generation
+    decoded.status == "promoted"
+        && source.source_type == SourceType::Markdown
+        && decoded.plan.expected_generation == source.generation
         && source.generation == source.successful_generation
         && source.status == SourceIngestionStatus::Ready
-        && source.metadata[KEY]["plan"]["expected_content_sha256"]
-            == source.content_hash.as_deref().unwrap_or("")
+        && Some(decoded.plan.expected_content_sha256.as_str()) == source.content_hash.as_deref()
+        && source.metadata["graph_enrichment_managed"] == true
+        && source.metadata["remote_upload_retired"] != true
+        && source.metadata["remote_upload"]["instance_id"] == decoded.plan.instance_id
+        && source.metadata["remote_upload"]["document_key"] == decoded.plan.document_key
         && source.metadata["remote_upload"]["extract_entities"] == true
-        && source.metadata[KEY]["plan"]["target_processing_options"]
+        && decoded.plan.target_processing_options
             == source.metadata["remote_upload"]["processing_options"]
+        && !source
+            .metadata
+            .get("remote_upload_pending")
+            .is_some_and(|pending| pending != &source.metadata["remote_upload"])
 }
 impl Repository {
+    /// Fail closed against exact current notes, scoped typed entities and published
+    /// mentions. Snapshot guards and inventory checks share one read transaction.
+    pub async fn source_entity_enrichment_current(&self, source: &Source) -> Result<bool> {
+        if !source_entity_enrichment_metadata_eligible(source) {
+            return Ok(false);
+        }
+        let decoded: Stage =
+            serde_json::from_value(source.metadata[KEY].clone()).map_err(|_| conflict())?;
+        Ok(self
+            .validate_enrichment_evidence(source, &decoded, true)
+            .await
+            .is_ok())
+    }
+    async fn validate_enrichment_evidence(
+        &self,
+        source: &Source,
+        staged: &Stage,
+        published: bool,
+    ) -> Result<()> {
+        let mut notes = Vec::new();
+        let mut checks = String::new();
+        for (index, item) in staged.items.iter().enumerate() {
+            let note = self.enrichment_note(item, &staged.plan).await?;
+            if let Some(entities) = &item.entities {
+                super::remote_jobs::validate_enrichment_entities(
+                    &note,
+                    self.note_extraction_scope(&note).await?.as_deref(),
+                    entities,
+                )?;
+            }
+            checks.push_str(
+                &super::notes::editor_snapshot_guard(false)
+                    .replace("$editor_source", &format!("$notes[{index}].id"))
+                    .replace("$editor_expected", &format!("$notes[{index}]"))
+                    .replace("$editor_matches", &format!("$note_matches_{index}")),
+            );
+            if published {
+                let count = item.entities.as_ref().ok_or_else(conflict)?.len();
+                checks.push_str(&format!("LET $owned_mentions_{index} = (SELECT * FROM mentions WHERE in = $notes[{index}].id); IF array::len($owned_mentions_{index}) != {count} {{ THROW '{FENCE}'; }}; FOR $expected_entity IN $entity_batches[{index}] {{ LET $found = array::filter($owned_mentions_{index}, |$mention| $mention.out.identity_key = $expected_entity.identity_key); IF array::len($found) != 1 {{ THROW '{FENCE}'; }}; LET $mention = $found[0]; IF $mention.out.canonical_name != $expected_entity.canonical_name OR $mention.out.entity_type != $expected_entity.entity_type OR $mention.metadata != object::extend($expected_entity.metadata, {{ aliases: array::slice($expected_entity.metadata.aliases ?? [], 0, 8) }}) {{ THROW '{FENCE}'; }}; }}; "));
+            }
+            notes.push(note);
+        }
+        let all_ids = staged
+            .items
+            .iter()
+            .map(|i| parse_record_id(&i.id, Some("note")))
+            .collect::<Result<Vec<_>>>()?;
+        let batches = staged
+            .items
+            .iter()
+            .map(|i| i.entities.clone().unwrap_or_default())
+            .collect::<Vec<_>>();
+        self.db.query(format!("BEGIN TRANSACTION; LET $matches=(SELECT VALUE id FROM source WHERE id=$source AND metadata=$metadata AND generation=$generation AND successful_generation=$generation AND status='ready' AND content_hash=$hash AND content=$content AND title=$title); IF array::len($matches)!=1 {{ THROW '{FENCE}'; }}; LET $current_notes=(SELECT VALUE id FROM note WHERE source_id=$source AND source_generation=$generation); IF array::len($current_notes)!=array::len($all_ids) OR array::len(array::difference($current_notes,$all_ids))!=0 {{ THROW '{FENCE}'; }}; {checks} COMMIT TRANSACTION;"))
+            .bind(("source", source.id.clone())).bind(("metadata", source.metadata.clone())).bind(("generation",source.generation))
+            .bind(("hash",source.content_hash.clone())).bind(("content",source.content.clone())).bind(("title",source.title.clone()))
+            .bind(("all_ids",all_ids)).bind(("notes",notes)).bind(("entity_batches",batches)).await?.check().map_err(|_| conflict())?;
+        Ok(())
+    }
     /// Single owning embedded datastore worker; durable checkpoints resume after crash.
     /// This separate gate is never held by source writers, so replacements can fence stale work.
     pub async fn source_entity_enrichment_worker_guard(&self) -> tokio::sync::OwnedMutexGuard<()> {
@@ -252,7 +364,16 @@ impl Repository {
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         let source = self.enrichment_source(&plan).await?;
         if source.metadata.get(KEY).is_some() {
-            return stage(&source, &plan).map(|s| status(&s));
+            let saved = stage(&source, &plan)?;
+            if saved.status == "promoted" {
+                if !self.source_entity_enrichment_current(&source).await? {
+                    return Err(conflict());
+                }
+            } else {
+                self.validate_enrichment_evidence(&source, &saved, false)
+                    .await?;
+            }
+            return Ok(status(&saved));
         }
         let origin = &source.metadata["remote_upload"];
         let job = self
@@ -402,7 +523,10 @@ impl Repository {
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         let source = self.enrichment_source(plan).await?;
         let mut staged = stage(&source, plan)?;
-        if staged.status == "promoted" && source_entity_enrichment_current(&source) {
+        if staged.status == "promoted" {
+            if !self.source_entity_enrichment_current(&source).await? {
+                return Err(conflict());
+            }
             return Ok(status(&staged));
         }
         if staged.status != "staged" || staged.items.iter().any(|v| v.entities.is_none()) {
@@ -455,12 +579,14 @@ impl Repository {
         let source = self.enrichment_source(plan).await?;
         let mut staged = stage(&source, plan)?;
         if staged.status == "rolled_back" {
+            self.validate_enrichment_evidence(&source, &staged, false)
+                .await?;
             return Ok(status(&staged));
         }
         if !matches!(staged.status.as_str(), "staged" | "promoted") {
             return Err(conflict());
         }
-        if staged.status == "promoted" && !source_entity_enrichment_current(&source) {
+        if staged.status == "promoted" && !self.source_entity_enrichment_current(&source).await? {
             return Err(conflict());
         }
         let mut notes = Vec::new();

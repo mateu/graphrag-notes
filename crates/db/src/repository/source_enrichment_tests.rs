@@ -167,7 +167,7 @@ async fn checkpoint_resume_atomic_promotion_preserves_identity_generation_and_ve
         uploaded_source_revision(&saved, "Atlas one and two").unwrap(),
         plan.expected_source_revision
     );
-    assert!(!source_entity_enrichment_current(&saved));
+    assert!(!source_entity_enrichment_metadata_eligible(&saved));
     let resumed = Repository::new(db);
     assert_eq!(
         resumed
@@ -205,7 +205,7 @@ async fn checkpoint_resume_atomic_promotion_preserves_identity_generation_and_ve
     assert_eq!(after.generation, source.generation);
     assert_eq!(after.successful_generation, source.successful_generation);
     assert_eq!(after.content_hash, source.content_hash);
-    assert!(source_entity_enrichment_current(&after));
+    assert!(source_entity_enrichment_metadata_eligible(&after));
     assert_ne!(
         uploaded_source_revision(&after, "Atlas one and two").unwrap(),
         plan.expected_source_revision
@@ -320,7 +320,7 @@ async fn rollback_requires_confirmation_preserves_content_and_prevents_policy_ab
         .await
         .unwrap()
         .unwrap();
-    assert!(!source_entity_enrichment_current(&after));
+    assert!(!source_entity_enrichment_metadata_eligible(&after));
     assert_eq!(
         after.metadata["remote_upload"],
         source.metadata["remote_upload"]
@@ -390,7 +390,7 @@ async fn source_replacement_invalidates_conversion_and_removes_previous_mentions
     let replaced = upload(&repo, replacement, &["New content"]).await;
     assert_eq!(replaced.id, source.id);
     assert_eq!(replaced.generation, 2);
-    assert!(!source_entity_enrichment_current(&replaced));
+    assert!(!source_entity_enrichment_metadata_eligible(&replaced));
     assert!(replaced.metadata.get(KEY).is_none());
     assert!(rows(&repo, "mentions").await.is_empty());
     assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
@@ -509,7 +509,7 @@ async fn malformed_checkpoint_shapes_never_claim_graph_freshness_or_publish() {
             .await
             .unwrap()
             .unwrap();
-        assert!(!source_entity_enrichment_current(&now));
+        assert!(!source_entity_enrichment_metadata_eligible(&now));
         assert!(repo
             .begin_source_entity_enrichment(plan.clone())
             .await
@@ -519,4 +519,212 @@ async fn malformed_checkpoint_shapes_never_claim_graph_freshness_or_publish() {
         assert!(rows(&repo, "entity").await.is_empty());
         assert!(rows(&repo, "mentions").await.is_empty());
     }
+}
+
+#[tokio::test]
+async fn promoted_metadata_corruption_cannot_claim_currency_or_shortcut_lifecycle() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(
+        &repo,
+        input("original", "Atlas one and two"),
+        &["Atlas one", "Atlas two"],
+    )
+    .await;
+    let plan = plan(&source, "Atlas one and two");
+    prepared(&repo, &plan).await;
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    let saved = repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(repo.source_entity_enrichment_current(&saved).await.unwrap());
+    let mut other_input = input("other-original", "Atlas one and two");
+    other_input.document_key = "other.md".into();
+    let other = upload(&repo, other_input, &["Atlas one", "Atlas two"]).await;
+    let foreign_note = repo
+        .get_source_chunks(other.id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .remove(0);
+    let notes_before = rows(&repo, "note").await;
+    let mentions_before = rows(&repo, "mentions").await;
+    let entities_before = rows(&repo, "entity").await;
+    for case in 0..10 {
+        let mut metadata = saved.metadata.clone();
+        match case {
+            0 => {
+                metadata[KEY]["plan"]["source_id"] =
+                    record_id_to_string(other.id.as_ref().unwrap()).into()
+            }
+            1 => {
+                metadata[KEY]["items"][0]["entities"][0]["metadata"]["oversized"] =
+                    "x".repeat(MAX_STAGE_BYTES).into()
+            }
+            2 => {
+                metadata[KEY]["items"][0]["entities"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("identity_key");
+            }
+            3 => {
+                metadata[KEY]["items"][0]["entities"][0]["identity_key"] =
+                    "extracted-v1:wrong".into()
+            }
+            4 => {
+                let e = metadata[KEY]["items"][0]["entities"][0].clone();
+                metadata[KEY]["items"][0]["entities"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(e);
+            }
+            5 => {
+                metadata[KEY]["items"][0]["entities"][0]["metadata"]["extraction"]["scope"] =
+                    "source:other".into()
+            }
+            6 => {
+                metadata[KEY]["items"][0]["id"] =
+                    record_id_to_string(foreign_note.id.as_ref().unwrap()).into();
+                metadata[KEY]["items"][0]["revision"] =
+                    content_revision(&foreign_note).unwrap().into();
+            }
+            7 => {
+                metadata[KEY]["items"].as_array_mut().unwrap().pop();
+            }
+            8 => metadata[KEY]["items"][0]["revision"] = "a".repeat(64).into(),
+            _ => {
+                // Valid deterministic key, but a Project scope from another source.
+                let e = &mut metadata[KEY]["items"][0]["entities"][0];
+                e["entity_type"] = "project".into();
+                e["metadata"]["extraction"]["scope"] = "source:other:chunk:foreign".into();
+                let identity = serde_json::json!([
+                    e["metadata"]["extraction"]["scope"],
+                    e["entity_type"],
+                    e["canonical_name"]
+                ])
+                .to_string();
+                e["identity_key"] = format!(
+                    "extracted-v1:{}",
+                    graphrag_core::normalized_content_hash(&identity)
+                )
+                .into();
+            }
+        }
+        repo.db
+            .query("UPDATE $source SET metadata=$metadata")
+            .bind(("source", source.id.clone()))
+            .bind(("metadata", metadata))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let now = repo
+            .get_source(source.uri.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        if case <= 5 {
+            assert!(
+                !source_entity_enrichment_metadata_eligible(&now),
+                "pure case {case}"
+            );
+        }
+        assert!(
+            !repo.source_entity_enrichment_current(&now).await.unwrap(),
+            "repository case {case}"
+        );
+        let before = rows(&repo, "source").await;
+        assert!(
+            repo.begin_source_entity_enrichment(plan.clone())
+                .await
+                .is_err(),
+            "begin {case}"
+        );
+        assert!(
+            repo.promote_source_entity_enrichment(&plan).await.is_err(),
+            "promote {case}"
+        );
+        assert!(
+            repo.rollback_source_entity_enrichment(&plan, true)
+                .await
+                .is_err(),
+            "rollback {case}"
+        );
+        assert_eq!(rows(&repo, "source").await, before);
+        assert_eq!(rows(&repo, "note").await, notes_before);
+        assert_eq!(rows(&repo, "mentions").await, mentions_before);
+        assert_eq!(rows(&repo, "entity").await, entities_before);
+    }
+    // A complete otherwise valid checkpoint transplanted to a matching source.
+    let mut metadata = other.metadata.clone();
+    metadata[KEY] = saved.metadata[KEY].clone();
+    metadata["remote_upload"] = saved.metadata["remote_upload"].clone();
+    metadata["graph_enrichment_managed"] = true.into();
+    repo.db
+        .query("UPDATE $source SET metadata=$metadata")
+        .bind(("source", other.id.clone()))
+        .bind(("metadata", metadata))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let transplanted = repo
+        .get_source(other.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!source_entity_enrichment_metadata_eligible(&transplanted));
+    assert!(!repo
+        .source_entity_enrichment_current(&transplanted)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn published_evidence_currency_requires_current_owned_notes_and_complete_mentions() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    let notes = prepared(&repo, &plan).await;
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    let saved = repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(repo.source_entity_enrichment_current(&saved).await.unwrap());
+    repo.db
+        .query("UPDATE $note SET source_generation=2")
+        .bind(("note", notes[0].id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(!repo.source_entity_enrichment_current(&saved).await.unwrap());
+    assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+    assert!(repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .is_err());
+    repo.db
+        .query("UPDATE $note SET source_generation=1")
+        .bind(("note", notes[0].id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(repo.source_entity_enrichment_current(&saved).await.unwrap());
+    repo.db
+        .query("DELETE mentions WHERE in=$note")
+        .bind(("note", notes[0].id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(!repo.source_entity_enrichment_current(&saved).await.unwrap());
+    assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+    assert!(repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .is_err());
 }
