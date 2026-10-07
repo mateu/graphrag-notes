@@ -34,7 +34,6 @@ pub use chats::{EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEd
 pub use folder_sync::FileSourceSnapshot;
 pub use graph::{SourceDeleteSummary, SourceImportAction, SourceImportPlan};
 use ids::normalize_note_id;
-use migration_probe::{migration_probe, migration_probe_result, migration_statement_errors};
 pub use ids::parse_record_id;
 pub use inspection::{
     InspectedConversation, InspectedMessage, InspectionProvenance, RecordInspection,
@@ -44,6 +43,7 @@ pub use jobs::{
     InferenceCacheEntry, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, ReindexItem,
 };
+use migration_probe::{migration_probe, migration_probe_result, migration_statement_errors};
 pub use models::{
     ConversationSearchResult, MessageSearchResult, RelatedNotes, SearchResult, SimilarNote,
 };
