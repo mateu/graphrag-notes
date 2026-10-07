@@ -15,6 +15,9 @@ pub struct InspectionProvenance {
     pub source_uri: Option<String>,
     pub source_type: Option<String>,
     pub source_generation: Option<u64>,
+    /// Policy-only graph publication epoch, distinct from content generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_policy_revision: Option<u64>,
     pub heading_path: Vec<String>,
     pub start_line: Option<u64>,
     pub end_line: Option<u64>,
@@ -284,6 +287,7 @@ impl Repository {
                     .unwrap_or("unknown")
                     .to_string(),
             );
+            provenance.graph_policy_revision = source.metadata["graph_policy_revision"].as_u64();
             let remote_origin = match (source.source_type.clone(), source.uri.as_deref()) {
                 (SourceType::Manual, Some(uri)) if uri.starts_with("mcp://capture/") => {
                     source.metadata.get("remote_capture")

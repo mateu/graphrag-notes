@@ -131,6 +131,16 @@ impl Repository {
             }
         }
         for edge in edges {
+            if let Some(id) = &edge.proposal_id {
+                if self
+                    .get_edge_proposal(id)
+                    .await?
+                    .is_some_and(|p| p.generator == "remote-reviewed-endpoint")
+                {
+                    // The proposal pins exact note revisions, never successor approximations.
+                    continue;
+                }
+            }
             let from_id = successors.get(&edge.in_id).cloned().unwrap_or(edge.in_id);
             let to_id = successors.get(&edge.out_id).cloned().unwrap_or(edge.out_id);
             if from_id == to_id {

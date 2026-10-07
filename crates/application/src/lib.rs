@@ -6,6 +6,8 @@ mod embedded;
 mod error;
 mod inference;
 mod remote_contracts;
+mod remote_endpoint_proposal_contracts;
+mod remote_endpoint_proposals;
 mod remote_job_contracts;
 mod remote_jobs;
 mod remote_mutation_contracts;
@@ -20,6 +22,8 @@ pub use embedded::{
 };
 pub use error::{ApplicationError, ApplicationFailure, ApplicationResult};
 pub use remote_contracts::*;
+pub use remote_endpoint_proposal_contracts::*;
+pub use remote_endpoint_proposals::remote_endpoint_proposal_fingerprint;
 pub use remote_job_contracts::*;
 pub use remote_mutation_contracts::*;
 pub use remote_mutations::remote_mutation_fingerprint;
@@ -104,6 +108,16 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
         let _ = (caller, request);
         Err(ApplicationError::Validation(
             "Remote proposal decisions are unavailable.".into(),
+        ))
+    }
+
+    async fn propose_endpoint_remote(
+        &self,
+        _caller: CallerIdentity,
+        _request: RemoteEndpointProposalRequest,
+    ) -> ApplicationResult<RemoteEndpointProposalResponse> {
+        Err(ApplicationError::Compatibility(
+            "Remote endpoint proposals are unavailable in this adapter".into(),
         ))
     }
 

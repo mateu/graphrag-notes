@@ -31,7 +31,11 @@ fn serialize_entities<S: serde::Serializer>(
     values.serialize(serializer)
 }
 
-fn validate_entities(note: &Note, scope: Option<&str>, entities: &[Entity]) -> Result<()> {
+pub(super) fn validate_entities(
+    note: &Note,
+    scope: Option<&str>,
+    entities: &[Entity],
+) -> Result<()> {
     let mut identities = HashSet::new();
     let note_id = note
         .id
@@ -173,7 +177,7 @@ impl Repository {
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         let job = self.owned_remote_upload(lease, false).await?;
         self.ensure_remote_source_current(&job).await?;
-        if job.input.policy_migration.is_none() || job.phase != "migration_staged" {
+        if !job.input.extract_entities || job.phase != "migration_staged" {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
                 &lease.job_id,
             )));
@@ -236,7 +240,7 @@ impl Repository {
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         let job = self.owned_remote_upload(lease, false).await?;
         self.ensure_remote_source_current(&job).await?;
-        if job.input.policy_migration.is_none() || job.phase != "migration_extracting" {
+        if !job.input.extract_entities || job.phase != "migration_extracting" {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
                 &lease.job_id,
             )));
@@ -301,7 +305,7 @@ impl Repository {
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         let job = self.owned_remote_upload(lease, false).await?;
         self.ensure_remote_source_current(&job).await?;
-        if job.input.policy_migration.is_none() || job.phase != "migration_extracting" {
+        if !job.input.extract_entities || job.phase != "migration_extracting" {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
                 &lease.job_id,
             )));

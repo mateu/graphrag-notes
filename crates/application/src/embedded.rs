@@ -168,6 +168,8 @@ pub async fn proposal_card(
         Some(format!("Proposal is {}, not pending.", proposal.status))
     } else if !from.available || !to.available {
         Some("Both notes must be visible before this proposal can be accepted.".into())
+    } else if !repo.reviewed_endpoint_proposal_current(&proposal).await? {
+        Some("The immutable endpoint evidence is stale; create a fresh reviewed proposal.".into())
     } else {
         None
     };

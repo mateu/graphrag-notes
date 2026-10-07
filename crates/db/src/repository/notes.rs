@@ -401,10 +401,12 @@ impl Repository {
             .await?
             .ok_or_else(|| DbError::NotFound("note".into(), id.into()))?;
         let search_content = search_content_for_note_update(&existing, &note);
-        let updated: Option<Note> = self
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$id]");
+        let mut response = self
             .db
-            .query(
-                "UPDATE $id SET \
+            .query(format!(
+                "BEGIN TRANSACTION; {invalidation} UPDATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \
                     chunk_location_key = $chunk_location_key, chunk_ordinal = $chunk_ordinal, \
@@ -418,8 +420,8 @@ impl Repository {
                     source_id = IF $source_id = NONE THEN source_id ELSE $source_id END, \
                     source_generation = IF $source_generation = NONE THEN source_generation ELSE $source_generation END, \
                     created_at = <datetime>$created_at, updated_at = <datetime>$updated_at \
-                 RETURN AFTER",
-            )
+                 RETURN AFTER; COMMIT TRANSACTION;",
+            ))
             .bind(("id", RecordId::new("note", raw_id)))
             .bind(("note_type", serde_json::to_value(&note.note_type).map_err(|error| DbError::QueryFailed(error.to_string()))?))
             .bind(("title", note.title.clone()))
@@ -444,8 +446,17 @@ impl Repository {
             .bind(("search_content", search_content))
             .bind(("created_at", note.created_at.to_rfc3339()))
             .bind(("updated_at", note.updated_at.to_rfc3339()))
-            .await?
-            .take(0)?;
+            .await?;
+        response
+            .take_errors()
+            .into_iter()
+            .next()
+            .map_or(Ok(()), |(_, error)| Err(DbError::Surreal(error)))?;
+        let index = response
+            .num_statements()
+            .checked_sub(2)
+            .ok_or_else(|| DbError::QueryFailed("missing note update result".into()))?;
+        let updated: Option<Note> = response.take(index)?;
 
         updated.ok_or_else(|| DbError::NotFound("note".into(), id.into()))
     }
@@ -514,6 +525,8 @@ impl Repository {
             }
             (existing, String::new(), None)
         };
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$id]");
         let replacement_entities = replacement_entities_transaction();
         let replacement_mentions = replacement_mentions_transaction("$id");
         let entity_names: Vec<String> = entities
@@ -525,7 +538,7 @@ impl Repository {
         let mut response = self
             .db
             .query(format!(
-                "BEGIN TRANSACTION; {guard}{replacement_entities}\
+                "BEGIN TRANSACTION; {guard}{invalidation}{replacement_entities}\
                  UPDATE $id SET \
                     note_type = $note_type, title = $title, content = $content, \
                     embedding = $embedding, chunk_key = $chunk_key, \

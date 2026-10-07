@@ -383,6 +383,23 @@ pub(crate) async fn source(
     // spans. The public source contract returns the exact latest supplied input.
     let content = origin_job.input.markdown;
     let revision = graphrag_db::uploaded_source_revision(&source, &content)?;
+    let enriched = graphrag_db::source_entity_enrichment_current(&source);
+    let extract_entities = origin["extract_entities"]
+        .as_bool()
+        .unwrap_or(origin_job.input.extract_entities);
+    let applied_options = if enriched {
+        &origin["processing_options"]
+    } else {
+        &origin_job.input.processing_options
+    };
+    let extraction_complete = enriched
+        || (origin_job.input.extract_entities
+            && (origin_job.job.status == "completed" || origin_job.phase == "migration_promoted")
+            && source.successful_generation == source.generation
+            && source.status == graphrag_core::SourceIngestionStatus::Ready
+            && origin_job.source_generation == Some(source.successful_generation)
+            && origin_job.job.failed_count == 0
+            && origin_job.job.completed_count == origin_job.job.total_count);
     Ok(UploadedSource {
         id: record_id_to_string(
             source
@@ -408,11 +425,11 @@ pub(crate) async fn source(
         instance_id: origin["instance_id"].as_str().unwrap_or_default().into(),
         document_key: origin["document_key"].as_str().unwrap_or_default().into(),
         provenance: origin["source"].clone(),
-        extract_entities: origin_job.input.extract_entities,
+        extract_entities,
         processing_policy_sha256: format!(
             "{:x}",
             Sha256::digest(
-                serde_json::to_vec(&origin_job.input.processing_options)
+                serde_json::to_vec(applied_options)
                     .map_err(|e| ApplicationError::Internal(e.to_string()))?
             )
         ),
@@ -420,20 +437,21 @@ pub(crate) async fn source(
         configured_processing_policy_sha256: graphrag_db::uploaded_processing_policy_sha256(
             &options(app),
         )?,
-        processing_policy_current: graphrag_db::uploaded_processing_compatible(
-            &origin_job.input.processing_options,
-            &options(app),
-            origin_job.input.extract_entities,
-            false,
-        ),
+        processing_policy_current: (!extract_entities || extraction_complete)
+            && graphrag_db::uploaded_processing_compatible(
+                applied_options,
+                &options(app),
+                extract_entities,
+                false,
+            ),
         ingestion_policy_current: graphrag_db::uploaded_processing_compatible(
             &origin_job.input.processing_options,
             &options(app),
             false,
             false,
         ),
-        extraction_policy_current: origin_job.input.extract_entities.then(|| {
-            origin_job.input.processing_options["extraction"] == options(app)["extraction"]
+        extraction_policy_current: extract_entities.then(|| {
+            extraction_complete && applied_options["extraction"] == options(app)["extraction"]
         }),
         revision,
     })
@@ -600,7 +618,8 @@ async fn run(
                 // preparation; exact old chunks must not reuse stale vectors.
                 let existing = if source.metadata["remote_upload"]["processing_options"]
                     == job.input.processing_options
-                    || (job.input.policy_migration.is_some()
+                    || ((job.input.policy_migration.is_some()
+                        || job.phase == "migration_preparing")
                         && graphrag_db::uploaded_processing_compatible(
                             &source.metadata["remote_upload"]["processing_options"],
                             &job.input.processing_options,
@@ -636,7 +655,7 @@ async fn run(
                 let old = app.repo.get_source_chunks(&source_id).await?;
                 let staged = app.repo.remote_upload_notes(lease).await?;
                 let successors = markdown_chunk_successors(&old, &staged);
-                if job.input.policy_migration.is_some() {
+                if job.phase == "migration_staged" {
                     app.repo
                         .prepare_policy_migration_extraction(lease, &successors)
                         .await?;
@@ -645,9 +664,9 @@ async fn run(
                 }
             }
             "migration_extracting" => {
-                if job.input.policy_migration.is_none() {
+                if !job.input.extract_entities {
                     return Err(ApplicationError::Validation(
-                        "Migration phase lacks explicit intent".into(),
+                        "Graph rebuild phase requires enabled extraction".into(),
                     ));
                 }
                 let notes = app.repo.remote_upload_notes(lease).await?;
@@ -692,6 +711,7 @@ async fn run(
                     app.repo.reconcile_remote_upload(lease, &[]).await?;
                 }
                 if job.input.policy_migration.is_some()
+                    || job.phase == "migration_promoted"
                     || job.job.scope.as_deref() == Some("unchanged")
                     || !job.input.extract_entities
                     || job.job.item_ids.is_empty()
@@ -747,7 +767,7 @@ async fn run(
             phase => {
                 return Err(ApplicationError::Validation(format!(
                     "Unsupported uploaded job phase {phase:?}; no work was started"
-                )))
+                )));
             }
         }
     }
@@ -796,4 +816,72 @@ pub(crate) async fn recover(
     };
     app.repo.recover_remote_upload_job(&lease, code).await?;
     Ok(())
+}
+
+impl EmbeddedApplication {
+    /// Service-owner development API, intentionally not an MCP tool or background scan.
+    /// Requires reviewed exact plan, same authenticated owner and current server policy.
+    pub async fn enrich_uploaded_source(
+        &self,
+        caller: CallerIdentity,
+        plan: graphrag_db::SourceEnrichmentPlan,
+        cancellation: ActionCancellation,
+    ) -> ApplicationResult<graphrag_db::SourceEnrichmentStatus> {
+        let check = || -> ApplicationResult<()> {
+            if caller.instance_id != plan.instance_id {
+                return Err(ApplicationError::Validation(
+                    "Enrichment owner does not match authenticated caller".into(),
+                ));
+            }
+            if plan.target_processing_options != options(self) {
+                return Err(ApplicationError::Compatibility("Reviewed enrichment policy differs from server policy; re-review before proceeding".into()));
+            }
+            if cancellation.is_cancelled() {
+                return Err(ApplicationError::Cancelled);
+            }
+            Ok(())
+        };
+        check()?;
+        let _worker = tokio::select! { biased; _=cancellation.cancelled()=>return Err(ApplicationError::Cancelled), guard=self.repo.source_entity_enrichment_worker_guard()=>guard };
+        check()?;
+        let staged = self
+            .repo
+            .begin_source_entity_enrichment(plan.clone())
+            .await?;
+        if staged.status == "promoted" {
+            return Ok(staged);
+        }
+        if staged.status != "staged" {
+            return Err(ApplicationError::Validation(
+                "Rolled-back enrichment cannot be implicitly restarted".into(),
+            ));
+        }
+        let notes = self.repo.source_entity_enrichment_notes(&plan).await?;
+        if staged.completed < notes.len() {
+            let available = tokio::select! { biased; _=cancellation.cancelled()=>return Err(ApplicationError::Cancelled), result=self.extractor.health()=>result.unwrap_or(false) };
+            if !available {
+                return Err(ApplicationError::ProviderUnavailable("Enrichment extraction unavailable; policy remains vector-only and checkpoints retained".into()));
+            }
+        }
+        let librarian = LibrarianAgent::new(
+            self.repo.clone(),
+            self.embedder.clone(),
+            Arc::new(CancellableExtractor(
+                self.extractor.clone(),
+                cancellation.clone(),
+            )),
+        )
+        .with_runtime_config(self.runtime.clone())
+        .with_cancellation_flag(cancellation.flag());
+        for (index, note) in notes.iter().enumerate().skip(staged.completed) {
+            check()?;
+            let entities = librarian.prepare_note_entities(note).await?;
+            check()?;
+            self.repo
+                .checkpoint_source_entity_enrichment(&plan, index, entities)
+                .await?;
+        }
+        check()?;
+        Ok(self.repo.promote_source_entity_enrichment(&plan).await?)
+    }
 }

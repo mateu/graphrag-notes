@@ -2,6 +2,7 @@
 //! Transport identity and request authorization are resolved for each HTTP request.
 
 pub mod credentials;
+mod endpoint_proposals;
 mod jobs;
 mod mutations;
 mod server;

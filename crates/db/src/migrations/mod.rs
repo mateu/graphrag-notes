@@ -25,6 +25,7 @@ mod v018_remote_upload_jobs;
 mod v019_entity_identity;
 mod v020_source_policy_migration;
 mod v021_note_search;
+mod v022_source_entity_enrichment;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -37,7 +38,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 21;
+pub const LATEST_SCHEMA_VERSION: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -74,6 +75,7 @@ const MIGRATIONS: &[Migration] = &[
     v019_entity_identity::MIGRATION,
     v020_source_policy_migration::MIGRATION,
     v021_note_search::MIGRATION,
+    v022_source_entity_enrichment::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is

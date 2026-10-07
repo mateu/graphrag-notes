@@ -100,7 +100,9 @@ pub(crate) fn validate_capture(
     ] {
         validate_text(name, value, 128, true)?;
         if value.len() > 256 || value.trim() != value || value.chars().any(char::is_control) {
-            return Err(ApplicationError::Validation(format!("{name} cannot exceed 256 UTF-8 bytes or contain control characters or surrounding whitespace")));
+            return Err(ApplicationError::Validation(format!(
+                "{name} cannot exceed 256 UTF-8 bytes or contain control characters or surrounding whitespace"
+            )));
         }
     }
     if request.content.trim().is_empty() || request.content.len() > MAX_REMOTE_CAPTURE_BYTES {
@@ -185,6 +187,14 @@ impl RemoteApplicationOperations for EmbeddedApplication {
         request: RemoteDecisionRequest,
     ) -> ApplicationResult<RemoteMutationResponse> {
         self.remote_decision_impl(caller, request).await
+    }
+
+    async fn propose_endpoint_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteEndpointProposalRequest,
+    ) -> ApplicationResult<RemoteEndpointProposalResponse> {
+        self.remote_endpoint_proposal_impl(caller, request).await
     }
 
     async fn build_context(

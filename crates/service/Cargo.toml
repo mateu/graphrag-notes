@@ -4,8 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["rocksdb"]
+rocksdb = ["graphrag-db/rocksdb", "graphrag-application/rocksdb", "graphrag-agents/rocksdb"]
+
 [dependencies]
-graphrag-application = { path = "../application" }
+graphrag-application = { path = "../application", default-features = false }
 rmcp.workspace = true
 axum.workspace = true
 schemars.workspace = true
@@ -26,5 +30,5 @@ reqwest.workspace = true
 tempfile.workspace = true
 async-trait.workspace = true
 graphrag-core = { path = "../core" }
-graphrag-db = { path = "../db" }
-graphrag-agents = { path = "../agents" }
+graphrag-db = { path = "../db", default-features = false }
+graphrag-agents = { path = "../agents", default-features = false }

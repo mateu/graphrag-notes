@@ -416,6 +416,16 @@ impl Repository {
             .get_edge_proposal(id)
             .await?
             .ok_or_else(|| DbError::NotFound("proposed_edge".into(), record_id_to_string(id)))?;
+        if proposal.generator == "remote-reviewed-endpoint" {
+            return self
+                .accept_reviewed_endpoint_atomic_locked(
+                    proposal,
+                    reviewer,
+                    action_reason,
+                    is_manual,
+                )
+                .await;
+        }
         match proposal.status {
             ProposedEdgeStatus::Accepted => {
                 return self
@@ -433,6 +443,11 @@ impl Repository {
                     proposal.status
                 )));
             }
+        }
+        if !self.reviewed_endpoint_proposal_current(&proposal).await? {
+            return Err(DbError::MutationRevisionConflict(
+                "Reviewed endpoint evidence is stale; a fresh proposal is required".into(),
+            ));
         }
         // Claim the pending row before creating the accepted edge. `accepting`
         // is recoverable: retries resume its idempotent edge creation rather
