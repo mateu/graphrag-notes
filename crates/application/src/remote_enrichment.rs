@@ -103,9 +103,11 @@ pub(crate) async fn admit(
     rollback: bool,
 ) -> ApplicationResult<UploadAdmission> {
     let plan = validated(&caller, &request)?;
-    if !rollback && request.request_id != plan.request_id {
+    if (!rollback && request.request_id != plan.request_id)
+        || (rollback && request.request_id == plan.request_id)
+    {
         return Err(ApplicationError::Validation(
-            "Execution identity must match reviewed plan".into(),
+            "Conversion must use the reviewed identity and rollback a distinct identity".into(),
         ));
     }
     let fingerprint = format!(

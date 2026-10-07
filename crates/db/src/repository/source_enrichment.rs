@@ -180,10 +180,7 @@ fn stage_shape(value: &Stage) -> Result<()> {
     }
     Ok(())
 }
-fn stage(source: &Source, plan: &SourceEnrichmentPlan) -> Result<Stage> {
-    if source.id.as_ref().map(record_id_to_string).as_deref() != Some(plan.source_id.as_str()) {
-        return Err(conflict());
-    }
+fn saved_stage(source: &Source) -> Result<Stage> {
     if serde_json::to_vec(&source.metadata[KEY])
         .map_err(|_| conflict())?
         .len()
@@ -194,7 +191,8 @@ fn stage(source: &Source, plan: &SourceEnrichmentPlan) -> Result<Stage> {
     let result: Stage =
         serde_json::from_value(source.metadata[KEY].clone()).map_err(|_| conflict())?;
     stage_shape(&result)?;
-    if result.plan != *plan
+    let plan = &result.plan;
+    if source.id.as_ref().map(record_id_to_string).as_deref() != Some(plan.source_id.as_str())
         || result.prior_origin["extract_entities"] != false
         || result.prior_origin["instance_id"] != plan.instance_id
         || result.prior_origin["document_key"] != plan.document_key
@@ -219,6 +217,27 @@ fn stage(source: &Source, plan: &SourceEnrichmentPlan) -> Result<Stage> {
     }
     Ok(result)
 }
+fn stage(source: &Source, plan: &SourceEnrichmentPlan) -> Result<Stage> {
+    let result = saved_stage(source)?;
+    if result.plan != *plan {
+        return Err(conflict());
+    }
+    Ok(result)
+}
+/// Validate saved lineage for staged, promoted, and compensated unchanged uploads.
+pub(super) fn source_entity_enrichment_origin_current(source: &Source) -> bool {
+    let Ok(decoded) = saved_stage(source) else {
+        return false;
+    };
+    source.source_type == SourceType::Markdown
+        && decoded.plan.expected_generation == source.generation
+        && source.generation == source.successful_generation
+        && source.status == SourceIngestionStatus::Ready
+        && Some(decoded.plan.expected_content_sha256.as_str()) == source.content_hash.as_deref()
+        && source.metadata["remote_upload_retired"] != true
+        && source.metadata.get("remote_upload_pending").is_none()
+        && (decoded.status != "promoted" || source.metadata["graph_enrichment_managed"] == true)
+}
 fn status(stage: &Stage) -> SourceEnrichmentStatus {
     SourceEnrichmentStatus {
         request_id: stage.plan.request_id.clone(),
@@ -242,18 +261,9 @@ fn stage_value(stage: &Stage) -> Result<serde_json::Value> {
 /// Metadata-only eligibility, not a graph freshness proof. Public readback must also
 /// call Repository::source_entity_enrichment_current to validate datastore evidence.
 pub fn source_entity_enrichment_metadata_eligible(source: &Source) -> bool {
-    let Ok(bytes) = serde_json::to_vec(&source.metadata[KEY]) else {
+    let Ok(decoded) = saved_stage(source) else {
         return false;
     };
-    if bytes.len() > MAX_STAGE_BYTES {
-        return false;
-    }
-    let Ok(decoded) = serde_json::from_value::<Stage>(source.metadata[KEY].clone()) else {
-        return false;
-    };
-    if stage(source, &decoded.plan).is_err() {
-        return false;
-    }
     decoded.status == "promoted"
         && source.source_type == SourceType::Markdown
         && decoded.plan.expected_generation == source.generation

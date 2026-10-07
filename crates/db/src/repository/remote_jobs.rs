@@ -389,6 +389,8 @@ fn validate_input(input: &RemoteUploadInput) -> Result<()> {
         if enrichment.plan.instance_id != input.authenticated_instance_id
             || enrichment.plan.document_key != input.document_key
             || enrichment.plan.target_processing_options != input.processing_options
+            || (!enrichment.rollback && enrichment.plan.request_id != input.request_id)
+            || (enrichment.rollback && enrichment.plan.request_id == input.request_id)
             || input.policy_migration.is_some()
             || !input.extract_entities
             || input.preserve_unchanged
@@ -1037,6 +1039,8 @@ impl Repository {
                     job.job.id.as_ref().expect("persisted ID"),
                 ))
             })?;
+            let preserves_enrichment_origin = job.job.scope.as_deref() == Some("unchanged")
+                && super::source_enrichment::source_entity_enrichment_origin_current(&source);
             let origin = source
                 .metadata
                 .get("remote_upload_pending")
@@ -1045,7 +1049,7 @@ impl Repository {
                 || source.id != job.source_id
                 || source.source_type != SourceType::Markdown
                 || origin.is_none_or(|origin| {
-                    origin["job_id"] != expected_job
+                    (!preserves_enrichment_origin && origin["job_id"] != expected_job)
                         || origin["instance_id"] != job.instance_id
                         || origin["document_key"] != job.input.document_key
                 })
@@ -1207,13 +1211,26 @@ impl Repository {
         if let Some(metadata) = metadata.as_object_mut() {
             metadata.remove("remote_upload_retired");
         }
-        let origin = serde_json::json!({"instance_id":job.instance_id,"document_key":input.document_key,"request_id":job.request_id,"source":input.source_provenance,"job_id":record_id_to_string(&lease.job_id),"processing_options":input.processing_options,"extract_entities":input.extract_entities});
+        let preserves_enrichment_origin =
+            unchanged && metadata.get("entity_enrichment_v1").is_some();
+        if preserves_enrichment_origin
+            && !prior
+                .as_ref()
+                .is_some_and(super::source_enrichment::source_entity_enrichment_origin_current)
+        {
+            return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                &lease.job_id,
+            )));
+        }
         if unchanged {
-            metadata["remote_upload"] = origin;
+            if !preserves_enrichment_origin {
+                metadata["remote_upload"] = serde_json::json!({"instance_id":job.instance_id,"document_key":input.document_key,"request_id":job.request_id,"source":input.source_provenance,"job_id":record_id_to_string(&lease.job_id),"processing_options":input.processing_options,"extract_entities":input.extract_entities});
+            }
             if let Some(metadata) = metadata.as_object_mut() {
                 metadata.remove("remote_upload_pending");
             }
         } else {
+            let origin = serde_json::json!({"instance_id":job.instance_id,"document_key":input.document_key,"request_id":job.request_id,"source":input.source_provenance,"job_id":record_id_to_string(&lease.job_id),"processing_options":input.processing_options,"extract_entities":input.extract_entities});
             metadata["remote_upload_pending"] = origin;
             if let Some(fields) = metadata.as_object_mut() {
                 fields.remove("entity_enrichment_v1");

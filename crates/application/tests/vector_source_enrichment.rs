@@ -225,6 +225,235 @@ async fn provider_failure_resumes_without_claiming_graph_freshness_and_sync_can_
     assert_ne!(rolled_back.revision, before.revision);
 }
 #[tokio::test]
+async fn direct_enrichment_unchanged_uploads_preserve_stage_origin_through_rollback() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = application(
+        &repo,
+        "fixture-policy",
+        calls.clone(),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let mut input = request("direct-origin");
+    input.extract_entities = false;
+    let admission = app.upload_source(caller(), input.clone()).await.unwrap();
+    run(&app).await.unwrap();
+    let plan = conversion_plan(&repo, &app, &admission.source_id).await;
+    repo.begin_source_entity_enrichment(plan.clone())
+        .await
+        .unwrap();
+    let staged_source = repo
+        .get_source(&admission.source_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut staged_unchanged = input.clone();
+    staged_unchanged.request_id = "direct-origin-staged-unchanged".into();
+    staged_unchanged.preserve_unchanged = true;
+    let staged_upload = app.upload_source(caller(), staged_unchanged).await.unwrap();
+    run(&app).await.unwrap();
+    assert_eq!(
+        app.get_remote_job(caller(), &staged_upload.job_id)
+            .await
+            .unwrap()
+            .result
+            .unwrap()["action"],
+        "unchanged"
+    );
+    assert_eq!(
+        repo.get_source(&admission.source_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata,
+        staged_source.metadata
+    );
+    assert_eq!(
+        repo.inspect_source_entity_enrichment(&plan)
+            .await
+            .unwrap()
+            .status,
+        "staged"
+    );
+    app.enrich_uploaded_source(caller(), plan.clone(), ActionCancellation::new())
+        .await
+        .unwrap();
+    let promoted = app.get_uploaded_source(&admission.source_id).await.unwrap();
+    let source_id = graphrag_db::parse_record_id(&admission.source_id, Some("source")).unwrap();
+    let promoted_source = repo
+        .get_source(&admission.source_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let promoted_origin = promoted_source.metadata["remote_upload"].clone();
+    let prior_origin = promoted_source.metadata["entity_enrichment_v1"]["prior_origin"].clone();
+    let promoted_notes = rows(&repo, "note").await;
+    let inference_calls = calls.load(Ordering::SeqCst);
+
+    let mut unchanged = input.clone();
+    unchanged.request_id = "direct-origin-unchanged".into();
+    unchanged.extract_entities = true;
+    unchanged.preserve_unchanged = true;
+    unchanged.expected_source_revision = Some(promoted.revision.clone());
+    let unchanged_admission = app
+        .upload_source(caller(), unchanged.clone())
+        .await
+        .unwrap();
+    run(&app).await.unwrap();
+    let unchanged_job = app
+        .get_remote_job(caller(), &unchanged_admission.job_id)
+        .await
+        .unwrap();
+    assert_eq!(unchanged_job.result.unwrap()["action"], "unchanged");
+    let after_unchanged = app.get_uploaded_source(&admission.source_id).await.unwrap();
+    let after_unchanged_source = repo
+        .get_source(&admission.source_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after_unchanged_source.id, promoted_source.id);
+    assert_eq!(after_unchanged_source.content, promoted_source.content);
+    assert_eq!(
+        after_unchanged_source.content_hash,
+        promoted_source.content_hash
+    );
+    assert_eq!(
+        after_unchanged_source.generation,
+        promoted_source.generation
+    );
+    assert_eq!(
+        after_unchanged_source.successful_generation,
+        promoted_source.successful_generation
+    );
+    assert_eq!(
+        after_unchanged_source.metadata["remote_upload"],
+        promoted_origin
+    );
+    assert_eq!(
+        after_unchanged_source.metadata["entity_enrichment_v1"]["prior_origin"],
+        prior_origin
+    );
+    assert_eq!(rows(&repo, "note").await, promoted_notes);
+    assert_eq!(calls.load(Ordering::SeqCst), inference_calls);
+    assert_eq!(after_unchanged.latest_upload_request_id, input.request_id);
+    assert_eq!(
+        after_unchanged.reviewed_enrichment_v1.as_ref().unwrap()["operation"],
+        "enrich"
+    );
+    assert!(after_unchanged.processing_policy_current);
+
+    let replay = app.upload_source(caller(), unchanged).await.unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.job_id, unchanged_admission.job_id);
+    assert_eq!(calls.load(Ordering::SeqCst), inference_calls);
+
+    let rolled = repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .unwrap();
+    assert_eq!(rolled.status, "rolled_back");
+    let rolled_back = app.get_uploaded_source(&admission.source_id).await.unwrap();
+    assert_eq!(
+        rolled_back.reviewed_enrichment_v1.as_ref().unwrap()["operation"],
+        "rollback"
+    );
+    assert!(!rolled_back.extract_entities);
+    assert_eq!(rolled_back.extraction_policy_current, None);
+    assert_eq!(rows(&repo, "note").await, promoted_notes);
+
+    let mut after_rollback = input.clone();
+    after_rollback.request_id = "direct-origin-after-rollback".into();
+    after_rollback.preserve_unchanged = true;
+    after_rollback.expected_source_revision = Some(rolled_back.revision.clone());
+    let after_rollback_admission = app.upload_source(caller(), after_rollback).await.unwrap();
+    run(&app).await.unwrap();
+    let after_rollback_job = app
+        .get_remote_job(caller(), &after_rollback_admission.job_id)
+        .await
+        .unwrap();
+    assert_eq!(after_rollback_job.result.unwrap()["action"], "unchanged");
+    let final_view = app.get_uploaded_source(&admission.source_id).await.unwrap();
+    let final_source = repo
+        .get_source(&admission.source_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_source.id.as_ref(), Some(&source_id));
+    assert_eq!(final_source.content, promoted_source.content);
+    assert_eq!(final_source.content_hash, promoted_source.content_hash);
+    assert_eq!(final_source.generation, promoted_source.generation);
+    assert_eq!(
+        final_source.successful_generation,
+        promoted_source.successful_generation
+    );
+    assert_eq!(final_source.metadata["remote_upload"], prior_origin);
+    assert_eq!(rows(&repo, "note").await, promoted_notes);
+    assert_eq!(calls.load(Ordering::SeqCst), inference_calls);
+    assert_eq!(final_view.latest_upload_request_id, input.request_id);
+    assert_eq!(
+        final_view.reviewed_enrichment_v1.as_ref().unwrap()["operation"],
+        "rollback"
+    );
+}
+
+#[tokio::test]
+async fn malformed_enrichment_lineage_cannot_authorize_unchanged_upload() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let app = application(
+        &repo,
+        "fixture-policy",
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let mut original = request("malformed-origin-vector");
+    original.extract_entities = false;
+    let admission = app.upload_source(caller(), original).await.unwrap();
+    run(&app).await.unwrap();
+    let plan = conversion_plan(&repo, &app, &admission.source_id).await;
+    app.enrich_uploaded_source(caller(), plan, ActionCancellation::new())
+        .await
+        .unwrap();
+    let saved = repo
+        .get_source(&admission.source_id)
+        .await
+        .unwrap()
+        .unwrap();
+    for case in 0..3 {
+        let mut metadata = saved.metadata.clone();
+        match case {
+            0 => metadata["entity_enrichment_v1"] = serde_json::json!({}),
+            1 => metadata["entity_enrichment_v1"]["plan"]["source_id"] = "source:foreign".into(),
+            _ => {
+                metadata["entity_enrichment_v1"]["prior_origin"]["job_id"] =
+                    "processing_job:foreign".into()
+            }
+        }
+        db.query("UPDATE $source SET metadata=$metadata")
+            .bind(("source", saved.id.clone()))
+            .bind(("metadata", metadata))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let before = rows(&repo, "source").await;
+        let unchanged = app
+            .upload_source(caller(), request(&format!("malformed-origin-{case}")))
+            .await
+            .unwrap();
+        assert!(run(&app).await.is_err(), "case {case}");
+        assert_eq!(rows(&repo, "source").await, before, "case {case}");
+        assert_eq!(
+            app.get_remote_job(caller(), &unchanged.job_id)
+                .await
+                .unwrap()
+                .status,
+            "failed",
+            "case {case}"
+        );
+    }
+}
+#[tokio::test]
 async fn owner_policy_and_cancellation_fences_prevent_extraction() {
     let repo = Repository::new(init_memory().await.unwrap());
     let calls = Arc::new(AtomicUsize::new(0));
@@ -906,4 +1135,98 @@ async fn reviewed_transport_running_cancellation_keeps_private_stage_and_shared_
             .status,
         "completed"
     );
+}
+
+#[tokio::test]
+async fn reviewed_transport_rejects_direct_conversion_identity_reuse_for_rollback_without_journal_mutation(
+) {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = application(
+        &repo,
+        "direct-rollback-policy",
+        calls,
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let mut upload = request("direct-rollback-vector");
+    upload.extract_entities = false;
+    let source = app.upload_source(caller(), upload).await.unwrap();
+    run(&app).await.unwrap();
+    let plan = conversion_plan(&repo, &app, &source.source_id).await;
+    let mut mismatched_conversion = ExecuteSourceEnrichment {
+        request_id: "different-conversion-operation".into(),
+        reviewed: enrichment_receipt(&plan).unwrap(),
+        confirmed: true,
+        rollback_source_revision: None,
+    };
+    assert!(app
+        .execute_source_enrichment(caller(), mismatched_conversion.clone(), false)
+        .await
+        .is_err());
+    app.enrich_uploaded_source(caller(), plan.clone(), ActionCancellation::new())
+        .await
+        .unwrap();
+    let converted = app.get_uploaded_source(&source.source_id).await.unwrap();
+    let jobs_before = rows(&repo, "processing_job").await;
+    let receipts_before = rows(&repo, "remote_mutation_receipt").await;
+    let source_before = rows(&repo, "source").await;
+    let original_job = repo
+        .get_remote_upload_job(&caller().instance_id, &source.job_id)
+        .await
+        .unwrap()
+        .unwrap();
+    for rollback in [false, true] {
+        let mut durable = original_job.input.clone();
+        durable.request_id = if rollback {
+            plan.request_id.clone()
+        } else {
+            "durable-mismatched-conversion".into()
+        };
+        durable.extract_entities = true;
+        durable.expected_source_revision = Some(plan.expected_source_revision.clone());
+        durable.processing_options = plan.target_processing_options.clone();
+        durable.enrichment = Some(graphrag_db::RemoteEnrichmentInput {
+            plan: plan.clone(),
+            rollback,
+        });
+        assert!(repo.admit_remote_upload(durable).await.is_err());
+    }
+    mismatched_conversion.request_id = plan.request_id.clone();
+    mismatched_conversion.rollback_source_revision = Some(converted.revision.clone());
+    assert!(app
+        .execute_source_enrichment(caller(), mismatched_conversion, true)
+        .await
+        .is_err());
+    assert_eq!(rows(&repo, "processing_job").await, jobs_before);
+    assert_eq!(
+        rows(&repo, "remote_mutation_receipt").await,
+        receipts_before
+    );
+    assert_eq!(rows(&repo, "source").await, source_before);
+
+    let rollback = ExecuteSourceEnrichment {
+        request_id: "direct-conversion-rollback".into(),
+        reviewed: enrichment_receipt(&plan).unwrap(),
+        confirmed: true,
+        rollback_source_revision: Some(converted.revision),
+    };
+    let admitted = app
+        .execute_source_enrichment(caller(), rollback.clone(), true)
+        .await
+        .unwrap();
+    run(&app).await.unwrap();
+    assert_eq!(
+        app.get_remote_job(caller(), &admitted.job_id)
+            .await
+            .unwrap()
+            .status,
+        "completed"
+    );
+    let replay = app
+        .execute_source_enrichment(caller(), rollback, true)
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.job_id, admitted.job_id);
+    assert_eq!(replay.source_id, admitted.source_id);
 }
