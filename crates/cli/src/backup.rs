@@ -2723,7 +2723,8 @@ mod tests {
         use graphrag_application::*;
         use std::sync::Arc;
         fn app(repo: &Repository) -> EmbeddedApplication {
-            let embed = Arc::new(DeterministicEmbedder::default());
+            let embed =
+                Arc::new(DeterministicEmbedder::default().with_identity("fixture", "model"));
             EmbeddedApplication::new(
                 repo.clone(),
                 SearchAgent::new(repo.clone(), embed.clone()),
@@ -2990,7 +2991,8 @@ mod tests {
             use graphrag_application::*;
             use std::sync::Arc;
             let repo = Repository::new(init_persistent(PathBuf::from(path)).await.unwrap());
-            let embed = Arc::new(DeterministicEmbedder::default());
+            let embed =
+                Arc::new(DeterministicEmbedder::default().with_identity("fixture", "model"));
             let app = EmbeddedApplication::new(
                 repo.clone(),
                 SearchAgent::new(repo.clone(), embed.clone()),
