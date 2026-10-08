@@ -24,8 +24,33 @@ fn input(instance: &str, request: &str, body: &str) -> RemoteUploadInput {
         create_only: false,
         expected_source_revision: None,
         policy_migration: None,
+        enrichment: None,
         processing_options: serde_json::json!({"runtime":{"target_chunk_chars":1000},"provider":"fixture","model":"fixture","cache_identity":"fixture"}),
     }
+}
+
+fn enrichment_input(instance: &str, request_id: &str, body: &str) -> RemoteUploadInput {
+    let mut request = input(instance, request_id, body);
+    let revision = format!("{:x}", Sha256::digest(b"synthetic opening source"));
+    request.extract_entities = true;
+    request.expected_source_revision = Some(revision.clone());
+    request.enrichment = Some(RemoteEnrichmentInput {
+        plan: SourceEnrichmentPlan {
+            source_id: uploaded_source_id(instance, &request.document_key),
+            instance_id: request.authenticated_instance_id.clone(),
+            request_id: request.request_id.clone(),
+            document_key: request.document_key.clone(),
+            expected_source_revision: revision,
+            expected_content_sha256: graphrag_core::normalized_content_hash(&request.markdown),
+            expected_generation: 1,
+            original_policy_sha256: uploaded_processing_policy_sha256(&request.processing_options)
+                .unwrap(),
+            target_processing_options: request.processing_options.clone(),
+            confirmed: true,
+        },
+        rollback: false,
+    });
+    request
 }
 
 async fn admit_claim(
@@ -75,6 +100,53 @@ async fn complete(repo: &Repository, lease: &RemoteJobLease, body: &str) -> Remo
     )
     .await
     .unwrap()
+}
+
+async fn propose_reviewed_endpoint(
+    repo: &Repository,
+    from: &Note,
+    to: &Note,
+    request_id: &str,
+) -> ProposedEdge {
+    let from_id = record_id_to_string(from.id.as_ref().unwrap());
+    let to_id = record_id_to_string(to.id.as_ref().unwrap());
+    let from_revision = repo.inspect_record(&from_id, 0).await.unwrap().revision;
+    let to_revision = repo.inspect_record(&to_id, 0).await.unwrap().revision;
+    let payload = serde_json::json!({
+        "request_id": request_id,
+        "from": {"id": from_id, "revision": from_revision, "quote": from.content},
+        "to": {"id": to_id, "revision": to_revision, "quote": to.content},
+        "relationship": "supports",
+        "rationale": "Fictional directly reviewed evidence",
+        "confirmed": true,
+    });
+    let receipt = repo
+        .propose_remote_endpoint(RemoteEndpointProposalInput {
+            mutation: RemoteMutationInput {
+                instance_id: "fixture".into(),
+                request_id: request_id.into(),
+                operation: "propose_endpoint".into(),
+                payload_fingerprint: "a".repeat(64),
+                payload,
+                result: serde_json::json!({}),
+            },
+            from_id,
+            from_revision,
+            from_quote: from.content.clone(),
+            to_id,
+            to_revision,
+            to_quote: to.content.clone(),
+            edge_type: EdgeType::Supports,
+            rationale: "Fictional directly reviewed evidence".into(),
+        })
+        .await
+        .unwrap();
+    let id = parse_record_id(
+        receipt.result["id"].as_str().unwrap(),
+        Some("proposed_edge"),
+    )
+    .unwrap();
+    repo.get_edge_proposal(&id).await.unwrap().unwrap()
 }
 
 #[tokio::test]
@@ -745,6 +817,124 @@ async fn unchanged_body_reuses_exact_active_ids_and_has_no_staged_generation() {
 }
 
 #[tokio::test]
+async fn unchanged_provenance_publication_retires_reviewed_edges_but_preserves_manual_edges() {
+    for (preserve_unchanged, collection_refresh, provenance_changed) in [
+        (false, false, false),
+        (false, false, true),
+        (true, true, true),
+    ] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let mut original = input("a", "first", "Atlas");
+        original.source_provenance["metadata"] = serde_json::json!({"collection_id":"original"});
+        let (_, first) = admit_claim(&repo, original, "epoch", "worker1").await;
+        let first = complete(&repo, &first, "Atlas").await;
+        let generated: Note = repo
+            .db
+            .select(parse_record_id(&first.job.item_ids[0], Some("note")).unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("Manual endpoint"))
+            .await
+            .unwrap();
+        let manual_id = manual.id.clone().unwrap();
+        let generated_id = generated.id.clone().unwrap();
+        repo.create_edge(&generated_id, &manual_id, EdgeType::Supports, Some(0.9))
+            .await
+            .unwrap();
+        let pending_endpoint = repo
+            .create_note(Note::new("Pending endpoint"))
+            .await
+            .unwrap();
+        let pending =
+            propose_reviewed_endpoint(&repo, &generated, &pending_endpoint, "pending").await;
+        let accepted_endpoint = repo
+            .create_note(Note::new("Separately accepted evidence endpoint"))
+            .await
+            .unwrap();
+        let accepted =
+            propose_reviewed_endpoint(&repo, &generated, &accepted_endpoint, "accepted").await;
+        repo.accept_edge_proposal(
+            accepted.id.as_ref().unwrap(),
+            Some("reviewer".into()),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        let prior_revision = repo
+            .inspect_record(&record_id_to_string(&generated_id), 0)
+            .await
+            .unwrap()
+            .revision;
+
+        let mut refresh = input("a", "refresh", "Atlas");
+        refresh.preserve_unchanged = preserve_unchanged;
+        if provenance_changed {
+            if collection_refresh {
+                refresh.source_provenance["metadata"] =
+                    serde_json::json!({"collection_id":"refreshed"});
+            } else {
+                refresh.source_provenance["label"] = "refreshed".into();
+            }
+        } else {
+            refresh.source_provenance["metadata"] = serde_json::json!({"collection_id":"original"});
+        }
+        let (_, lease) = admit_claim(&repo, refresh, "epoch", "worker2").await;
+        repo.begin_remote_upload_generation(&lease).await.unwrap();
+
+        let revision = repo
+            .inspect_record(&record_id_to_string(&generated_id), 0)
+            .await
+            .unwrap()
+            .revision;
+        assert_eq!(revision != prior_revision, provenance_changed);
+        for (proposal, unchanged_status) in [
+            (pending, ProposedEdgeStatus::Pending),
+            (accepted, ProposedEdgeStatus::Accepted),
+        ] {
+            assert_eq!(
+                repo.get_edge_proposal(proposal.id.as_ref().unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                if provenance_changed {
+                    ProposedEdgeStatus::Superseded
+                } else {
+                    unchanged_status
+                }
+            );
+        }
+        let edges = repo
+            .graph_note_edges(
+                std::slice::from_ref(&generated_id),
+                &["supports".into()],
+                10,
+                true,
+                false,
+                0.0,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let mut targets = edges
+            .into_iter()
+            .map(|edge| record_id_to_string(&edge.out_id))
+            .collect::<Vec<_>>();
+        targets.sort();
+        let mut expected = vec![record_id_to_string(&manual_id)];
+        if !provenance_changed {
+            expected.push(record_id_to_string(accepted_endpoint.id.as_ref().unwrap()));
+        }
+        expected.sort();
+        assert_eq!(targets, expected);
+    }
+}
+
+#[tokio::test]
 async fn unchanged_extracted_source_finishes_with_no_new_entity_or_note_mutation() {
     let repo = Repository::new(init_memory().await.unwrap());
     let mut request = input("a", "first", "Atlas");
@@ -866,6 +1056,353 @@ async fn extraction_and_checkpoint_commit_together_and_replayed_item_is_noop() {
     repo.finish_remote_upload_job(&lease, ProcessingJobStatus::Completed, None, None)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn legacy_visible_generated_scope_anchor_retires_reviewed_edges_atomically_and_replay_is_safe(
+) {
+    for writer in ["leased", "replace", "upsert"] {
+        for accepted in [false, true] {
+            let repo = Repository::new(init_memory().await.unwrap());
+            let mut request = input("scope-owner", writer, "Atlas");
+            request.extract_entities = true;
+            let (_, lease) = admit_claim(&repo, request, "epoch", "worker").await;
+            repo.begin_remote_upload_generation(&lease).await.unwrap();
+            let staged = repo
+                .stage_remote_upload_notes(&lease, vec![Note::new("Atlas")])
+                .await
+                .unwrap();
+            repo.reconcile_remote_upload(&lease, &[]).await.unwrap();
+            let generated_id = parse_record_id(&staged.job.item_ids[0], Some("note")).unwrap();
+
+            // This models a visible legacy chunk created before extraction scopes
+            // were persisted; the write under test remains the public checkpoint.
+            repo.db
+                .query("UPDATE $note SET extraction_scope = NONE")
+                .bind(("note", generated_id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let generated: Note = repo.db.select(generated_id.clone()).await.unwrap().unwrap();
+            let evidence = repo
+                .create_note(Note::new("Reviewed evidence"))
+                .await
+                .unwrap();
+            let manual = repo
+                .create_note(Note::new("Manual graph target"))
+                .await
+                .unwrap();
+            repo.create_edge(
+                &generated_id,
+                manual.id.as_ref().unwrap(),
+                EdgeType::Supports,
+                None,
+            )
+            .await
+            .unwrap();
+            let proposal = propose_reviewed_endpoint(
+                &repo,
+                &generated,
+                &evidence,
+                &format!("legacy-scope-review-{writer}-{accepted}"),
+            )
+            .await;
+            if accepted {
+                repo.accept_edge_proposal(
+                    proposal.id.as_ref().unwrap(),
+                    Some("reviewer".into()),
+                    None,
+                    true,
+                )
+                .await
+                .unwrap();
+            }
+            let revision = repo
+                .inspect_record(&record_id_to_string(&generated_id), 0)
+                .await
+                .unwrap()
+                .revision;
+
+            repo.db
+            .query(
+                "DEFINE FIELD OVERWRITE canonical_name ON entity TYPE string ASSERT $value != 'forbidden'",
+            )
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+            let failed = match writer {
+                "leased" => repo
+                    .persist_remote_upload_entities(
+                        &lease,
+                        0,
+                        vec![entity("Allowed"), entity("Forbidden")],
+                    )
+                    .await
+                    .map(|_| ()),
+                "replace" => repo
+                    .replace_note_entities(
+                        &generated_id,
+                        vec![entity("Allowed"), entity("Forbidden")],
+                    )
+                    .await
+                    .map(|_| ()),
+                "upsert" => repo
+                    .upsert_entities_and_link_note(
+                        &generated_id,
+                        vec![entity("Allowed"), entity("Forbidden")],
+                    )
+                    .await
+                    .map(|_| ()),
+                _ => unreachable!(),
+            };
+            assert!(failed.is_err());
+            let after_failed: Note = repo.db.select(generated_id.clone()).await.unwrap().unwrap();
+            assert!(after_failed.extraction_scope.is_none());
+            assert_eq!(
+                repo.get_edge_proposal(proposal.id.as_ref().unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                if accepted {
+                    ProposedEdgeStatus::Accepted
+                } else {
+                    ProposedEdgeStatus::Pending
+                }
+            );
+
+            match writer {
+                "leased" => repo
+                    .persist_remote_upload_entities(&lease, 0, vec![entity("Atlas")])
+                    .await
+                    .map(drop)
+                    .unwrap(),
+                "replace" => repo
+                    .replace_note_entities(&generated_id, vec![entity("Atlas")])
+                    .await
+                    .map(drop)
+                    .unwrap(),
+                "upsert" => repo
+                    .upsert_entities_and_link_note(&generated_id, vec![entity("Atlas")])
+                    .await
+                    .map(drop)
+                    .unwrap(),
+                _ => unreachable!(),
+            };
+            assert_ne!(
+                repo.inspect_record(&record_id_to_string(&generated_id), 0)
+                    .await
+                    .unwrap()
+                    .revision,
+                revision
+            );
+            let anchored: Note = repo.db.select(generated_id.clone()).await.unwrap().unwrap();
+            assert!(anchored.extraction_scope.is_some());
+            assert_eq!(
+                repo.get_edge_proposal(proposal.id.as_ref().unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                ProposedEdgeStatus::Superseded
+            );
+            let targets = repo
+                .graph_note_edges(
+                    std::slice::from_ref(&generated_id),
+                    &["supports".into()],
+                    10,
+                    true,
+                    false,
+                    0.0,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|edge| edge.out_id)
+                .collect::<Vec<_>>();
+            assert_eq!(targets, vec![manual.id.clone().unwrap()]);
+
+            if writer == "leased" {
+                // Retrying an already committed checkpoint must not overwrite its
+                // evidence or alter retired-review state.
+                repo.persist_remote_upload_entities(&lease, 0, vec![entity("Different")])
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    repo.get_edge_proposal(proposal.id.as_ref().unwrap())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .status,
+                    ProposedEdgeStatus::Superseded
+                );
+            }
+
+            let anchored: Note = repo.db.select(generated_id.clone()).await.unwrap().unwrap();
+            let fresh = propose_reviewed_endpoint(
+                &repo,
+                &anchored,
+                &evidence,
+                &format!("same-scope-review-{writer}-{accepted}"),
+            )
+            .await;
+            if accepted {
+                repo.accept_edge_proposal(
+                    fresh.id.as_ref().unwrap(),
+                    Some("reviewer".into()),
+                    None,
+                    true,
+                )
+                .await
+                .unwrap();
+            }
+            match writer {
+                "leased" => {
+                    repo.persist_remote_upload_entities(&lease, 0, vec![entity("Refreshed")])
+                        .await
+                        .unwrap();
+                }
+                "replace" => {
+                    repo.replace_note_entities(&generated_id, vec![entity("Refreshed")])
+                        .await
+                        .unwrap();
+                }
+                "upsert" => {
+                    repo.upsert_entities_and_link_note(&generated_id, vec![entity("Refreshed")])
+                        .await
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                repo.get_edge_proposal(fresh.id.as_ref().unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                if accepted {
+                    ProposedEdgeStatus::Accepted
+                } else {
+                    ProposedEdgeStatus::Pending
+                }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn reconciliation_anchors_legacy_old_scope_before_hiding_exact_successor() {
+    for accepted in [false, true] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let (_, first) = admit_claim(
+            &repo,
+            input("anchor", "first", "Atlas"),
+            "epoch",
+            "first-worker",
+        )
+        .await;
+        let first = complete(&repo, &first, "Atlas").await;
+        let old_id = parse_record_id(&first.job.item_ids[0], Some("note")).unwrap();
+        repo.db
+            .query("UPDATE $note SET extraction_scope = NONE")
+            .bind(("note", old_id.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let old: Note = repo.db.select(old_id.clone()).await.unwrap().unwrap();
+        let expected_scope = repo.note_extraction_scope(&old).await.unwrap().unwrap();
+        let evidence = repo
+            .create_note(Note::new("Reviewed successor evidence"))
+            .await
+            .unwrap();
+        let manual = repo
+            .create_note(Note::new("Manual successor target"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            &old_id,
+            manual.id.as_ref().unwrap(),
+            EdgeType::Supports,
+            None,
+        )
+        .await
+        .unwrap();
+        let proposal = propose_reviewed_endpoint(
+            &repo,
+            &old,
+            &evidence,
+            &format!("successor-scope-{accepted}"),
+        )
+        .await;
+        if accepted {
+            repo.accept_edge_proposal(
+                proposal.id.as_ref().unwrap(),
+                Some("reviewer".into()),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        }
+
+        let (_, next) = admit_claim(
+            &repo,
+            input("anchor", "next", "Changed wrapper"),
+            "epoch",
+            "next-worker",
+        )
+        .await;
+        repo.begin_remote_upload_generation(&next).await.unwrap();
+        let staged = repo
+            .stage_remote_upload_notes(&next, vec![Note::new("Atlas")])
+            .await
+            .unwrap();
+        let new_id = parse_record_id(&staged.job.item_ids[0], Some("note")).unwrap();
+        repo.copy_note_dependents_to_successors(&[(old_id.clone(), new_id.clone(), true)])
+            .await
+            .unwrap();
+
+        let old: Note = repo.db.select(old_id.clone()).await.unwrap().unwrap();
+        let new: Note = repo.db.select(new_id).await.unwrap().unwrap();
+        assert_eq!(
+            old.extraction_scope.as_deref(),
+            Some(expected_scope.as_str())
+        );
+        assert_eq!(
+            new.extraction_scope.as_deref(),
+            Some(expected_scope.as_str())
+        );
+        assert_eq!(
+            repo.get_edge_proposal(proposal.id.as_ref().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ProposedEdgeStatus::Superseded
+        );
+        let targets = repo
+            .graph_note_edges(
+                std::slice::from_ref(&old_id),
+                &["supports".into()],
+                10,
+                true,
+                false,
+                0.0,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|edge| edge.out_id)
+            .collect::<Vec<_>>();
+        assert_eq!(targets, vec![manual.id.unwrap()]);
+    }
 }
 
 #[tokio::test]
@@ -1929,7 +2466,7 @@ async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
     assert_eq!(damaged.job.last_error.as_deref(), Some("validation"));
     assert!(damaged.job.finished_at.is_some());
     let jobs = restored
-        .list_remote_upload_job_statuses("owner", 10)
+        .list_remote_upload_job_statuses("owner", 10, true)
         .await
         .unwrap();
     assert_eq!(jobs.len(), 2);
@@ -1950,7 +2487,7 @@ async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
         .unwrap()
         .is_none());
     let other_jobs = restored
-        .list_remote_upload_job_statuses("other-owner", 10)
+        .list_remote_upload_job_statuses("other-owner", 10, true)
         .await
         .unwrap();
     assert_eq!(other_jobs.len(), 1);
@@ -1993,7 +2530,7 @@ async fn quarantined_input_status_is_readable_without_exposing_other_owners() {
     for limit in [0, 201] {
         assert!(matches!(
             restored
-                .list_remote_upload_job_statuses("owner", limit)
+                .list_remote_upload_job_statuses("owner", limit, true)
                 .await,
             Err(DbError::InvalidRemoteRequest(_))
         ));
@@ -2148,7 +2685,7 @@ async fn status_query_redacts_private_checkpoints_and_saved_input_before_materia
         .iter()
         .all(|row| row["remote_result"]["policy_migration_stage"].is_null()));
     let statuses = repo
-        .list_remote_upload_job_statuses("owner", 100)
+        .list_remote_upload_job_statuses("owner", 100, true)
         .await
         .unwrap();
     assert_eq!(statuses.len(), 2);
@@ -2201,6 +2738,56 @@ async fn status_query_redacts_private_checkpoints_and_saved_input_before_materia
     }
     let saved: Vec<serde_json::Value> = db.query("SELECT remote_result FROM processing_job WHERE remote_request_id = 'private-checkpoint'").await.unwrap().take(0).unwrap();
     assert_eq!(saved[0]["remote_result"], private);
+}
+
+#[tokio::test]
+async fn status_list_selects_authorized_family_before_bounded_window_without_saved_input_deserialization(
+) {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let ordinary = repo
+        .admit_remote_upload(input("owner", "ordinary", "Ordinary owned upload"))
+        .await
+        .unwrap();
+    let private = serde_json::json!({"damaged_private_plan":"x".repeat(16 * 1024)});
+    for index in 0..500 {
+        let admitted = repo
+            .admit_remote_upload(enrichment_input(
+                "owner",
+                &format!("private-enrichment-{index}"),
+                "Private conversion envelope",
+            ))
+            .await
+            .unwrap();
+        db.query(
+            "UPDATE $id SET status = 'failed', remote_input.enrichment = $private, updated_at = time::now()",
+        )
+        .bind((
+            "id",
+            job_id(admitted.result["job_id"].as_str().unwrap()).unwrap(),
+        ))
+        .bind(("private", private.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    }
+    let authorized = repo
+        .list_remote_upload_job_statuses("owner", 10, true)
+        .await
+        .unwrap();
+    assert_eq!(authorized.len(), 10);
+    assert!(authorized.iter().all(|job| job.enrichment == Some(true)));
+    let ordinary_only = repo
+        .list_remote_upload_job_statuses("owner", 10, false)
+        .await
+        .unwrap();
+    assert_eq!(ordinary_only.len(), 1);
+    assert_eq!(ordinary_only[0].enrichment, Some(false));
+    assert_eq!(
+        ordinary_only[0].job.id,
+        Some(job_id(ordinary.result["job_id"].as_str().unwrap()).unwrap())
+    );
 }
 
 #[tokio::test]
@@ -2285,5 +2872,66 @@ async fn restart_counts_identities_and_admission_replay_preserves_private_checkp
             .unwrap()
             .result
             .is_none());
+    }
+}
+
+#[tokio::test]
+async fn damaged_enrichment_heads_are_quarantined_before_claiming_same_document_successor() {
+    for restarted in [false, true] {
+        for mutation in [
+            "SET remote_input.enrichment = { broken: true }",
+            "SET remote_input.enrichment = NULL",
+            "UNSET remote_input.enrichment",
+        ] {
+            let db = init_memory().await.unwrap();
+            let repo = Repository::new(db.clone());
+            let damaged = repo
+                .admit_remote_upload(enrichment_input(
+                    "owner",
+                    "damaged-head",
+                    "Enrichment input",
+                ))
+                .await
+                .unwrap();
+            let damaged_id = damaged.result["job_id"].as_str().unwrap();
+            let successor = repo
+                .admit_remote_upload(input("owner", "next-upload", "Fresh explicit upload"))
+                .await
+                .unwrap();
+            if restarted {
+                repo.claim_remote_upload_job("owner", damaged_id, "old-epoch", "old-worker")
+                    .await
+                    .unwrap();
+            }
+            db.query(format!("UPDATE $id {mutation}"))
+                .bind(("id", job_id(damaged_id).unwrap()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            if restarted {
+                repo.reconcile_interrupted_remote_uploads("new-epoch")
+                    .await
+                    .unwrap();
+            }
+            let claimed = repo
+                .claim_next_remote_upload("new-epoch", "worker")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                claimed.job.id,
+                Some(job_id(successor.result["job_id"].as_str().unwrap()).unwrap())
+            );
+            let quarantined = repo
+                .get_remote_upload_job_status("owner", damaged_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(quarantined.enrichment, Some(true));
+            assert_eq!(quarantined.job.status, "failed");
+            assert_eq!(quarantined.job.last_error.as_deref(), Some("validation"));
+            assert_eq!(claimed.input.enrichment, None);
+        }
     }
 }

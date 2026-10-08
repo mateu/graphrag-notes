@@ -1,0 +1,1020 @@
+use super::*;
+use crate::init_memory;
+use graphrag_core::EntityType;
+use sha2::{Digest, Sha256};
+
+fn input(request: &str, body: &str) -> RemoteUploadInput {
+    RemoteUploadInput {
+        authenticated_instance_id: "fixture".into(),
+        request_id: request.into(),
+        payload_fingerprint: format!("{:x}", Sha256::digest(body.as_bytes())),
+        document_key: "atlas.md".into(),
+        markdown: body.into(),
+        title: Some("Atlas".into()),
+        source_provenance: serde_json::json!({"metadata":{"collection_id":"fictional"}}),
+        extract_entities: false,
+        preserve_unchanged: false,
+        create_only: false,
+        expected_source_revision: None,
+        policy_migration: None,
+        enrichment: None,
+        processing_options: serde_json::json!({"runtime":"{}","embedding":{"provider":"fixture","model":"fixture","cache_identity":"fixture","endpoint_identity":"fixture"},"extraction":{"provider":"fixture","model":"fixture","cache_identity":"fixture","endpoint_identity":"fixture"}}),
+    }
+}
+async fn upload(repo: &Repository, input: RemoteUploadInput, bodies: &[&str]) -> Source {
+    let extraction = input.extract_entities;
+    let admitted = repo.admit_remote_upload(input).await.unwrap();
+    let job = repo
+        .claim_remote_upload_job(
+            "fixture",
+            admitted.result["job_id"].as_str().unwrap(),
+            "epoch",
+            "worker",
+        )
+        .await
+        .unwrap();
+    let lease = RemoteJobLease {
+        job_id: job.job.id.unwrap(),
+        instance_id: "fixture".into(),
+        service_epoch: "epoch".into(),
+        worker_token: "worker".into(),
+    };
+    repo.begin_remote_upload_generation(&lease).await.unwrap();
+    repo.stage_remote_upload_notes(&lease, bodies.iter().map(|body| Note::new(*body)).collect())
+        .await
+        .unwrap();
+    let staged = repo.owned_remote_upload_job(&lease).await.unwrap();
+    if staged.phase == "migration_staged" {
+        repo.prepare_policy_migration_extraction(&lease, &[])
+            .await
+            .unwrap();
+        let chunks = repo.remote_upload_notes(&lease).await.unwrap();
+        for index in 0..chunks.len() {
+            repo.checkpoint_policy_migration_entities(&lease, index, vec![])
+                .await
+                .unwrap();
+        }
+        repo.promote_policy_migration(&lease, &[]).await.unwrap();
+    } else {
+        repo.reconcile_remote_upload(&lease, &[]).await.unwrap();
+    }
+    if extraction && staged.phase != "migration_staged" {
+        let chunks = repo.remote_upload_notes(&lease).await.unwrap();
+        for index in 0..chunks.len() {
+            repo.persist_remote_upload_entities(&lease, index, vec![])
+                .await
+                .unwrap();
+        }
+    }
+    repo.finish_remote_upload_job(&lease, ProcessingJobStatus::Completed, None, None)
+        .await
+        .unwrap();
+    repo.get_source(admitted.result["source_uri"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+}
+fn plan(source: &Source, body: &str) -> SourceEnrichmentPlan {
+    SourceEnrichmentPlan {
+        instance_id: "fixture".into(),
+        request_id: "reviewed-1".into(),
+        source_id: record_id_to_string(source.id.as_ref().unwrap()),
+        document_key: "atlas.md".into(),
+        expected_source_revision: uploaded_source_revision(source, body).unwrap(),
+        expected_content_sha256: source.content_hash.clone().unwrap(),
+        expected_generation: source.generation,
+        original_policy_sha256: uploaded_processing_policy_sha256(
+            &source.metadata["remote_upload"]["processing_options"],
+        )
+        .unwrap(),
+        target_processing_options: source.metadata["remote_upload"]["processing_options"].clone(),
+        confirmed: true,
+    }
+}
+async fn rows(repo: &Repository, table: &str) -> Vec<serde_json::Value> {
+    repo.db
+        .query(format!("SELECT * FROM {table} ORDER BY id"))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap()
+}
+fn entity(note: &Note, name: &str) -> Entity {
+    let mut entity = Entity::new(name, EntityType::Concept);
+    let scope = record_id_to_string(note.source_id.as_ref().unwrap());
+    let identity =
+        serde_json::json!([scope, entity.entity_type, entity.canonical_name]).to_string();
+    entity.identity_key = Some(format!(
+        "extracted-v1:{}",
+        graphrag_core::normalized_content_hash(&identity)
+    ));
+    entity.metadata = serde_json::json!({"extraction":{"scope":scope}, "aliases":[]});
+    entity
+}
+async fn prepared(repo: &Repository, plan: &SourceEnrichmentPlan) -> Vec<Note> {
+    repo.begin_source_entity_enrichment(plan.clone())
+        .await
+        .unwrap();
+    let notes = repo.source_entity_enrichment_notes(plan).await.unwrap();
+    for (index, note) in notes.iter().enumerate() {
+        repo.checkpoint_source_entity_enrichment(plan, index, vec![entity(note, "Atlas")])
+            .await
+            .unwrap();
+    }
+    notes
+}
+
+async fn detached_reviewed_endpoint(
+    repo: &Repository,
+    opening: &Note,
+    request_id: &str,
+    accepted: bool,
+) -> (Note, ProposedEdge) {
+    let mut detached = Note::new("Detached source-linked reviewed quote");
+    detached.source_id = opening.source_id.clone();
+    let detached = repo
+        .create_note_and_replace_entities_if_unchanged(detached, Vec::new(), opening)
+        .await
+        .unwrap();
+    assert_eq!(detached.source_id, opening.source_id);
+    assert_eq!(detached.source_generation, None);
+    let other = repo
+        .create_note(Note::new("Independent reviewed endpoint quote"))
+        .await
+        .unwrap();
+    let from_id = record_id_to_string(detached.id.as_ref().unwrap());
+    let to_id = record_id_to_string(other.id.as_ref().unwrap());
+    let from_revision = repo.inspect_record(&from_id, 0).await.unwrap().revision;
+    let to_revision = repo.inspect_record(&to_id, 0).await.unwrap().revision;
+    let rationale = "Detached source provenance review".to_string();
+    let payload = serde_json::json!({
+        "request_id": request_id,
+        "from": {"id": from_id, "revision": from_revision, "quote": detached.content},
+        "to": {"id": to_id, "revision": to_revision, "quote": other.content},
+        "relationship": "supports",
+        "rationale": rationale,
+        "confirmed": true
+    });
+    let receipt = repo
+        .propose_remote_endpoint(RemoteEndpointProposalInput {
+            mutation: RemoteMutationInput {
+                instance_id: "fixture".into(),
+                request_id: request_id.into(),
+                operation: "propose_endpoint".into(),
+                payload_fingerprint: "d".repeat(64),
+                payload,
+                result: serde_json::json!({}),
+            },
+            from_id,
+            from_revision,
+            from_quote: detached.content.clone(),
+            to_id,
+            to_revision,
+            to_quote: other.content.clone(),
+            edge_type: EdgeType::Supports,
+            rationale,
+        })
+        .await
+        .unwrap();
+    let proposal_id = parse_record_id(
+        receipt.result["id"].as_str().unwrap(),
+        Some("proposed_edge"),
+    )
+    .unwrap();
+    let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+    if accepted {
+        let accepted = repo
+            .accept_edge_proposal(
+                proposal.id.as_ref().unwrap(),
+                Some("reviewer".into()),
+                Some("Reviewed detached source provenance".into()),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status, ProposedEdgeStatus::Accepted);
+        (detached, accepted)
+    } else {
+        (detached, proposal)
+    }
+}
+#[tokio::test]
+async fn checkpoint_resume_atomic_promotion_preserves_identity_generation_and_vectors() {
+    let db = init_memory().await.unwrap();
+    let repo = Repository::new(db.clone());
+    let source = upload(
+        &repo,
+        input("original", "Atlas one and two"),
+        &["Atlas one", "Atlas two"],
+    )
+    .await;
+    let plan = plan(&source, "Atlas one and two");
+    let opening = rows(&repo, "note").await;
+    let staged = repo
+        .begin_source_entity_enrichment(plan.clone())
+        .await
+        .unwrap();
+    assert_eq!(staged.total, 2);
+    let notes = repo.source_entity_enrichment_notes(&plan).await.unwrap();
+    assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+    assert!(repo
+        .checkpoint_source_entity_enrichment(&plan, 1, vec![])
+        .await
+        .is_err());
+    let entities = vec![entity(&notes[0], "Atlas")];
+    repo.checkpoint_source_entity_enrichment(&plan, 0, entities.clone())
+        .await
+        .unwrap();
+    repo.checkpoint_source_entity_enrichment(&plan, 0, entities)
+        .await
+        .unwrap();
+    assert!(repo
+        .checkpoint_source_entity_enrichment(&plan, 0, vec![])
+        .await
+        .is_err());
+    assert!(rows(&repo, "mentions").await.is_empty());
+    assert!(rows(&repo, "entity").await.is_empty());
+    let saved = repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        uploaded_source_revision(&saved, "Atlas one and two").unwrap(),
+        plan.expected_source_revision
+    );
+    assert!(!source_entity_enrichment_metadata_eligible(&saved));
+    let resumed = Repository::new(db);
+    assert_eq!(
+        resumed
+            .begin_source_entity_enrichment(plan.clone())
+            .await
+            .unwrap()
+            .completed,
+        1
+    );
+    resumed
+        .checkpoint_source_entity_enrichment(&plan, 1, vec![entity(&notes[1], "Atlas")])
+        .await
+        .unwrap();
+    let done = resumed
+        .promote_source_entity_enrichment(&plan)
+        .await
+        .unwrap();
+    assert_eq!(done.status, "promoted");
+    assert_eq!(
+        resumed
+            .promote_source_entity_enrichment(&plan)
+            .await
+            .unwrap(),
+        done
+    );
+    assert_eq!(rows(&resumed, "note").await, opening);
+    assert_eq!(rows(&resumed, "mentions").await.len(), 2);
+    assert_eq!(rows(&resumed, "entity").await.len(), 1);
+    let after = resumed
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.id, source.id);
+    assert_eq!(after.generation, source.generation);
+    assert_eq!(after.successful_generation, source.successful_generation);
+    assert_eq!(after.content_hash, source.content_hash);
+    assert!(source_entity_enrichment_metadata_eligible(&after));
+    assert_ne!(
+        uploaded_source_revision(&after, "Atlas one and two").unwrap(),
+        plan.expected_source_revision
+    );
+}
+#[tokio::test]
+async fn reviewed_fences_and_overlay_fail_closed_without_effects() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let original = plan(&source, "Atlas");
+    for field in 0..8 {
+        let mut bad = original.clone();
+        match field {
+            0 => bad.confirmed = false,
+            1 => bad.instance_id = "other".into(),
+            2 => bad.document_key = "other".into(),
+            3 => bad.expected_generation += 1,
+            4 => bad.expected_content_sha256 = format!("sha256:{}", "a".repeat(64)),
+            5 => bad.expected_source_revision = "b".repeat(64),
+            6 => bad.original_policy_sha256 = "c".repeat(64),
+            _ => bad.target_processing_options["embedding"]["model"] = "changed".into(),
+        }
+        assert!(repo.begin_source_entity_enrichment(bad).await.is_err());
+    }
+    assert!(repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .metadata
+        .get(KEY)
+        .is_none());
+    let notes = repo
+        .get_source_chunks(source.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    let entity = repo
+        .upsert_entity({
+            let mut e = Entity::new("Overlay", EntityType::Concept);
+            e.metadata = serde_json::json!({});
+            e
+        })
+        .await
+        .unwrap();
+    repo.db
+        .query("CREATE mentions SET in=$note,out=$entity")
+        .bind(("note", notes[0].id.clone()))
+        .bind(("entity", entity.id))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(repo.begin_source_entity_enrichment(original).await.is_err());
+    assert_eq!(rows(&repo, "mentions").await.len(), 1);
+}
+#[tokio::test]
+async fn stale_chunk_and_bad_entities_prevent_complete_publication() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    repo.begin_source_entity_enrichment(plan.clone())
+        .await
+        .unwrap();
+    let notes = repo.source_entity_enrichment_notes(&plan).await.unwrap();
+    let mut bad = entity(&notes[0], "Atlas");
+    bad.identity_key = Some("forged".into());
+    assert!(repo
+        .checkpoint_source_entity_enrichment(&plan, 0, vec![bad])
+        .await
+        .is_err());
+    repo.checkpoint_source_entity_enrichment(&plan, 0, vec![entity(&notes[0], "Atlas")])
+        .await
+        .unwrap();
+    repo.db
+        .query("UPDATE $note SET content='Changed after checkpoint'")
+        .bind(("note", notes[0].id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+    assert!(rows(&repo, "mentions").await.is_empty());
+    assert!(rows(&repo, "entity").await.is_empty());
+}
+#[tokio::test]
+async fn rollback_requires_confirmation_preserves_content_and_prevents_policy_aba() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    let opening = rows(&repo, "note").await;
+    prepared(&repo, &plan).await;
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    assert!(repo
+        .rollback_source_entity_enrichment(&plan, false)
+        .await
+        .is_err());
+    let result = repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .unwrap();
+    assert_eq!(result.status, "rolled_back");
+    assert_eq!(
+        repo.rollback_source_entity_enrichment(&plan, true)
+            .await
+            .unwrap(),
+        result
+    );
+    assert!(rows(&repo, "mentions").await.is_empty());
+    assert_eq!(rows(&repo, "note").await, opening);
+    let after = repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!source_entity_enrichment_metadata_eligible(&after));
+    assert_eq!(
+        after.metadata["remote_upload"],
+        source.metadata["remote_upload"]
+    );
+    assert_eq!(after.metadata["graph_policy_revision"], 2);
+    assert_ne!(
+        uploaded_source_revision(&after, "Atlas").unwrap(),
+        plan.expected_source_revision
+    );
+    assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+}
+#[tokio::test]
+async fn rollback_refuses_foreign_mentions_or_relationship_dependents() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    let notes = prepared(&repo, &plan).await;
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    repo.db
+        .query("UPDATE mentions SET metadata={foreign:true}")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .is_err());
+    assert_eq!(rows(&repo, "mentions").await.len(), 1);
+    repo.db
+        .query("UPDATE mentions SET metadata=$metadata")
+        .bind(("metadata", entity(&notes[0], "Atlas").metadata))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let other = repo.create_note(Note::new("Other")).await.unwrap();
+    repo.create_edge(
+        notes[0].id.as_ref().unwrap(),
+        other.id.as_ref().unwrap(),
+        EdgeType::Supports,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .is_err());
+}
+
+async fn proposal_for_enrichment_note(
+    repo: &Repository,
+    note: &Note,
+    suffix: &str,
+) -> ProposedEdge {
+    let other = repo
+        .create_note(Note::new(format!("Independent reviewed endpoint {suffix}")))
+        .await
+        .unwrap();
+    repo.upsert_edge_proposal(EdgeProposalDraft {
+        from_id: note.id.clone().unwrap(),
+        to_id: other.id.unwrap(),
+        edge_type: EdgeType::Supports,
+        confidence: 1.0,
+        reason: format!("Reviewed rollback dependency {suffix}"),
+        generator: "test-reviewed-proposal".into(),
+        generator_version: Some("1".into()),
+        model: None,
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn rollback_separates_terminal_proposal_audit_from_active_graph_dependencies() {
+    // The five persisted states are intentionally split by dependency semantics:
+    // pending/accepting/accepted and unknown values are active; only
+    // rejected/superseded remain audit rows.
+    for status in ["pending", "accepting", "accepted", "unknown_future_state"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+        let plan = plan(&source, "Atlas");
+        let notes = prepared(&repo, &plan).await;
+        repo.promote_source_entity_enrichment(&plan).await.unwrap();
+        let proposal = proposal_for_enrichment_note(&repo, &notes[0], status).await;
+        if status == "accepted" {
+            repo.accept_edge_proposal(
+                proposal.id.as_ref().unwrap(),
+                Some("reviewer".into()),
+                Some("materialized rollback dependency".into()),
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(rows(&repo, "supports").await.len(), 1);
+        } else if status == "accepting" || status == "unknown_future_state" {
+            repo.db
+                .query("UPDATE $proposal SET status=$status,updated_at=time::now()")
+                .bind(("proposal", proposal.id.clone()))
+                .bind(("status", status))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        let source_before = rows(&repo, "source").await;
+        let notes_before = rows(&repo, "note").await;
+        let mentions_before = rows(&repo, "mentions").await;
+        let jobs_before = rows(&repo, "processing_job").await;
+        assert!(
+            repo.rollback_source_entity_enrichment(&plan, true)
+                .await
+                .is_err(),
+            "active proposal status {status} must block rollback"
+        );
+        assert_eq!(
+            rows(&repo, "source").await,
+            source_before,
+            "{status} source"
+        );
+        assert_eq!(rows(&repo, "note").await, notes_before, "{status} notes");
+        assert_eq!(
+            rows(&repo, "mentions").await,
+            mentions_before,
+            "{status} mentions"
+        );
+        assert_eq!(
+            rows(&repo, "processing_job").await,
+            jobs_before,
+            "{status} jobs"
+        );
+    }
+
+    for status in ["rejected", "superseded"] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+        let plan = plan(&source, "Atlas");
+        let notes = prepared(&repo, &plan).await;
+        // This reviewed proposal exists before enrichment publication. Its later
+        // supersession must retain the audit record without retaining a graph
+        // dependency that prevents policy rollback.
+        let proposal = proposal_for_enrichment_note(&repo, &notes[0], status).await;
+        repo.reject_edge_proposal(
+            proposal.id.as_ref().unwrap(),
+            Some("reviewer".into()),
+            Some("reviewed before promotion".into()),
+        )
+        .await
+        .unwrap();
+        if status == "superseded" {
+            repo.db
+                .query("UPDATE $proposal SET status='superseded',superseded_at=time::now(),supersession_reason='reviewed proposal superseded before promotion',updated_at=time::now()")
+                .bind(("proposal", proposal.id.clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+        repo.promote_source_entity_enrichment(&plan).await.unwrap();
+        let result = repo
+            .rollback_source_entity_enrichment(&plan, true)
+            .await
+            .unwrap();
+        assert_eq!(result.status, "rolled_back");
+        let retained = repo
+            .get_edge_proposal(proposal.id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.status.to_string(), status);
+        assert!(
+            retained.reviewed_at.is_some(),
+            "{status} audit review retained"
+        );
+        assert_eq!(rows(&repo, "mentions").await.len(), 0);
+    }
+}
+#[tokio::test]
+async fn source_replacement_invalidates_conversion_and_removes_previous_mentions() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    prepared(&repo, &plan).await;
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    let mut replacement = input("replacement", "New content");
+    replacement.extract_entities = true;
+    let converted = repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    replacement.expected_source_revision =
+        Some(uploaded_source_revision(&converted, "Atlas").unwrap());
+    let replaced = upload(&repo, replacement, &["New content"]).await;
+    assert_eq!(replaced.id, source.id);
+    assert_eq!(replaced.generation, 2);
+    assert!(!source_entity_enrichment_metadata_eligible(&replaced));
+    assert!(replaced.metadata.get(KEY).is_none());
+    assert!(rows(&repo, "mentions").await.is_empty());
+    assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+    assert!(repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .is_err());
+}
+#[tokio::test]
+async fn concurrent_opening_plans_bind_one_exact_review() {
+    let db = init_memory().await.unwrap();
+    let a = Repository::new(db.clone());
+    let b = Repository::new(db);
+    let source = upload(&a, input("original", "Atlas"), &["Atlas"]).await;
+    let first = plan(&source, "Atlas");
+    let mut second = first.clone();
+    second.request_id = "different-review".into();
+    let (left, right) = tokio::join!(
+        a.begin_source_entity_enrichment(first),
+        b.begin_source_entity_enrichment(second)
+    );
+    assert_ne!(left.is_ok(), right.is_ok());
+    assert!(rows(&a, "mentions").await.is_empty());
+}
+
+#[tokio::test]
+async fn transactional_failure_rolls_back_policy_entity_and_mention_writes() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    let notes = prepared(&repo, &plan).await;
+    let source = repo.enrichment_source(&plan).await.unwrap();
+    let before = rows(&repo, "source").await;
+    let mut metadata = source.metadata.clone();
+    let mut staged = stage(&source, &plan).unwrap();
+    staged.status = "promoted".into();
+    metadata[KEY] = stage_value(&staged).unwrap();
+    let effects=format!("LET $note = $notes[0].id; LET $replacement_entities=$entity_batches[0]; LET $replacement_entity_names=$identity_batches[0]; {} {} THROW 'injected promotion failure';",super::super::notes::replacement_entities_transaction(),super::super::notes::replacement_mentions_transaction("$note"));
+    assert!(repo
+        .write_enrichment(&source, metadata, &effects, notes, None, None)
+        .await
+        .is_err());
+    assert_eq!(rows(&repo, "source").await, before);
+    assert!(rows(&repo, "entity").await.is_empty());
+    assert!(rows(&repo, "mentions").await.is_empty());
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+}
+#[tokio::test]
+async fn new_upload_cannot_implicitly_downgrade_enrichment() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    prepared(&repo, &plan).await;
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    let before = rows(&repo, "source").await;
+    let mentions = rows(&repo, "mentions").await;
+    let request = input("downgrade", "New content");
+    let admitted = repo.admit_remote_upload(request).await.unwrap();
+    let job = repo
+        .claim_remote_upload_job(
+            "fixture",
+            admitted.result["job_id"].as_str().unwrap(),
+            "epoch",
+            "worker",
+        )
+        .await
+        .unwrap();
+    let lease = RemoteJobLease {
+        job_id: job.job.id.unwrap(),
+        instance_id: "fixture".into(),
+        service_epoch: "epoch".into(),
+        worker_token: "worker".into(),
+    };
+    assert!(repo.begin_remote_upload_generation(&lease).await.is_err());
+    assert_eq!(rows(&repo, "source").await, before);
+    assert_eq!(rows(&repo, "mentions").await, mentions);
+}
+
+#[tokio::test]
+async fn malformed_checkpoint_shapes_never_claim_graph_freshness_or_publish() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    repo.begin_source_entity_enrichment(plan.clone())
+        .await
+        .unwrap();
+    let saved = repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    for case in 0..6 {
+        let mut metadata = saved.metadata.clone();
+        match case {
+            0 => metadata[KEY]["items"] = serde_json::json!([]),
+            1 => {
+                let item = metadata[KEY]["items"][0].clone();
+                metadata[KEY]["items"].as_array_mut().unwrap().push(item);
+            }
+            2 => metadata[KEY]["unexpected"] = true.into(),
+            3 => metadata[KEY]["status"] = "invented".into(),
+            4 => metadata[KEY]["items"][0]["revision"] = "not-a-revision".into(),
+            _ => metadata[KEY]["status"] = "promoted".into(),
+        }
+        repo.db
+            .query("UPDATE $source SET metadata=$metadata")
+            .bind(("source", source.id.clone()))
+            .bind(("metadata", metadata))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let before = rows(&repo, "source").await;
+        let now = repo
+            .get_source(source.uri.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!source_entity_enrichment_metadata_eligible(&now));
+        assert!(repo
+            .begin_source_entity_enrichment(plan.clone())
+            .await
+            .is_err());
+        assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+        assert_eq!(rows(&repo, "source").await, before);
+        assert!(rows(&repo, "entity").await.is_empty());
+        assert!(rows(&repo, "mentions").await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn promoted_metadata_corruption_cannot_claim_currency_or_shortcut_lifecycle() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(
+        &repo,
+        input("original", "Atlas one and two"),
+        &["Atlas one", "Atlas two"],
+    )
+    .await;
+    let plan = plan(&source, "Atlas one and two");
+    prepared(&repo, &plan).await;
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    let saved = repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(repo.source_entity_enrichment_current(&saved).await.unwrap());
+    let mut other_input = input("other-original", "Atlas one and two");
+    other_input.document_key = "other.md".into();
+    let other = upload(&repo, other_input, &["Atlas one", "Atlas two"]).await;
+    let foreign_note = repo
+        .get_source_chunks(other.id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .remove(0);
+    let notes_before = rows(&repo, "note").await;
+    let mentions_before = rows(&repo, "mentions").await;
+    let entities_before = rows(&repo, "entity").await;
+    for case in 0..10 {
+        let mut metadata = saved.metadata.clone();
+        match case {
+            0 => {
+                metadata[KEY]["plan"]["source_id"] =
+                    record_id_to_string(other.id.as_ref().unwrap()).into()
+            }
+            1 => {
+                metadata[KEY]["items"][0]["entities"][0]["metadata"]["oversized"] =
+                    "x".repeat(MAX_STAGE_BYTES).into()
+            }
+            2 => {
+                metadata[KEY]["items"][0]["entities"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("identity_key");
+            }
+            3 => {
+                metadata[KEY]["items"][0]["entities"][0]["identity_key"] =
+                    "extracted-v1:wrong".into()
+            }
+            4 => {
+                let e = metadata[KEY]["items"][0]["entities"][0].clone();
+                metadata[KEY]["items"][0]["entities"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(e);
+            }
+            5 => {
+                metadata[KEY]["items"][0]["entities"][0]["metadata"]["extraction"]["scope"] =
+                    "source:other".into()
+            }
+            6 => {
+                metadata[KEY]["items"][0]["id"] =
+                    record_id_to_string(foreign_note.id.as_ref().unwrap()).into();
+                metadata[KEY]["items"][0]["revision"] =
+                    content_revision(&foreign_note).unwrap().into();
+            }
+            7 => {
+                metadata[KEY]["items"].as_array_mut().unwrap().pop();
+            }
+            8 => metadata[KEY]["items"][0]["revision"] = "a".repeat(64).into(),
+            _ => {
+                // Valid deterministic key, but a Project scope from another source.
+                let e = &mut metadata[KEY]["items"][0]["entities"][0];
+                e["entity_type"] = "project".into();
+                e["metadata"]["extraction"]["scope"] = "source:other:chunk:foreign".into();
+                let identity = serde_json::json!([
+                    e["metadata"]["extraction"]["scope"],
+                    e["entity_type"],
+                    e["canonical_name"]
+                ])
+                .to_string();
+                e["identity_key"] = format!(
+                    "extracted-v1:{}",
+                    graphrag_core::normalized_content_hash(&identity)
+                )
+                .into();
+            }
+        }
+        repo.db
+            .query("UPDATE $source SET metadata=$metadata")
+            .bind(("source", source.id.clone()))
+            .bind(("metadata", metadata))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let now = repo
+            .get_source(source.uri.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        if case <= 5 {
+            assert!(
+                !source_entity_enrichment_metadata_eligible(&now),
+                "pure case {case}"
+            );
+        }
+        assert!(
+            !repo.source_entity_enrichment_current(&now).await.unwrap(),
+            "repository case {case}"
+        );
+        let before = rows(&repo, "source").await;
+        assert!(
+            repo.begin_source_entity_enrichment(plan.clone())
+                .await
+                .is_err(),
+            "begin {case}"
+        );
+        assert!(
+            repo.promote_source_entity_enrichment(&plan).await.is_err(),
+            "promote {case}"
+        );
+        assert!(
+            repo.rollback_source_entity_enrichment(&plan, true)
+                .await
+                .is_err(),
+            "rollback {case}"
+        );
+        assert_eq!(rows(&repo, "source").await, before);
+        assert_eq!(rows(&repo, "note").await, notes_before);
+        assert_eq!(rows(&repo, "mentions").await, mentions_before);
+        assert_eq!(rows(&repo, "entity").await, entities_before);
+    }
+    // A complete otherwise valid checkpoint transplanted to a matching source.
+    let mut metadata = other.metadata.clone();
+    metadata[KEY] = saved.metadata[KEY].clone();
+    metadata["remote_upload"] = saved.metadata["remote_upload"].clone();
+    metadata["graph_enrichment_managed"] = true.into();
+    repo.db
+        .query("UPDATE $source SET metadata=$metadata")
+        .bind(("source", other.id.clone()))
+        .bind(("metadata", metadata))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let transplanted = repo
+        .get_source(other.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!source_entity_enrichment_metadata_eligible(&transplanted));
+    assert!(!repo
+        .source_entity_enrichment_current(&transplanted)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn published_evidence_currency_requires_current_owned_notes_and_complete_mentions() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+    let plan = plan(&source, "Atlas");
+    let notes = prepared(&repo, &plan).await;
+    repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    let saved = repo
+        .get_source(source.uri.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(repo.source_entity_enrichment_current(&saved).await.unwrap());
+    repo.db
+        .query("UPDATE $note SET source_generation=2")
+        .bind(("note", notes[0].id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(!repo.source_entity_enrichment_current(&saved).await.unwrap());
+    assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+    assert!(repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .is_err());
+    repo.db
+        .query("UPDATE $note SET source_generation=1")
+        .bind(("note", notes[0].id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(repo.source_entity_enrichment_current(&saved).await.unwrap());
+    repo.db
+        .query("DELETE mentions WHERE in=$note")
+        .bind(("note", notes[0].id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(!repo.source_entity_enrichment_current(&saved).await.unwrap());
+    assert!(repo.promote_source_entity_enrichment(&plan).await.is_err());
+    assert!(repo
+        .rollback_source_entity_enrichment(&plan, true)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn source_epoch_publication_retires_detached_reviewed_endpoints() {
+    for (boundary, accepted) in [
+        ("promotion", false),
+        ("promotion", true),
+        ("rollback", false),
+        ("rollback", true),
+    ] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+        let plan = plan(&source, "Atlas");
+        let generated = prepared(&repo, &plan).await;
+        if boundary == "rollback" {
+            repo.promote_source_entity_enrichment(&plan).await.unwrap();
+        }
+        let (detached, proposal) = detached_reviewed_endpoint(
+            &repo,
+            &generated[0],
+            &format!("detached-{boundary}-{accepted}"),
+            accepted,
+        )
+        .await;
+        let unrelated = repo
+            .create_note(Note::new("Unrelated manual graph endpoint"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            detached.id.as_ref().unwrap(),
+            unrelated.id.as_ref().unwrap(),
+            EdgeType::Contradicts,
+            None,
+        )
+        .await
+        .unwrap();
+        let before = repo
+            .inspect_record(&record_id_to_string(detached.id.as_ref().unwrap()), 0)
+            .await
+            .unwrap()
+            .revision;
+        assert_eq!(
+            rows(&repo, "supports").await.len(),
+            if accepted { 1 } else { 0 }
+        );
+        assert_eq!(rows(&repo, "contradicts").await.len(), 1);
+
+        if boundary == "promotion" {
+            repo.promote_source_entity_enrichment(&plan).await.unwrap();
+        } else {
+            repo.rollback_source_entity_enrichment(&plan, true)
+                .await
+                .unwrap();
+        }
+
+        let after = repo
+            .inspect_record(&record_id_to_string(detached.id.as_ref().unwrap()), 0)
+            .await
+            .unwrap()
+            .revision;
+        assert_ne!(
+            after, before,
+            "{boundary}/{accepted} must advance provenance"
+        );
+        assert_eq!(
+            repo.get_edge_proposal(proposal.id.as_ref().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .to_string(),
+            "superseded",
+            "{boundary}/{accepted}"
+        );
+        assert_eq!(
+            rows(&repo, "supports").await.len(),
+            0,
+            "{boundary}/{accepted} removes only proposal materialization"
+        );
+        assert_eq!(rows(&repo, "contradicts").await.len(), 1);
+        assert!(repo
+            .get_note(&record_id_to_string(unrelated.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+    }
+}

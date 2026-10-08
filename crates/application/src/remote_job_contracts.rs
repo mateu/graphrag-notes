@@ -130,6 +130,10 @@ pub struct UploadedSource {
     /// None when extraction was disabled; false retains an older graph policy.
     pub extraction_policy_current: Option<bool>,
     pub revision: String,
+    #[serde(default)]
+    pub graph_policy_epoch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_enrichment_v1: Option<serde_json::Value>,
 }
 
 /// Internal worker authority, never an MCP input or credential.

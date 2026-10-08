@@ -416,7 +416,7 @@ async fn lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exac
     let db = init_memory().await.unwrap();
     // Exercise the actual migration over an existing v20 corpus, rather than
     // installing a manufactured copy of its schema over an empty database.
-    db.query("REMOVE EVENT materialize_note_search ON note; REMOVE EVENT delete_note_search ON note; REMOVE FUNCTION fn::materialize_note_search; REMOVE TABLE note_search; DELETE schema_migration WHERE version = 21;")
+    db.query("REMOVE EVENT materialize_note_search ON note; REMOVE EVENT delete_note_search ON note; REMOVE FUNCTION fn::materialize_note_search; REMOVE TABLE note_search; DELETE schema_migration WHERE version >= 21;")
         .await.unwrap().check().unwrap();
     populate_lexical_fixture(&db, 260).await;
     populate_native_lexical_ties(&db).await;

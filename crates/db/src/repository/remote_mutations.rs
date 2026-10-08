@@ -258,6 +258,7 @@ impl Repository {
         let mut entities = Vec::new();
         let mut expected_proposal = None;
         let mut endpoint_notes = Vec::new();
+        let mut endpoint_sources = Vec::new();
         let mut edge_id = None;
         let mut reason = None;
         let target;
@@ -288,6 +289,11 @@ impl Repository {
                 note.search_content = Some(search_content_for_note_update(&expected, &note));
                 target = expected.id.clone().ok_or_else(conflict)?;
                 let mut sql = super::notes::editor_snapshot_guard(true);
+                sql.push_str(
+                    &super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql(
+                        "[$target]",
+                    ),
+                );
                 if let Some(new_entities) = replacement_entities {
                     entities = new_entities;
                     sql.push_str(super::notes::replacement_entities_transaction());
@@ -318,6 +324,13 @@ impl Repository {
                 }
                 target = expected.id.clone().ok_or_else(conflict)?;
                 let mut sql = proposal_guard();
+                if action == "accept" && expected.generator == "remote-reviewed-endpoint" {
+                    endpoint_sources = self.endpoint_source_snapshots(&endpoints).await?;
+                    if !self.reviewed_endpoint_proposal_current(&expected).await? {
+                        return Err(conflict());
+                    }
+                    sql.push_str(super::remote_endpoint_proposals::source_snapshot_guards());
+                }
                 for (index, _) in endpoints.iter().enumerate() {
                     sql.push_str(
                         &super::notes::editor_snapshot_guard(false)
@@ -413,6 +426,7 @@ impl Repository {
             .bind(("replacement_embedding", replacement_embedding))
             .bind(("replacement_entities", entities))
             .bind(("replacement_entity_names", entity_names))
+            .bind(("endpoint_sources", endpoint_sources))
             .bind(("expected_proposal", expected_proposal))
             .bind(("expected_status", expected_status))
             .bind(("expected_edge_type", expected_edge_type))

@@ -16,10 +16,13 @@ pub use repository::{
     InspectedConversation, InspectedMessage, InspectionProvenance, MutationGuard,
     MutationNoteSnapshot, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, RecordInspection, RemoteCaptureInput, RemoteCaptureReceipt,
-    RemoteJobAdmission, RemoteJobLease, RemoteMutationEffect, RemoteMutationInput,
-    RemoteUploadInput, RemoteUploadJob, RemoteUploadJobStatus, Repository, SourceDeleteSummary,
-    SourceImportAction, SourceImportPlan, MAX_INSPECTION_NEIGHBORS, MAX_REMOTE_UPLOAD_BYTES,
-    MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
+    RemoteEndpointProposalInput, RemoteEnrichmentInput, RemoteJobAdmission, RemoteJobLease,
+    RemoteMutationEffect, RemoteMutationInput, RemoteUploadInput, RemoteUploadJob,
+    RemoteUploadJobStatus, Repository, SourceDeleteSummary, SourceImportAction, SourceImportPlan,
+    MAX_INSPECTION_NEIGHBORS, MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS, PORTABLE_TABLES,
+};
+pub use repository::{
+    source_entity_enrichment_metadata_eligible, SourceEnrichmentPlan, SourceEnrichmentStatus,
 };
 
 use std::ops::Deref;
@@ -41,6 +44,7 @@ pub struct DbConnection {
     client: Surreal<Db>,
     proposal_lifecycle_lock: Arc<Mutex<()>>,
     remote_job_transition_lock: Arc<Mutex<()>>,
+    source_enrichment_worker_lock: Arc<Mutex<()>>,
 }
 
 impl DbConnection {
@@ -50,11 +54,16 @@ impl DbConnection {
             client,
             proposal_lifecycle_lock: Arc::new(Mutex::new(())),
             remote_job_transition_lock: Arc::new(Mutex::new(())),
+            source_enrichment_worker_lock: Arc::new(Mutex::new(())),
         }
     }
 
     pub(crate) fn proposal_lifecycle_lock(&self) -> Arc<Mutex<()>> {
         Arc::clone(&self.proposal_lifecycle_lock)
+    }
+
+    pub(crate) fn source_enrichment_worker_lock(&self) -> Arc<Mutex<()>> {
+        Arc::clone(&self.source_enrichment_worker_lock)
     }
 
     pub(crate) fn remote_job_transition_lock(&self) -> Arc<Mutex<()>> {

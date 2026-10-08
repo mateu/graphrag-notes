@@ -65,7 +65,15 @@ impl Repository {
                         // even without mentions; entity evidence still copies
                         // only for exact content below. Unmatched new chunks
                         // keep their own final-ID-derived scope.
-                        self.db.query("BEGIN TRANSACTION; IF $anchor_old { UPDATE $old SET extraction_scope = $scope; }; UPDATE $new SET extraction_scope = $scope; COMMIT TRANSACTION;")
+                        let old_invalidation =
+                            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql(
+                                "[$old]",
+                            );
+                        let new_invalidation =
+                            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql(
+                                "[$new]",
+                            );
+                        self.db.query(format!("BEGIN TRANSACTION; IF $anchor_old AND (SELECT VALUE extraction_scope FROM $old)[0] != $scope {{ {old_invalidation} UPDATE $old SET extraction_scope = $scope; }}; IF (SELECT VALUE extraction_scope FROM $new)[0] != $scope {{ {new_invalidation} UPDATE $new SET extraction_scope = $scope; }}; COMMIT TRANSACTION;"))
                             .bind(("old", old_id.clone())).bind(("new", new_id.clone()))
                             .bind(("anchor_old", anchor_old))
                             .bind(("scope", scope)).await?.check()?;
@@ -131,6 +139,16 @@ impl Repository {
             }
         }
         for edge in edges {
+            if let Some(id) = &edge.proposal_id {
+                if self
+                    .get_edge_proposal(id)
+                    .await?
+                    .is_some_and(|p| p.generator == "remote-reviewed-endpoint")
+                {
+                    // The proposal pins exact note revisions, never successor approximations.
+                    continue;
+                }
+            }
             let from_id = successors.get(&edge.in_id).cloned().unwrap_or(edge.in_id);
             let to_id = successors.get(&edge.out_id).cloned().unwrap_or(edge.out_id);
             if from_id == to_id {
@@ -589,11 +607,14 @@ impl Repository {
                 serde_json::json!({"op": "replace", "path": path, "value": value})
             })
             .collect::<Vec<_>>();
+        let provenance = super::remote_endpoint_proposals::reviewed_source_provenance_sql("$id");
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_source_reviewed_endpoints_sql("$id");
         let response = migration_probe(
             "source.replace",
             "patch_sdk_await",
             self.db
-                .query("UPDATE $id PATCH $source_patch")
+                .query(format!("BEGIN TRANSACTION; LET $reviewed_source_before = {provenance}; UPDATE $id PATCH $source_patch; LET $reviewed_source_after = {provenance}; IF $reviewed_source_before != $reviewed_source_after {{ {invalidation} }}; COMMIT TRANSACTION;"))
                 .bind(("id", id.clone()))
                 .bind(("source_patch", source_patch)),
         )

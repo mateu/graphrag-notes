@@ -4,9 +4,13 @@ version.workspace = true
 edition = "2021"
 rust-version.workspace = true
 
+[features]
+default = ["rocksdb"]
+rocksdb = ["graphrag-db/rocksdb"]
+
 [dependencies]
 graphrag-core = { path = "../core" }
-graphrag-db = { path = "../db" }
+graphrag-db = { path = "../db", default-features = false }
 
 tokio.workspace = true
 async-trait.workspace = true

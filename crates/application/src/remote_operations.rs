@@ -100,7 +100,9 @@ pub(crate) fn validate_capture(
     ] {
         validate_text(name, value, 128, true)?;
         if value.len() > 256 || value.trim() != value || value.chars().any(char::is_control) {
-            return Err(ApplicationError::Validation(format!("{name} cannot exceed 256 UTF-8 bytes or contain control characters or surrounding whitespace")));
+            return Err(ApplicationError::Validation(format!(
+                "{name} cannot exceed 256 UTF-8 bytes or contain control characters or surrounding whitespace"
+            )));
         }
     }
     if request.content.trim().is_empty() || request.content.len() > MAX_REMOTE_CAPTURE_BYTES {
@@ -185,6 +187,14 @@ impl RemoteApplicationOperations for EmbeddedApplication {
         request: RemoteDecisionRequest,
     ) -> ApplicationResult<RemoteMutationResponse> {
         self.remote_decision_impl(caller, request).await
+    }
+
+    async fn propose_endpoint_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RemoteEndpointProposalRequest,
+    ) -> ApplicationResult<RemoteEndpointProposalResponse> {
+        self.remote_endpoint_proposal_impl(caller, request).await
     }
 
     async fn build_context(
@@ -343,6 +353,28 @@ impl RemoteApplicationOperations for EmbeddedApplication {
             .await?;
         capture_response(request.request_id, receipt.result, receipt.replayed)
     }
+    async fn prepare_source_enrichment(
+        &self,
+        caller: CallerIdentity,
+        request: PrepareSourceEnrichment,
+    ) -> ApplicationResult<ReviewedEnrichmentReceipt> {
+        crate::remote_enrichment::prepare(self, caller, request).await
+    }
+    async fn execute_source_enrichment(
+        &self,
+        caller: CallerIdentity,
+        request: ExecuteSourceEnrichment,
+        rollback: bool,
+    ) -> ApplicationResult<UploadAdmission> {
+        crate::remote_enrichment::admit(self, caller, request, rollback).await
+    }
+    async fn read_source_enrichment_plan(
+        &self,
+        caller: CallerIdentity,
+        id: &str,
+    ) -> ApplicationResult<ReviewedEnrichmentReceipt> {
+        crate::remote_enrichment::read_plan(self, caller, id).await
+    }
     async fn upload_source(
         &self,
         caller: CallerIdentity,
@@ -393,8 +425,9 @@ impl RemoteApplicationOperations for EmbeddedApplication {
         &self,
         caller: CallerIdentity,
         limit: usize,
+        include_enrichment: bool,
     ) -> ApplicationResult<RemoteJobList> {
-        crate::remote_jobs::list(self, caller, limit).await
+        crate::remote_jobs::list(self, caller, limit, include_enrichment).await
     }
     async fn cancel_remote_job(
         &self,

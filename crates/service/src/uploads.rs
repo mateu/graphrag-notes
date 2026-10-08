@@ -39,8 +39,35 @@ fn default_limit() -> usize {
     20
 }
 
+/// The application maps immutable family authority into `job_type`. Unknown
+/// legacy/corrupt authority stays hidden until an explicit Enrich credential
+/// elects to inspect its projected status.
+pub(crate) fn job_visible(principal: &Principal, job: &RemoteJobStatus) -> bool {
+    !matches!(
+        job.job_type.as_str(),
+        "remote_enrichment" | "remote_unknown"
+    ) || principal.allows(Capability::Enrich)
+}
+
+/// Enrichment aliases are fenced by the owner-scoped status projection. Its
+/// family comes from the immutable admission marker, never private execution
+/// input that a recovery path may have quarantined.
+async fn owned_enrichment_status(
+    application: &dyn RemoteApplicationOperations,
+    caller: CallerIdentity,
+    id: &str,
+) -> graphrag_application::ApplicationResult<RemoteJobStatus> {
+    let job = application.get_remote_job(caller, id).await?;
+    if job.job_type != "remote_enrichment" {
+        return Err(graphrag_application::ApplicationError::NotFound(
+            "Owned enrichment job required".into(),
+        ));
+    }
+    Ok(job)
+}
+
 pub(crate) fn catalog() -> Vec<(Capability, Tool)> {
-    vec![
+    let mut tools = vec![
         (Capability::Upload, definition::<UploadSourceRequest, UploadAdmission>("upload_source", "Upload supplied UTF-8 Markdown (at most 65536 bytes) under an opaque document_key scoped to this authenticated instance. No path is read or URL fetched. Reuse identical payload/request_id after a lost response; processing belongs to the returned durable job.", false)),
         (Capability::Read, definition::<SourceInput, UploadedSource>("get_source", "Inspect an uploaded source's latest supplied content and provenance, with attempted and successful generation labels. Server URIs are metadata, never client file actions.", true)),
         (Capability::Delete, definition::<DeleteUploadedSourceRequest, graphrag_application::RemoteMutationResponse>("delete_uploaded_source", "Explicitly retire one ready uploaded source owned by this authenticated instance and registered collection_id, using its reviewed revision and confirmed=true. Generated chunks are removed; detached/manual notes and durable receipt history survive. Retry identical request_id/payload after an uncertain response.", false).with_annotations(ToolAnnotations::new().read_only(false).destructive(true).idempotent(true).open_world(false))),
@@ -48,7 +75,22 @@ pub(crate) fn catalog() -> Vec<(Capability, Tool)> {
         (Capability::Jobs, definition::<JobsInput, RemoteJobList>("list_jobs", "List bounded uploaded jobs owned by this authenticated instance.", true)),
         (Capability::Jobs, definition::<JobInput, RemoteJobStatus>("cancel_job", "Request explicit cancellation of this instance's job at a safe write boundary. Cancellation remains available while workers prepare or persist content.", false)),
         (Capability::Jobs, definition::<JobInput, RemoteJobStatus>("resume_job", "Resume this instance's interrupted/failed/cancelled supported upload job from its durable input and checkpoint. Running workers cannot be claimed twice; newer source generations cause a conflict.", false)),
-    ]
+    ];
+    tools.extend(enrichment_catalog());
+    tools
+}
+
+fn enrichment_catalog() -> Vec<(Capability, Tool)> {
+    use graphrag_application::*;
+    vec![
+ (Capability::Enrich,definition::<PrepareSourceEnrichment,ReviewedEnrichmentReceipt>("prepare_source_enrichment","Read-only exact owned-source reviewed plan; no inference or writes. DEVELOPMENT ONLY.",true)),
+ (Capability::Enrich,definition::<ExecuteSourceEnrichment,UploadAdmission>("execute_source_enrichment","Explicit confirmed exact-plan conversion queued under durable owner lease; no acceptance or scans. DEVELOPMENT ONLY.",false)),
+ (Capability::Enrich,definition::<ExecuteSourceEnrichment,UploadAdmission>("rollback_source_enrichment","Separate confirmed exact-plan forward compensation, queued under durable owner lease. DEVELOPMENT ONLY.",false)),
+ (Capability::Enrich,definition::<JobInput,ReviewedEnrichmentReceipt>("read_source_enrichment_plan","Read exact persisted owned enrichment plan and policy digests. DEVELOPMENT ONLY.",true)),
+ (Capability::Enrich,definition::<JobInput,RemoteJobStatus>("get_source_enrichment_job","Read owned conversion outcome and canonical current source readback. DEVELOPMENT ONLY.",true)),
+ (Capability::Enrich,definition::<JobInput,RemoteJobStatus>("cancel_source_enrichment_job","Request cancellation before atomic publication entry; committed conversion remains completed. DEVELOPMENT ONLY.",false)),
+ (Capability::Enrich,definition::<JobInput,RemoteJobStatus>("retry_source_enrichment_job","Retry exact durable owned plan/checkpoints; changed source or policy fails closed. DEVELOPMENT ONLY.",false)),
+ ]
 }
 
 pub(crate) async fn dispatch(
@@ -61,6 +103,101 @@ pub(crate) async fn dispatch(
         instance_id: principal.instance_id.clone(),
     };
     match name {
+        "prepare_source_enrichment" => {
+            let input = match parse(arguments) {
+                Ok(x) => x,
+                Err(e) => return e,
+            };
+            match application.prepare_source_enrichment(caller, input).await {
+                Ok(x) => success(x),
+                Err(e) => application_failure(e),
+            }
+        }
+        "execute_source_enrichment" | "rollback_source_enrichment" => {
+            let input = match parse(arguments) {
+                Ok(x) => x,
+                Err(e) => return e,
+            };
+            match application
+                .execute_source_enrichment(caller, input, name == "rollback_source_enrichment")
+                .await
+            {
+                Ok(x) => success(x),
+                Err(e) => application_failure(e),
+            }
+        }
+        "read_source_enrichment_plan"
+        | "get_source_enrichment_job"
+        | "cancel_source_enrichment_job"
+        | "retry_source_enrichment_job" => {
+            let input: JobInput = match parse(arguments) {
+                Ok(x) => x,
+                Err(e) => return e,
+            };
+            let status = match owned_enrichment_status(application, caller.clone(), &input.id).await
+            {
+                Ok(status) => status,
+                Err(error) => return application_failure(error),
+            };
+            if name == "read_source_enrichment_plan" {
+                return match application
+                    .read_source_enrichment_plan(caller, &input.id)
+                    .await
+                {
+                    Ok(receipt) => success(receipt),
+                    Err(error) => application_failure(error),
+                };
+            }
+            let result = match name {
+                "cancel_source_enrichment_job" => {
+                    application
+                        .cancel_remote_job(caller.clone(), &input.id)
+                        .await
+                }
+                "retry_source_enrichment_job" => {
+                    application
+                        .resume_remote_job(caller.clone(), &input.id)
+                        .await
+                }
+                _ => Ok(status),
+            };
+            match result {
+                Ok(mut job) => {
+                    if let Some(result) = job.result.as_mut().filter(|result| result.is_object()) {
+                        match application
+                            .read_source_enrichment_plan(caller.clone(), &input.id)
+                            .await
+                        {
+                            Ok(receipt) => {
+                                result["reviewed"] = serde_json::to_value(receipt.clone()).unwrap();
+                                match application
+                                    .get_owned_uploaded_source(
+                                        caller,
+                                        receipt.plan["source_id"].as_str().unwrap_or_default(),
+                                    )
+                                    .await
+                                {
+                                    Ok(current) => {
+                                        result["current_source"] =
+                                            serde_json::to_value(current).unwrap()
+                                    }
+                                    Err(error) => return application_failure(error),
+                                }
+                            }
+                            // A status projection remains inspectable when only
+                            // private execution input was damaged. Validation is
+                            // the explicit decode quarantine signal; all other
+                            // failures still fail the request.
+                            Err(graphrag_application::ApplicationError::Validation(_)) => {}
+                            Err(error) => return application_failure(error),
+                        }
+                    }
+                    success(job)
+                }
+                Err(error) => application_failure(error),
+            }
+        }
+
         "delete_uploaded_source" => {
             let request = match parse(arguments) {
                 Ok(request) => request,
@@ -87,7 +224,7 @@ pub(crate) async fn dispatch(
                 Err(error) => return error,
             };
             let result = match (input.id, input.document_key) {
-                (Some(id), None) => application.get_uploaded_source(&id).await,
+                (Some(id), None) => application.get_owned_uploaded_source(caller, &id).await,
                 (None, Some(key)) => application.lookup_uploaded_source(caller, &key).await,
                 _ => {
                     return failure(
@@ -107,8 +244,18 @@ pub(crate) async fn dispatch(
                 Ok(input) => input,
                 Err(error) => return error,
             };
-            match application.list_remote_jobs(caller, input.limit).await {
-                Ok(result) => success(result),
+            match application
+                .list_remote_jobs(
+                    caller.clone(),
+                    input.limit,
+                    principal.allows(Capability::Enrich),
+                )
+                .await
+            {
+                Ok(mut result) => {
+                    result.jobs.retain(|job| job_visible(principal, job));
+                    success(result)
+                }
                 Err(error) => application_failure(error),
             }
         }
@@ -117,8 +264,21 @@ pub(crate) async fn dispatch(
                 Ok(input) => input,
                 Err(error) => return error,
             };
+            let job = match application.get_remote_job(caller.clone(), &input.id).await {
+                Ok(job) => job,
+                Err(error) => return application_failure(error),
+            };
+            if !job_visible(principal, &job) {
+                return failure(
+                    "forbidden",
+                    "Enrichment control requires explicit enrich capability",
+                    false,
+                );
+            }
+            if name == "get_job" {
+                return success(job);
+            }
             let result = match name {
-                "get_job" => application.get_remote_job(caller, &input.id).await,
                 "cancel_job" => application.cancel_remote_job(caller, &input.id).await,
                 _ => application.resume_remote_job(caller, &input.id).await,
             };

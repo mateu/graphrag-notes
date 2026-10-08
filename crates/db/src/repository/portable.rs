@@ -266,6 +266,28 @@ impl Repository {
                     "portable processing jobs must be durable uploaded documents".into(),
                 ));
             }
+            // Older archives predate immutable family authority. The restore
+            // loads receipts first so deleted private input cannot erase intent.
+            if object
+                .get("remote_enrichment_job")
+                .is_none_or(serde_json::Value::is_null)
+            {
+                let enrichment = object["remote_input"]
+                    .get("enrichment")
+                    .is_some_and(|value| !value.is_null())
+                    || self
+                        .db
+                        .query("RETURN array::len((SELECT VALUE id FROM remote_mutation_receipt WHERE instance_id = $instance AND request_id = $request AND operation IN ['enrich_source', 'rollback_enrichment'] LIMIT 1)) != 0;")
+                        .bind(("instance", object["remote_instance_id"].clone()))
+                        .bind(("request", object["remote_request_id"].clone()))
+                        .await?
+                        .take::<Option<bool>>(0)?
+                        .ok_or_else(|| DbError::QueryFailed("Portable job family lookup returned no result".into()))?;
+                object.insert(
+                    "remote_enrichment_job".into(),
+                    serde_json::json!(enrichment),
+                );
+            }
             // A restored server must reconcile an interrupted running job;
             // worker ownership from the exporting process can never survive.
             object.remove("remote_service_epoch");

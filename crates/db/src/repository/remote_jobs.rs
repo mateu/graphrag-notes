@@ -11,6 +11,13 @@ mod tests;
 
 #[path = "policy_migration.rs"]
 mod policy_migration;
+pub(super) fn validate_enrichment_entities(
+    note: &Note,
+    scope: Option<&str>,
+    entities: &[Entity],
+) -> Result<()> {
+    policy_migration::validate_entities(note, scope, entities)
+}
 
 pub const MAX_REMOTE_UPLOAD_BYTES: usize = 65_536;
 pub const MAX_REMOTE_UPLOAD_CHUNKS: usize = 200;
@@ -20,7 +27,13 @@ const FENCE: &str = "remote-upload-worker-fence";
 // Status requests must not materialize private extraction checkpoints (up to
 // 16 MiB each) or saved inputs. Project their redaction inside the database,
 // before a caller's bounded list can be deserialized in the service process.
-const STATUS_FIELDS: &str = "id, job_type, source_generation, scope, item_ids, status, total_count, completed_count, failed_count, checkpoint, last_error, created_at, updated_at, finished_at, remote_instance_id, remote_request_id, remote_payload_fingerprint, {} AS remote_input, remote_admission, IF remote_result.policy_migration_stage IS NOT NONE THEN NONE ELSE remote_result END AS remote_result, remote_source_id, remote_source_uri, remote_source_generation, remote_admission_order, remote_phase, remote_migration_contract_version, remote_cancel_requested, remote_service_epoch, remote_worker_token";
+const STATUS_FIELDS: &str = "id, job_type, source_generation, scope, item_ids, status, total_count, completed_count, failed_count, checkpoint, last_error, created_at, updated_at, finished_at, remote_instance_id, remote_request_id, remote_payload_fingerprint, {} AS remote_input, remote_enrichment_job, remote_admission, IF remote_result.policy_migration_stage IS NOT NONE OR remote_result.unchanged_source_revision IS NOT NONE THEN NONE ELSE remote_result END AS remote_result, remote_source_id, remote_source_uri, remote_source_generation, remote_admission_order, remote_phase, remote_migration_contract_version, remote_cancel_requested, remote_service_epoch, remote_worker_token";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RemoteEnrichmentInput {
+    pub plan: SourceEnrichmentPlan,
+    pub rollback: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RemoteUploadInput {
@@ -43,6 +56,8 @@ pub struct RemoteUploadInput {
     /// Frozen explicit migration intent; old admissions omit this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_migration: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrichment: Option<RemoteEnrichmentInput>,
     pub processing_options: serde_json::Value,
 }
 
@@ -83,6 +98,9 @@ pub struct RemoteUploadJob {
 #[derive(Debug, Clone)]
 pub struct RemoteUploadJobStatus {
     pub job: ProcessingJob,
+    /// Immutable family authority. `None` is an unclassified legacy/corrupt
+    /// row and must not be treated as either executable family.
+    pub enrichment: Option<bool>,
     pub instance_id: String,
     pub source_id: Option<RecordId>,
     pub source_generation: Option<u64>,
@@ -95,6 +113,7 @@ pub struct RemoteUploadJobStatus {
 impl From<RemoteUploadJob> for RemoteUploadJobStatus {
     fn from(job: RemoteUploadJob) -> Self {
         Self {
+            enrichment: Some(job.input.enrichment.is_some()),
             job: job.job,
             instance_id: job.instance_id,
             source_id: job.source_id,
@@ -127,6 +146,7 @@ struct JobRow {
     remote_request_id: String,
     remote_payload_fingerprint: String,
     remote_input: serde_json::Value,
+    remote_enrichment_job: Option<bool>,
     remote_admission: serde_json::Value,
     remote_result: Option<serde_json::Value>,
     remote_source_id: Option<RecordId>,
@@ -190,6 +210,7 @@ impl JobRow {
     fn status(self) -> RemoteUploadJobStatus {
         RemoteUploadJobStatus {
             job: self.processing_job(),
+            enrichment: self.remote_enrichment_job,
             instance_id: self.remote_instance_id,
             source_id: self.remote_source_id,
             source_generation: self.remote_source_generation,
@@ -206,6 +227,11 @@ impl JobRow {
             serde_json::from_value(self.remote_input).map_err(|error| {
                 DbError::InvalidRemoteRequest(format!("stored upload input shape: {error}"))
             })?;
+        if self.remote_enrichment_job != Some(input.enrichment.is_some()) {
+            return Err(DbError::InvalidRemoteRequest(
+                "stored upload family differs from immutable admission authority".into(),
+            ));
+        }
         if input.policy_migration.is_some() && self.remote_migration_contract_version != Some(1) {
             return Err(DbError::InvalidRemoteRequest(
                 "migration requires its schema20 durable contract marker".into(),
@@ -298,15 +324,22 @@ pub fn uploaded_processing_policy_sha256(options: &serde_json::Value) -> Result<
 
 /// Provider-free source revision shared by inspection and generation fencing.
 pub fn uploaded_source_revision(source: &Source, original_markdown: &str) -> Result<String> {
-    let id = source
-        .id
-        .as_ref()
-        .ok_or_else(|| DbError::InvalidRemoteRequest("source identity missing".into()))?;
     let origin = source
         .metadata
         .get("remote_upload_pending")
         .or_else(|| source.metadata.get("remote_upload"))
         .ok_or_else(|| DbError::InvalidRemoteRequest("uploaded source origin missing".into()))?;
+    uploaded_source_revision_with_origin(source, original_markdown, origin)
+}
+fn uploaded_source_revision_with_origin(
+    source: &Source,
+    original_markdown: &str,
+    origin: &serde_json::Value,
+) -> Result<String> {
+    let id = source
+        .id
+        .as_ref()
+        .ok_or_else(|| DbError::InvalidRemoteRequest("source identity missing".into()))?;
     let mut snapshot = serde_json::to_vec(&(
         record_id_to_string(id),
         &source.title,
@@ -323,6 +356,14 @@ pub fn uploaded_source_revision(source: &Source, original_markdown: &str) -> Res
     // tombstone when present so old inspected drafts cannot bypass retirement.
     if source.metadata["remote_upload_retired"] == true {
         snapshot.extend_from_slice(b"\0retired");
+    }
+    if let Some(revision) = source.metadata.get("graph_policy_revision") {
+        snapshot.extend_from_slice(b"\0graph_policy_revision\0");
+        snapshot.extend_from_slice(
+            &serde_json::to_vec(revision).map_err(|_| {
+                DbError::InvalidRemoteRequest("graph revision serialization".into())
+            })?,
+        );
     }
     Ok(format!("{:x}", Sha256::digest(snapshot)))
 }
@@ -352,6 +393,27 @@ fn job_id(value: &str) -> Result<RecordId> {
     Ok(RecordId::new("processing_job", key))
 }
 fn validate_input(input: &RemoteUploadInput) -> Result<()> {
+    if let Some(enrichment) = &input.enrichment {
+        super::source_enrichment::plan_valid(&enrichment.plan)?;
+        if enrichment.plan.instance_id != input.authenticated_instance_id
+            || enrichment.plan.document_key != input.document_key
+            || enrichment.plan.target_processing_options != input.processing_options
+            || (!enrichment.rollback && enrichment.plan.request_id != input.request_id)
+            || (enrichment.rollback && enrichment.plan.request_id == input.request_id)
+            || input.policy_migration.is_some()
+            || !input.extract_entities
+            || input.preserve_unchanged
+            || input.create_only
+            || input.expected_source_revision.is_none()
+            || (!enrichment.rollback
+                && input.expected_source_revision.as_deref()
+                    != Some(&enrichment.plan.expected_source_revision))
+        {
+            return Err(DbError::InvalidRemoteRequest(
+                "invalid enrichment job contract".into(),
+            ));
+        }
+    }
     identity(&input.authenticated_instance_id)?;
     identity(&input.request_id)?;
     if let Some(migration) = &input.policy_migration {
@@ -443,7 +505,9 @@ fn validate_input(input: &RemoteUploadInput) -> Result<()> {
     Ok(())
 }
 fn guard_sql() -> String {
-    format!("LET $owned = (UPDATE $job SET updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker AND remote_cancel_requested = false RETURN VALUE id); IF array::len($owned) != 1 {{ THROW '{FENCE}'; }}; ")
+    format!(
+        "LET $owned = (UPDATE $job SET updated_at = time::now() WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker AND remote_cancel_requested = false RETURN VALUE id); IF array::len($owned) != 1 {{ THROW '{FENCE}'; }}; "
+    )
 }
 fn check_write(
     errors: HashMap<usize, surrealdb::Error>,
@@ -572,6 +636,15 @@ impl Repository {
                 replayed: true,
             });
         }
+        if input.enrichment.is_some() {
+            let receipts: Vec<RecordId> = self.db.query("SELECT VALUE id FROM remote_mutation_receipt WHERE instance_id=$instance AND request_id=$request LIMIT 1").bind(("instance",input.authenticated_instance_id.clone())).bind(("request",input.request_id.clone())).await?.take(0)?;
+            if !receipts.is_empty() {
+                return Err(DbError::RemoteRequestConflict {
+                    instance_id: input.authenticated_instance_id.clone(),
+                    request_id: input.request_id.clone(),
+                });
+            }
+        }
         let key = digest(
             "graphrag-remote-upload-job-v1",
             &[&input.authenticated_instance_id, &input.request_id],
@@ -585,10 +658,28 @@ impl Repository {
         let source_uri = format!("mcp://upload/{source_key}");
         let now = Utc::now();
         let result = serde_json::json!({"job_id": record_id_to_string(&id), "source_id":record_id_to_string(&source_id), "source_uri": source_uri, "status": "queued", "created_at": now.to_rfc3339()});
-        self.db.query("BEGIN TRANSACTION; LET $prior_orders = (SELECT VALUE remote_admission_order FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND remote_admission_order IS NOT NONE ORDER BY remote_admission_order DESC LIMIT 1); CREATE $id SET job_type = 'remote_upload', status = 'queued', total_count = 0, completed_count = 0, failed_count = 0, item_ids = [], created_at = <datetime>$now, updated_at = <datetime>$now, remote_instance_id = $instance, remote_request_id = $request, remote_payload_fingerprint = $fingerprint, remote_input = $input, remote_admission = $admission, remote_source_uri = $uri, remote_admission_order = IF array::len($prior_orders) = 0 THEN 1 ELSE $prior_orders[0] + 1 END, remote_phase = $phase, remote_migration_contract_version = $migration_contract, remote_cancel_requested = false; COMMIT TRANSACTION;")
-            .bind(("id", id)).bind(("now", now.to_rfc3339())).bind(("instance", input.authenticated_instance_id))
+        let journal = if input.enrichment.is_some() {
+            "IF array::len((SELECT VALUE id FROM remote_mutation_receipt WHERE instance_id=$instance AND request_id=$request LIMIT 1))!=0 { THROW 'enrichment-request-conflict'; }; CREATE $receipt SET instance_id=$instance, request_id=$request, operation=$operation, target=$source, payload_fingerprint=$fingerprint, payload=$input, result=$admission, created_at=time::now(),updated_at=time::now(); "
+        } else {
+            ""
+        };
+        let receipt = RecordId::new(
+            "remote_mutation_receipt",
+            digest(
+                "graphrag-enrichment-admission-v1",
+                &[&input.authenticated_instance_id, &input.request_id],
+            ),
+        );
+        let operation = if input.enrichment.as_ref().is_some_and(|i| i.rollback) {
+            "rollback_enrichment"
+        } else {
+            "enrich_source"
+        };
+        self.db.query(format!("BEGIN TRANSACTION; {journal} LET $prior_orders = (SELECT VALUE remote_admission_order FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND remote_source_uri = $uri AND remote_admission_order IS NOT NONE ORDER BY remote_admission_order DESC LIMIT 1); CREATE $id SET job_type = 'remote_upload', status = 'queued', total_count = 0, completed_count = 0, failed_count = 0, item_ids = [], created_at = <datetime>$now, updated_at = <datetime>$now, remote_instance_id = $instance, remote_request_id = $request, remote_payload_fingerprint = $fingerprint, remote_input = $input, remote_enrichment_job = $enrichment, remote_admission = $admission, remote_source_uri = $uri, remote_admission_order = IF array::len($prior_orders) = 0 THEN 1 ELSE $prior_orders[0] + 1 END, remote_phase = $phase, remote_migration_contract_version = $migration_contract, remote_cancel_requested = false; COMMIT TRANSACTION;"))
+            .bind(("source",source_id)).bind(("receipt",receipt)).bind(("operation",operation)).bind(("id", id)).bind(("now", now.to_rfc3339())).bind(("instance", input.authenticated_instance_id))
             .bind(("migration_contract", input.policy_migration.as_ref().map(|_| 1_i64)))
-            .bind(("phase", if input.policy_migration.is_some() { "migration_admitted" } else { "admitted" })).bind(("request", input.request_id)).bind(("fingerprint", input.payload_fingerprint))
+            .bind(("enrichment", input.enrichment.is_some()))
+            .bind(("phase", if input.enrichment.is_some() { "enrichment_admitted" } else if input.policy_migration.is_some() { "migration_admitted" } else { "admitted" })).bind(("request", input.request_id)).bind(("fingerprint", input.payload_fingerprint))
             .bind(("input", payload)).bind(("admission", result.clone())).bind(("uri", source_uri)).await?.check()?;
         Ok(RemoteJobAdmission {
             result,
@@ -652,6 +743,7 @@ impl Repository {
         &self,
         instance: &str,
         limit: usize,
+        include_enrichment: bool,
     ) -> Result<Vec<RemoteUploadJobStatus>> {
         identity(instance)?;
         if !(1..=200).contains(&limit) {
@@ -659,8 +751,8 @@ impl Repository {
                 "job limit must be 1–200".into(),
             ));
         }
-        let rows: Vec<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance ORDER BY updated_at DESC, id ASC LIMIT $limit"))
-            .bind(("instance", instance.to_string())).bind(("limit", limit)).await?.take(0)?;
+        let rows: Vec<JobRow> = self.db.query(format!("SELECT {STATUS_FIELDS} FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND ($include_enrichment OR remote_enrichment_job = false) ORDER BY updated_at DESC, id ASC LIMIT $limit"))
+            .bind(("instance", instance.to_string())).bind(("limit", limit)).bind(("include_enrichment", include_enrichment)).await?.take(0)?;
         Ok(rows.into_iter().map(JobRow::status).collect())
     }
 
@@ -732,7 +824,9 @@ impl Repository {
         if !active.is_empty() {
             return Err(DbError::RemoteJobSourceConflict(record_id_to_string(&id)));
         }
-        self.ensure_remote_source_current(&job).await?;
+        if job.input.enrichment.is_none() {
+            self.ensure_remote_source_current(&job).await?;
+        }
         if job.input.policy_migration.is_some() && job.source_generation.is_none() {
             let _lifecycle = self.proposal_acceptance_lock.lock().await;
             let source = self
@@ -849,7 +943,9 @@ impl Repository {
             "$parent.remote_admission_order",
             "$parent.created_at",
         );
-        let query = format!("SELECT id, remote_instance_id, created_at FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'queued' AND remote_cancel_requested = false AND array::len((SELECT VALUE id FROM processing_job WHERE {blockers} LIMIT 1)) = 0 ORDER BY created_at ASC, id ASC LIMIT $limit");
+        let query = format!(
+            "SELECT id, remote_instance_id, created_at FROM processing_job WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'queued' AND remote_cancel_requested = false AND array::len((SELECT VALUE id FROM processing_job WHERE {blockers} LIMIT 1)) = 0 ORDER BY created_at ASC, id ASC LIMIT $limit"
+        );
         let mut remaining = MAX_REMOTE_CLAIM_SCAN;
         while remaining > 0 {
             let mut response = migration_probe(
@@ -971,6 +1067,21 @@ impl Repository {
             {
                 return Err(DbError::RemoteJobSourceConflict(expected_job));
             }
+            if job.job.scope.as_deref() == Some("unchanged")
+                && source.metadata.get("entity_enrichment_v1").is_some()
+            {
+                let observed = job
+                    .result
+                    .as_ref()
+                    .and_then(|result| result["unchanged_source_revision"].as_str());
+                if observed
+                    != Some(uploaded_source_revision(&source, &job.input.markdown)?.as_str())
+                {
+                    return Err(DbError::RemoteJobSourceConflict(expected_job));
+                }
+                self.validate_source_entity_enrichment_origin(&source)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -1003,6 +1114,11 @@ impl Repository {
         let mut prior_exact_input_matches = false;
         let mut prior_revision_matches = input.expected_source_revision.is_none();
         if let Some(source) = &prior {
+            if source.metadata["graph_enrichment_managed"] == true && !input.extract_entities {
+                return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
+                    &lease.job_id,
+                )));
+            }
             let origin = source
                 .metadata
                 .get("remote_upload_pending")
@@ -1023,7 +1139,13 @@ impl Repository {
                             &lease.job_id,
                         )));
                     }
-                    prior_completed = other.job.status == "completed";
+                    // An unchanged capture commits its metadata at promoted phase,
+                    // even when the response/terminalization is later interrupted.
+                    // The full stage validator below proves that publication.
+                    prior_completed = other.job.status == "completed"
+                        || (other.job.scope.as_deref() == Some("unchanged")
+                            && other.phase == "promoted"
+                            && source.metadata.get("entity_enrichment_v1").is_some());
                     if let Some(expected) = &input.expected_source_revision {
                         let migration_valid =
                             policy_migration::matches_origin(source, &other, input)?;
@@ -1032,7 +1154,12 @@ impl Repository {
                                 && (migration_valid
                                     || (input.policy_migration.is_none()
                                         && uploaded_processing_compatible(
-                                            &other.input.processing_options,
+                                            if source.metadata["graph_enrichment_managed"] == true {
+                                                &source.metadata["remote_upload"]
+                                                    ["processing_options"]
+                                            } else {
+                                                &other.input.processing_options
+                                            },
                                             &input.processing_options,
                                             input.extract_entities,
                                             input.preserve_unchanged,
@@ -1068,10 +1195,25 @@ impl Repository {
                     && source.metadata["remote_upload"]["extract_entities"]
                         == input.extract_entities
             });
+        let pinned_source_provenance_changed = unchanged
+            && prior
+                .as_ref()
+                .and_then(|source| source.metadata.get("remote_upload"))
+                .and_then(|origin| origin.get("source"))
+                != Some(&input.source_provenance);
         if input.preserve_unchanged && (!unchanged || !prior_exact_input_matches) {
             return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
                 &lease.job_id,
             )));
+        }
+        let enriched_replacement = !unchanged
+            && prior
+                .as_ref()
+                .is_some_and(|source| source.metadata["graph_enrichment_managed"] == true);
+        if enriched_replacement && input.expected_source_revision.is_none() {
+            return Err(DbError::InvalidRemoteRequest(
+                "Replacing an enriched source requires its exact reviewed source revision".into(),
+            ));
         }
         let generation = prior.as_ref().map_or(1, |source| {
             if unchanged {
@@ -1108,6 +1250,19 @@ impl Repository {
             metadata.remove("remote_upload_retired");
         }
         let origin = serde_json::json!({"instance_id":job.instance_id,"document_key":input.document_key,"request_id":job.request_id,"source":input.source_provenance,"job_id":record_id_to_string(&lease.job_id),"processing_options":input.processing_options,"extract_entities":input.extract_entities});
+        let unchanged_revision = if unchanged && metadata.get("entity_enrichment_v1").is_some() {
+            let previous = prior.as_ref().expect("unchanged source");
+            metadata["entity_enrichment_v1"] = self
+                .rebind_unchanged_enrichment_origin(previous, &origin)
+                .await?;
+            Some(uploaded_source_revision_with_origin(
+                previous,
+                &input.markdown,
+                &origin,
+            )?)
+        } else {
+            None
+        };
         if unchanged {
             metadata["remote_upload"] = origin;
             if let Some(metadata) = metadata.as_object_mut() {
@@ -1115,18 +1270,25 @@ impl Repository {
             }
         } else {
             metadata["remote_upload_pending"] = origin;
+            if let Some(fields) = metadata.as_object_mut() {
+                fields.remove("entity_enrichment_v1");
+            }
         }
         let source_sql: String = if unchanged {
-            "UPDATE $source SET metadata = $metadata, updated_at = time::now(); ".into()
+            format!(
+                "UPDATE $source SET metadata = $metadata, updated_at = time::now(); IF $pinned_source_provenance_changed {{ {} }}; ",
+                super::remote_endpoint_proposals::invalidate_source_reviewed_endpoints_sql("$source"),
+            )
         } else {
             "UPSERT $source SET source_type = 'markdown', title = $title, uri = $uri, normalized_uri = $uri, content = $markdown, content_hash = $hash, generation = $generation, successful_generation = $successful, status = 'pending', last_error = NONE, metadata = $metadata, created_at = IF created_at = NONE THEN time::now() ELSE created_at END, updated_at = time::now(); ".into()
         };
         let checkpoint = items.last().cloned();
-        let mut response = migration_probe("upload.begin_generation", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {}{} UPDATE $job SET remote_source_id = $source, remote_source_generation = $generation, source_generation = $generation_label, scope = $action, item_ids = $items, total_count = $total, completed_count = IF $unchanged THEN $total ELSE 0 END, checkpoint = $checkpoint, remote_phase = $phase; COMMIT TRANSACTION;", guard_sql(), source_sql))
+        let mut response = migration_probe("upload.begin_generation", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {}{} UPDATE $job SET remote_source_id = $source, remote_source_generation = $generation, source_generation = $generation_label, scope = $action, item_ids = $items, total_count = $total, completed_count = IF $unchanged THEN $total ELSE 0 END, checkpoint = $checkpoint, remote_phase = $phase, remote_result = IF $unchanged_revision IS NOT NONE THEN {{ unchanged_source_revision: $unchanged_revision }} ELSE remote_result END, remote_migration_contract_version = IF $rebuild THEN 1 ELSE remote_migration_contract_version END; COMMIT TRANSACTION;", guard_sql(), source_sql))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
             .bind(("source", source_id)).bind(("title", input.title.clone())).bind(("uri", job.source_uri.clone())).bind(("markdown", input.markdown.clone())).bind(("hash", hash))
+            .bind(("unchanged_revision", unchanged_revision))
             .bind(("generation", generation as i64)).bind(("successful", prior.map_or(0, |source| source.successful_generation) as i64)).bind(("generation_label", generation.to_string()))
-            .bind(("metadata", metadata)).bind(("action", action)).bind(("total", items.len() as i64)).bind(("items", items)).bind(("unchanged",unchanged)).bind(("checkpoint",checkpoint)).bind(("phase", if unchanged {"promoted"} else if input.policy_migration.is_some() {"migration_preparing"} else {"preparing"}))).await?;
+            .bind(("rebuild", enriched_replacement)).bind(("metadata", metadata)).bind(("action", action)).bind(("total", items.len() as i64)).bind(("items", items)).bind(("unchanged",unchanged)).bind(("pinned_source_provenance_changed", pinned_source_provenance_changed)).bind(("checkpoint",checkpoint)).bind(("phase", if unchanged {"promoted"} else if input.policy_migration.is_some() || enriched_replacement {"migration_preparing"} else {"preparing"}))).await?;
         check_write(response.take_errors(), lease, "upload.begin_generation")?;
         self.get_source(&job.source_uri)
             .await?
@@ -1194,7 +1356,7 @@ impl Repository {
         let total = notes.len() as i64;
         let mut response = migration_probe("upload.stage_notes", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} FOR $item IN $notes {{ LET $note_id = $item.id; LET $content = IF array::len($item.embedding) = 0 THEN object::remove($item, 'embedding') ELSE $item END; CREATE $note_id CONTENT $content; }}; UPDATE $job SET item_ids = $ids, total_count = $total, completed_count = 0, failed_count = 0, checkpoint = NONE, remote_phase = $phase; COMMIT TRANSACTION;", guard_sql()))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
-            .bind(("phase", if job.input.policy_migration.is_some() { "migration_staged" } else { "staged" }))
+            .bind(("phase", if job.phase == "migration_preparing" { "migration_staged" } else { "staged" }))
             .bind(("notes", notes)).bind(("ids", ids)).bind(("total", total))).await?;
         check_write(response.take_errors(), lease, "upload.stage_notes")?;
         self.owned_remote_upload(lease, true).await
@@ -1264,7 +1426,7 @@ impl Repository {
             // transition. Resume observes promoted and retries cleanup/extraction.
             self.update_remote_phase_locked(
                 lease,
-                if job.input.policy_migration.is_some() {
+                if job.input.policy_migration.is_some() || job.phase == "migration_promoted" {
                     "migration_promoted"
                 } else {
                     "promoted"
@@ -1386,7 +1548,9 @@ impl Repository {
             .iter()
             .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
-        let mut response = migration_probe("upload.persist_entities", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation AND source_generation = source_id.successful_generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; {} IF $extraction_scope != NONE {{ UPDATE $note SET extraction_scope = $extraction_scope; }}; DELETE mentions WHERE in = $note; {} UPDATE $job SET remote_phase = 'extracting', completed_count += 1, checkpoint = $checkpoint; COMMIT TRANSACTION;", guard_sql(), super::notes::replacement_entities_transaction(), super::notes::replacement_mentions_transaction("$note")))
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$note]");
+        let mut response = migration_probe("upload.persist_entities", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation AND source_generation = source_id.successful_generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; {} IF $extraction_scope != NONE AND (SELECT VALUE extraction_scope FROM $note)[0] != $extraction_scope {{ {invalidation} UPDATE $note SET extraction_scope = $extraction_scope; }}; DELETE mentions WHERE in = $note; {} UPDATE $job SET remote_phase = 'extracting', completed_count += 1, checkpoint = $checkpoint; COMMIT TRANSACTION;", guard_sql(), super::notes::replacement_entities_transaction(), super::notes::replacement_mentions_transaction("$note")))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
             .bind(("extraction_scope", extraction_scope)).bind(("note", note_id)).bind(("source", job.source_id.clone())).bind(("generation", job.source_generation)).bind(("checkpoint", job.job.item_ids[item_index].clone())).bind(("replacement_entities", entities)).bind(("replacement_entity_names", entity_names))).await?;
         check_write(response.take_errors(), lease, "upload.persist_entities")?;
@@ -1439,7 +1603,7 @@ impl Repository {
         // Cancellation is independent of both mutexes. Resolve its persisted
         // flag in the same UPDATE as terminalization, never from the earlier
         // ownership snapshot taken before waiting for the lifecycle gate.
-        let mut response = migration_probe("upload.finish", "sdk_await", self.db.query("UPDATE $job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE $status END, remote_phase = IF remote_cancel_requested = false AND $status = 'completed' THEN 'completed' ELSE remote_phase END, completed_count = IF remote_cancel_requested = false AND $status = 'completed' AND $skip_extract THEN total_count ELSE completed_count END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE $error END, remote_result = IF remote_result.policy_migration_stage != NONE AND (remote_cancel_requested OR $status != 'completed') THEN remote_result ELSE (IF remote_cancel_requested THEN NONE ELSE $result END) END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN AFTER")
+        let mut response = migration_probe("upload.finish", "sdk_await", self.db.query("UPDATE $job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE $status END, remote_phase = IF remote_cancel_requested = false AND $status = 'completed' THEN 'completed' ELSE remote_phase END, completed_count = IF remote_cancel_requested = false AND $status = 'completed' AND $skip_extract THEN total_count ELSE completed_count END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE $error END, remote_result = IF (remote_result.policy_migration_stage != NONE OR remote_result.unchanged_source_revision != NONE) AND (remote_cancel_requested OR $status != 'completed') THEN remote_result ELSE (IF remote_cancel_requested THEN NONE ELSE $result END) END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN AFTER")
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
             .bind(("status", status.as_str())).bind(("skip_extract", !job.input.extract_entities)).bind(("error", error)).bind(("result", result))).await?;
         let row: Option<JobRow> =
@@ -1492,7 +1656,7 @@ impl Repository {
         // below resolves it again atomically after waiting for lifecycle work.
         let _cancel_was_requested = fence.remote_cancel_requested;
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
-        let mut response = migration_probe("upload.recover_settle", "sdk_await", self.db.query("UPDATE $job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE 'failed' END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE (IF $error = 'cancelled' THEN 'interrupted' ELSE $error END) END, remote_result = IF remote_result.policy_migration_stage != NONE THEN remote_result ELSE NONE END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN VALUE id")
+        let mut response = migration_probe("upload.recover_settle", "sdk_await", self.db.query("UPDATE $job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE 'failed' END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE (IF $error = 'cancelled' THEN 'interrupted' ELSE $error END) END, remote_result = IF remote_result.policy_migration_stage != NONE OR remote_result.unchanged_source_revision != NONE THEN remote_result ELSE NONE END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id = $instance AND status = 'running' AND remote_service_epoch = $epoch AND remote_worker_token = $worker RETURN VALUE id")
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone())).bind(("error", error_code.to_string()))).await?;
         let settled: Vec<RecordId> =
             migration_probe_result("upload.recover_settle", "response_take", response.take(0))?;
@@ -1519,7 +1683,7 @@ impl Repository {
     pub async fn reconcile_interrupted_remote_uploads(&self, current_epoch: &str) -> Result<usize> {
         identity(current_epoch)?;
         let _gate = self.remote_job_transition_lock.lock().await;
-        let rows: Vec<RecordId> = self.db.query("UPDATE processing_job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE 'failed' END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE 'interrupted' END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'running' AND (remote_service_epoch = NONE OR remote_service_epoch != $epoch) RETURN VALUE id")
+        let rows: Vec<RecordId> = self.db.query("UPDATE processing_job SET status = IF remote_cancel_requested THEN 'cancelled' ELSE (IF remote_enrichment_job = true THEN 'queued' ELSE 'failed' END) END, last_error = IF remote_cancel_requested THEN 'cancelled' ELSE 'interrupted' END, finished_at = time::now(), updated_at = time::now(), remote_service_epoch = NONE, remote_worker_token = NONE WHERE job_type = 'remote_upload' AND remote_instance_id IS NOT NONE AND status = 'running' AND (remote_service_epoch = NONE OR remote_service_epoch != $epoch) RETURN VALUE id")
             .bind(("epoch", current_epoch.to_string())).await?.take(0)?;
         Ok(rows.len())
     }

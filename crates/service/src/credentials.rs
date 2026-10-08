@@ -14,6 +14,10 @@ const MAX_CREDENTIALS: usize = 128;
 pub enum Capability {
     Read,
     Capture,
+    /// Create a pending reviewed endpoint proposal; it grants neither acceptance nor rejection.
+    Propose,
+    /// Explicit owned-source reviewed conversion only, never default.
+    Enrich,
     Edit,
     Delete,
     Accept,
@@ -64,9 +68,13 @@ impl Principal {
 pub enum CredentialError {
     #[error("Cannot read the credential file; check its location and permissions.")]
     Unavailable,
-    #[error("Credentials must be a regular file owned by the service user with permissions 0600; symlinks are refused.")]
+    #[error(
+        "Credentials must be a regular file owned by the service user with permissions 0600; symlinks are refused."
+    )]
     UnsafeFile,
-    #[error("Invalid credential file; expected schema version 1, unique instance IDs, SHA-256 token hashes and supported capabilities.")]
+    #[error(
+        "Invalid credential file; expected schema version 1, unique instance IDs, SHA-256 token hashes and supported capabilities."
+    )]
     InvalidFile,
 }
 

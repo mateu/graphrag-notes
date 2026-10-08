@@ -23,9 +23,14 @@ mod models;
 mod notes;
 mod portable;
 mod remote_capture;
+mod remote_endpoint_proposals;
 mod remote_jobs;
 mod remote_mutations;
+mod source_enrichment;
 mod sources;
+pub use source_enrichment::{
+    source_entity_enrichment_metadata_eligible, SourceEnrichmentPlan, SourceEnrichmentStatus,
+};
 mod stats;
 #[cfg(test)]
 mod title_score_diagnostic_tests;
@@ -49,10 +54,12 @@ pub use models::{
 };
 pub use portable::{parse_portable_record_id, PORTABLE_TABLES};
 pub use remote_capture::{RemoteCaptureInput, RemoteCaptureReceipt};
+pub use remote_endpoint_proposals::RemoteEndpointProposalInput;
 pub use remote_jobs::{
     uploaded_processing_compatible, uploaded_processing_policy_sha256, uploaded_source_id,
-    uploaded_source_revision, RemoteJobAdmission, RemoteJobLease, RemoteUploadInput,
-    RemoteUploadJob, RemoteUploadJobStatus, MAX_REMOTE_UPLOAD_BYTES, MAX_REMOTE_UPLOAD_CHUNKS,
+    uploaded_source_revision, RemoteEnrichmentInput, RemoteJobAdmission, RemoteJobLease,
+    RemoteUploadInput, RemoteUploadJob, RemoteUploadJobStatus, MAX_REMOTE_UPLOAD_BYTES,
+    MAX_REMOTE_UPLOAD_CHUNKS,
 };
 pub use remote_mutations::{
     MutationGuard, MutationNoteSnapshot, RemoteMutationEffect, RemoteMutationInput,
@@ -89,6 +96,7 @@ pub struct Repository {
     db: DbConnection,
     proposal_acceptance_lock: Arc<Mutex<()>>,
     remote_job_transition_lock: Arc<Mutex<()>>,
+    source_enrichment_worker_lock: Arc<Mutex<()>>,
 }
 
 // A source generation becomes visible only after promotion. Legacy/manual
@@ -273,10 +281,12 @@ impl Repository {
     pub fn new(db: DbConnection) -> Self {
         let proposal_acceptance_lock = db.proposal_lifecycle_lock();
         let remote_job_transition_lock = db.remote_job_transition_lock();
+        let source_enrichment_worker_lock = db.source_enrichment_worker_lock();
         Self {
             db,
             proposal_acceptance_lock,
             remote_job_transition_lock,
+            source_enrichment_worker_lock,
         }
     }
 }

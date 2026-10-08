@@ -31,7 +31,11 @@ fn serialize_entities<S: serde::Serializer>(
     values.serialize(serializer)
 }
 
-fn validate_entities(note: &Note, scope: Option<&str>, entities: &[Entity]) -> Result<()> {
+pub(super) fn validate_entities(
+    note: &Note,
+    scope: Option<&str>,
+    entities: &[Entity],
+) -> Result<()> {
     let mut identities = HashSet::new();
     let note_id = note
         .id
@@ -173,7 +177,7 @@ impl Repository {
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         let job = self.owned_remote_upload(lease, false).await?;
         self.ensure_remote_source_current(&job).await?;
-        if job.input.policy_migration.is_none() || job.phase != "migration_staged" {
+        if !job.input.extract_entities || job.phase != "migration_staged" {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
                 &lease.job_id,
             )));
@@ -236,7 +240,7 @@ impl Repository {
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         let job = self.owned_remote_upload(lease, false).await?;
         self.ensure_remote_source_current(&job).await?;
-        if job.input.policy_migration.is_none() || job.phase != "migration_extracting" {
+        if !job.input.extract_entities || job.phase != "migration_extracting" {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
                 &lease.job_id,
             )));
@@ -301,7 +305,7 @@ impl Repository {
         let _lifecycle = self.proposal_acceptance_lock.lock().await;
         let job = self.owned_remote_upload(lease, false).await?;
         self.ensure_remote_source_current(&job).await?;
-        if job.input.policy_migration.is_none() || job.phase != "migration_extracting" {
+        if !job.input.extract_entities || job.phase != "migration_extracting" {
             return Err(DbError::RemoteJobOwnershipLost(record_id_to_string(
                 &lease.job_id,
             )));
@@ -407,7 +411,13 @@ impl Repository {
             .and_then(|value| value.remove("remote_upload_pending"))
             .ok_or_else(|| DbError::RemoteJobSourceConflict(record_id_to_string(&lease.job_id)))?;
         metadata["remote_upload"] = origin;
-        let mut response = migration_probe("migration.promote_visibility", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} FOR $batch IN $batches {{ LET $note = $batch.note; LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; LET $replacement_entities = $batch.entities; LET $replacement_entity_names = $batch.entity_names; {} DELETE mentions WHERE in = $note; {} IF $batch.scope != NONE {{ UPDATE $note SET extraction_scope = $batch.scope; }}; }}; UPDATE $source SET successful_generation = $generation, status = 'ready', last_error = NONE, metadata = $metadata, updated_at = time::now(), last_ingested_at = time::now(); UPDATE $job SET remote_phase = 'migration_promoted'; COMMIT TRANSACTION;", guard_sql(), super::super::notes::replacement_entities_transaction(), super::super::notes::replacement_mentions_transaction("$note")))
+        let provenance =
+            super::super::remote_endpoint_proposals::reviewed_source_provenance_sql("$source");
+        let invalidation =
+            super::super::remote_endpoint_proposals::invalidate_source_reviewed_endpoints_sql(
+                "$source",
+            );
+        let mut response = migration_probe("migration.promote_visibility", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} LET $reviewed_source_before = {provenance}; FOR $batch IN $batches {{ LET $note = $batch.note; LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; LET $replacement_entities = $batch.entities; LET $replacement_entity_names = $batch.entity_names; {} DELETE mentions WHERE in = $note; {} IF $batch.scope != NONE {{ UPDATE $note SET extraction_scope = $batch.scope; }}; }}; UPDATE $source SET successful_generation = $generation, status = 'ready', last_error = NONE, metadata = $metadata, updated_at = time::now(), last_ingested_at = time::now(); LET $reviewed_source_after = {provenance}; IF $reviewed_source_before != $reviewed_source_after {{ {invalidation} }}; UPDATE $job SET remote_phase = 'migration_promoted'; COMMIT TRANSACTION;", guard_sql(), super::super::notes::replacement_entities_transaction(), super::super::notes::replacement_mentions_transaction("$note")))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
             .bind(("source", job.source_id)).bind(("generation", job.source_generation)).bind(("metadata", metadata)).bind(("batches", batches))).await?;
         check_write(

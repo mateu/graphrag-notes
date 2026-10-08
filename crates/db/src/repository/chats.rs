@@ -1,6 +1,6 @@
 //! Conversation/message persistence and note-link ownership.
 //!
-//! Chat migration SQL and its deterministic link behavior remain verbatim.
+//! Chat mutations atomically retire reviewed endpoints whose inspection context changes.
 
 use super::*;
 
@@ -29,10 +29,12 @@ impl Repository {
             Some(conversation.summary.clone())
         };
 
-        let upserted: Option<ConversationIdRow> = self
-            .db
-            .query(
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("$context_notes");
+        self.db
+            .query(format!(
                 r#"
+                BEGIN TRANSACTION;
                 INSERT INTO conversation (
                     uuid, title, summary, source_uri, account_uuid, metadata, summary_embedding, created_at, updated_at, ingested_at
                 )
@@ -48,9 +50,15 @@ impl Repository {
                     summary_embedding = $summary_embedding,
                     created_at = <datetime>$created_at,
                     updated_at = <datetime>$updated_at,
-                    ingested_at = time::now()
+                    ingested_at = time::now();
+                LET $context_id = (SELECT VALUE id FROM conversation WHERE uuid = $uuid LIMIT 1)[0];
+                LET $direct_context_notes = (SELECT VALUE in FROM note_from_conversation WHERE out = $context_id);
+                LET $message_context_notes = (SELECT VALUE in FROM note_from_message WHERE out IN (SELECT VALUE id FROM message WHERE conversation_id = $context_id));
+                LET $context_notes = array::distinct(array::concat($direct_context_notes, $message_context_notes));
+                {invalidation}
+                COMMIT TRANSACTION;
             "#,
-            )
+            ))
             .bind(("uuid", conversation.uuid.clone()))
             .bind(("title", conversation.display_title()))
             .bind(("summary", summary))
@@ -61,11 +69,7 @@ impl Repository {
             .bind(("created_at", conversation.created_at.to_rfc3339()))
             .bind(("updated_at", conversation.updated_at.to_rfc3339()))
             .await?
-            .take(0)?;
-
-        if let Some(row) = upserted {
-            return Ok(row.id);
-        }
+            .check()?;
 
         let fetched: Option<ConversationIdRow> = self
             .db
@@ -113,10 +117,12 @@ impl Repository {
         let attachments = message.attachments.clone();
         let files = message.files.clone();
 
-        let upserted: Option<MessageIdRow> = self
-            .db
-            .query(
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("$context_notes");
+        self.db
+            .query(format!(
                 r#"
+                BEGIN TRANSACTION;
                 INSERT INTO message (
                     message_key, message_uuid, conversation_id, conversation_uuid, message_index, role,
                     content, embedding, content_blocks, attachments, files, has_files, created_at, updated_at, ingested_at
@@ -142,9 +148,13 @@ impl Repository {
                     has_files = $has_files,
                     created_at = IF $created_at = NONE THEN NONE ELSE <datetime>$created_at END,
                     updated_at = IF $updated_at = NONE THEN NONE ELSE <datetime>$updated_at END,
-                    ingested_at = time::now()
+                    ingested_at = time::now();
+                LET $context_id = (SELECT VALUE id FROM message WHERE message_key = $message_key LIMIT 1)[0];
+                LET $context_notes = (SELECT VALUE in FROM note_from_message WHERE out = $context_id);
+                {invalidation}
+                COMMIT TRANSACTION;
             "#,
-            )
+            ))
             .bind(("message_key", message_key.clone()))
             .bind(("message_uuid", message_uuid))
             .bind(("conversation_id", conversation_id.clone()))
@@ -166,11 +176,7 @@ impl Repository {
                 message.updated_at.as_ref().map(|dt| dt.to_rfc3339()),
             ))
             .await?
-            .take(0)?;
-
-        if let Some(row) = upserted {
-            return Ok(row.id);
-        }
+            .check()?;
 
         let fetched: Option<MessageIdRow> = self
             .db
@@ -227,11 +233,18 @@ impl Repository {
             return Ok(false);
         }
 
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$note_id]");
         self.db
-            .query("CREATE note_from_conversation SET in = $note_id, out = $conversation_id")
+            .query(format!(
+                "BEGIN TRANSACTION; {invalidation} \
+                 CREATE note_from_conversation SET in = $note_id, out = $conversation_id; \
+                 COMMIT TRANSACTION;"
+            ))
             .bind(("note_id", note_id.clone()))
             .bind(("conversation_id", conversation_id.clone()))
-            .await?;
+            .await?
+            .check()?;
 
         Ok(true)
     }
@@ -278,11 +291,18 @@ impl Repository {
             return Ok(false);
         }
 
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$note_id]");
         self.db
-            .query("CREATE note_from_message SET in = $note_id, out = $message_id")
+            .query(format!(
+                "BEGIN TRANSACTION; {invalidation} \
+                 CREATE note_from_message SET in = $note_id, out = $message_id; \
+                 COMMIT TRANSACTION;"
+            ))
             .bind(("note_id", note_id.clone()))
             .bind(("message_id", message_id.clone()))
-            .await?;
+            .await?
+            .check()?;
 
         Ok(true)
     }

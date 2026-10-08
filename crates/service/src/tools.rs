@@ -269,12 +269,48 @@ pub(crate) fn definition<I: JsonSchema + 'static, O: JsonSchema + 'static>(
 
 fn catalog() -> Vec<(Capability, Tool)> {
     let mut tools = vec![
-        (Capability::Read, definition::<StatusInput, graphrag_application::ServiceReadiness>("service_status", "Bounded authenticated readiness through the owning service: storage, configured/cached providers, refresh/backup evidence and permitted own jobs. No inference or mutation. Unknown evidence is not healthy; no private host paths are exposed.", true)),
-        (Capability::Read, definition::<SearchInput, SearchOutput>("search_notes", "Search shared notes and chat records. Use mode=keyword and graph=off for provider-free retrieval. Source URIs describe the server's corpus.", true)),
-        (Capability::Read, definition::<InspectInput, InspectionOutput>("get_record", "Inspect an exact record ID with bounded chat context. Supply the search revision to reject stale selection. Server source paths are provenance, never client file actions.", true)),
-        (Capability::Read, definition::<ContextInput, ContextResponse>("build_context", "Build bounded, cited context from shared notes and chats using server-owned providers and defaults.", true)),
-        (Capability::Capture, definition::<CaptureInput, RemoteCaptureResponse>("capture_note", "Capture a new shared note. Reuse the same request_id and identical payload after interruption; authenticated instance identity is supplied by the server. Changed payloads under the same request_id are rejected.", false)),
+        (
+            Capability::Read,
+            definition::<StatusInput, graphrag_application::ServiceReadiness>(
+                "service_status",
+                "Bounded authenticated readiness through the owning service: storage, configured/cached providers, refresh/backup evidence and permitted own jobs. No inference or mutation. Unknown evidence is not healthy; no private host paths are exposed.",
+                true,
+            ),
+        ),
+        (
+            Capability::Read,
+            definition::<SearchInput, SearchOutput>(
+                "search_notes",
+                "Search shared notes and chat records. Use mode=keyword and graph=off for provider-free retrieval. Source URIs describe the server's corpus.",
+                true,
+            ),
+        ),
+        (
+            Capability::Read,
+            definition::<InspectInput, InspectionOutput>(
+                "get_record",
+                "Inspect an exact record ID with bounded chat context. Supply the search revision to reject stale selection. Server source paths are provenance, never client file actions.",
+                true,
+            ),
+        ),
+        (
+            Capability::Read,
+            definition::<ContextInput, ContextResponse>(
+                "build_context",
+                "Build bounded, cited context from shared notes and chats using server-owned providers and defaults.",
+                true,
+            ),
+        ),
+        (
+            Capability::Capture,
+            definition::<CaptureInput, RemoteCaptureResponse>(
+                "capture_note",
+                "Capture a new shared note. Reuse the same request_id and identical payload after interruption; authenticated instance identity is supplied by the server. Changed payloads under the same request_id are rejected.",
+                false,
+            ),
+        ),
     ];
+    tools.push(crate::endpoint_proposals::catalog());
     tools.extend(crate::mutations::catalog());
     tools.extend(crate::uploads::catalog());
     tools
@@ -350,8 +386,16 @@ fn bounded_value<T: Serialize>(value: T) -> Result<Value, EncodingFailure> {
 
 fn encoding_failure(error: EncodingFailure) -> CallToolResult {
     match error {
-        EncodingFailure::TooLarge => failure("response_too_large", "The result exceeds the service's 2 MiB response limit. Narrow the query, reduce limit/neighbors or context budgets, or ask the corpus owner to inspect the large record locally.", false),
-        EncodingFailure::Invalid => failure("internal", "Cannot encode the tool result; contact the service owner.", false),
+        EncodingFailure::TooLarge => failure(
+            "response_too_large",
+            "The result exceeds the service's 2 MiB response limit. Narrow the query, reduce limit/neighbors or context budgets, or ask the corpus owner to inspect the large record locally.",
+            false,
+        ),
+        EncodingFailure::Invalid => failure(
+            "internal",
+            "Cannot encode the tool result; contact the service owner.",
+            false,
+        ),
     }
 }
 
@@ -382,14 +426,46 @@ pub(crate) fn application_failure(error: ApplicationError) -> CallToolResult {
     // Application/provider diagnostics may contain host paths or secrets. The
     // network boundary exposes stable categories and recovery guidance only.
     match error {
-        ApplicationError::Validation(_) => failure("invalid_input", "The operation rejected these arguments; check the tool schema and request bounds.", false),
-        ApplicationError::NotFound(_) => failure("not_found", "The selected record is unavailable. Search again to refresh its ID.", false),
-        ApplicationError::RevisionConflict(_) => failure("revision_conflict", "The record or request payload changed. Refresh the snapshot; retain the same request_id and payload for an uncertain outcome. A new intent requires a new request_id.", false),
-        ApplicationError::ProviderUnavailable(_) => failure("provider_unavailable", "A server provider is unavailable. For retrieval, retry search_notes with mode=keyword and graph=off; keep capture drafts and their request_id for retry.", true),
-        ApplicationError::Compatibility(_) => failure("compatibility", "The server's corpus and embedding configuration differ. Use search_notes with mode=keyword and graph=off, or contact the corpus owner.", false),
-        ApplicationError::ServiceUnreachable(_) => failure("service_unreachable", "An upstream service is unreachable; retry later and retain capture drafts with their request_id.", true),
-        ApplicationError::Cancelled => failure("cancelled", "The read operation was cancelled. Retry when ready.", true),
-        ApplicationError::Internal(_) => failure("internal", "The operation failed internally; contact the service owner before changing or repeating a write.", false),
+        ApplicationError::Validation(_) => failure(
+            "invalid_input",
+            "The operation rejected these arguments; check the tool schema and request bounds.",
+            false,
+        ),
+        ApplicationError::NotFound(_) => failure(
+            "not_found",
+            "The selected record is unavailable. Search again to refresh its ID.",
+            false,
+        ),
+        ApplicationError::RevisionConflict(_) => failure(
+            "revision_conflict",
+            "The record or request payload changed. Refresh the snapshot; retain the same request_id and payload for an uncertain outcome. A new intent requires a new request_id.",
+            false,
+        ),
+        ApplicationError::ProviderUnavailable(_) => failure(
+            "provider_unavailable",
+            "A server provider is unavailable. For retrieval, retry search_notes with mode=keyword and graph=off; keep capture drafts and their request_id for retry.",
+            true,
+        ),
+        ApplicationError::Compatibility(_) => failure(
+            "compatibility",
+            "The server's corpus and embedding configuration differ. Use search_notes with mode=keyword and graph=off, or contact the corpus owner.",
+            false,
+        ),
+        ApplicationError::ServiceUnreachable(_) => failure(
+            "service_unreachable",
+            "An upstream service is unreachable; retry later and retain capture drafts with their request_id.",
+            true,
+        ),
+        ApplicationError::Cancelled => failure(
+            "cancelled",
+            "The read operation was cancelled. Retry when ready.",
+            true,
+        ),
+        ApplicationError::Internal(_) => failure(
+            "internal",
+            "The operation failed internally; contact the service owner before changing or repeating a write.",
+            false,
+        ),
     }
 }
 
@@ -492,6 +568,9 @@ impl ToolService {
             .into());
         }
         let result = match request.name.as_ref() {
+            "propose_endpoint_relationship" => {
+                crate::endpoint_proposals::call(self, request, principal).await
+            }
             "service_status" => {
                 let _: StatusInput = match parse(request.arguments) {
                     Ok(input) => input,
@@ -688,18 +767,29 @@ impl ToolService {
                 match task.await {
                     Ok(Ok(record)) => success(record),
                     Ok(Err(error)) => application_failure(error),
-                    Err(_) => failure("internal", "Capture outcome is uncertain; retain the identical draft and request_id for a safe retry.", true),
+                    Err(_) => failure(
+                        "internal",
+                        "Capture outcome is uncertain; retain the identical draft and request_id for a safe retry.",
+                        true,
+                    ),
                 }
             }
             name if matches!(
                 name,
-                "upload_source" | "cancel_job" | "resume_job" | "delete_uploaded_source"
+                "upload_source"
+                    | "cancel_job"
+                    | "resume_job"
+                    | "delete_uploaded_source"
+                    | "execute_source_enrichment"
+                    | "rollback_source_enrichment"
+                    | "cancel_source_enrichment_job"
+                    | "retry_source_enrichment_job"
             ) =>
             {
                 // These short durable mutations never share the provider/capture
                 // semaphore. Explicit cancellation remains reachable while a
                 // worker is preparing or inside a guarded atomic write.
-                let gate = if name == "cancel_job" {
+                let gate = if matches!(name, "cancel_job" | "cancel_source_enrichment_job") {
                     &self.cancellation_gate
                 } else {
                     &self.admission_gate
@@ -724,10 +814,19 @@ impl ToolService {
                 });
                 match task.await {
                     Ok(result) => result,
-                    Err(_) => failure("internal", "The job control outcome is uncertain; inspect the existing job or retry the identical upload request ID.", true),
+                    Err(_) => failure(
+                        "internal",
+                        "The job control outcome is uncertain; inspect the existing job or retry the identical upload request ID.",
+                        true,
+                    ),
                 }
             }
-            name @ ("get_source" | "get_job" | "list_jobs") => {
+            name @ ("get_source"
+            | "get_job"
+            | "list_jobs"
+            | "prepare_source_enrichment"
+            | "read_source_enrichment_plan"
+            | "get_source_enrichment_job") => {
                 crate::uploads::dispatch(
                     self.application.as_ref(),
                     &principal,

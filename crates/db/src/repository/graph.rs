@@ -416,6 +416,16 @@ impl Repository {
             .get_edge_proposal(id)
             .await?
             .ok_or_else(|| DbError::NotFound("proposed_edge".into(), record_id_to_string(id)))?;
+        if proposal.generator == "remote-reviewed-endpoint" {
+            return self
+                .accept_reviewed_endpoint_atomic_locked(
+                    proposal,
+                    reviewer,
+                    action_reason,
+                    is_manual,
+                )
+                .await;
+        }
         match proposal.status {
             ProposedEdgeStatus::Accepted => {
                 return self
@@ -433,6 +443,11 @@ impl Repository {
                     proposal.status
                 )));
             }
+        }
+        if !self.reviewed_endpoint_proposal_current(&proposal).await? {
+            return Err(DbError::MutationRevisionConflict(
+                "Reviewed endpoint evidence is stale; a fresh proposal is required".into(),
+            ));
         }
         // Claim the pending row before creating the accepted edge. `accepting`
         // is recoverable: retries resume its idempotent edge creation rather
@@ -1256,6 +1271,8 @@ impl Repository {
         } else {
             ""
         };
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$note_id]");
         let mut response = self
             .db
             .query(format!(
@@ -1265,7 +1282,7 @@ impl Repository {
                      OR source_generation = source_id.successful_generation \
                      OR (source_generation = source_id.generation AND source_id.status = 'pending')) LIMIT 1); \
                  IF array::len($writable) != 1 {{ THROW 'entity replacement endpoint is no longer writable'; }}; {} \
-                 IF $extraction_scope != NONE {{ UPDATE $note_id SET extraction_scope = $extraction_scope; }}; \
+                 IF $extraction_scope != NONE AND (SELECT VALUE extraction_scope FROM $note_id)[0] != $extraction_scope {{ {invalidation} UPDATE $note_id SET extraction_scope = $extraction_scope; }}; \
                  {deletion} {} COMMIT TRANSACTION;",
                 super::notes::replacement_entities_transaction(),
                 super::notes::replacement_mentions_transaction("$note_id")
