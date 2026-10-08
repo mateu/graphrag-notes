@@ -187,8 +187,8 @@ impl Repository {
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit())
             || !request.edge_type.is_note_edge()
+            || request.rationale.len() > 2048
             || request.rationale.trim().is_empty()
-            || request.rationale.chars().count() > 2048
         {
             return Err(DbError::InvalidMutationRequest(
                 "invalid endpoint proposal request".into(),

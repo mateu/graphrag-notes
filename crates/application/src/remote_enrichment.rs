@@ -157,7 +157,11 @@ pub(crate) async fn admit(
             extract_entities: true,
             preserve_unchanged: false,
             create_only: false,
-            expected_source_revision: Some(plan.expected_source_revision.clone()),
+            expected_source_revision: Some(if rollback {
+                current.revision
+            } else {
+                plan.expected_source_revision.clone()
+            }),
             policy_migration: None,
             processing_options: plan.target_processing_options.clone(),
             enrichment: Some(RemoteEnrichmentInput { plan, rollback }),
@@ -218,7 +222,12 @@ pub(crate) async fn execute(
     if input.rollback {
         let _worker = app.repo.source_entity_enrichment_worker_guard().await;
         app.repo
-            .rollback_source_entity_enrichment_leased(&input.plan, true, Some(&lease))
+            .rollback_source_entity_enrichment_leased(
+                &input.plan,
+                true,
+                Some(&lease),
+                job.input.expected_source_revision.as_deref(),
+            )
             .await?;
     } else {
         app.enrich_uploaded_source_leased(

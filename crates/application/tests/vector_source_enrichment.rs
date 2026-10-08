@@ -1620,3 +1620,190 @@ async fn same_policy_unchanged_resume_preserves_capture_and_redacts_private_chec
         }
     }
 }
+
+#[tokio::test]
+async fn rollback_review_survives_recovery_and_fences_all_source_transitions() {
+    for (opening, mutation) in [
+        ("promoted", "none"),
+        ("staged", "none"),
+        ("rolled_back", "none"),
+        ("staged", "capture"),
+        ("promoted", "capture"),
+        ("rolled_back", "capture"),
+        ("staged", "promoted"),
+        ("staged", "rolled_back"),
+        ("promoted", "rolled_back"),
+    ] {
+        for interruption in ["cancelled", "failed", "restart"] {
+            let context = format!("{opening}/{mutation}/{interruption}");
+            let (repo, app, calls, source, plan) = lineage_fixture(opening).await;
+            let reviewed = app.get_uploaded_source(&source.source_id).await.unwrap();
+            let operation = ExecuteSourceEnrichment {
+                request_id: format!("rollback-{opening}-{mutation}-{interruption}"),
+                reviewed: enrichment_receipt(&plan).unwrap(),
+                confirmed: true,
+                rollback_source_revision: Some(reviewed.revision.clone()),
+            };
+            let admitted = app
+                .execute_source_enrichment(caller(), operation.clone(), true)
+                .await
+                .unwrap();
+            let saved = repo
+                .get_remote_upload_job(&caller().instance_id, &admitted.job_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                saved.input.expected_source_revision.as_deref(),
+                Some(reviewed.revision.as_str()),
+                "{context}"
+            );
+            let execution = app
+                .claim_remote_job("epoch", "worker")
+                .await
+                .unwrap()
+                .unwrap();
+            let lease = graphrag_db::RemoteJobLease {
+                job_id: graphrag_db::parse_record_id(&execution.job_id, Some("processing_job"))
+                    .unwrap(),
+                instance_id: execution.instance_id,
+                service_epoch: execution.service_epoch,
+                worker_token: execution.worker_token,
+            };
+            match interruption {
+                "cancelled" => {
+                    app.cancel_remote_job(caller(), &admitted.job_id)
+                        .await
+                        .unwrap();
+                    repo.finish_remote_upload_job(
+                        &lease,
+                        graphrag_db::ProcessingJobStatus::Cancelled,
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                }
+                "failed" => {
+                    repo.finish_remote_upload_job(
+                        &lease,
+                        graphrag_db::ProcessingJobStatus::Failed,
+                        Some("validation".into()),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                }
+                _ => repo
+                    .recover_remote_upload_job(&lease, "worker_interrupted")
+                    .await
+                    .unwrap(),
+            }
+            match mutation {
+                "capture" => {
+                    let mut capture = request("later-capture");
+                    capture.extract_entities = opening == "promoted";
+                    capture.content = capture.content.replace('\n', "\r\n");
+                    capture
+                        .provenance
+                        .as_mut()
+                        .unwrap()
+                        .metadata
+                        .insert("host".into(), "changed-after-rollback-review".into());
+                    app.upload_source(caller(), capture).await.unwrap();
+                    run(&app).await.unwrap();
+                }
+                "promoted" => {
+                    app.enrich_uploaded_source(caller(), plan.clone(), ActionCancellation::new())
+                        .await
+                        .unwrap();
+                }
+                "rolled_back" => {
+                    repo.rollback_source_entity_enrichment(&plan, true)
+                        .await
+                        .unwrap();
+                }
+                _ => {}
+            }
+            let current = app.get_uploaded_source(&source.source_id).await.unwrap();
+            assert_eq!(
+                current.revision == reviewed.revision,
+                mutation == "none",
+                "{context}"
+            );
+            let tables = [
+                "source",
+                "note",
+                "entity",
+                "mentions",
+                "supports",
+                "related_to",
+                "proposed_edge",
+            ];
+            let mut before = Vec::new();
+            if mutation != "none" {
+                before.reserve(tables.len());
+                for table in tables {
+                    before.push(rows(&repo, table).await);
+                }
+            }
+            let calls_before = calls.load(Ordering::SeqCst);
+            let queued = match app.resume_remote_job(caller(), &admitted.job_id).await {
+                Ok(_) => true,
+                Err(error) => {
+                    assert_ne!(mutation, "none", "{context}: {error}");
+                    false
+                }
+            };
+            if queued && interruption == "restart" {
+                // Lose a freshly claimed worker without executing it, then let
+                // the new service epoch requeue its immutable admission.
+                app.claim_remote_job("before-restart", "abandoned-worker")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                app.reconcile_remote_jobs("new-epoch").await.unwrap();
+            }
+            if queued {
+                let execution = app
+                    .claim_remote_job("new-epoch", "recovered-worker")
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let result = app
+                    .execute_remote_job(execution, ActionCancellation::new())
+                    .await;
+                assert_eq!(result.is_ok(), mutation == "none", "{context}: {result:?}");
+            }
+            if mutation != "none" {
+                for (table, expected) in tables.into_iter().zip(before) {
+                    assert_eq!(rows(&repo, table).await, expected, "{context}/{table}");
+                }
+            } else {
+                let final_source = app.get_uploaded_source(&source.source_id).await.unwrap();
+                assert!(!final_source.extract_entities, "{context}");
+                assert_eq!(final_source.generation, current.generation, "{context}");
+                assert_eq!(
+                    final_source.graph_policy_epoch,
+                    current.graph_policy_epoch + u64::from(opening != "rolled_back"),
+                    "{context}"
+                );
+                assert_eq!(
+                    app.get_remote_job(caller(), &admitted.job_id)
+                        .await
+                        .unwrap()
+                        .status,
+                    "completed",
+                    "{context}"
+                );
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), calls_before, "{context}");
+            let replay = app
+                .execute_source_enrichment(caller(), operation, true)
+                .await
+                .unwrap();
+            assert!(replay.replayed, "{context}");
+            assert_eq!(replay.job_id, admitted.job_id, "{context}");
+        }
+    }
+}

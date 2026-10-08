@@ -403,8 +403,10 @@ fn validate_input(input: &RemoteUploadInput) -> Result<()> {
             || !input.extract_entities
             || input.preserve_unchanged
             || input.create_only
-            || input.expected_source_revision.as_deref()
-                != Some(&enrichment.plan.expected_source_revision)
+            || input.expected_source_revision.is_none()
+            || (!enrichment.rollback
+                && input.expected_source_revision.as_deref()
+                    != Some(&enrichment.plan.expected_source_revision))
         {
             return Err(DbError::InvalidRemoteRequest(
                 "invalid enrichment job contract".into(),

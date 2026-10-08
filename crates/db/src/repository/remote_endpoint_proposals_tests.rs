@@ -51,6 +51,52 @@ async fn count(repo: &Repository, table: &str) -> usize {
         .unwrap()
         .len()
 }
+
+#[tokio::test]
+async fn oversized_utf8_rationale_cannot_persist_proposal_or_receipt() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let notes = [
+        repo.create_note(Note::new("Fictional claim quote"))
+            .await
+            .unwrap(),
+        repo.create_note(Note::new("Fictional evidence quote"))
+            .await
+            .unwrap(),
+    ];
+    let from = record_id_to_string(notes[0].id.as_ref().unwrap());
+    let to = record_id_to_string(notes[1].id.as_ref().unwrap());
+    let from_revision = repo.inspect_record(&from, 0).await.unwrap().revision;
+    let to_revision = repo.inspect_record(&to, 0).await.unwrap().revision;
+    let rationale = format!("{}x", "\u{10400}".repeat(512));
+    let payload = serde_json::json!({"request_id":"oversized","from":{"id":from,"revision":from_revision,"quote":notes[0].content},"to":{"id":to,"revision":to_revision,"quote":notes[1].content},"relationship":"supports","rationale":rationale,"confirmed":true});
+    let result = repo
+        .propose_remote_endpoint(RemoteEndpointProposalInput {
+            mutation: RemoteMutationInput {
+                instance_id: "fixture".into(),
+                request_id: "oversized".into(),
+                operation: "propose_endpoint".into(),
+                payload_fingerprint: "b".repeat(64),
+                payload,
+                result: serde_json::json!({}),
+            },
+            from_id: from,
+            from_revision,
+            from_quote: notes[0].content.clone(),
+            to_id: to,
+            to_revision,
+            to_quote: notes[1].content.clone(),
+            edge_type: EdgeType::Supports,
+            rationale,
+        })
+        .await;
+    assert!(
+        matches!(&result, Err(DbError::InvalidMutationRequest(_))),
+        "{result:?}"
+    );
+    assert_eq!(count(&repo, "proposed_edge").await, 0);
+    assert_eq!(count(&repo, "remote_mutation_receipt").await, 0);
+    assert_eq!(count(&repo, "supports").await, 0);
+}
 #[tokio::test]
 async fn generic_acceptance_transaction_fences_changed_endpoint_after_preflight() {
     let repo = Repository::new(init_memory().await.unwrap());
