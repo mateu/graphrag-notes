@@ -815,13 +815,18 @@ impl Repository {
         embedding: Vec<f32>,
     ) -> Result<()> {
         let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$id]");
         self.db
-            .query(
-                "UPDATE note SET embedding = $embedding, updated_at = time::now() WHERE id = $id",
-            )
+            .query(format!(
+                "BEGIN TRANSACTION; {invalidation} \
+                 UPDATE note SET embedding = $embedding, updated_at = time::now() WHERE id = $id; \
+                 COMMIT TRANSACTION;"
+            ))
             .bind(("id", id.clone()))
             .bind(("embedding", embedding))
-            .await?;
+            .await?
+            .check()?;
 
         Ok(())
     }

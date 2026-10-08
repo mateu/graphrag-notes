@@ -39,10 +39,31 @@ fn default_limit() -> usize {
     20
 }
 
-/// The application maps the database's non-decoding family classification into
-/// `job_type`, so damaged saved enrichment plans remain hidden without decoding.
+/// The application maps immutable family authority into `job_type`. Unknown
+/// legacy/corrupt authority stays hidden until an explicit Enrich credential
+/// elects to inspect its projected status.
 pub(crate) fn job_visible(principal: &Principal, job: &RemoteJobStatus) -> bool {
-    job.job_type != "remote_enrichment" || principal.allows(Capability::Enrich)
+    !matches!(
+        job.job_type.as_str(),
+        "remote_enrichment" | "remote_unknown"
+    ) || principal.allows(Capability::Enrich)
+}
+
+/// Enrichment aliases are fenced by the owner-scoped status projection. Its
+/// family comes from the immutable admission marker, never private execution
+/// input that a recovery path may have quarantined.
+async fn owned_enrichment_status(
+    application: &dyn RemoteApplicationOperations,
+    caller: CallerIdentity,
+    id: &str,
+) -> graphrag_application::ApplicationResult<RemoteJobStatus> {
+    let job = application.get_remote_job(caller, id).await?;
+    if job.job_type != "remote_enrichment" {
+        return Err(graphrag_application::ApplicationError::NotFound(
+            "Owned enrichment job required".into(),
+        ));
+    }
+    Ok(job)
 }
 
 pub(crate) fn catalog() -> Vec<(Capability, Tool)> {
@@ -113,16 +134,19 @@ pub(crate) async fn dispatch(
                 Ok(x) => x,
                 Err(e) => return e,
             };
-            // Validate the job family and credential owner before any generic job control.
-            let receipt = match application
-                .read_source_enrichment_plan(caller.clone(), &input.id)
-                .await
+            let status = match owned_enrichment_status(application, caller.clone(), &input.id).await
             {
-                Ok(x) => x,
-                Err(e) => return application_failure(e),
+                Ok(status) => status,
+                Err(error) => return application_failure(error),
             };
             if name == "read_source_enrichment_plan" {
-                return success(receipt);
+                return match application
+                    .read_source_enrichment_plan(caller, &input.id)
+                    .await
+                {
+                    Ok(receipt) => success(receipt),
+                    Err(error) => application_failure(error),
+                };
             }
             let result = match name {
                 "cancel_source_enrichment_job" => {
@@ -135,28 +159,42 @@ pub(crate) async fn dispatch(
                         .resume_remote_job(caller.clone(), &input.id)
                         .await
                 }
-                _ => application.get_remote_job(caller.clone(), &input.id).await,
+                _ => Ok(status),
             };
             match result {
                 Ok(mut job) => {
-                    if let Some(result) = job.result.as_mut() {
-                        result["reviewed"] = serde_json::to_value(receipt.clone()).unwrap();
+                    if let Some(result) = job.result.as_mut().filter(|result| result.is_object()) {
                         match application
-                            .get_owned_uploaded_source(
-                                caller.clone(),
-                                receipt.plan["source_id"].as_str().unwrap_or_default(),
-                            )
+                            .read_source_enrichment_plan(caller.clone(), &input.id)
                             .await
                         {
-                            Ok(current) => {
-                                result["current_source"] = serde_json::to_value(current).unwrap()
+                            Ok(receipt) => {
+                                result["reviewed"] = serde_json::to_value(receipt.clone()).unwrap();
+                                match application
+                                    .get_owned_uploaded_source(
+                                        caller,
+                                        receipt.plan["source_id"].as_str().unwrap_or_default(),
+                                    )
+                                    .await
+                                {
+                                    Ok(current) => {
+                                        result["current_source"] =
+                                            serde_json::to_value(current).unwrap()
+                                    }
+                                    Err(error) => return application_failure(error),
+                                }
                             }
-                            Err(e) => return application_failure(e),
+                            // A status projection remains inspectable when only
+                            // private execution input was damaged. Validation is
+                            // the explicit decode quarantine signal; all other
+                            // failures still fail the request.
+                            Err(graphrag_application::ApplicationError::Validation(_)) => {}
+                            Err(error) => return application_failure(error),
                         }
                     }
                     success(job)
                 }
-                Err(e) => application_failure(e),
+                Err(error) => application_failure(error),
             }
         }
 

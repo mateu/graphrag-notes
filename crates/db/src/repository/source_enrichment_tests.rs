@@ -123,6 +123,81 @@ async fn prepared(repo: &Repository, plan: &SourceEnrichmentPlan) -> Vec<Note> {
     }
     notes
 }
+
+async fn detached_reviewed_endpoint(
+    repo: &Repository,
+    opening: &Note,
+    request_id: &str,
+    accepted: bool,
+) -> (Note, ProposedEdge) {
+    let mut detached = Note::new("Detached source-linked reviewed quote");
+    detached.source_id = opening.source_id.clone();
+    let detached = repo
+        .create_note_and_replace_entities_if_unchanged(detached, Vec::new(), opening)
+        .await
+        .unwrap();
+    assert_eq!(detached.source_id, opening.source_id);
+    assert_eq!(detached.source_generation, None);
+    let other = repo
+        .create_note(Note::new("Independent reviewed endpoint quote"))
+        .await
+        .unwrap();
+    let from_id = record_id_to_string(detached.id.as_ref().unwrap());
+    let to_id = record_id_to_string(other.id.as_ref().unwrap());
+    let from_revision = repo.inspect_record(&from_id, 0).await.unwrap().revision;
+    let to_revision = repo.inspect_record(&to_id, 0).await.unwrap().revision;
+    let rationale = "Detached source provenance review".to_string();
+    let payload = serde_json::json!({
+        "request_id": request_id,
+        "from": {"id": from_id, "revision": from_revision, "quote": detached.content},
+        "to": {"id": to_id, "revision": to_revision, "quote": other.content},
+        "relationship": "supports",
+        "rationale": rationale,
+        "confirmed": true
+    });
+    let receipt = repo
+        .propose_remote_endpoint(RemoteEndpointProposalInput {
+            mutation: RemoteMutationInput {
+                instance_id: "fixture".into(),
+                request_id: request_id.into(),
+                operation: "propose_endpoint".into(),
+                payload_fingerprint: "d".repeat(64),
+                payload,
+                result: serde_json::json!({}),
+            },
+            from_id,
+            from_revision,
+            from_quote: detached.content.clone(),
+            to_id,
+            to_revision,
+            to_quote: other.content.clone(),
+            edge_type: EdgeType::Supports,
+            rationale,
+        })
+        .await
+        .unwrap();
+    let proposal_id = parse_record_id(
+        receipt.result["id"].as_str().unwrap(),
+        Some("proposed_edge"),
+    )
+    .unwrap();
+    let proposal = repo.get_edge_proposal(&proposal_id).await.unwrap().unwrap();
+    if accepted {
+        let accepted = repo
+            .accept_edge_proposal(
+                proposal.id.as_ref().unwrap(),
+                Some("reviewer".into()),
+                Some("Reviewed detached source provenance".into()),
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status, ProposedEdgeStatus::Accepted);
+        (detached, accepted)
+    } else {
+        (detached, proposal)
+    }
+}
 #[tokio::test]
 async fn checkpoint_resume_atomic_promotion_preserves_identity_generation_and_vectors() {
     let db = init_memory().await.unwrap();
@@ -856,4 +931,90 @@ async fn published_evidence_currency_requires_current_owned_notes_and_complete_m
         .rollback_source_entity_enrichment(&plan, true)
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn source_epoch_publication_retires_detached_reviewed_endpoints() {
+    for (boundary, accepted) in [
+        ("promotion", false),
+        ("promotion", true),
+        ("rollback", false),
+        ("rollback", true),
+    ] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let source = upload(&repo, input("original", "Atlas"), &["Atlas"]).await;
+        let plan = plan(&source, "Atlas");
+        let generated = prepared(&repo, &plan).await;
+        if boundary == "rollback" {
+            repo.promote_source_entity_enrichment(&plan).await.unwrap();
+        }
+        let (detached, proposal) = detached_reviewed_endpoint(
+            &repo,
+            &generated[0],
+            &format!("detached-{boundary}-{accepted}"),
+            accepted,
+        )
+        .await;
+        let unrelated = repo
+            .create_note(Note::new("Unrelated manual graph endpoint"))
+            .await
+            .unwrap();
+        repo.create_edge(
+            detached.id.as_ref().unwrap(),
+            unrelated.id.as_ref().unwrap(),
+            EdgeType::Contradicts,
+            None,
+        )
+        .await
+        .unwrap();
+        let before = repo
+            .inspect_record(&record_id_to_string(detached.id.as_ref().unwrap()), 0)
+            .await
+            .unwrap()
+            .revision;
+        assert_eq!(
+            rows(&repo, "supports").await.len(),
+            if accepted { 1 } else { 0 }
+        );
+        assert_eq!(rows(&repo, "contradicts").await.len(), 1);
+
+        if boundary == "promotion" {
+            repo.promote_source_entity_enrichment(&plan).await.unwrap();
+        } else {
+            repo.rollback_source_entity_enrichment(&plan, true)
+                .await
+                .unwrap();
+        }
+
+        let after = repo
+            .inspect_record(&record_id_to_string(detached.id.as_ref().unwrap()), 0)
+            .await
+            .unwrap()
+            .revision;
+        assert_ne!(
+            after, before,
+            "{boundary}/{accepted} must advance provenance"
+        );
+        assert_eq!(
+            repo.get_edge_proposal(proposal.id.as_ref().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .to_string(),
+            "superseded",
+            "{boundary}/{accepted}"
+        );
+        assert_eq!(
+            rows(&repo, "supports").await.len(),
+            0,
+            "{boundary}/{accepted} removes only proposal materialization"
+        );
+        assert_eq!(rows(&repo, "contradicts").await.len(), 1);
+        assert!(repo
+            .get_note(&record_id_to_string(unrelated.id.as_ref().unwrap()))
+            .await
+            .unwrap()
+            .is_some());
+    }
 }

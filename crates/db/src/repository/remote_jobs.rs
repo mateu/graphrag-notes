@@ -98,8 +98,9 @@ pub struct RemoteUploadJob {
 #[derive(Debug, Clone)]
 pub struct RemoteUploadJobStatus {
     pub job: ProcessingJob,
-    /// Family classification does not require decoding a potentially damaged plan.
-    pub enrichment: bool,
+    /// Immutable family authority. `None` is an unclassified legacy/corrupt
+    /// row and must not be treated as either executable family.
+    pub enrichment: Option<bool>,
     pub instance_id: String,
     pub source_id: Option<RecordId>,
     pub source_generation: Option<u64>,
@@ -112,7 +113,7 @@ pub struct RemoteUploadJobStatus {
 impl From<RemoteUploadJob> for RemoteUploadJobStatus {
     fn from(job: RemoteUploadJob) -> Self {
         Self {
-            enrichment: job.input.enrichment.is_some(),
+            enrichment: Some(job.input.enrichment.is_some()),
             job: job.job,
             instance_id: job.instance_id,
             source_id: job.source_id,
@@ -209,7 +210,7 @@ impl JobRow {
     fn status(self) -> RemoteUploadJobStatus {
         RemoteUploadJobStatus {
             job: self.processing_job(),
-            enrichment: self.remote_enrichment_job != Some(false),
+            enrichment: self.remote_enrichment_job,
             instance_id: self.remote_instance_id,
             source_id: self.remote_source_id,
             source_generation: self.remote_source_generation,
@@ -1194,6 +1195,12 @@ impl Repository {
                     && source.metadata["remote_upload"]["extract_entities"]
                         == input.extract_entities
             });
+        let pinned_source_provenance_changed = unchanged
+            && prior
+                .as_ref()
+                .and_then(|source| source.metadata.get("remote_upload"))
+                .and_then(|origin| origin.get("source"))
+                != Some(&input.source_provenance);
         if input.preserve_unchanged && (!unchanged || !prior_exact_input_matches) {
             return Err(DbError::RemoteJobSourceConflict(record_id_to_string(
                 &lease.job_id,
@@ -1268,7 +1275,10 @@ impl Repository {
             }
         }
         let source_sql: String = if unchanged {
-            "UPDATE $source SET metadata = $metadata, updated_at = time::now(); ".into()
+            format!(
+                "UPDATE $source SET metadata = $metadata, updated_at = time::now(); IF $pinned_source_provenance_changed {{ {} }}; ",
+                super::remote_endpoint_proposals::invalidate_source_reviewed_endpoints_sql("$source"),
+            )
         } else {
             "UPSERT $source SET source_type = 'markdown', title = $title, uri = $uri, normalized_uri = $uri, content = $markdown, content_hash = $hash, generation = $generation, successful_generation = $successful, status = 'pending', last_error = NONE, metadata = $metadata, created_at = IF created_at = NONE THEN time::now() ELSE created_at END, updated_at = time::now(); ".into()
         };
@@ -1278,7 +1288,7 @@ impl Repository {
             .bind(("source", source_id)).bind(("title", input.title.clone())).bind(("uri", job.source_uri.clone())).bind(("markdown", input.markdown.clone())).bind(("hash", hash))
             .bind(("unchanged_revision", unchanged_revision))
             .bind(("generation", generation as i64)).bind(("successful", prior.map_or(0, |source| source.successful_generation) as i64)).bind(("generation_label", generation.to_string()))
-            .bind(("rebuild", enriched_replacement)).bind(("metadata", metadata)).bind(("action", action)).bind(("total", items.len() as i64)).bind(("items", items)).bind(("unchanged",unchanged)).bind(("checkpoint",checkpoint)).bind(("phase", if unchanged {"promoted"} else if input.policy_migration.is_some() || enriched_replacement {"migration_preparing"} else {"preparing"}))).await?;
+            .bind(("rebuild", enriched_replacement)).bind(("metadata", metadata)).bind(("action", action)).bind(("total", items.len() as i64)).bind(("items", items)).bind(("unchanged",unchanged)).bind(("pinned_source_provenance_changed", pinned_source_provenance_changed)).bind(("checkpoint",checkpoint)).bind(("phase", if unchanged {"promoted"} else if input.policy_migration.is_some() || enriched_replacement {"migration_preparing"} else {"preparing"}))).await?;
         check_write(response.take_errors(), lease, "upload.begin_generation")?;
         self.get_source(&job.source_uri)
             .await?
@@ -1538,7 +1548,9 @@ impl Repository {
             .iter()
             .map(Entity::effective_identity_key)
             .collect::<Vec<_>>();
-        let mut response = migration_probe("upload.persist_entities", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation AND source_generation = source_id.successful_generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; {} IF $extraction_scope != NONE {{ UPDATE $note SET extraction_scope = $extraction_scope; }}; DELETE mentions WHERE in = $note; {} UPDATE $job SET remote_phase = 'extracting', completed_count += 1, checkpoint = $checkpoint; COMMIT TRANSACTION;", guard_sql(), super::notes::replacement_entities_transaction(), super::notes::replacement_mentions_transaction("$note")))
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$note]");
+        let mut response = migration_probe("upload.persist_entities", "sdk_await", self.db.query(format!("BEGIN TRANSACTION; {} LET $selected = (SELECT VALUE id FROM note WHERE id = $note AND source_id = $source AND source_generation = $generation AND source_generation = source_id.successful_generation); IF array::len($selected) != 1 {{ THROW '{FENCE}'; }}; {} IF $extraction_scope != NONE AND (SELECT VALUE extraction_scope FROM $note)[0] != $extraction_scope {{ {invalidation} UPDATE $note SET extraction_scope = $extraction_scope; }}; DELETE mentions WHERE in = $note; {} UPDATE $job SET remote_phase = 'extracting', completed_count += 1, checkpoint = $checkpoint; COMMIT TRANSACTION;", guard_sql(), super::notes::replacement_entities_transaction(), super::notes::replacement_mentions_transaction("$note")))
             .bind(("job", lease.job_id.clone())).bind(("instance", lease.instance_id.clone())).bind(("epoch", lease.service_epoch.clone())).bind(("worker", lease.worker_token.clone()))
             .bind(("extraction_scope", extraction_scope)).bind(("note", note_id)).bind(("source", job.source_id.clone())).bind(("generation", job.source_generation)).bind(("checkpoint", job.job.item_ids[item_index].clone())).bind(("replacement_entities", entities)).bind(("replacement_entity_names", entity_names))).await?;
         check_write(response.take_errors(), lease, "upload.persist_entities")?;

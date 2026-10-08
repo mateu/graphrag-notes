@@ -269,6 +269,7 @@ fn stage_value(stage: &Stage) -> Result<serde_json::Value> {
     }
     Ok(value)
 }
+
 /// Metadata-only eligibility, not a graph freshness proof. Public readback must also
 /// call Repository::source_entity_enrichment_current to validate datastore evidence.
 pub fn source_entity_enrichment_metadata_eligible(source: &Source) -> bool {
@@ -790,7 +791,7 @@ impl Repository {
             notes.push(note);
         }
         effects.push_str(
-            &super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("$note_ids"),
+            &super::remote_endpoint_proposals::invalidate_source_reviewed_endpoints_sql("$source"),
         );
         staged.status = "promoted".into();
         let mut metadata = source.metadata.clone();
@@ -898,6 +899,11 @@ impl Repository {
             effects.push_str(&format!("IF array::len((SELECT VALUE id FROM {table} WHERE in IN $note_ids OR out IN $note_ids LIMIT 1)) != 0 {{ THROW '{FENCE}'; }}; "));
         }
         effects.push_str(&format!("IF array::len((SELECT VALUE id FROM proposed_edge WHERE status != 'rejected' AND status != 'superseded' AND (in IN $note_ids OR out IN $note_ids) LIMIT 1)) != 0 {{ THROW '{FENCE}'; }}; "));
+        // Retire reviewed decisions pinned to detached source-linked notes too.
+        // The dependency guards above remain deliberately limited to owned notes.
+        effects.push_str(
+            &super::remote_endpoint_proposals::invalidate_source_reviewed_endpoints_sql("$source"),
+        );
         if staged.status == "promoted" {
             for (index, item) in staged.items.iter().enumerate() {
                 let count = item.entities.as_ref().ok_or_else(conflict)?.len();

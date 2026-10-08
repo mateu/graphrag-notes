@@ -782,8 +782,10 @@ impl Repository {
             DbError::QueryFailed("embedding dimension exceeds database integer range".into())
         })?;
         let completed_count = count_to_i64(completed_count)?;
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("$notes");
         self.db
-            .query(
+            .query(format!(
                 "BEGIN TRANSACTION; \
                  LET $job_valid = (SELECT VALUE count() FROM processing_job WHERE id = $job_id AND job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner AND reindex_lease_expires_at >= time::now() GROUP ALL)[0] = 1; \
                  LET $notes_expected = (SELECT VALUE count() FROM note WHERE id IN $notes GROUP ALL)[0]; \
@@ -797,6 +799,7 @@ impl Repository {
                  LET $conversations_valid = (SELECT VALUE count() FROM conversation WHERE id IN $conversations AND reindex_summary_embedding IS NOT NONE AND reindex_source_snapshot.title = title AND reindex_source_snapshot.summary = summary AND reindex_staging_owner = $owner GROUP ALL)[0] = $conversations_expected; \
                  IF !$job_valid OR !$notes_valid OR !$messages_valid OR !$conversations_valid THEN THROW 'reindex staging is stale, incomplete, or no longer owned' END; \
                  IF $validate_full_scope_membership AND ($notes_widened OR $messages_widened OR $conversations_widened) THEN THROW 'full reindex scope widened after snapshot; start a new reindex job' END; \
+                 {invalidation}\
                  UPDATE note SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $notes; \
                  UPDATE message SET embedding = reindex_embedding, reindex_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $messages; \
                  UPDATE conversation SET summary_embedding = reindex_summary_embedding, reindex_summary_embedding = NONE, reindex_source_text = NONE, reindex_staging_owner = NONE WHERE id IN $conversations; \
@@ -809,7 +812,7 @@ impl Repository {
                  UPDATE $job_id SET status = 'completed', completed_count = $completed_count, checkpoint = NONE, last_error = NONE, finished_at = time::now(), updated_at = time::now() \
                      WHERE job_type = 'reindex' AND status = 'running' AND reindex_lease_owner = $owner AND reindex_lease_expires_at >= time::now(); \
                  COMMIT TRANSACTION;",
-            )
+            ))
             .bind(("job_id", job_id.clone()))
             .bind(("owner", owner.to_string()))
             .bind(("notes", notes))

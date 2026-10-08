@@ -3063,6 +3063,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .enrichment
+                == Some(true)
         );
         drop(vectorless);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -3088,6 +3089,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .enrichment
+                == Some(true)
         );
         let restored_lineage = restored
             .get_source(&lineage_source.id)
@@ -3255,6 +3257,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .enrichment
+                == Some(true)
         );
         assert!(legacy
             .get_remote_upload_job("backup-owner", &admitted.job_id)

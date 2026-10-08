@@ -618,7 +618,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ordinary.len(), 3);
-        assert!(ordinary.iter().all(|status| !status.enrichment));
+        assert!(ordinary
+            .iter()
+            .all(|status| status.enrichment == Some(false)));
         let all = repo
             .list_remote_upload_job_statuses("owner", 20, true)
             .await
@@ -626,7 +628,7 @@ mod tests {
         assert_eq!(all.len(), 6);
         let mut enrichment_ids = all
             .iter()
-            .filter(|status| status.enrichment)
+            .filter(|status| status.enrichment == Some(true))
             .map(|status| record_id_to_string(status.job.id.as_ref().unwrap()))
             .collect::<Vec<_>>();
         enrichment_ids.sort();

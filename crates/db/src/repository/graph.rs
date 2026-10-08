@@ -1271,6 +1271,8 @@ impl Repository {
         } else {
             ""
         };
+        let invalidation =
+            super::remote_endpoint_proposals::invalidate_reviewed_endpoint_sql("[$note_id]");
         let mut response = self
             .db
             .query(format!(
@@ -1280,7 +1282,7 @@ impl Repository {
                      OR source_generation = source_id.successful_generation \
                      OR (source_generation = source_id.generation AND source_id.status = 'pending')) LIMIT 1); \
                  IF array::len($writable) != 1 {{ THROW 'entity replacement endpoint is no longer writable'; }}; {} \
-                 IF $extraction_scope != NONE {{ UPDATE $note_id SET extraction_scope = $extraction_scope; }}; \
+                 IF $extraction_scope != NONE AND (SELECT VALUE extraction_scope FROM $note_id)[0] != $extraction_scope {{ {invalidation} UPDATE $note_id SET extraction_scope = $extraction_scope; }}; \
                  {deletion} {} COMMIT TRANSACTION;",
                 super::notes::replacement_entities_transaction(),
                 super::notes::replacement_mentions_transaction("$note_id")

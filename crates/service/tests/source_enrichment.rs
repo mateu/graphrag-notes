@@ -440,5 +440,152 @@ async fn authenticated_enrichment_is_separately_opt_in_owned_reviewed_and_durabl
             "Missing enrichment input must not decode as an executable ordinary upload"
         );
     }
+    // Re-grant Enrich to the owner only after Jobs-only visibility has been
+    // checked. The matrix below corrupts the whole private envelope while the
+    // immutable admission family remains true.
+    for credential in &mut credentials.credentials {
+        if credential.instance_id == "enricher" {
+            credential.capabilities.push(Capability::Enrich);
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&credentials).unwrap()).unwrap();
+    let enrichment_job =
+        graphrag_db::parse_record_id(id.as_str().unwrap(), Some("processing_job")).unwrap();
+    let ordinary_job =
+        graphrag_db::parse_record_id(&upload.job_id, Some("processing_job")).unwrap();
+    for mutation in [
+        "UNSET remote_input",
+        "SET remote_input.enrichment = NULL",
+        "SET remote_input = { broken: true }",
+    ] {
+        db.query(format!("UPDATE $job {mutation}"))
+            .bind(("job", enrichment_job.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        for retained_result in [Some(json!({"durable": "checkpoint"})), None] {
+            db.query(
+                "UPDATE $job SET status = 'completed', remote_result = $result, remote_cancel_requested = false, updated_at = time::now()",
+            )
+            .bind(("job", enrichment_job.clone()))
+            .bind(("result", retained_result.clone()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+            for alias in ["get_source_enrichment_job", "cancel_source_enrichment_job"] {
+                let response = fixture.tool("jobs", alias, json!({"id":id})).await;
+                assert!(error(&response).is_null(), "{mutation} {alias}: {response}");
+                assert_eq!(data(&response)["status"], "completed");
+                assert_eq!(
+                    &data(&response)["result"],
+                    retained_result.as_ref().unwrap_or(&Value::Null)
+                );
+            }
+        }
+        db.query(
+            "UPDATE $job SET status = 'failed', remote_cancel_requested = false, updated_at = time::now()",
+        )
+        .bind(("job", enrichment_job.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        for alias in ["read_source_enrichment_plan", "retry_source_enrichment_job"] {
+            assert_eq!(
+                error(&fixture.tool("jobs", alias, json!({"id":id})).await),
+                "invalid_input",
+                "{mutation} {alias}"
+            );
+        }
+        let unchanged = repo
+            .get_remote_upload_job_status("enricher", id.as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.job.status, "failed");
+        assert!(!unchanged.cancel_requested);
+        // Hold a synthetic active lease so background workers cannot claim or
+        // execute the damaged input while the owner requests cancellation.
+        db.query(
+            "UPDATE $job SET status = 'running', remote_service_epoch = 'held-fixture', remote_worker_token = 'held-fixture', remote_cancel_requested = false",
+        )
+        .bind(("job", enrichment_job.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let cancelled = fixture
+            .tool("jobs", "cancel_source_enrichment_job", json!({"id":id}))
+            .await;
+        assert!(error(&cancelled).is_null(), "{mutation}: {cancelled}");
+        let persisted = repo
+            .get_remote_upload_job_status("enricher", id.as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(persisted.cancel_requested);
+        assert_eq!(persisted.job.status, "running");
+    }
+    for alias in [
+        "get_source_enrichment_job",
+        "cancel_source_enrichment_job",
+        "retry_source_enrichment_job",
+        "read_source_enrichment_plan",
+    ] {
+        assert_eq!(
+            error(&fixture.tool("foreign", alias, json!({"id":id})).await),
+            "not_found",
+            "foreign owner must not pass {alias}"
+        );
+        assert_eq!(
+            error(
+                &fixture
+                    .tool("jobs", alias, json!({"id":upload.job_id}))
+                    .await
+            ),
+            "not_found",
+            "ordinary upload must not pass {alias}"
+        );
+    }
+    let ordinary = repo
+        .get_remote_upload_job_status("enricher", &upload.job_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ordinary.job.id, Some(ordinary_job));
+    assert!(!ordinary.cancel_requested);
+    // A privileged legacy/corruption setup can leave no immutable marker at
+    // all. It is neither an ordinary nor an enrichment family: Enrich aliases
+    // fail closed, and Jobs-only generic control must keep it hidden.
+    db.query(
+        "REMOVE FIELD remote_enrichment_job ON processing_job; \
+         UPDATE processing_job UNSET remote_enrichment_job",
+    )
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+    assert_eq!(
+        error(
+            &fixture
+                .tool("jobs", "get_source_enrichment_job", json!({"id":id}))
+                .await
+        ),
+        "not_found"
+    );
+    for credential in &mut credentials.credentials {
+        if credential.instance_id == "enricher" {
+            credential
+                .capabilities
+                .retain(|capability| *capability != Capability::Enrich);
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&credentials).unwrap()).unwrap();
+    assert_eq!(
+        error(&fixture.tool("jobs", "get_job", json!({"id":id})).await),
+        "forbidden"
+    );
     fixture.stop().await;
 }

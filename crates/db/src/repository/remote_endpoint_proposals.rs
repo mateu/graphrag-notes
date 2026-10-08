@@ -38,6 +38,28 @@ pub(super) fn invalidate_reviewed_endpoint_sql(notes: &str) -> String {
     format!("LET $reviewed_ids = (SELECT VALUE id FROM proposed_edge WHERE generator = 'remote-reviewed-endpoint' AND status IN ['pending','accepting','accepted'] AND (in IN {notes} OR out IN {notes})); DELETE supports WHERE proposal_id IN $reviewed_ids; DELETE contradicts WHERE proposal_id IN $reviewed_ids; DELETE derived_from WHERE proposal_id IN $reviewed_ids; DELETE related_to WHERE proposal_id IN $reviewed_ids; UPDATE proposed_edge SET status='superseded',superseded_at=time::now(),supersession_reason='reviewed endpoint content or policy changed; fresh review required',resulting_edge_id=NONE,updated_at=time::now() WHERE id IN $reviewed_ids; ")
 }
 
+/// Source provenance also participates in the revision of generation-free notes.
+pub(super) fn invalidate_source_reviewed_endpoints_sql(source: &str) -> String {
+    format!(
+        "LET $source_reviewed_note_ids = (SELECT VALUE id FROM note WHERE source_id = {source}); {}",
+        invalidate_reviewed_endpoint_sql("$source_reviewed_note_ids")
+    )
+}
+
+/// Match the source-derived fields pinned by `inspect_note`, not the upload
+/// revision's stricter capture authority or unrelated staging metadata.
+pub(super) fn reviewed_source_provenance_sql(source: &str) -> String {
+    format!(
+        "(SELECT uri ?? normalized_uri AS source_uri, source_type, \
+         metadata.graph_policy_revision AS graph_policy_revision, \
+         IF source_type = 'manual' AND string::starts_with(uri ?? '', 'mcp://capture/') \
+         THEN {{ instance_id: metadata.remote_capture.instance_id, source: metadata.remote_capture.source }} \
+         ELSE IF source_type = 'markdown' AND string::starts_with(uri ?? '', 'mcp://upload/') \
+         THEN {{ instance_id: metadata.remote_upload.instance_id, source: metadata.remote_upload.source }} \
+         ELSE NONE END AS remote_origin FROM {source})[0]"
+    )
+}
+
 pub(super) fn source_snapshot_guards() -> &'static str {
     "FOR $expected IN $endpoint_sources { LET $matches=(SELECT VALUE id FROM source WHERE id=$expected.id AND metadata=$expected.metadata AND generation=$expected.generation AND successful_generation=$expected.successful_generation AND status=$expected.status AND content=$expected.content AND content_hash=$expected.content_hash AND title=$expected.title); IF array::len($matches)!=1 { THROW 'reviewed-endpoint-source-conflict'; }; }; "
 }
