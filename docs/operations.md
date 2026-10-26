@@ -56,6 +56,15 @@ Notes:
 - Avoid concurrent access to the same DB path; overlapping processes will fail on the RocksDB `LOCK` file.
 - Validate on a copied DB before doing a real cutover.
 
+## SurrealDB 3.2 → 3.3 upgrade
+
+SurrealDB 3.3 upgrades on-disk data in a one-way format change: after the
+upgrade, a 3.2 binary can misread the migrated data. Before replacing a 3.2
+GraphRAG binary or opening its database with 3.3, create and verify a portable
+backup with `graphrag backup create` and `graphrag backup verify`. Keep the
+previous binary available only for restoring that verified backup into a fresh
+location; do not point it at a database that 3.3 has already opened.
+
 ## Portable logical backups
 
 `graphrag backup` is the application-level recovery format. It writes a

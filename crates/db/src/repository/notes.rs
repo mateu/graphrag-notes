@@ -135,17 +135,11 @@ fn check_note_mutation_errors(
             // The SDK preserves the engine's THROW display prefix rather
             // than always marking it as a public `Thrown` error. Match only
             // our fixed SQL sentinel; callers still receive a typed error.
-            (error
+            error
                 .message()
                 .strip_prefix("An error occurred: ")
                 .unwrap_or(error.message())
-                == EDITOR_REVISION_CONFLICT)
-                || matches!(
-                    error.details(),
-                    surrealdb_types::ErrorDetails::Query(Some(
-                        surrealdb_types::QueryError::TransactionConflict
-                    ))
-                )
+                == EDITOR_REVISION_CONFLICT
         }) {
             return Err(DbError::NoteRevisionConflict(record_id_to_string(
                 &editor_source_id(expected)?,
@@ -264,6 +258,39 @@ impl Repository {
 
     async fn create_note_and_replace_entities_guarded(
         &self,
+        mut note: Note,
+        entities: Vec<Entity>,
+        expected: Option<&Note>,
+        conversation_id: Option<&RecordId>,
+    ) -> Result<Note> {
+        let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        if note.id.is_none() {
+            note.id = Some(RecordId::new("note", Uuid::new_v4().to_string()));
+        }
+        let repo = self.clone();
+        let expected = expected.cloned();
+        let conversation_id = conversation_id.cloned();
+        retry_transaction_conflicts(|| {
+            let repo = repo.clone();
+            let note = note.clone();
+            let entities = entities.clone();
+            let expected = expected.clone();
+            let conversation_id = conversation_id.clone();
+            async move {
+                repo.create_note_and_replace_entities_guarded_once(
+                    note,
+                    entities,
+                    expected.as_ref(),
+                    conversation_id.as_ref(),
+                )
+                .await
+            }
+        })
+        .await
+    }
+
+    async fn create_note_and_replace_entities_guarded_once(
+        &self,
         note: Note,
         entities: Vec<Entity>,
         expected: Option<&Note>,
@@ -273,7 +300,6 @@ impl Repository {
         let guard = expected
             .map(|_| editor_snapshot_guard(false))
             .unwrap_or_default();
-        let _completion_guard = self.proposal_acceptance_lock.lock().await;
         let replacement_entities = replacement_entities_transaction();
         let replacement_mentions = replacement_mentions_transaction("$id");
         let entity_names: Vec<String> = entities
@@ -500,6 +526,35 @@ impl Repository {
         expected: Option<&Note>,
     ) -> Result<Note> {
         let _completion_guard = self.proposal_acceptance_lock.lock().await;
+        let repo = self.clone();
+        let id = id.to_owned();
+        let expected = expected.cloned();
+        retry_transaction_conflicts(|| {
+            let repo = repo.clone();
+            let id = id.clone();
+            let note = note.clone();
+            let entities = entities.clone();
+            let expected = expected.clone();
+            async move {
+                repo.update_note_and_replace_entities_guarded_once(
+                    &id,
+                    note,
+                    entities,
+                    expected.as_ref(),
+                )
+                .await
+            }
+        })
+        .await
+    }
+
+    async fn update_note_and_replace_entities_guarded_once(
+        &self,
+        id: &str,
+        note: Note,
+        entities: Vec<Entity>,
+        expected: Option<&Note>,
+    ) -> Result<Note> {
         let raw_id = id.strip_prefix("note:").unwrap_or(id);
         let note_id = RecordId::new("note", raw_id);
         let (existing, guard, editor_source) = if let Some(expected) = expected {
