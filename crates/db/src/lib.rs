@@ -106,10 +106,14 @@ impl DbResponse {
         }
     }
 
-    pub fn take<R>(&mut self, index: impl QueryResult<R>) -> surrealdb::Result<R>
+    pub fn take<R>(&mut self, index: usize) -> surrealdb::Result<R>
     where
         R: SurrealValue,
+        usize: QueryResult<R>,
     {
+        if let Some(error) = self.extracted_errors.remove(&index) {
+            return Err(error);
+        }
         self.inner.take(index)
     }
 
@@ -351,11 +355,15 @@ pub struct DbResponseWithStats {
 impl DbResponseWithStats {
     pub fn take<R>(
         &mut self,
-        index: impl QueryResult<R>,
+        index: usize,
     ) -> Option<(surrealdb::method::Stats, surrealdb::Result<R>)>
     where
         R: SurrealValue,
+        usize: QueryResult<R>,
     {
+        if let Some(error) = self.extracted_errors.remove(&index) {
+            return Some((surrealdb::method::Stats::default(), Err(error)));
+        }
         self.inner.take(index)
     }
 
@@ -603,21 +611,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn extracted_statement_errors_remain_visible_and_keep_indices() {
+    async fn extracted_statement_errors_remain_visible_at_their_original_indices() {
         let db = init_memory().await.unwrap();
         let response = db
             .client
-            .query("RETURN 'kept'; THROW 'graphrag-note-editor-revision-conflict';")
+            .query("THROW 'first'; RETURN 'kept'; THROW 'third';")
             .await
             .unwrap();
         let mut response = DbResponse::new(response);
-        assert_eq!(response.num_statements(), 2);
-        let _: surrealdb::types::Value = response.take(0).unwrap();
+        assert_eq!(response.num_statements(), 3);
+        assert!(response.take::<surrealdb::types::Value>(0).is_err());
+        let _: surrealdb::types::Value = response.take(1).unwrap();
         let errors = response.take_errors();
         assert_eq!(errors.len(), 1);
-        assert!(errors
-            .values()
-            .all(|error| !is_retryable_transaction_conflict(error)));
+        assert!(errors.contains_key(&2));
+    }
+
+    #[tokio::test]
+    async fn extracted_statement_errors_check_uses_lowest_index() {
+        let db = init_memory().await.unwrap();
+        let response = db
+            .client
+            .query("THROW 'first'; THROW 'second';")
+            .await
+            .unwrap();
+        let error = DbResponse::new(response).check().unwrap_err();
+        assert!(error.to_string().contains("first"));
     }
 
     #[test]
