@@ -5,4 +5,8 @@ ignore = [
     # SurrealDB selects rsa only for WebAssembly; native builds use aws-lc-rs.
     # The advisory currently has no fixed rsa release.
     "RUSTSEC-2023-0071",
+    # SurrealDB's WebAssembly-only JWT RustCrypto backend pulls elliptic-curve
+    # 0.13 / crypto-bigint 0.5; native builds use aws-lc-rs instead. Guarded by
+    # scripts/check-audit-exemptions.sh until upstream adopts the fixed stack.
+    "RUSTSEC-2026-0387",
 ]
