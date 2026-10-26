@@ -115,8 +115,20 @@ const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM
 const TRANSACTION_CONFLICT_RETRY_ATTEMPTS: usize = 5;
 
 fn is_retryable_transaction_conflict(error: &DbError) -> bool {
-    matches!(error, DbError::QueryFailed(message) if message.contains("Transaction conflict")
-        || message.contains("The query was not executed due to a failed transaction"))
+    match error {
+        DbError::QueryFailed(message) => {
+            message.contains("Transaction conflict")
+                || message.contains("The query was not executed due to a failed transaction")
+        }
+        DbError::Surreal(error) => matches!(
+            error.details(),
+            surrealdb_types::ErrorDetails::Query(Some(
+                surrealdb_types::QueryError::TransactionConflict
+                    | surrealdb_types::QueryError::NotExecuted
+            ))
+        ),
+        _ => false,
+    }
 }
 
 /// Retry only a known-aborted SurrealDB transaction. The closure must include
@@ -3542,9 +3554,10 @@ mod tests {
             let attempt = attempts.fetch_add(1, Ordering::SeqCst);
             async move {
                 if attempt == 0 {
-                    Err(DbError::QueryFailed(
-                        "statement 12: Cannot COMMIT: Transaction conflict".into(),
-                    ))
+                    Err(DbError::Surreal(surrealdb::Error::query(
+                        "transaction conflict".into(),
+                        surrealdb::types::QueryError::TransactionConflict,
+                    )))
                 } else {
                     Ok("committed")
                 }
