@@ -37,6 +37,8 @@ use std::time::Duration;
 use surrealdb::engine::local::RocksDb;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::method::IntoVariables;
+use surrealdb::opt::{QueryResult, QueryStream};
+use surrealdb::types::SurrealValue;
 use surrealdb::Surreal;
 use surrealdb_types::Variables;
 use tokio::sync::Mutex;
@@ -72,6 +74,82 @@ pub(crate) fn statement_errors_are_retryable_conflict(
     errors: &HashMap<usize, surrealdb::Error>,
 ) -> bool {
     !errors.is_empty() && errors.values().all(is_retryable_transaction_conflict)
+}
+
+/// A query response whose statement errors may have been inspected by the
+/// retry boundary. SurrealDB removes errors from `IndexedResults` when read,
+/// so retain them for the caller-facing response contract.
+#[derive(Debug)]
+pub struct DbResponse {
+    inner: surrealdb::IndexedResults,
+    extracted_errors: HashMap<usize, surrealdb::Error>,
+    statement_count: usize,
+}
+
+impl DbResponse {
+    fn new(mut inner: surrealdb::IndexedResults) -> Self {
+        let statement_count = inner.num_statements();
+        let extracted_errors = inner.take_errors();
+        Self {
+            inner,
+            extracted_errors,
+            statement_count,
+        }
+    }
+
+    fn uninspected(inner: surrealdb::IndexedResults) -> Self {
+        let statement_count = inner.num_statements();
+        Self {
+            inner,
+            extracted_errors: HashMap::new(),
+            statement_count,
+        }
+    }
+
+    pub fn take<R>(&mut self, index: impl QueryResult<R>) -> surrealdb::Result<R>
+    where
+        R: SurrealValue,
+    {
+        self.inner.take(index)
+    }
+
+    pub fn stream<R>(
+        &mut self,
+        index: impl QueryStream<R>,
+    ) -> surrealdb::Result<surrealdb::method::QueryStream<R>> {
+        self.inner.stream(index)
+    }
+
+    pub fn take_errors(&mut self) -> HashMap<usize, surrealdb::Error> {
+        let mut errors = std::mem::take(&mut self.extracted_errors);
+        errors.extend(self.inner.take_errors());
+        errors
+    }
+
+    pub fn check(mut self) -> surrealdb::Result<Self> {
+        if let Some(index) = self.extracted_errors.keys().min().copied() {
+            return Err(self
+                .extracted_errors
+                .remove(&index)
+                .expect("selected extracted query error"));
+        }
+        self.inner = self.inner.check()?;
+        Ok(self)
+    }
+
+    pub fn num_statements(&self) -> usize {
+        self.statement_count
+    }
+
+    fn into_parts(
+        self,
+    ) -> (
+        surrealdb::IndexedResults,
+        HashMap<usize, surrealdb::Error>,
+        usize,
+    ) {
+        (self.inner, self.extracted_errors, self.statement_count)
+    }
 }
 
 /// Return true only for queries whose replay cannot duplicate a mutation.
@@ -263,17 +341,70 @@ where
 #[must_use = "queries do nothing unless you `.await` or poll them"]
 pub struct DbQueryWithStats(DbQuery);
 
+#[must_use = "queries do nothing unless you `.await` or poll them"]
+pub struct DbResponseWithStats {
+    inner: surrealdb::method::WithStats<surrealdb::IndexedResults>,
+    extracted_errors: HashMap<usize, surrealdb::Error>,
+    statement_count: usize,
+}
+
+impl DbResponseWithStats {
+    pub fn take<R>(
+        &mut self,
+        index: impl QueryResult<R>,
+    ) -> Option<(surrealdb::method::Stats, surrealdb::Result<R>)>
+    where
+        R: SurrealValue,
+    {
+        self.inner.take(index)
+    }
+
+    pub fn take_errors(&mut self) -> HashMap<usize, surrealdb::Error> {
+        let mut errors = std::mem::take(&mut self.extracted_errors);
+        errors.extend(
+            self.inner
+                .take_errors()
+                .into_iter()
+                .map(|(index, (_, error))| (index, error)),
+        );
+        errors
+    }
+
+    pub fn check(mut self) -> surrealdb::Result<Self> {
+        if let Some(index) = self.extracted_errors.keys().min().copied() {
+            return Err(self
+                .extracted_errors
+                .remove(&index)
+                .expect("selected extracted query error"));
+        }
+        self.inner = self.inner.check()?;
+        Ok(self)
+    }
+
+    pub fn num_statements(&self) -> usize {
+        self.statement_count
+    }
+}
+
 impl IntoFuture for DbQueryWithStats {
-    type Output = surrealdb::Result<surrealdb::method::WithStats<surrealdb::IndexedResults>>;
+    type Output = surrealdb::Result<DbResponseWithStats>;
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move { self.0.await.map(surrealdb::method::WithStats) })
+        Box::pin(async move {
+            let response = self.0.await?;
+            let (inner, extracted_errors, statement_count) = response.into_parts();
+            Ok(DbResponseWithStats {
+                inner: surrealdb::method::WithStats(inner),
+                extracted_errors,
+                statement_count,
+            })
+        })
     }
 }
 
 impl IntoFuture for DbQuery {
-    type Output = surrealdb::Result<surrealdb::IndexedResults>;
+    type Output = surrealdb::Result<DbResponse>;
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
@@ -286,11 +417,20 @@ impl IntoFuture for DbQuery {
                     .bind(variables.clone());
                 async move { query.await }
             };
-            if self.retry_transaction_conflicts {
-                retry_transaction_conflicts(execute).await
-            } else {
-                execute().await
+            if !self.retry_transaction_conflicts {
+                return execute().await.map(DbResponse::uninspected);
             }
+            retry_transaction_conflicts(|| async {
+                let response = DbResponse::new(execute().await?);
+                if statement_errors_are_retryable_conflict(&response.extracted_errors) {
+                    return Err(surrealdb::Error::query(
+                        "retryable statement-level transaction conflict".into(),
+                        surrealdb::types::QueryError::TransactionConflict,
+                    ));
+                }
+                Ok(response)
+            })
+            .await
         })
     }
 }
@@ -460,6 +600,24 @@ mod tests {
             "committed"
         );
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn extracted_statement_errors_remain_visible_and_keep_indices() {
+        let db = init_memory().await.unwrap();
+        let response = db
+            .client
+            .query("RETURN 'kept'; THROW 'graphrag-note-editor-revision-conflict';")
+            .await
+            .unwrap();
+        let mut response = DbResponse::new(response);
+        assert_eq!(response.num_statements(), 2);
+        let _: surrealdb::types::Value = response.take(0).unwrap();
+        let errors = response.take_errors();
+        assert_eq!(errors.len(), 1);
+        assert!(errors
+            .values()
+            .all(|error| !is_retryable_transaction_conflict(error)));
     }
 
     #[test]
