@@ -11,7 +11,7 @@ rocksdb = ["surrealdb/kv-rocksdb"]
 [dependencies]
 graphrag-core = { path = "../core" }
 
-surrealdb = { workspace = true, default-features = false, features = ["kv-mem"] }
+surrealdb = { workspace = true, default-features = false, features = ["kv-mem", "parse"] }
 surrealdb-types.workspace = true
 tokio.workspace = true
 serde.workspace = true

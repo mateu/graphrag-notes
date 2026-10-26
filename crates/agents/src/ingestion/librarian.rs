@@ -4377,7 +4377,7 @@ mod tests {
             replay
                 .iter()
                 .map(|entity| entity.id.as_ref().map(record_id_to_string))
-                .collect()
+                .collect::<std::collections::HashSet<_>>()
         );
         assert_eq!(
             repo.get_entities_for_note(&record_id_to_string(unrelated.id.as_ref().unwrap()))

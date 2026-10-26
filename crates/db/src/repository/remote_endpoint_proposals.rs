@@ -191,7 +191,7 @@ impl Repository {
                 record_id_to_string(&proposal.to_id),
             ]
             .into_iter()
-            .collect())
+            .collect::<HashSet<_>>())
     }
 
     /// Creates an immutable proposal and its idempotency receipt in one
