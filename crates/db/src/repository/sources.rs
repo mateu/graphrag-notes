@@ -679,14 +679,16 @@ impl Repository {
                 "eight_statement_sdk_await",
                 self.db
                     .query(
-                        "DELETE supports WHERE in = $note OR out = $note; \
+                        "BEGIN TRANSACTION; \
+                     DELETE supports WHERE in = $note OR out = $note; \
                      DELETE contradicts WHERE in = $note OR out = $note; \
                      DELETE derived_from WHERE in = $note OR out = $note; \
                      DELETE related_to WHERE in = $note OR out = $note; \
                      DELETE mentions WHERE in = $note; \
                      DELETE note_from_conversation WHERE in = $note; \
                      DELETE note_from_message WHERE in = $note; \
-                     DELETE $note;",
+                     DELETE $note; \
+                     COMMIT TRANSACTION;",
                     )
                     .bind(("note", note_id.clone())),
             )

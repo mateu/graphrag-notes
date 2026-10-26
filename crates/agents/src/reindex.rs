@@ -6,6 +6,7 @@
 
 use crate::{inference::validate_embedding_dim, AgentError, Result, SharedEmbedder};
 use chrono::{Duration, Utc};
+use graphrag_core::record_id_to_string;
 use graphrag_db::{
     compatibility::EmbeddingIdentity, ProcessingJob, ProcessingJobStatus, ProcessingJobType,
     ProcessingJobUpdate, Repository,
@@ -194,14 +195,21 @@ impl ReindexAgent {
             .await?;
         let job_id = job
             .id
-            .as_ref()
             .ok_or_else(|| AgentError::Processing("reindex job has no id".into()))?;
         let owner = Uuid::new_v4().to_string();
         let claimed = self
             .repo
-            .claim_reindex_processing_job(job_id, &owner, Utc::now() + self.lease_duration)
+            .claim_reindex_processing_job(&job_id, &owner, Utc::now() + self.lease_duration)
             .await?;
-        self.run_job(claimed, identity, owner).await
+        match self.run_job(claimed, identity.clone(), owner).await {
+            // A COMMIT conflict aborts the complete cutover. The job and its
+            // staged vectors remain durable, so resume the same job rather
+            // than creating a duplicate reindex operation.
+            Err(error) if is_failed_transaction(&error) => {
+                self.resume(&record_id_to_string(&job_id), identity).await
+            }
+            result => result,
+        }
     }
 
     /// Resume from the durable checkpoint. A completed staging batch is

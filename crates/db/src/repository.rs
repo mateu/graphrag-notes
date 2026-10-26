@@ -80,6 +80,8 @@ use graphrag_core::{
     ProposedEdgeStatus, Source, SourceIngestionStatus, SourceType,
 };
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -109,6 +111,49 @@ const VISIBLE_NOTE_CONDITION: &str = "(source_id IS NONE OR source_generation IS
 // interrupted import cannot expose relationships owned by a staged or
 // superseded generation.
 const VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION: &str = "in IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation)) AND out IN (SELECT VALUE id FROM note WHERE (source_id IS NONE OR source_generation IS NONE OR source_generation = source_id.successful_generation))";
+
+const TRANSACTION_CONFLICT_RETRY_ATTEMPTS: usize = 5;
+
+fn is_retryable_transaction_conflict(error: &DbError) -> bool {
+    match error {
+        DbError::RetryableEngineConflict => true,
+        DbError::QueryFailed(message) => {
+            message.contains("Transaction conflict")
+                || message.contains("The query was not executed due to a failed transaction")
+        }
+        DbError::Surreal(error) => matches!(
+            error.details(),
+            surrealdb_types::ErrorDetails::Query(Some(
+                surrealdb_types::QueryError::TransactionConflict
+                    | surrealdb_types::QueryError::NotExecuted
+            ))
+        ),
+        _ => false,
+    }
+}
+
+/// Retry only a known-aborted SurrealDB transaction. The closure must include
+/// result extraction so an aborted COMMIT cannot be mistaken for a success.
+pub(crate) async fn retry_transaction_conflicts<T, F, Fut>(mut operation: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    for attempt in 1..=TRANSACTION_CONFLICT_RETRY_ATTEMPTS {
+        match operation().await {
+            Err(error)
+                if is_retryable_transaction_conflict(&error)
+                    && attempt < TRANSACTION_CONFLICT_RETRY_ATTEMPTS =>
+            {
+                // Deterministic, bounded backoff prevents contending index
+                // maintenance from immediately re-colliding with this write.
+                tokio::time::sleep(Duration::from_millis((attempt * 5) as u64)).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final transaction retry attempt always returns")
+}
 
 fn graph_query_normalize(query: &str) -> String {
     // Entity canonicalization retains arbitrary Unicode text. Split only at
@@ -3499,5 +3544,39 @@ mod tests {
         let resumed = repo.resume_processing_job(&id).await.unwrap();
         assert_eq!(resumed.status, ProcessingJobStatus::Running.as_str());
         assert_eq!(repo.list_processing_jobs(10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn transaction_conflict_is_retried_but_editor_conflict_is_not() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attempts = AtomicUsize::new(0);
+        let value = retry_transaction_conflicts(|| {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if attempt == 0 {
+                    Err(DbError::Surreal(surrealdb::Error::query(
+                        "transaction conflict".into(),
+                        surrealdb::types::QueryError::TransactionConflict,
+                    )))
+                } else {
+                    Ok("committed")
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, "committed");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        let revision_attempts = AtomicUsize::new(0);
+        let error = retry_transaction_conflicts(|| {
+            revision_attempts.fetch_add(1, Ordering::SeqCst);
+            async { Err::<(), _>(DbError::NoteRevisionConflict("note:editor".into())) }
+        })
+        .await
+        .unwrap_err();
+        assert!(matches!(error, DbError::NoteRevisionConflict(_)));
+        assert_eq!(revision_attempts.load(Ordering::SeqCst), 1);
     }
 }

@@ -33,11 +33,14 @@ class AuditExemptionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_each_reachable_exemption_fails_including_deduplicated_entries(self):
-        for crate in ("rkyv", "rsa", "crypto-bigint"):
+        for crate, version in (("rkyv", "0.7.46"), ("rsa", "0.5.5"), ("crypto-bigint", "0.5.5")):
             with self.subTest(crate=crate):
-                result = self.check_tree(f"graphrag-cli v0.1.0\n{crate} v0.5.5 (*)")
+                result = self.check_tree(f"graphrag-cli v0.1.0\n{crate} v{version} (*)")
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn(f"{crate} is active", result.stderr)
+                self.assertIn(f"{crate}" + (" v0.7" if crate == "rkyv" else "") + " is active", result.stderr)
+
+        # SurrealDB 3.3 reaches the non-affected rkyv 0.8 series natively.
+        self.assertEqual(self.check_tree("rkyv v0.8.18").returncode, 0)
 
     def test_failed_dependency_resolution_cannot_pass_as_an_empty_tree(self):
         result = self.check_tree("", status=101)

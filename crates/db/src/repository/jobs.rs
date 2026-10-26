@@ -762,6 +762,44 @@ impl Repository {
         completed_count: u64,
     ) -> Result<()> {
         let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
+        let repo = self.clone();
+        let job_id = job_id.clone();
+        let owner = owner.to_owned();
+        let item_ids = item_ids.to_vec();
+        let embedding = embedding.clone();
+        retry_transaction_conflicts(|| {
+            let repo = repo.clone();
+            let job_id = job_id.clone();
+            let owner = owner.clone();
+            let item_ids = item_ids.clone();
+            let embedding = embedding.clone();
+            async move {
+                repo.commit_reindex_once(
+                    &job_id,
+                    &owner,
+                    &item_ids,
+                    &embedding,
+                    clear_entity_embeddings,
+                    validate_full_scope_membership,
+                    completed_count,
+                )
+                .await
+            }
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_reindex_once(
+        &self,
+        job_id: &RecordId,
+        owner: &str,
+        item_ids: &[String],
+        embedding: &EmbeddingIdentity,
+        clear_entity_embeddings: bool,
+        validate_full_scope_membership: bool,
+        completed_count: u64,
+    ) -> Result<()> {
         let mut notes = Vec::new();
         let mut messages = Vec::new();
         let mut conversations = Vec::new();
