@@ -104,7 +104,7 @@ work; the historical baseline does not justify a new runtime budget.
 
 ## Audit exemption policy
 
-`.cargo/audit.toml` contains two narrowly scoped advisory exemptions that are
+`.cargo/audit.toml` contains three narrowly scoped advisory exemptions that are
 present in `Cargo.lock` but unreachable from the supported native dependency
 graph:
 
@@ -113,12 +113,23 @@ graph:
 - `RUSTSEC-2023-0071`: `rsa` is selected by SurrealDB's WebAssembly
   `jsonwebtoken` path. Native builds select `aws-lc-rs`, and the advisory has no
   fixed `rsa` release.
+- `RUSTSEC-2026-0387`: `crypto-bigint` 0.5.5 is pulled in by
+  `elliptic-curve` 0.13 through `p256`/`p384` and `jsonwebtoken`'s
+  WebAssembly-only `rust_crypto` backend. Native builds use `aws-lc-rs`.
+  The fixed `crypto-bigint` 0.7.6 is not compatible with that dependency
+  requirement. As checked on 2026-10-26, SurrealDB core 3.2.6 and 3.3.4
+  still require `jsonwebtoken` 10; even `jsonwebtoken` 11.1.0 still uses
+  `p256`/`p384` 0.13. A forced major-version override is not a valid fix.
+  This exemption does not qualify WebAssembly builds as secure.
 
 Before `cargo audit`, CI runs `scripts/check-audit-exemptions.sh` against the
 native Linux target. The job fails if either exempted crate becomes reachable,
 forcing the exemption to be removed or reassessed instead of silently masking
 a production dependency. Revisit these exemptions whenever `surrealdb`,
-`surrealdb-types`, `rust_decimal`, or `jsonwebtoken` changes.
+`surrealdb-types`, `rust_decimal`, `jsonwebtoken`, or its RustCrypto backend
+changes. Remove the crypto-bigint exemption once upstream adopts a fixed
+compatible stack; do not enable that backend on native builds without
+reassessing it.
 
 ## Retrieval baseline policy
 
