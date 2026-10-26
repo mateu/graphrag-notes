@@ -25,14 +25,20 @@ pub use repository::{
     source_entity_enrichment_metadata_eligible, SourceEnrichmentPlan, SourceEnrichmentStatus,
 };
 
+use std::collections::HashMap;
+use std::future::{Future, IntoFuture};
 use std::ops::Deref;
 #[cfg(feature = "rocksdb")]
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 #[cfg(feature = "rocksdb")]
 use surrealdb::engine::local::RocksDb;
 use surrealdb::engine::local::{Db, Mem};
+use surrealdb::method::IntoVariables;
 use surrealdb::Surreal;
+use surrealdb_types::Variables;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -47,6 +53,248 @@ pub struct DbConnection {
     source_enrichment_worker_lock: Arc<Mutex<()>>,
 }
 
+const TRANSACTION_CONFLICT_RETRY_ATTEMPTS: usize = 8;
+
+fn is_retryable_transaction_conflict(error: &surrealdb::Error) -> bool {
+    matches!(
+        error.details(),
+        surrealdb_types::ErrorDetails::Query(Some(
+            surrealdb_types::QueryError::TransactionConflict
+                | surrealdb_types::QueryError::NotExecuted
+        ))
+    )
+}
+
+/// A statement-level response is replayable only when every failed statement
+/// reports an engine-aborted transaction. Application `THROW` sentinels are
+/// not typed engine conflicts, so mixed responses are never retried.
+pub(crate) fn statement_errors_are_retryable_conflict(
+    errors: &HashMap<usize, surrealdb::Error>,
+) -> bool {
+    !errors.is_empty() && errors.values().all(is_retryable_transaction_conflict)
+}
+
+/// Return true only for queries whose replay cannot duplicate a mutation.
+///
+/// This deliberately recognizes a small, unambiguous subset of SurrealQL. An
+/// unterminated string/comment means no retry.
+fn is_replayable_query(query: &str) -> bool {
+    let statements = match query_statements(query) {
+        Some(statements) => statements,
+        None => return false,
+    };
+
+    match statements.as_slice() {
+        [statement] => {
+            !(statement.starts_with("THROW")
+                && query.to_ascii_uppercase().contains("NOTEREVISIONCONFLICT"))
+        }
+        [first, .., last] => first == "BEGIN TRANSACTION" && last == "COMMIT TRANSACTION",
+        [] => false,
+    }
+}
+
+/// Extract uppercase statement text without treating string/comment semicolons
+/// as statement boundaries.
+fn query_statements(query: &str) -> Option<Vec<String>> {
+    #[derive(Clone, Copy)]
+    enum State {
+        Code,
+        SingleQuote,
+        DoubleQuote,
+        Backtick,
+        LineComment,
+        BlockComment,
+    }
+
+    let mut state = State::Code;
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = query.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let character = chars[index];
+        let next = chars.get(index + 1).copied();
+        match state {
+            State::Code => match (character, next) {
+                ('-', Some('-')) => {
+                    state = State::LineComment;
+                    index += 1;
+                }
+                ('/', Some('*')) => {
+                    state = State::BlockComment;
+                    index += 1;
+                }
+                ('\'', _) => state = State::SingleQuote,
+                ('"', _) => state = State::DoubleQuote,
+                ('`', _) => state = State::Backtick,
+                (';', _) => {
+                    let statement = current.trim();
+                    if !statement.is_empty() {
+                        statements.push(statement.to_ascii_uppercase());
+                    }
+                    current.clear();
+                }
+                _ => current.push(character),
+            },
+            State::SingleQuote | State::DoubleQuote | State::Backtick => {
+                let quote = match state {
+                    State::SingleQuote => '\'',
+                    State::DoubleQuote => '"',
+                    State::Backtick => '`',
+                    _ => unreachable!(),
+                };
+                if character == '\\' {
+                    index += 1;
+                    if index == chars.len() {
+                        return None;
+                    }
+                } else if character == quote {
+                    state = State::Code;
+                }
+            }
+            State::LineComment => {
+                if character == '\n' {
+                    state = State::Code;
+                    current.push(' ');
+                }
+            }
+            State::BlockComment => {
+                if character == '*' && next == Some('/') {
+                    state = State::Code;
+                    current.push(' ');
+                    index += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+    if !matches!(state, State::Code | State::LineComment) {
+        return None;
+    }
+    let statement = current.trim();
+    if !statement.is_empty() {
+        statements.push(statement.to_ascii_uppercase());
+    }
+    Some(statements)
+}
+
+/// A replayable query builder for complete SurrealQL transactions and single statements.
+///
+/// The underlying query is rerun only after SurrealDB reports that the entire
+/// transaction rolled back. A single statement is also an implicit transaction.
+/// Other multi-statement scripts execute once because an earlier mutation may
+/// already have committed.
+#[must_use = "queries do nothing unless you `.await` or poll them"]
+pub struct DbQuery {
+    client: Surreal<Db>,
+    query: String,
+    variables: std::result::Result<Variables, String>,
+    retry_transaction_conflicts: bool,
+}
+
+impl DbQuery {
+    fn new(client: Surreal<Db>, query: String) -> Self {
+        Self {
+            client,
+            retry_transaction_conflicts: is_replayable_query(&query),
+            query,
+            variables: Ok(Variables::new()),
+        }
+    }
+
+    /// Chain another statement, retaining the ordinary SurrealDB query API.
+    pub fn query(mut self, query: impl Into<String>) -> Self {
+        self.query.push(';');
+        self.query.push_str(&query.into());
+        self.retry_transaction_conflicts = is_replayable_query(&self.query);
+        self
+    }
+
+    /// Execute with the normal per-statement statistics response.
+    pub fn with_stats(self) -> DbQueryWithStats {
+        DbQueryWithStats(self)
+    }
+
+    /// Execute as a result stream. Streaming intentionally does not retry:
+    /// callers can observe provisional rows before the transaction is known to
+    /// commit, so replay would violate the stream contract.
+    pub fn stream_items(self) -> surrealdb::Result<surrealdb::method::ItemStream> {
+        let variables = self.variables.map_err(surrealdb::Error::internal)?;
+        self.client.query(self.query).bind(variables).stream_items()
+    }
+
+    pub fn bind(mut self, vars: impl IntoVariables) -> Self {
+        self.variables = match (self.variables, vars.into_variables()) {
+            (Ok(mut current), Ok(next)) => {
+                current.extend(next);
+                Ok(current)
+            }
+            (Ok(_), Err(error)) | (Err(_), Err(error)) => Err(error.to_string()),
+            (Err(error), Ok(_)) => Err(error),
+        };
+        self
+    }
+}
+
+async fn retry_transaction_conflicts<T, F, Fut>(mut operation: F) -> surrealdb::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: IntoFuture<Output = surrealdb::Result<T>>,
+{
+    for attempt in 1..=TRANSACTION_CONFLICT_RETRY_ATTEMPTS {
+        match operation().into_future().await {
+            Err(error)
+                if is_retryable_transaction_conflict(&error)
+                    && attempt < TRANSACTION_CONFLICT_RETRY_ATTEMPTS =>
+            {
+                // SurrealDB starts an index-compaction pass after a 250 ms
+                // commit-trigger debounce. Quadratic spacing lets that pass
+                // finish instead of repeatedly colliding with it.
+                tokio::time::sleep(Duration::from_millis((attempt * attempt * 25) as u64)).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final transaction retry attempt always returns")
+}
+
+/// Query response wrapper retaining SurrealDB's per-statement execution stats.
+#[must_use = "queries do nothing unless you `.await` or poll them"]
+pub struct DbQueryWithStats(DbQuery);
+
+impl IntoFuture for DbQueryWithStats {
+    type Output = surrealdb::Result<surrealdb::method::WithStats<surrealdb::IndexedResults>>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move { self.0.await.map(surrealdb::method::WithStats) })
+    }
+}
+
+impl IntoFuture for DbQuery {
+    type Output = surrealdb::Result<surrealdb::IndexedResults>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            let variables = self.variables.map_err(surrealdb::Error::internal)?;
+            let execute = || {
+                let query = self
+                    .client
+                    .query(self.query.clone())
+                    .bind(variables.clone());
+                async move { query.await }
+            };
+            if self.retry_transaction_conflicts {
+                retry_transaction_conflicts(execute).await
+            } else {
+                execute().await
+            }
+        })
+    }
+}
+
 impl DbConnection {
     /// Wrap a configured SurrealDB client in the application connection type.
     pub fn new(client: Surreal<Db>) -> Self {
@@ -56,6 +304,12 @@ impl DbConnection {
             remote_job_transition_lock: Arc::new(Mutex::new(())),
             source_enrichment_worker_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// Run a query, automatically retrying complete transactions and one
+    /// statement when SurrealDB confirms they were aborted by a write conflict.
+    pub fn query(&self, query: impl Into<String>) -> DbQuery {
+        DbQuery::new(self.client.clone(), query.into())
     }
 
     pub(crate) fn proposal_lifecycle_lock(&self) -> Arc<Mutex<()>> {
@@ -140,6 +394,106 @@ async fn setup_database_at(db: &DbConnection, namespace: &str, database: &str) -
 mod tests {
     use super::*;
 
+    async fn conflict_then_success(
+        attempts: &std::sync::atomic::AtomicUsize,
+    ) -> surrealdb::Result<&'static str> {
+        use std::sync::atomic::Ordering;
+        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(surrealdb::Error::query(
+                "transaction conflict".into(),
+                surrealdb::types::QueryError::TransactionConflict,
+            ))
+        } else {
+            Ok("committed")
+        }
+    }
+
+    #[test]
+    fn statement_level_conflicts_require_only_engine_conflicts() {
+        let conflict = surrealdb::Error::query(
+            "transaction conflict".into(),
+            surrealdb::types::QueryError::TransactionConflict,
+        );
+        let sentinel = surrealdb::Error::thrown("graphrag-note-editor-revision-conflict".into());
+        let mut only_conflict = HashMap::new();
+        only_conflict.insert(0, conflict.clone());
+        assert!(statement_errors_are_retryable_conflict(&only_conflict));
+
+        let mut sentinel_only = HashMap::new();
+        sentinel_only.insert(0, sentinel.clone());
+        assert!(!statement_errors_are_retryable_conflict(&sentinel_only));
+
+        let mut mixed = only_conflict;
+        mixed.insert(1, sentinel);
+        assert!(!statement_errors_are_retryable_conflict(&mixed));
+    }
+
+    #[tokio::test]
+    async fn single_statement_retries_native_conflicts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        assert!(is_replayable_query(
+            "CREATE note SET title = 'one; statement';"
+        ));
+        let attempts = AtomicUsize::new(0);
+        assert_eq!(
+            retry_transaction_conflicts(|| conflict_then_success(&attempts))
+                .await
+                .unwrap(),
+            "committed"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn complete_transaction_retries_native_conflicts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        assert!(is_replayable_query(
+            "BEGIN TRANSACTION; CREATE note; COMMIT TRANSACTION;"
+        ));
+        let attempts = AtomicUsize::new(0);
+        assert_eq!(
+            retry_transaction_conflicts(|| conflict_then_success(&attempts))
+                .await
+                .unwrap(),
+            "committed"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn multi_statement_script_is_not_retried() {
+        assert!(!is_replayable_query("CREATE note; CREATE source;"));
+    }
+
+    #[test]
+    fn revision_sentinel_is_not_retried() {
+        assert!(!is_replayable_query("THROW 'NoteRevisionConflict';"));
+    }
+
+    #[tokio::test]
+    async fn non_conflict_error_is_not_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let attempts = AtomicUsize::new(0);
+        let error = retry_transaction_conflicts(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err::<(), _>(surrealdb::Error::query(
+                    "timed out".into(),
+                    surrealdb::types::QueryError::TimedOut {
+                        duration: Duration::from_secs(1),
+                    },
+                ))
+            }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(!is_retryable_transaction_conflict(&error));
+    }
+
     #[tokio::test]
     async fn test_init_memory() {
         let db = init_memory().await.expect("Failed to init memory db");
@@ -179,8 +533,9 @@ mod tests {
         drop(db);
 
         // SurrealDB releases the embedded-engine lock asynchronously after the
-        // final client session is dropped.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // final client session is dropped. Its 3.3 index workers can outlive
+        // the client for more than the old 50 ms grace period.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         let reopened = init_persistent(temporary_directory.path()).await.unwrap();
         assert_eq!(

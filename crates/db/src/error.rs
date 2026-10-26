@@ -19,6 +19,9 @@ pub enum DbError {
     #[error("Query failed: {0}")]
     QueryFailed(String),
 
+    #[error("SurrealDB aborted the transaction due to a retryable engine conflict")]
+    RetryableEngineConflict,
+
     #[error("Note {0} changed or became unavailable while the editor was open. Inspect the current note before applying the retained draft.")]
     NoteRevisionConflict(String),
 

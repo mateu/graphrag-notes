@@ -130,6 +130,9 @@ fn check_note_mutation_errors(
     if errors.is_empty() {
         return Ok(());
     }
+    if crate::statement_errors_are_retryable_conflict(&errors) {
+        return Err(DbError::RetryableEngineConflict);
+    }
     if let Some(expected) = expected {
         if errors.values().any(|error| {
             // The SDK preserves the engine's THROW display prefix rather

@@ -116,6 +116,7 @@ const TRANSACTION_CONFLICT_RETRY_ATTEMPTS: usize = 5;
 
 fn is_retryable_transaction_conflict(error: &DbError) -> bool {
     match error {
+        DbError::RetryableEngineConflict => true,
         DbError::QueryFailed(message) => {
             message.contains("Transaction conflict")
                 || message.contains("The query was not executed due to a failed transaction")

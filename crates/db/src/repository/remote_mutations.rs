@@ -240,6 +240,18 @@ impl Repository {
         input: RemoteMutationInput,
         effect: RemoteMutationEffect,
     ) -> Result<RemoteCaptureReceipt> {
+        retry_transaction_conflicts(|| {
+            self.apply_remote_mutation_once(guard, input.clone(), effect.clone())
+        })
+        .await
+    }
+
+    async fn apply_remote_mutation_once(
+        &self,
+        guard: &MutationGuard,
+        input: RemoteMutationInput,
+        effect: RemoteMutationEffect,
+    ) -> Result<RemoteCaptureReceipt> {
         self.check_mutation_guard(guard)?;
         validate_input(&input)?;
         if let Some(receipt) = self.find_remote_mutation_receipt(&input).await? {
@@ -452,15 +464,13 @@ impl Repository {
             if let Some(receipt) = self.find_remote_mutation_receipt(&input).await? {
                 return Ok(receipt);
             }
-            if errors.values().any(|e| {
-                e.message().contains("revision-conflict")
-                    || matches!(
-                        e.details(),
-                        surrealdb_types::ErrorDetails::Query(Some(
-                            surrealdb_types::QueryError::TransactionConflict
-                        ))
-                    )
-            }) {
+            if crate::statement_errors_are_retryable_conflict(&errors) {
+                return Err(DbError::RetryableEngineConflict);
+            }
+            if errors
+                .values()
+                .any(|error| error.message().contains("revision-conflict"))
+            {
                 return Err(conflict());
             }
             return Err(DbError::QueryFailed(format!(
