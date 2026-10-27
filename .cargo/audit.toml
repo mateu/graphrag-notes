@@ -9,4 +9,10 @@ ignore = [
     # 0.13 / crypto-bigint 0.5; native builds use aws-lc-rs instead. Guarded by
     # scripts/check-audit-exemptions.sh until upstream adopts the fixed stack.
     "RUSTSEC-2026-0387",
+    # quick-xml <0.41 via SurrealDB 3.3.4 -> object_store 0.13.2. graphrag uses
+    # embedded kv-mem/kv-rocksdb only and never configures an object-store
+    # backend, so the XML parser is unreachable here. Revisit when SurrealDB
+    # bumps object_store to 0.14, which uses quick-xml >=0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
