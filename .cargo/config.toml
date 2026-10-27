@@ -4,3 +4,8 @@
 [build]
 # Use sccache for faster compilation when available
 rustc-wrapper = "sccache"
+
+[env]
+# Debug async tests in this workspace build deep future chains; the default
+# 2 MiB test-thread stack overflows. Give test threads headroom locally and in CI.
+RUST_MIN_STACK = "16777216"
