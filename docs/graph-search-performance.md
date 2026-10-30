@@ -46,13 +46,16 @@ thresholds.
 
 ```sh
 GRAPHRAG_GRAPH_LATENCY_ROUNDS=10 \
+GRAPHRAG_GRAPH_LATENCY_SCALES=256,2048 \
 GRAPHRAG_GRAPH_LATENCY_REPORT=/tmp/graph-latency-new.json \
   cargo test -p graphrag-agents --test graph_latency_fixture --locked -- --nocapture
 ```
 
-The report path must be new. Default populations are 256 and 2,048 notes;
-`GRAPHRAG_GRAPH_LATENCY_LARGE=1` adds 10,000. An explicit comma-separated
-`GRAPHRAG_GRAPH_LATENCY_SCALES=64,256` selects smaller diagnostic populations.
+The report path must be new. The default population is 256 notes, which
+already exercises every candidate cap and edge path the fixture asserts, so the
+nightly test suite stays fast. For scaling comparisons select populations with
+a comma-separated `GRAPHRAG_GRAPH_LATENCY_SCALES` (64 to 10,000), as above;
+`GRAPHRAG_GRAPH_LATENCY_LARGE=1` adds 10,000.
 Reports separate first-per-policy calls from warmed samples. Small-sample p95
 values are emitted only with at least ten observations. Independent repository
 probes must not be added and presented as an end-to-end trace.

@@ -4,7 +4,7 @@
 //! `GRAPHRAG_GRAPH_LATENCY_ROUNDS=10` collects ten warmed observations;
 //! `GRAPHRAG_GRAPH_LATENCY_LARGE=1` adds a 10,000-note population. An optional
 //! `GRAPHRAG_GRAPH_LATENCY_SCALES=64,256` selects populations from 64 to 10,000.
-//! The default populations are 256 and 2,048 notes.
+//! The default population is 256 notes; benchmark with e.g. `=256,2048`.
 //! An optional
 //! `GRAPHRAG_GRAPH_LATENCY_REPORT` writes JSON to a new path, refusing overwrite.
 //! Timings are observations, never pass/fail thresholds. Independently measured
@@ -659,7 +659,9 @@ async fn sanitized_graph_latency_fixture() {
             );
             values
         }
-        Err(std::env::VarError::NotPresent) => vec![256, 2048],
+        // 256 notes already exceed every candidate cap and edge endpoint the
+        // assertions check; larger populations are for benchmarking only.
+        Err(std::env::VarError::NotPresent) => vec![256],
         Err(std::env::VarError::NotUnicode(_)) => {
             panic!("fixture scales must contain Unicode text")
         }
