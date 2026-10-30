@@ -2556,6 +2556,17 @@ mod tests {
         (first, second)
     }
 
+    /// Delete a note behind the repository's back, retrying the same
+    /// transaction conflicts as production writes: the note's search event
+    /// and index maintenance can contend with a raw delete.
+    async fn delete_note_raw(repo: &Repository, id: RecordId) {
+        let _: Option<Note> = retry_transaction_conflicts(|| async {
+            repo.db.delete(id.clone()).await.map_err(DbError::Surreal)
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn gardener_proposals_are_canonical_and_idempotent() {
         let repo = Repository::new(init_memory().await.unwrap());
@@ -3178,7 +3189,7 @@ mod tests {
             .await
             .unwrap();
         let stale_id = stale.id.unwrap();
-        let _: Option<Note> = repo.db.delete(fourth).await.unwrap();
+        delete_note_raw(&repo, fourth).await;
         assert!(repo
             .accept_edge_proposal(&stale_id, None, None, true)
             .await
@@ -3363,7 +3374,7 @@ mod tests {
             .upsert_gardener_proposal(&from, &stale_endpoint, 0.9, "similar".into(), None, None)
             .await
             .unwrap();
-        let _: Option<Note> = failing_repo.db.delete(stale_endpoint).await.unwrap();
+        delete_note_raw(&failing_repo, stale_endpoint).await;
         assert!(failing_repo
             .accept_gardener_proposals_above_in_pages(
                 0.8,
