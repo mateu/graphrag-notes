@@ -1,0 +1,16 @@
+# cargo-nextest runs each test in its own process and schedules test binaries
+# concurrently, so the long serial binaries (graph latency fixture, db unit
+# tests) overlap instead of running back to back under `cargo test`.
+
+[profile.default]
+# Report tests that run longer than a minute; kill anything still running after
+# 15 minutes instead of waiting for the job timeout.
+slow-timeout = { period = "60s", terminate-after = 15 }
+
+[profile.ci]
+# Run every test even after a failure, so one flaky test can't hide the next
+# one. No retries: a flaky test should fail visibly, not pass on retry.
+fail-fast = false
+retries = 0
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 15 }
