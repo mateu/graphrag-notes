@@ -77,18 +77,26 @@ jobs:
     name: unit and offline integration
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '23 3 * * *')
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: quality-gates-v1
-      - name: Run deterministic workspace tests (cargo test --workspace --locked)
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run deterministic workspace tests (cargo nextest run --workspace --locked)
         # Only the fictional policy-migration fixture installs the safe
-        # dedicated subscriber; libtest hides captured output on success.
+        # dedicated subscriber; nextest hides captured output on success.
+        # Binaries run concurrently and the ci profile does not stop at the
+        # first failure (see .config/nextest.toml).
         env:
           GRAPHRAG_MIGRATION_CONFLICT_PROBE: "1"
-        run: cargo test --workspace --locked
+        run: cargo nextest run --workspace --locked --profile ci
+      - name: Run doctests (nextest does not run them)
+        run: cargo test --workspace --locked --doc
       - name: Validate the combined daily workflow with isolated provider doubles
         run: python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline
 
