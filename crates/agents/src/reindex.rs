@@ -809,13 +809,16 @@ mod tests {
             .await
             .unwrap();
         let target = EmbeddingIdentity::new("test", "slow", 1024);
+        // The batch outlasts the lease three times over, so only heartbeats
+        // keep it alive. The lease still needs headroom for the owned staging
+        // and checkpoint writes after the batch on a loaded test runner.
         let result = ReindexAgent::new(
             repo.clone(),
             Arc::new(SlowEmbedder {
-                delay: StdDuration::from_millis(180),
+                delay: StdDuration::from_millis(1500),
             }),
         )
-        .with_lease_timing_for_test(Duration::milliseconds(60), StdDuration::from_millis(10))
+        .with_lease_timing_for_test(Duration::milliseconds(500), StdDuration::from_millis(25))
         .start(
             ReindexAgent::new(repo.clone(), Arc::new(DeterministicEmbedder::default()))
                 .preview(ReindexScope::all())
