@@ -16,6 +16,7 @@ use graphrag_db::{
     fusion::{FusionConfig, FusionStrategy},
     init_memory, init_persistent, migrations, Repository,
 };
+use std::io::IsTerminal;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -784,6 +785,8 @@ pub(crate) async fn run() -> Result<()> {
     let subscriber = FmtSubscriber::builder()
         .with_env_filter(log_filter)
         .with_target(false)
+        // Piped or redirected logs must stay plain text; color is for terminals.
+        .with_ansi(std::io::stderr().is_terminal())
         .with_writer(std::io::stderr)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;

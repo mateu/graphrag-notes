@@ -524,8 +524,17 @@ fn offline_workspace_browses_selects_and_copies_without_provider_requests() {
 #[test]
 fn empty_narrow_workspace_unknown_input_and_eof_remain_usable() {
     let fixture = Fixture::new(false);
-    let output =
-        fixture.session("recent\nkeyword absentlexeme\nselect 99\nunknown-command\nhelp\nstats\n");
+    // Info logging guarantees stderr log lines, so the ANSI check below does
+    // not depend on whether a shutdown warning happens to be emitted.
+    let output = fixture
+        .command()
+        .env("RUST_LOG", "info")
+        .arg("workspace")
+        .write_stdin("recent\nkeyword absentlexeme\nselect 99\nunknown-command\nhelp\nstats\n")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
     let text = format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
@@ -537,6 +546,10 @@ fn empty_narrow_workspace_unknown_input_and_eof_remain_usable() {
     );
     assert!(text.contains("Unknown command"), "{text}");
     assert!(text.contains("Goodbye"), "{text}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("INFO"),
+        "info logs must reach piped stderr: {text}"
+    );
     assert!(
         !text.contains('\u{1b}'),
         "piped narrow output contains ANSI: {text}"
