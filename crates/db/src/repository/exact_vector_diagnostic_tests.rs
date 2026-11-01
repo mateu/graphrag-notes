@@ -2217,12 +2217,7 @@ async fn exact_vector_projection_events_backfill_restore_and_fault_atomicity() {
     assert_projection_probe(&db).await;
     assert_scope_projection_ranking(&db).await;
     let created_id = created.id.unwrap();
-    db.query("DELETE $id")
-        .bind(("id", created_id))
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+    delete_records_retrying(&db, vec![created_id]).await;
     assert_projection_probe(&db).await;
     // A failed derived write fails the primary mutation in the same actual
     // storage transaction. Verify full originals, including all vector bits.

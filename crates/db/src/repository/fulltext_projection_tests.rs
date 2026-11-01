@@ -513,11 +513,7 @@ async fn lexical_events_skip_vector_and_bookkeeping_updates_but_track_each_mirro
             .unwrap();
         assert_eq!(writes().await, index as i64 + 2, "{mutation}");
     }
-    db.query("DELETE note:fictional;")
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+    delete_records_retrying(&db, vec![RecordId::new("note", "fictional")]).await;
     let rows: Vec<serde_json::Value> = db
         .query("SELECT * FROM note_search;")
         .await

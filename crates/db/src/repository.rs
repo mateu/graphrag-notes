@@ -155,6 +155,23 @@ where
     unreachable!("the final transaction retry attempt always returns")
 }
 
+/// Test-only raw delete of specific records. It retries the same aborted
+/// transactions as production writes: a note's delete event and search-index
+/// maintenance can conflict with a raw DELETE. Deleting an already-deleted
+/// record is a no-op, so retrying is safe.
+#[cfg(test)]
+pub(crate) async fn delete_records_retrying(db: &DbConnection, ids: Vec<RecordId>) {
+    retry_transaction_conflicts(|| async {
+        db.query("DELETE $ids")
+            .bind(("ids", ids.clone()))
+            .await?
+            .check()?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
 fn graph_query_normalize(query: &str) -> String {
     // Entity canonicalization retains arbitrary Unicode text. Split only at
     // lexical boundaries so adjacent punctuation (for example `Atlas?`) does

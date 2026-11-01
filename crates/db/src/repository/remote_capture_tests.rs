@@ -101,13 +101,11 @@ async fn replay_keeps_original_snapshot_after_note_edit_and_deletion() {
         .unwrap();
     assert!(receipt.replayed);
     assert_eq!(receipt.result, saved.result);
-    repo.db
-        .query("DELETE $id")
-        .bind(("id", parse_record_id(id, Some("note")).unwrap()))
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+    crate::repository::delete_records_retrying(
+        &repo.db,
+        vec![parse_record_id(id, Some("note")).unwrap()],
+    )
+    .await;
     let repeated = repo
         .capture_remote_note(request, Vec::new(), Vec::new())
         .await
