@@ -115,8 +115,9 @@ fn graph_entity_aliases_local_sql(query: &str) -> String {
 #[cfg(test)]
 fn graph_entity_aliases_fresh_parent_sql(query: &str) -> String {
     // Independent per-entity oracle: retain the original parent predicate,
-    // ordering and cap, but create its plan inside each entity's block. The
-    // pinned engine otherwise shares a correlated TopK threshold across rows.
+    // ordering and cap, but create its plan inside each entity's block.
+    // SurrealDB before 3.3.5 otherwise shared a correlated TopK threshold
+    // across rows (surrealdb#1768).
     // Do not substitute the local indexed ID or use the production shape guard.
     format!(
         "{{ LET $graph_reference_matching_aliases = ({query}); {}; }}",
@@ -138,9 +139,10 @@ fn graph_entity_mentions_local_result_sql(query: &str, result: &str) -> String {
     // Bind the rows before applying the alias union: nesting a full SELECT
     // beneath flatten/distinct/sort/slice exceeds the default parser depth.
     // The last expression operates on that local value, without RETURN.
-    // Both branches receive a fresh per-entity plan: the pinned engine's
-    // unwrapped correlated plan reuses a TopK threshold between entities and
-    // can omit a later entity whose mentions equal an earlier page's cutoff.
+    // Both branches receive a fresh per-entity plan. Before 3.3.5, SurrealDB's
+    // unwrapped correlated plan reused a TopK threshold between entities and
+    // could omit a later entity whose mentions equal an earlier page's cutoff
+    // (surrealdb#1768); per-entity plans stay correct on either version.
     let aliases = "metadata.aliases ?? []";
     let safe_aliases = format!(
         "type::is_array({aliases}) AND array::len({aliases}) <= 8 \

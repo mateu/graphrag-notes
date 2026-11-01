@@ -1758,13 +1758,13 @@ async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_ra
         assert_eq!(comparison.fresh.len(), 3);
         assert_eq!(comparison.candidate.len(), 3);
         assert!(comparison.fresh.iter().any(|row| row.id == second));
-        // The pinned unwrapped correlated query reuses Dense's note:z TopK
-        // cutoff when evaluating B. Equal note:z evidence is rejected before
-        // B's own empty heap is populated; A's lower note:a still survives.
-        // Preserve this false-negative as explicit bug evidence, not a waived
-        // comparison or a retry dependent on randomly generated entity IDs.
-        assert_eq!(comparison.original.len(), 2);
-        assert_eq!(comparison.parent.len(), 2);
+        // SurrealDB before 3.3.5 reused Dense's note:z TopK cutoff when the
+        // unwrapped correlated query evaluated B, so B's equal note:z evidence
+        // was dropped (surrealdb#1768). 3.3.5 gives each run its own
+        // threshold. Keep the unwrapped shapes as a regression guard for that
+        // engine fix; production still plans per entity either way.
+        assert_eq!(comparison.original.len(), 3);
+        assert_eq!(comparison.parent.len(), 3);
         assert_eq!(comparison.payloads[0], comparison.payloads[1]);
         assert_eq!(
             comparison
@@ -1772,7 +1772,7 @@ async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_ra
                 .iter()
                 .map(|row| row.id.clone())
                 .collect::<Vec<_>>(),
-            [first.clone(), dense.clone()]
+            [first.clone(), second.clone(), dense.clone()]
         );
         assert_eq!(
             comparison
