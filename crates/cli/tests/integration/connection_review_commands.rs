@@ -21,7 +21,7 @@ fn fixture_operation(directory: &Path, request: Value) -> Value {
         .current_dir(directory)
         .args([
             "--exact",
-            "connection_review_fixture_process",
+            crate::exact_test_name(module_path!(), "connection_review_fixture_process").as_str(),
             "--nocapture",
         ])
         .output()

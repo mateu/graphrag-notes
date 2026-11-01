@@ -259,7 +259,11 @@ impl Fixture {
                 .env("HOME", directory.path().join("home"))
                 .env("GRAPHRAG_WORKSPACE_FIXTURE", directory.path())
                 .current_dir(directory.path())
-                .args(["--exact", "workspace_fixture_process", "--nocapture"])
+                .args([
+                    "--exact",
+                    crate::exact_test_name(module_path!(), "workspace_fixture_process").as_str(),
+                    "--nocapture",
+                ])
                 .output()
                 .unwrap();
             assert!(

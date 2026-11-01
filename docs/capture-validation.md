@@ -16,7 +16,7 @@ Inference used deterministic localhost doubles.
 
 ## Automated checks
 
-`crates/cli/tests/capture_commands.rs` runs the actual CLI with deterministic
+`crates/cli/tests/integration/capture_commands.rs` runs the actual CLI with deterministic
 HTTP providers and blocking executable editor doubles. It covers multiline
 stdin, JSON/JSONL IDs, editor rename saves, literal argv/Unicode paths,
 unchanged and cancelled sessions, private persistent recovery drafts,

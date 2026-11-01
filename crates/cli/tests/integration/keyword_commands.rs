@@ -81,7 +81,7 @@ impl Fixture {
             .args([
                 "--ignored",
                 "--exact",
-                "keyword_fixture_seed",
+                crate::exact_test_name(module_path!(), "keyword_fixture_seed").as_str(),
                 "--test-threads=1",
             ])
             .output()

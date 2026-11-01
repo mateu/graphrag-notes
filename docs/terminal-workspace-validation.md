@@ -7,7 +7,7 @@ Linux. A native Linux walkthrough and network/MCP validation are separate work.
 
 ## Isolated acceptance fixtures
 
-`crates/cli/tests/workspace_commands.rs` starts real CLI processes with private
+`crates/cli/tests/integration/workspace_commands.rs` starts real CLI processes with private
 HOME/configuration, persistent databases, draft directories, and loopback
 inference endpoints. A seed process creates the fictional corpus and exits
 before a workspace opens it, releasing SurrealDB's process-scoped store registry
@@ -88,7 +88,8 @@ Run the focused acceptance suite only while owning the worktree's Cargo slot:
 
 ```sh
 CARGO_BUILD_JOBS=2 RUSTC_WRAPPER='' cargo test -p graphrag-cli \
-  --test workspace_commands --all-features --locked --offline -- --test-threads=2
+  --test integration --all-features --locked --offline -- workspace_commands:: \
+  --test-threads=2
 ```
 
 The focused workspace target passed **12 tests**: **11 acceptance scenarios**

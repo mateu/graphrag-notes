@@ -97,7 +97,7 @@ remote status option and do not expand client permissions.
 
 ## Isolated walkthrough
 
-`cargo test -p graphrag-cli --test remote_doctor_http --locked` runs a fictional
+`cargo test -p graphrag-cli --test integration --locked remote_doctor_http::` runs a fictional
 in-memory service with a stopped provider and a private read-only credential.
 It verifies reachable storage with unknown provider availability, observes a
 hybrid failure and exact keyword recovery, reports cached provider unavailable,
