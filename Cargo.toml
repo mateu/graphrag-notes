@@ -73,10 +73,12 @@ tempfile = "3.14"
 codegen-units = 16
 debug = 0
 incremental = true
-# Disable unwinding for faster compile and smaller binaries
-panic = "abort"
-# Strip debuginfo from binaries for faster linking
-strip = "debuginfo"
+# Keep the default panic = "unwind": the test harness requires it, so
+# "abort" here made cargo build every dependency twice for test runs.
+# Strip symbols too: test binaries embed SurrealDB and RocksDB, and symbols
+# were ~45% of their size. Backtraces lose function names; use
+# CARGO_PROFILE_DEV_STRIP=debuginfo when one is needed.
+strip = "symbols"
 
 [profile.test]
 # Test-specific profile inherits from dev but can be modified
