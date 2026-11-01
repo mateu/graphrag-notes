@@ -179,14 +179,7 @@ async fn fetched_endpoint_visibility_matches_note_membership_for_typed_and_dangl
     for (id, owner, generation, _) in &cases {
         note(&repo, id.clone(), owner.clone(), *generation, timestamp()).await;
     }
-    repo.db
-        .query("DELETE $first; DELETE $second;")
-        .bind(("first", deleted_compound))
-        .bind(("second", deleted_string))
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+    delete_records_retrying(&repo.db, vec![deleted_compound, deleted_string]).await;
     cases.push((missing_compound, None, None, false));
     cases.push((RecordId::new("note", "missing"), None, None, false));
     cases.push((note_range(), None, None, false));
@@ -1154,13 +1147,7 @@ async fn graph_alias_fast_path_preserves_native_endpoints_scope_and_nonfinite_ve
         ));
         ranked.push(id.clone());
     }
-    repo.db
-        .query("DELETE $note")
-        .bind(("note", deleted.clone()))
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+    delete_records_retrying(&repo.db, vec![deleted.clone()]).await;
     cases.push((missing, None, None, timestamp()));
     cases.push((note_range(), None, None, timestamp()));
     let mut entity_ids = Vec::new();
@@ -1628,13 +1615,7 @@ async fn graph_alias_local_binding_preserves_malformed_errors_beyond_the_alias_p
                         ),
                     }
                 }
-                repo.db
-                    .query("DELETE $id")
-                    .bind(("id", bad_id.clone()))
-                    .await
-                    .unwrap()
-                    .check()
-                    .unwrap();
+                delete_records_retrying(&repo.db, vec![bad_id.clone()]).await;
             }
         }
     }
@@ -2018,13 +1999,7 @@ async fn graph_alias_local_binding_plan_falls_back_for_unsafe_mention_shapes() {
             None,
         )
         .await;
-        repo.db
-            .query("DELETE $id")
-            .bind(("id", id))
-            .await
-            .unwrap()
-            .check()
-            .unwrap();
+        delete_records_retrying(&repo.db, vec![id]).await;
     }
 }
 
