@@ -30,12 +30,14 @@ Focused commands (workspace selection retains the same feature union as normal
 CI while only the named integration targets execute):
 
 ```sh
-RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test --workspace \
-  --test keyword_search --test keyword_commands --locked -- --test-threads=2
+RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-agents \
+  --test keyword_search --locked -- --test-threads=2
+RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
+  --test integration --locked -- keyword_commands:: --test-threads=2
 
 # Direct ignored-test invocation without fixture environment also passes.
 RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
-  --test keyword_commands --locked -- --ignored --test-threads=1
+  --test integration --locked -- keyword_commands:: --ignored --test-threads=1
 ```
 
 The #58 navigation baseline `9b68002` is integrated, including the Linux

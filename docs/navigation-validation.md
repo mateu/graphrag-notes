@@ -6,7 +6,7 @@ paths. Existing release candidates may predate these commands.
 
 ## Automated verification
 
-`crates/cli/tests/navigation_commands.rs` seeds temporary persistent databases
+`crates/cli/tests/integration/navigation_commands.rs` seeds temporary persistent databases
 through the repository API in isolated helper processes. Each helper exits
 before the real CLI opens the database, releasing the embedded store's
 process-scoped RocksDB lock. CLI invocations use a cleared environment. A
@@ -40,7 +40,7 @@ close and durable reopen on both macOS and Linux CI.
 Run the targeted tests after compiling the current change:
 
 ```bash
-cargo test --locked -p graphrag-cli --test navigation_commands
+cargo test --locked -p graphrag-cli --test integration navigation_commands::
 ```
 
 The Balanced Copilot follow-up passed 13 repository inspection tests and 28
@@ -56,8 +56,8 @@ checks passed.
 RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-db \
   --lib repository::inspection --all-features --locked --offline -- --test-threads=2
 RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
-  --test navigation_commands --test init_commands --all-features \
-  --locked --offline -- --test-threads=2
+  --test integration --all-features --locked --offline -- \
+  navigation_commands:: init_commands:: --test-threads=2
 ```
 
 ## Manual local walkthrough

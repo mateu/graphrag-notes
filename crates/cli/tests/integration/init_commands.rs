@@ -606,7 +606,7 @@ fn fresh_install_can_check_import_search_inspect_and_reimport_sample() {
     fs::create_dir(sample_path.parent().unwrap()).unwrap();
     fs::write(
         &sample_path,
-        include_str!("../../../samples/first-notes.md"),
+        include_str!("../../../../samples/first-notes.md"),
     )
     .unwrap();
     let canonical_sample_path = sample_path.canonicalize().unwrap();

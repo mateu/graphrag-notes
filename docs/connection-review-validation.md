@@ -28,8 +28,8 @@ explicitly by each real fixture.
 Focused commands:
 
 ```sh
-RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test --workspace \
-  --test connection_review_commands --locked --offline -- --test-threads=2
+RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
+  --test integration --locked --offline -- connection_review_commands:: --test-threads=2
 RUSTC_WRAPPER='' CARGO_BUILD_JOBS=2 cargo test -p graphrag-cli \
   commands::connections::tests --locked --offline -- --test-threads=2
 ```

@@ -299,8 +299,8 @@ A focused HTTP regression covers modern discovery/catalog cache metadata,
 read-only versus read/capture schemas, and legacy projection:
 
 ```bash
-cargo test --locked -p graphrag-service --test http_service \
-  modern_catalog_cache_metadata_is_private_and_preserves_principal_filtering
+cargo test --locked -p graphrag-service --test integration \
+  http_service::modern_catalog_cache_metadata_is_private_and_preserves_principal_filtering
 ```
 
 To reproduce the wire-level boundary without a model, use an isolated test

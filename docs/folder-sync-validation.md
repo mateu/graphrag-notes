@@ -10,7 +10,7 @@ providers untouched.
 ```bash
 cargo test --locked -p graphrag-config folder
 cargo test --locked -p graphrag-agents ingestion::folders::tests
-cargo test --locked -p graphrag-cli --test folder_sync_commands
+cargo test --locked -p graphrag-cli --test integration folder_sync_commands::
 cargo test --workspace --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```

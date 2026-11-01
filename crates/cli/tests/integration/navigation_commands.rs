@@ -42,7 +42,11 @@ fn fixture_operation(directory: &std::path::Path, mut request: Value) -> Value {
         .env("XDG_CONFIG_HOME", directory.join("xdg-config"))
         .env("GRAPHRAG_NAVIGATION_FIXTURE_REQUEST", &request_path)
         .current_dir(directory)
-        .args(["--exact", "database_fixture_process", "--nocapture"])
+        .args([
+            "--exact",
+            crate::exact_test_name(module_path!(), "database_fixture_process").as_str(),
+            "--nocapture",
+        ])
         .output()
         .unwrap();
     assert!(
