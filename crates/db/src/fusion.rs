@@ -79,6 +79,11 @@ pub trait FusionRecord: Clone {
     fn exact_title_match(&self) -> bool {
         false
     }
+    /// Lower tiers represent stronger lexical evidence. Callers that do not
+    /// distinguish lexical stages retain the established single tier.
+    fn fulltext_match_tier(&self) -> u8 {
+        0
+    }
     fn set_fusion_evidence(&mut self, evidence: FusionEvidence);
 }
 
@@ -112,6 +117,7 @@ where
     fulltext.sort_by(|left, right| {
         (config.fulltext_weight > 0.0 && right.exact_title_match())
             .cmp(&(config.fulltext_weight > 0.0 && left.exact_title_match()))
+            .then_with(|| left.fulltext_match_tier().cmp(&right.fulltext_match_tier()))
             .then_with(|| {
                 component_fulltext_score(right).total_cmp(&component_fulltext_score(left))
             })

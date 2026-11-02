@@ -1147,17 +1147,23 @@ impl Repository {
         source_uri: Option<String>,
         any_term: bool,
     ) -> Result<Vec<SearchResult>> {
-        let (search_content_operator, content_operator, title_operator, coverage_predicate) =
-            if any_term {
-                (
+        let (
+            search_content_operator,
+            content_operator,
+            title_operator,
+            coverage_predicate,
+            match_tier,
+        ) = if any_term {
+            (
                     "@0,OR@",
                     "@1,OR@",
                     "@2,OR@",
                     "AND array::len(array::filter($terms, |$term| string::contains(string::concat(' ', string::trim(string::replace(string::slug(search_content ?? ''), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::slug(content), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::slug(title ?? ''), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')))) >= 2",
+                    1,
                 )
-            } else {
-                ("@0@", "@1@", "@2@", "")
-            };
+        } else {
+            ("@0@", "@1@", "@2@", "", 0)
+        };
         // Keep the fallback coverage gate aligned with the full-text `ascii`
         // filter, which applies `deunicode` after class tokenization.
         let mut terms = deunicode::deunicode(query)
@@ -1188,6 +1194,7 @@ impl Repository {
                     record_id.created_at AS created_at,
                     record_id.source_id.uri AS source_uri,
                     exact_title_match,
+                    {match_tier} AS lexical_match_tier,
                     fts_score
                 FROM (
                     SELECT id, record_id,

@@ -22,6 +22,11 @@ pub struct SearchResult {
     #[serde(default)]
     #[surreal(default)]
     pub exact_title_match: bool,
+    /// Internal retrieval-stage marker: all-term lexical hits precede bounded
+    /// any-term fallback hits when hybrid fusion assigns full-text ranks.
+    #[serde(default, skip_serializing)]
+    #[surreal(default)]
+    pub lexical_match_tier: u8,
     #[serde(skip, default)]
     #[surreal(default)]
     pub fusion: FusionEvidence,
@@ -83,6 +88,10 @@ impl FusionRecord for SearchResult {
 
     fn exact_title_match(&self) -> bool {
         self.exact_title_match
+    }
+
+    fn fulltext_match_tier(&self) -> u8 {
+        self.lexical_match_tier
     }
 
     fn set_fusion_evidence(&mut self, evidence: FusionEvidence) {

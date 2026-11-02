@@ -70,3 +70,37 @@ async fn keyword_fallback_matches_ascii_folded_tokens() {
     assert_eq!(results.len(), 1);
     assert_eq!(record_id_to_string(&results[0].id), id(&accented));
 }
+
+#[tokio::test]
+async fn hybrid_fusion_keeps_all_term_lexical_hits_ahead_of_higher_bm25_fallbacks() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let all_terms = repo
+        .create_note(Note::new("surrealdb fam deploy production"))
+        .await
+        .unwrap();
+    repo.create_note(Note::new(
+        "surrealdb fam surrealdb fam surrealdb fam surrealdb fam surrealdb fam",
+    ))
+    .await
+    .unwrap();
+
+    let results = repo
+        .hybrid_search_notes_with_fusion(
+            "surrealdb fam deploy production",
+            vec![0.0; 1024],
+            2,
+            None,
+            None,
+            &FusionConfig {
+                candidate_pool_min: 2,
+                candidate_pool_max: 2,
+                ..FusionConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(record_id_to_string(&results[0].id), id(&all_terms));
+    assert_eq!(results[0].fusion.fulltext_rank, Some(1));
+}
