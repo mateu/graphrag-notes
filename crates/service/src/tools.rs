@@ -527,7 +527,18 @@ impl ServerHandler for ToolService {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let id = context.id.clone();
-        let result = self.dispatch_tool(request, context).await?;
+        let started = std::time::Instant::now();
+        let principal_id = principal(&context).map(|p| p.instance_id.clone()).ok();
+        let tool = request.name.to_string();
+        let arguments = request.arguments.clone();
+        let result = self.dispatch_tool(request, context).await;
+        crate::usage::record(
+            principal_id.as_deref().unwrap_or("unauthenticated"),
+            &tool,
+            started.elapsed().as_secs_f64() * 1000.0,
+            &crate::usage::summarize(&tool, arguments.as_ref(), &result),
+        );
+        let result = result?;
         // Serialize the exact SDK response model, including the echoed RPC ID.
         // The HTTP transport adds no further JSON body fields.
         let response = rmcp::model::JsonRpcResponse {
