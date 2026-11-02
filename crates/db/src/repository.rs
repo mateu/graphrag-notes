@@ -963,14 +963,14 @@ mod tests {
     #[tokio::test]
     async fn update_note_rebuilds_markdown_search_content_without_stale_terms() {
         let repo = Repository::new(init_memory().await.unwrap());
-        let mut markdown_note = Note::new("obsolete-search-token is removed");
+        let mut markdown_note = Note::new("obsolete-retired-marker is removed");
         markdown_note.chunk_heading_path = vec!["Roadmap".into()];
-        markdown_note.search_content = Some("Roadmap\n\nobsolete-search-token is removed".into());
+        markdown_note.search_content = Some("Roadmap\n\nobsolete-retired-marker is removed".into());
         let created = repo.create_note(markdown_note).await.unwrap();
         let created_id = created.id.as_ref().unwrap().clone();
 
         let mut edited = created.clone();
-        edited.content = "current-search-token is indexed".into();
+        edited.content = "current-live-marker is indexed".into();
         // Model a caller changing only `content`; this stale field used to
         // keep removed body terms in the highest-weight FTS column.
         edited.search_content = created.search_content.clone();
@@ -981,16 +981,16 @@ mod tests {
 
         assert_eq!(
             updated.search_content.as_deref(),
-            Some("Roadmap\n\ncurrent-search-token is indexed")
+            Some("Roadmap\n\ncurrent-live-marker is indexed")
         );
         assert!(repo
-            .fulltext_search("obsolete-search-token", 10)
+            .fulltext_search("obsolete-retired-marker", 10)
             .await
             .unwrap()
             .iter()
             .all(|result| result.id != created_id));
         let current = repo
-            .fulltext_search("current-search-token", 10)
+            .fulltext_search("current-live-marker", 10)
             .await
             .unwrap();
         assert!(current

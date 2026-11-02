@@ -70,6 +70,19 @@ fn editor_source_id(expected: &Note) -> Result<RecordId> {
         .ok_or_else(|| DbError::NoteRevisionConflict("(missing note ID)".into()))
 }
 
+/// Match the full-text `ascii` filter's deunicode/class-token normalization for
+/// the bounded any-term fallback coverage gate and its eligibility check.
+fn lexical_coverage_terms(query: &str) -> Vec<String> {
+    let mut terms = deunicode::deunicode(query)
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    terms.sort_unstable();
+    terms.dedup();
+    terms
+}
+
 /// Keep the entity upsert semantics aligned with `Repository::upsert_entity`:
 /// explicit identities identify rows, existing type/creation time survive, and
 /// legacy metadata aliases merge distinctly, while extracted metadata reflects
@@ -1119,7 +1132,7 @@ impl Repository {
         // suffix with the engine's OR operator. Keep the all-term prefix
         // intact: an exact/all-term result remains more relevant than any
         // partial match, while the suffix retains native BM25 ordering.
-        if all_term_results.len() < limit && query.split_whitespace().nth(1).is_some() {
+        if all_term_results.len() < limit && lexical_coverage_terms(query).len() >= 2 {
             let any_term_results = self
                 .fulltext_search_notes_with_operator(query, limit, since, source_uri, true)
                 .await?;
@@ -1166,13 +1179,7 @@ impl Repository {
         };
         // Keep the fallback coverage gate aligned with the full-text `ascii`
         // filter, which applies `deunicode` after class tokenization.
-        let mut terms = deunicode::deunicode(query)
-            .split(|character: char| !character.is_alphanumeric())
-            .filter(|term| !term.is_empty())
-            .map(str::to_lowercase)
-            .collect::<Vec<_>>();
-        terms.sort_unstable();
-        terms.dedup();
+        let terms = lexical_coverage_terms(query);
         let since = since.map(|ts| ts.to_rfc3339());
         // Case folding and outer whitespace are the only equivalences here:
         // punctuation and internal whitespace can distinguish note titles.

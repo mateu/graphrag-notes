@@ -72,6 +72,23 @@ async fn keyword_fallback_matches_ascii_folded_tokens() {
 }
 
 #[tokio::test]
+async fn keyword_fallback_uses_analyzed_terms_when_punctuation_has_no_spaces() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let partial_match = repo
+        .create_note(Note::new("memory sync incident"))
+        .await
+        .unwrap();
+
+    let results = repo
+        .fulltext_search("memory,sync,recovery", 10)
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(record_id_to_string(&results[0].id), id(&partial_match));
+}
+
+#[tokio::test]
 async fn hybrid_fusion_keeps_all_term_lexical_hits_ahead_of_higher_bm25_fallbacks() {
     let repo = Repository::new(init_memory().await.unwrap());
     let all_terms = repo
