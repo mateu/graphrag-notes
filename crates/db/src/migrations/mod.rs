@@ -479,6 +479,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v024_backfills_entity_and_mention_alias_lexemes_idempotently() {
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..23]).await.unwrap();
+        db.query("CREATE entity:lexeme CONTENT { name: 'Atlas Engine', canonical_name: 'atlas engine', entity_type: 'concept', metadata: { aliases: ['Atlas Prime'] } }; CREATE note:lexeme CONTENT { content: 'fictional' }; CREATE mentions:lexeme SET in = note:lexeme, out = entity:lexeme, metadata = { aliases: ['Atlas Evidence'] };")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        apply_all(&db).await.unwrap();
+        let lexemes: Vec<String> = db
+            .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = entity:lexeme ORDER BY lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(lexemes, ["atlas engine", "atlas evidence", "atlas prime"]);
+        apply_all(&db).await.unwrap();
+        let repeated: Vec<String> = db
+            .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = entity:lexeme ORDER BY lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(repeated, lexemes);
+    }
+
+    #[tokio::test]
     async fn v019_preserves_legacy_ids_and_old_backup_identity_without_conflating_scopes() {
         use graphrag_core::{Entity, EntityType};
         let db = raw_memory_db().await;
