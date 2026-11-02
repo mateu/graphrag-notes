@@ -1817,16 +1817,16 @@ impl Repository {
             .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
             .unwrap_or_default();
         let (select_direct, mention_condition, direct_order) = if scope.is_some() {
-            // The direct-rank page is unordered and mentions are non-unique.
-            // Keep its original scan: an association index could change the
-            // capped subset when duplicate mentions outnumber ranked notes.
-            // Preserve the existence scan's original error/iteration order.
+            // The original table scan visits relation IDs in primary-key order.
+            // Materialize the indexed per-entity subset in that same order before
+            // applying the non-unique direct-rank cap; index endpoint order would
+            // otherwise change which duplicate relations contribute.
             (
                 format!(
-                    ", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"
+                    ", {{ LET $graph_entity_id = id; LET $graph_direct_mentions = (SELECT id, in FROM mentions WHERE out = $graph_entity_id AND in IN $ranked_notes AND {eligible} ORDER BY id ASC LIMIT $ranked_limit); (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM $graph_direct_mentions)) ?? 2147483647); }} AS graph_direct_rank"
                 ),
                 format!(
-                    "AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"
+                    "AND {{ LET $graph_entity_id = id; array::len((SELECT VALUE in FROM mentions WHERE out = $graph_entity_id AND {eligible} LIMIT 1)) > 0; }}"
                 ),
                 "graph_direct_rank ASC, ",
             )

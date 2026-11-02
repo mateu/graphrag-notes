@@ -1676,6 +1676,15 @@ async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_ra
             .check()
             .unwrap();
     }
+    // Verify the rank-page lookup can use the association index even though
+    // its cap is applied in relation-ID order (not index endpoint order).
+    let plans: Vec<serde_json::Value> = repo.db
+        .query("SELECT id, in FROM mentions WHERE out = $entity AND in IN $ranked_notes ORDER BY id ASC LIMIT 2 EXPLAIN FULL")
+        .bind(("entity", first.clone()))
+        .bind(("ranked_notes", vec![best_rank.clone(), lower_rank.clone()]))
+        .await.unwrap().take(0).unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_mentions_access_plan(&plans[0], true);
     let ranked = [best_rank, lower_rank];
     for limit in [1, 2] {
         let rows = assert_alias_query_matches_original(
