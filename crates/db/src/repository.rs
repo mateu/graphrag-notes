@@ -17,6 +17,8 @@ mod graph_retrieval_batch_tests;
 mod ids;
 mod inspection;
 mod jobs;
+#[cfg(test)]
+mod lexical_any_term_tests;
 mod metadata;
 mod migration_probe;
 mod models;

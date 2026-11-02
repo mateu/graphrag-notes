@@ -1109,6 +1109,59 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
+        let mut all_term_results = self
+            .fulltext_search_notes_with_operator(query, limit, since, source_uri.clone(), false)
+            .await?;
+
+        // SurrealDB's default match operator requires every analyzed term in a
+        // single chunk. Natural-language recall queries often spread their
+        // useful terms across neighbouring chunks, so backfill a bounded
+        // suffix with the engine's OR operator. Keep the all-term prefix
+        // intact: an exact/all-term result remains more relevant than any
+        // partial match, while the suffix retains native BM25 ordering.
+        if all_term_results.len() < limit && query.split_whitespace().nth(1).is_some() {
+            let any_term_results = self
+                .fulltext_search_notes_with_operator(query, limit, since, source_uri, true)
+                .await?;
+            for result in any_term_results {
+                if all_term_results
+                    .iter()
+                    .all(|existing| existing.id != result.id)
+                {
+                    all_term_results.push(result);
+                    if all_term_results.len() == limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(all_term_results)
+    }
+
+    async fn fulltext_search_notes_with_operator(
+        &self,
+        query: &str,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        any_term: bool,
+    ) -> Result<Vec<SearchResult>> {
+        let (search_content_operator, content_operator, title_operator, coverage_predicate) =
+            if any_term {
+                (
+                    "@0,OR@",
+                    "@1,OR@",
+                    "@2,OR@",
+                    "AND array::len(array::filter($terms, |$term| string::contains(string::lowercase(search_content ?? ''), $term) OR string::contains(string::lowercase(content), $term) OR string::contains(string::lowercase(title ?? ''), $term))) >= 2",
+                )
+            } else {
+                ("@0@", "@1@", "@2@", "")
+            };
+        let terms = query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>();
         let since = since.map(|ts| ts.to_rfc3339());
         // Case folding and outer whitespace are the only equivalences here:
         // punctuation and internal whitespace can distinguish note titles.
@@ -1119,7 +1172,7 @@ impl Repository {
         // The physical native keys mirror note IDs, preserving all tie types.
         let results: Vec<SearchResult> = self
             .db
-            .query(
+            .query(format!(
                 r#"
                 SELECT
                     record_id AS id,
@@ -1136,7 +1189,8 @@ impl Repository {
                         ($normalized_title != '' AND string::lowercase(string::trim(title ?? '')) = $normalized_title) AS exact_title_match,
                         (search::score(0) * 0.7 + search::score(1) * 0.2 + search::score(2) * 0.1) AS fts_score
                     FROM note_search
-                    WHERE (search_content @0@ $query OR content @1@ $query OR title @2@ $query)
+                    WHERE (search_content {search_content_operator} $query OR content {content_operator} $query OR title {title_operator} $query)
+                      {coverage_predicate}
                       AND ($since = NONE OR created_at >= <datetime>$since)
                       AND ($source_uri = NONE OR source_id.uri = $source_uri)
                       AND (
@@ -1149,8 +1203,9 @@ impl Repository {
                 )
                 ORDER BY exact_title_match DESC, fts_score DESC, id ASC
             "#,
-            )
+            ))
             .bind(("query", query.to_string()))
+            .bind(("terms", terms))
             .bind(("normalized_title", normalized_title))
             .bind(("limit", limit))
             .bind(("since", since))
