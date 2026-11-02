@@ -10,6 +10,11 @@ use super::*;
 use graphrag_core::{normalized_content_hash, EntityType};
 use surrealdb_types::ToSql;
 
+struct GraphCandidateEvidence {
+    eligible_notes: Vec<RecordId>,
+    mentions: std::collections::BTreeMap<String, Vec<surrealdb_types::Value>>,
+}
+
 /// Fetch the stored endpoint before inspecting fields. Plain `endpoint.id`
 /// can read an object-key component, falsely admitting a dangling compound
 /// record ID. `endpoint.*` fetches the document, preserving the former visible
@@ -1862,6 +1867,130 @@ impl Repository {
         if use_lexeme_index && candidate_ids.is_empty() {
             return Ok(Vec::new());
         }
+        // Hydrate each unique endpoint once for the complete candidate set.
+        // Keep the oracle path for malformed metadata / compound relation IDs,
+        // whose evaluation order and primary-key tie behavior are observable.
+        let batch_eligible = if use_lexeme_index {
+            self.graph_candidate_eligible_notes(&candidate_ids, scope)
+                .await?
+        } else {
+            None
+        };
+        if let Some(batch) = &batch_eligible {
+            // Evaluate evidence once in Rust, then run one lexical/ranking SELECT
+            // over the hydrated entity set. No per-candidate SQL plans or LETs.
+            #[derive(Deserialize, SurrealValue)]
+            struct Mention {
+                id: RecordId,
+                #[surreal(rename = "in")]
+                note: RecordId,
+                aliases: Vec<String>,
+            }
+            let mut alias_map = std::collections::BTreeMap::<String, Vec<String>>::new();
+            let mut rank_map = std::collections::BTreeMap::<String, i64>::new();
+            let mut visible_entities = Vec::new();
+            // RecordId hashing does not mutate native key values; the lint sees
+            // interior mutability only through unrelated Value regex variants.
+            #[allow(clippy::mutable_key_type)]
+            let eligible_ids = batch.eligible_notes.iter().cloned().collect::<HashSet<_>>();
+            let padded_query = format!(" {normalized_query} ");
+            // Match SurrealQL's Unicode category boundary exactly (Rust's
+            // is_alphanumeric also accepts some combining marks).
+            static BOUNDARY: std::sync::OnceLock<surrealdb_types::Regex> =
+                std::sync::OnceLock::new();
+            let boundary =
+                BOUNDARY.get_or_init(|| r"[^\p{L}\p{N}]+".parse().expect("constant lexical regex"));
+            for id in &candidate_ids {
+                let mut mentions = batch
+                    .mentions
+                    .get(&id.to_sql())
+                    .into_iter()
+                    .flatten()
+                    .map(|value| Mention::from_value(value.clone()))
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                mentions.retain(|mention| eligible_ids.contains(&mention.note));
+                if !mentions.is_empty() {
+                    visible_entities.push(id.clone());
+                }
+                mentions.sort_by(|a, b| a.id.cmp(&b.id));
+                let rank = scope
+                    .and_then(|scope| {
+                        mentions
+                            .iter()
+                            .filter_map(|mention| {
+                                scope
+                                    .ranked_note_ids
+                                    .iter()
+                                    .position(|note| note == &mention.note)
+                            })
+                            .take(scope.ranked_note_ids.len().max(1))
+                            .min()
+                    })
+                    .map(|rank| rank as i64)
+                    .unwrap_or(2147483647);
+                rank_map.insert(id.to_sql(), rank);
+                // Filter matching evidence before the 200-relation page, then
+                // union/sort/deduplicate and finally apply the eight-alias cap.
+                for mention in &mut mentions {
+                    mention.aliases.retain(|alias| {
+                        let lowered = alias.to_lowercase();
+                        let lexical = boundary.replace_all(&lowered, " ");
+                        let lexical = lexical.trim();
+                        match tier {
+                            GraphEntityMatchTier::Exact => lexical == normalized_query,
+                            GraphEntityMatchTier::ContainedPhrase => {
+                                padded_query.contains(&format!(" {lexical} "))
+                            }
+                            GraphEntityMatchTier::Prefix => false,
+                        }
+                    });
+                }
+                mentions.retain(|mention| !mention.aliases.is_empty());
+                mentions.sort_by(|a, b| a.note.cmp(&b.note).then(a.id.cmp(&b.id)));
+                let mut aliases = mentions
+                    .into_iter()
+                    .take(200)
+                    .flat_map(|mention| mention.aliases)
+                    .collect::<Vec<_>>();
+                aliases.sort();
+                aliases.dedup();
+                aliases.truncate(8);
+                alias_map.insert(id.to_sql(), aliases);
+            }
+            let direct = if scope.is_some() {
+                ", $rank_map[type::string(id)] AS graph_direct_rank"
+            } else {
+                ""
+            };
+            let visibility = if scope.is_some() {
+                "AND id IN $visible_entities"
+            } else {
+                ""
+            };
+            let sql = format!(
+                r#"
+                SELECT id, name, canonical_name, object::extend(metadata ?? {{}}, {{ aliases: graph_current_aliases }}) AS metadata{select_specificity}{select_prefix_plausibility}{direct}
+                FROM (SELECT id, name, canonical_name, metadata,
+                    IF string::starts_with(identity_key ?? '', 'extracted-v1:') THEN $alias_map[type::string(id)] ELSE metadata.aliases ?? [] END AS graph_current_aliases
+                    FROM $ids)
+                WHERE ({match_condition}) {visibility}
+                ORDER BY {ordering} LIMIT $limit
+            "#
+            );
+            let mut request = self
+                .db
+                .query(sql)
+                .bind(("ids", candidate_ids.clone()))
+                .bind(("alias_map", alias_map))
+                .bind(("rank_map", rank_map))
+                .bind(("visible_entities", visible_entities))
+                .bind(("query", normalized_query.to_owned()))
+                .bind(("limit", limit));
+            for (index, prefix) in prefixes.iter().enumerate() {
+                request = request.bind((format!("prefix_{index}"), prefix.clone()));
+            }
+            return request.await?.check()?.take(0).map_err(Into::into);
+        }
         let entity_source = if use_lexeme_index {
             "$graph_entity_lexeme_candidates"
         } else {
@@ -1931,13 +2060,38 @@ impl Repository {
                     if direct.is_some() {
                         statement = statement.replace(&select_direct, ", $graph_entity_direct_rank AS graph_direct_rank").replace(&mention_condition, "AND $graph_entity_has_mentions");
                     }
-                    format!("{setup}{statement}")
+                    let sql = format!("{setup}{statement}");
+                    if batch_eligible.is_some() {
+                        sql.replace("FROM mentions WITH NOINDEX", &format!("FROM $graph_mentions_{index}"))
+                            .replace("FROM mentions", &format!("FROM $graph_mentions_{index}"))
+                    } else { sql }
                 })
                 .collect::<Vec<_>>()
                 .join(";\n");
-            let mut request = bind_query(statements);
+            let statements = if batch_eligible.is_some() {
+                statements.replace(&eligible, "(in IN $graph_batch_eligible_notes)")
+            } else {
+                statements
+            };
+            let mut request = bind_query(statements).bind((
+                "graph_batch_eligible_notes",
+                batch_eligible
+                    .as_ref()
+                    .map(|batch| batch.eligible_notes.clone())
+                    .unwrap_or_default(),
+            ));
             for (index, id) in chunk.iter().enumerate() {
                 request = request.bind((format!("graph_entity_bound_{index}"), id.clone()));
+                if let Some(batch) = &batch_eligible {
+                    request = request.bind((
+                        format!("graph_mentions_{index}"),
+                        batch
+                            .mentions
+                            .get(&id.to_sql())
+                            .cloned()
+                            .unwrap_or_default(),
+                    ));
+                }
             }
             let mut response = request.await?.check()?;
             let statements_per_entity = if scope.is_some() { 5 } else { 3 };
@@ -1982,6 +2136,87 @@ impl Repository {
             .map_err(Into::into)
     }
 
+    async fn graph_candidate_eligible_notes(
+        &self,
+        entities: &[RecordId],
+        scope: Option<&GraphEntityQueryScope>,
+    ) -> Result<Option<GraphCandidateEvidence>> {
+        // Batched record-array projection can coalesce equal-valued compound
+        // numeric keys (e.g. [1] and [1.0]); retain individual native lookups.
+        if entities.iter().any(|entity| {
+            !matches!(
+                entity.key,
+                surrealdb_types::RecordIdKey::Number(_)
+                    | surrealdb_types::RecordIdKey::String(_)
+                    | surrealdb_types::RecordIdKey::Uuid(_)
+            )
+        }) {
+            return Ok(None);
+        }
+        #[derive(Deserialize, SurrealValue)]
+        struct Endpoint {
+            note_id: RecordId,
+            safe: bool,
+            row: surrealdb_types::Value,
+        }
+        let mut mentions = std::collections::BTreeMap::new();
+        let mut notes = Vec::new();
+        for chunk in entities.chunks(128) {
+            // Separate equality probes retain idx_mentions_entity_note; an
+            // out IN list is deliberately not used (it can become a table scan).
+            let sql = (0..chunk.len()).map(|i| format!(
+                "SELECT {{ id: id, in: in, aliases: metadata.aliases ?? [] }} AS row, in AS note_id, ((type::is_number(record::id(id)) OR type::is_string(record::id(id)) OR type::is_uuid(record::id(id))) AND record::tb(in) = 'note' AND (type::is_number(record::id(in)) OR type::is_string(record::id(in)) OR type::is_uuid(record::id(in))) AND type::is_array(metadata.aliases ?? []) AND array::len(metadata.aliases ?? []) <= 8 AND array::all(metadata.aliases ?? [], |$a| type::is_string($a))) AS safe FROM mentions WHERE out = $entity_{i};"
+            )).collect::<Vec<_>>().join("\n");
+            let mut request = self.db.query(sql);
+            for (i, entity) in chunk.iter().enumerate() {
+                request = request.bind((format!("entity_{i}"), entity.clone()));
+            }
+            let mut response = request.await?.check()?;
+            for (i, entity) in chunk.iter().enumerate() {
+                for endpoint in response.take::<Vec<Endpoint>>(i)? {
+                    if !endpoint.safe {
+                        return Ok(None);
+                    }
+                    notes.push(endpoint.note_id);
+                    mentions
+                        .entry(entity.to_sql())
+                        .or_insert_with(Vec::new)
+                        .push(endpoint.row);
+                }
+            }
+        }
+        notes.sort_by_cached_key(|id| id.to_sql());
+        notes.dedup_by(|a, b| a.to_sql() == b.to_sql());
+        // Fetch only the fields required for visibility and scope, never note
+        // content/vectors. Native record arrays are direct record lookups.
+        let mut response = self.db.query(r#"
+            LET $notes = SELECT id, source_id, source_generation, created_at FROM $ids;
+            SELECT VALUE id FROM $notes WHERE source_id != NONE AND NOT (type::is_number(record::id(source_id)) OR type::is_string(record::id(source_id)) OR type::is_uuid(record::id(source_id)));
+            LET $source_ids = array::distinct(array::filter($notes.source_id, |$id| $id != NONE));
+            LET $sources = SELECT id, successful_generation, uri FROM $source_ids;
+            LET $source_map = object::from_entries(array::map($sources, |$s| [type::string($s.id), $s]));
+            RETURN (SELECT VALUE id FROM $notes WHERE record::tb(id) = 'note'
+                AND type::is_range(record::id(id)) = false
+                AND (source_id = NONE OR source_generation = NONE OR source_generation = $source_map[type::string(source_id)].successful_generation)
+                AND ($since = NONE OR created_at >= <datetime>$since)
+                AND ($source_uri = NONE OR $source_map[type::string(source_id)].uri = $source_uri));
+        "#)
+            .bind(("ids", notes))
+            .bind(("since", scope.and_then(|s| s.since.clone())))
+            .bind(("source_uri", scope.and_then(|s| s.source_uri.clone())))
+            .await?.check()?;
+        // Equal-valued compound source keys must retain individual native
+        // dereferences, just like compound entity/note keys above.
+        let compound_sources: Vec<RecordId> = response.take(1)?;
+        if !compound_sources.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(GraphCandidateEvidence {
+            eligible_notes: response.take(5)?,
+            mentions,
+        }))
+    }
+
     /// Return only possible lexical matches. The caller still executes the
     /// original tier predicate against these IDs, so visibility, scope,
     /// specificity, ordering, and caps remain authoritative there.
@@ -1994,7 +2229,7 @@ impl Repository {
         match tier {
             GraphEntityMatchTier::Exact => self
                 .db
-                .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme = $query")
+                .query("RETURN array::concat((SELECT VALUE entity FROM mention_lexeme WHERE lexeme = $query), (SELECT VALUE entity FROM entity_lexeme WHERE lexeme = $query));")
                 .bind(("query", query.to_owned()))
                 .await?
                 .take(0)
@@ -2008,7 +2243,7 @@ impl Repository {
                     }
                 }
                 self.db
-                    .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme IN $lexemes")
+                    .query("RETURN array::concat((SELECT VALUE entity FROM mention_lexeme WHERE lexeme IN $lexemes), (SELECT VALUE entity FROM entity_lexeme WHERE lexeme IN $lexemes));")
                     .bind(("lexemes", lexemes))
                     .await?
                     .take(0)
