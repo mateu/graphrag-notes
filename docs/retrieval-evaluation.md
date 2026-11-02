@@ -130,3 +130,89 @@ binary/endpoint arguments. Missing ranking/readback entries become failed rows;
 one unavailable policy does not erase the other comparisons. Exit 0 means all
 retrieval/readback calls passed, not that relevance was perfect. Exit 1 records
 failed comparisons; exit 2 indicates input/connection/output setup failure.
+
+## Graph context evaluation
+
+`scripts/evaluate-graph-context.py` uses the repo's standard-library MCP client
+and calls only `build_context`. Use a read-only principal and an HTTP loopback
+endpoint (or an encrypted SSH tunnel ending on loopback) with path `/mcp`.
+Credentials are read only from `--credential-env` (default `GRAPHRAG_TOKEN`);
+never supply their value in arguments. It works with Python 3.9+.
+
+Keep the suite and source map private. A suite has this shape:
+
+```json
+{
+  "questions": [{
+    "id": "Q1",
+    "question": "What prerequisite explains the fictional rollout order?",
+    "seed": ["memory/fictional-seed.md"],
+    "support": ["memory/fictional-support.md"],
+    "allowed_relations": ["depends_on"],
+    "answer_differs_materially": "unknown"
+  }]
+}
+```
+
+The source map accepts `{ "upload-hash": "workspace-relative/path.md" }` or
+the importer's registry `files[path].parts[*].id = "source:<hash>"` (parts can
+be an object or list). Hashes map the tail of `mcp://upload/<hash>` to paths.
+Unmapped results are labeled `unmapped`; inspect coverage before interpreting
+misses. Neither the registry nor its importer credential should be published.
+
+The fixed protocol is `off,on,on,off`, scope `notes`, two chunks, 1000 total
+tokens, 400 tokens per chunk. `--policies`, `--scope`, `--max-chunks`,
+`--max-total-tokens`, and `--max-chunk-tokens` override it and are recorded.
+Policies must include at least two rounds of each off/on. Optional
+`--max-chunks-per-source` is forwarded unchanged; leave it unset on older
+servers that do not support it. It does not emulate diversity client-side.
+
+A pass requires all four suite conditions:
+
+1. Graph-off lacks every required support at the specified budget.
+2. Graph-on returns every support with a nonempty accepted graph path, hops ≥ 1.
+3. Every edge in that support's path has an ID and a type in `allowed_relations`.
+4. A human judges that the answer differs materially (`answer_differs_materially: "yes"`).
+
+`related_to` never satisfies a typed requirement such as dependency, causality,
+supersession, or remediation. Allow it only for a question that explicitly
+requires relatedness. Zero-hop graph/entity matches do not prove traversal.
+The runner checks the service's accepted path evidence and the suite's allowed
+types; humans must review semantic correctness and source-revision freshness.
+The final condition defaults to `unknown`: otherwise successful retrieval is
+`needs_judgement`, not `pass`. A missing retrieval/path condition, call failure,
+or a human `"no"` is `fail`. Seed/support found flags summarize the union of
+repeated rounds; consult per-round paths and stability before claiming a result.
+
+```sh
+python3 -I scripts/evaluate-graph-context.py \
+  --suite /private/suite.json --source-map /private/state.json \
+  --endpoint http://127.0.0.1:33157/mcp --credential-env GRAPHRAG_TOKEN \
+  --output /private/graph-run-002.json --private-dir /private/graph-snippets-002 \
+  --compare /private/graph-run-001.json --summary
+```
+
+Reports are exclusively created `0600` and refuse overwrite. Raw MCP responses
+(including snippets/rendered context) are retained **only** when `--private-dir`
+is supplied; that directory must be owned by the current user, mode `0700`, and
+not a symlink. Otherwise content is discarded. The public report and `--json`
+stdout omit questions, note content, query entities and arbitrary text diagnostic
+fields. They contain source paths and graph IDs: review these identifiers before
+sharing. Errors never print server exception strings. Use new output/private
+paths per run. Failed calls exit 1, setup failures exit 2; exit 0 says calls
+succeeded, not that questions passed.
+
+Reports record per-round paths, scores, graph hops/steps/types/IDs, diagnostics,
+found flags, elapsed milliseconds and sanitized-response SHA-256 stability.
+Hashes exclude timing, policy, and private fields (not byte hashes of the full
+response). Metadata includes endpoint host only, MCP protocol, timestamps,
+source-map size, suite and runner hashes. Optional `--binary-sha256`,
+`--source-revision`, `--embedding-identity`, `--source-count` and
+`--accepted-edge-count` record operator-supplied snapshot identity; these claims
+do not freeze the live corpus. `--compare` prints per-question gained/lost paths
+for off/on, boolean flag flips, mean per-call elapsed delta and pass transitions,
+without note text. The sanitized 2026-11-02 fixture predates tri-state scoring;
+its absent edge paths are classified as fail. Its old support paths also
+predate the dated-support suite revision, so record that coverage difference
+when comparing. Preserve the same corpus, suite and protocol to isolate ranking
+changes; timing drift alone is not evidence of graph usefulness.

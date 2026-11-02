@@ -1,0 +1,1416 @@
+{
+  "schema_version": 1,
+  "read_only": true,
+  "protocol": {
+    "scope": "notes",
+    "max_chunks": 2,
+    "max_total_tokens": 1000,
+    "max_chunk_tokens": 400,
+    "policies": [
+      "off",
+      "on",
+      "on",
+      "off"
+    ]
+  },
+  "run_at": "2026-11-02T20:57:22.782942+00:00",
+  "registered_sources": 824,
+  "questions": [
+    {
+      "id": "Q1",
+      "question": "Why can Active Memory time out even when its model route is reachable, and what should be inspected first?",
+      "seed": [
+        "memory/2026-08-08.md"
+      ],
+      "support": [
+        "memory/error-log.md"
+      ],
+      "coverage": {
+        "memory/2026-08-08.md": true,
+        "memory/error-log.md": false
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 5550,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-1227.md",
+            "memory/2026-09-19-0701.md"
+          ],
+          "scores": [
+            0.015223214402794838,
+            0.01149425283074379
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 692,
+          "expected_found": {
+            "memory/2026-08-08.md": false,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "a6193f3f1712cf6e802c6fd585b433448852cce7eb175d36ab9c0814467069b2"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 5585,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-1227.md",
+            "memory/2026-09-19-0701.md"
+          ],
+          "scores": [
+            0.015223214402794838,
+            0.01149425283074379
+          ],
+          "chunk_graph": [
+            {
+              "decay": 1.0,
+              "hops": 0,
+              "path": [],
+              "provenance_ids": [],
+              "query_entities": [
+                "active memory"
+              ],
+              "score": 0.004098360426723957,
+              "seed_note_id": "note:5ec6a9cd84a310725d2232f99ed6322659169b991998a967b3f45dd7e6361ac2",
+              "source_uri": "mcp://upload/25a48c90d7a68eb1f52d4a6e57d0278e8f1fcb86def641d2b461eed49d204a46"
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 5,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 692,
+          "expected_found": {
+            "memory/2026-08-08.md": false,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "8d17c55bf54f0c44d7ef0f3e1934078eb9a9aa108fba1fffb6de244a0a54dd8a"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 5818,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-1227.md",
+            "memory/2026-09-19-0701.md"
+          ],
+          "scores": [
+            0.015223214402794838,
+            0.01149425283074379
+          ],
+          "chunk_graph": [
+            {
+              "decay": 1.0,
+              "hops": 0,
+              "path": [],
+              "provenance_ids": [],
+              "query_entities": [
+                "active memory"
+              ],
+              "score": 0.004098360426723957,
+              "seed_note_id": "note:5ec6a9cd84a310725d2232f99ed6322659169b991998a967b3f45dd7e6361ac2",
+              "source_uri": "mcp://upload/25a48c90d7a68eb1f52d4a6e57d0278e8f1fcb86def641d2b461eed49d204a46"
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 5,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 692,
+          "expected_found": {
+            "memory/2026-08-08.md": false,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "8d17c55bf54f0c44d7ef0f3e1934078eb9a9aa108fba1fffb6de244a0a54dd8a"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 5780,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-1227.md",
+            "memory/2026-09-19-0701.md"
+          ],
+          "scores": [
+            0.015223214402794838,
+            0.01149425283074379
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 692,
+          "expected_found": {
+            "memory/2026-08-08.md": false,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "a6193f3f1712cf6e802c6fd585b433448852cce7eb175d36ab9c0814467069b2"
+        }
+      ],
+      "summary": {
+        "seed_in_corpus": true,
+        "support_in_corpus": false,
+        "off_finds_seed": false,
+        "off_finds_support": false,
+        "on_finds_seed": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 2,
+        "stable_off": true,
+        "stable_on": true
+      }
+    },
+    {
+      "id": "Q2",
+      "question": "When a current memory import changes, how do we preserve source identity without silently creating a duplicate or stale generation?",
+      "seed": [
+        "memory/2026-10-06-graphrag-ingestion-canary.md"
+      ],
+      "support": [
+        "project/graphrag-memory-sync/note/live-canary-20261006.md"
+      ],
+      "coverage": {
+        "memory/2026-10-06-graphrag-ingestion-canary.md": true,
+        "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 5951,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-2051.md",
+            "memory/2026-07-25-1234.md"
+          ],
+          "scores": [
+            0.012370600365102291,
+            0.011800698935985565
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 827,
+          "expected_found": {
+            "memory/2026-10-06-graphrag-ingestion-canary.md": false,
+            "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+          },
+          "response_sha256": "1c4bbf182df3e5fbf71089ab259c4c8c766243532eaed7fd564d54a3e93eef7e"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 6141,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-2051.md",
+            "memory/2026-07-25-1234.md"
+          ],
+          "scores": [
+            0.012370600365102291,
+            0.011800698935985565
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 827,
+          "expected_found": {
+            "memory/2026-10-06-graphrag-ingestion-canary.md": false,
+            "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+          },
+          "response_sha256": "7ad01496435e25c11d66f8840c359e710a60067faaececda267f7d2f4546d600"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 6123,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-2051.md",
+            "memory/2026-07-25-1234.md"
+          ],
+          "scores": [
+            0.012370600365102291,
+            0.011800698935985565
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 827,
+          "expected_found": {
+            "memory/2026-10-06-graphrag-ingestion-canary.md": false,
+            "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+          },
+          "response_sha256": "7ad01496435e25c11d66f8840c359e710a60067faaececda267f7d2f4546d600"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 5888,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-2051.md",
+            "memory/2026-07-25-1234.md"
+          ],
+          "scores": [
+            0.012370600365102291,
+            0.011800698935985565
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 827,
+          "expected_found": {
+            "memory/2026-10-06-graphrag-ingestion-canary.md": false,
+            "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+          },
+          "response_sha256": "1c4bbf182df3e5fbf71089ab259c4c8c766243532eaed7fd564d54a3e93eef7e"
+        }
+      ],
+      "summary": {
+        "seed_in_corpus": true,
+        "support_in_corpus": false,
+        "off_finds_seed": false,
+        "off_finds_support": false,
+        "on_finds_seed": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true
+      }
+    },
+    {
+      "id": "Q3",
+      "question": "Why is an enabled maintenance timer insufficient evidence that the CI host will retain disk headroom?",
+      "seed": [
+        "memory/2026-10-02-docker-prune.md"
+      ],
+      "support": [
+        "memory/error-log.md"
+      ],
+      "coverage": {
+        "memory/2026-10-02-docker-prune.md": true,
+        "memory/error-log.md": false
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 4578,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-02-docker-prune.md",
+            "memory/2026-10-02-docker-prune.md"
+          ],
+          "scores": [
+            0.015977822244167328,
+            0.015823235735297203
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 828,
+          "expected_found": {
+            "memory/2026-10-02-docker-prune.md": true,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "89105df36b9a356a96995a34a38fa14c3cf4c87452d08eef7e864b63cf086b61"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 4611,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-02-docker-prune.md",
+            "memory/2026-10-02-docker-prune.md"
+          ],
+          "scores": [
+            0.015977822244167328,
+            0.015823235735297203
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 828,
+          "expected_found": {
+            "memory/2026-10-02-docker-prune.md": true,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "315e0ca01b7556820b36289f4100976be17ef3ccc5a3f757d266df52d7d6b982"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 4624,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-02-docker-prune.md",
+            "memory/2026-10-02-docker-prune.md"
+          ],
+          "scores": [
+            0.015977822244167328,
+            0.015823235735297203
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 828,
+          "expected_found": {
+            "memory/2026-10-02-docker-prune.md": true,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "315e0ca01b7556820b36289f4100976be17ef3ccc5a3f757d266df52d7d6b982"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 4473,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-02-docker-prune.md",
+            "memory/2026-10-02-docker-prune.md"
+          ],
+          "scores": [
+            0.015977822244167328,
+            0.015823235735297203
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 828,
+          "expected_found": {
+            "memory/2026-10-02-docker-prune.md": true,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "89105df36b9a356a96995a34a38fa14c3cf4c87452d08eef7e864b63cf086b61"
+        }
+      ],
+      "summary": {
+        "seed_in_corpus": true,
+        "support_in_corpus": false,
+        "off_finds_seed": true,
+        "off_finds_support": false,
+        "on_finds_seed": true,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true
+      }
+    },
+    {
+      "id": "Q4",
+      "question": "Which CI coverage result was a deliberate informational boundary rather than evidence that HTTP request handlers are covered?",
+      "seed": [
+        "memory/2026-08-17.md"
+      ],
+      "support": [
+        "memory/2026-08-15.md"
+      ],
+      "coverage": {
+        "memory/2026-08-17.md": true,
+        "memory/2026-08-15.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 5020,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-17.md",
+            "memory/2026-08-13-1111.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014923685230314732
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 841,
+          "expected_found": {
+            "memory/2026-08-17.md": true,
+            "memory/2026-08-15.md": false
+          },
+          "response_sha256": "39ca394c482b87047a8bc39ff28e8300b956f7a483bf386316f259b08307b0b9"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 5071,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-17.md",
+            "memory/2026-08-13-1111.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014923685230314732
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 841,
+          "expected_found": {
+            "memory/2026-08-17.md": true,
+            "memory/2026-08-15.md": false
+          },
+          "response_sha256": "ba20941a29155231cfdb9cbc5ca42e550dff357b13bed4667864e8853549ce69"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 5097,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-17.md",
+            "memory/2026-08-13-1111.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014923685230314732
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 841,
+          "expected_found": {
+            "memory/2026-08-17.md": true,
+            "memory/2026-08-15.md": false
+          },
+          "response_sha256": "ba20941a29155231cfdb9cbc5ca42e550dff357b13bed4667864e8853549ce69"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 4893,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-17.md",
+            "memory/2026-08-13-1111.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014923685230314732
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 841,
+          "expected_found": {
+            "memory/2026-08-17.md": true,
+            "memory/2026-08-15.md": false
+          },
+          "response_sha256": "39ca394c482b87047a8bc39ff28e8300b956f7a483bf386316f259b08307b0b9"
+        }
+      ],
+      "summary": {
+        "seed_in_corpus": true,
+        "support_in_corpus": true,
+        "off_finds_seed": true,
+        "off_finds_support": false,
+        "on_finds_seed": true,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true
+      }
+    },
+    {
+      "id": "Q5",
+      "question": "What compatibility constraint prevented a market-first database cutover, and what staged ordering replaced it?",
+      "seed": [
+        "memory/2026-08-04.md"
+      ],
+      "support": [
+        "memory/2026-08-09.md"
+      ],
+      "coverage": {
+        "memory/2026-08-04.md": true,
+        "memory/2026-08-09.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 5053,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-04.md",
+            "memory/2026-08-04.md"
+          ],
+          "scores": [
+            0.01616290956735611,
+            0.01594982109963894
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 684,
+          "expected_found": {
+            "memory/2026-08-04.md": true,
+            "memory/2026-08-09.md": false
+          },
+          "response_sha256": "74904a9911e7d7d60053cdb96abd25650ac027ee9e1f58fa15c365ededb04d23"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 4955,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-04.md",
+            "memory/2026-08-04.md"
+          ],
+          "scores": [
+            0.01616290956735611,
+            0.01594982109963894
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 6,
+            "graph_candidates_dropped": 6,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 684,
+          "expected_found": {
+            "memory/2026-08-04.md": true,
+            "memory/2026-08-09.md": false
+          },
+          "response_sha256": "8c6afb44850dced56998f8dabb21fda95b629333cf4c1506468b3512ea51aa70"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 5053,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-04.md",
+            "memory/2026-08-04.md"
+          ],
+          "scores": [
+            0.01616290956735611,
+            0.01594982109963894
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 6,
+            "graph_candidates_dropped": 6,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 684,
+          "expected_found": {
+            "memory/2026-08-04.md": true,
+            "memory/2026-08-09.md": false
+          },
+          "response_sha256": "8c6afb44850dced56998f8dabb21fda95b629333cf4c1506468b3512ea51aa70"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 4969,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-04.md",
+            "memory/2026-08-04.md"
+          ],
+          "scores": [
+            0.01616290956735611,
+            0.01594982109963894
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 684,
+          "expected_found": {
+            "memory/2026-08-04.md": true,
+            "memory/2026-08-09.md": false
+          },
+          "response_sha256": "74904a9911e7d7d60053cdb96abd25650ac027ee9e1f58fa15c365ededb04d23"
+        }
+      ],
+      "summary": {
+        "seed_in_corpus": true,
+        "support_in_corpus": true,
+        "off_finds_seed": true,
+        "off_finds_support": false,
+        "on_finds_seed": true,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true
+      }
+    },
+    {
+      "id": "Q6",
+      "question": "When an OpenClaw gateway is degraded, what distinguishes routine active-memory warning noise from a transcript wedge requiring reset/recovery?",
+      "seed": [
+        "memory/2026-08-08.md"
+      ],
+      "support": [
+        "memory/2026-08-17.md"
+      ],
+      "coverage": {
+        "memory/2026-08-08.md": true,
+        "memory/2026-08-17.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 6761,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-08.md",
+            "memory/2026-08-08.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014377491548657417
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 617,
+          "expected_found": {
+            "memory/2026-08-08.md": true,
+            "memory/2026-08-17.md": false
+          },
+          "response_sha256": "af885d998ea8d3adbedc9b62020b91a9b633da3fdcc90d5a951055a003de8d24"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 7155,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-08.md",
+            "memory/2026-08-08.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014377491548657417
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 617,
+          "expected_found": {
+            "memory/2026-08-08.md": true,
+            "memory/2026-08-17.md": false
+          },
+          "response_sha256": "806a7d29aed15f15be992d4be7530a7fc470eaa0667699444ca3e2a7cd74d0c2"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 7186,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-08.md",
+            "memory/2026-08-08.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014377491548657417
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 617,
+          "expected_found": {
+            "memory/2026-08-08.md": true,
+            "memory/2026-08-17.md": false
+          },
+          "response_sha256": "806a7d29aed15f15be992d4be7530a7fc470eaa0667699444ca3e2a7cd74d0c2"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 6543,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-08.md",
+            "memory/2026-08-08.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014377491548657417
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 617,
+          "expected_found": {
+            "memory/2026-08-08.md": true,
+            "memory/2026-08-17.md": false
+          },
+          "response_sha256": "af885d998ea8d3adbedc9b62020b91a9b633da3fdcc90d5a951055a003de8d24"
+        }
+      ],
+      "summary": {
+        "seed_in_corpus": true,
+        "support_in_corpus": true,
+        "off_finds_seed": true,
+        "off_finds_support": false,
+        "on_finds_seed": true,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true
+      }
+    },
+    {
+      "id": "Q7",
+      "question": "Which controls keep GraphRAG memory ingestion from fabricating completion after lost admission or replay?",
+      "seed": [
+        "memory/2026-10-06-graphrag-ingestion-canary.md"
+      ],
+      "support": [
+        "project/graphrag-memory-sync/note/live-canary-20261006.md"
+      ],
+      "coverage": {
+        "memory/2026-10-06-graphrag-ingestion-canary.md": true,
+        "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 3554,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-15-graphrag-ingestion-failure.md",
+            "memory/2026-10-27-write-conflict-retry.md"
+          ],
+          "scores": [
+            0.016208354383707047,
+            0.015367966145277023
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 729,
+          "expected_found": {
+            "memory/2026-10-06-graphrag-ingestion-canary.md": false,
+            "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+          },
+          "response_sha256": "3e1c2fd59be9281e4221a800c7439621d1476c75923597c577cee3218fdbbb47"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 3590,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-15-graphrag-ingestion-failure.md",
+            "memory/2026-10-27-write-conflict-retry.md"
+          ],
+          "scores": [
+            0.016208354383707047,
+            0.015367966145277023
+          ],
+          "chunk_graph": [
+            {
+              "decay": 1.0,
+              "hops": 0,
+              "path": [],
+              "provenance_ids": [],
+              "query_entities": [
+                "memory ingestion"
+              ],
+              "score": 0.0031296571251004934,
+              "seed_note_id": "note:3e48d4eb0eda5bb98bf5c3b097427578aabed930c4ba44228a5b70c2b2f5a469",
+              "source_uri": "mcp://upload/06a61d0d69078bf3bc0e1dbd073f7480d4ba6eabeb463c87cdd3fcfb640fa6d9"
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 3,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 729,
+          "expected_found": {
+            "memory/2026-10-06-graphrag-ingestion-canary.md": false,
+            "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+          },
+          "response_sha256": "3a87abc50babc147b90bee9fbd8ea4578df823bb2fded6511fc20e3c61f649f4"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 3665,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-15-graphrag-ingestion-failure.md",
+            "memory/2026-10-27-write-conflict-retry.md"
+          ],
+          "scores": [
+            0.016208354383707047,
+            0.015367966145277023
+          ],
+          "chunk_graph": [
+            {
+              "decay": 1.0,
+              "hops": 0,
+              "path": [],
+              "provenance_ids": [],
+              "query_entities": [
+                "memory ingestion"
+              ],
+              "score": 0.0031296571251004934,
+              "seed_note_id": "note:3e48d4eb0eda5bb98bf5c3b097427578aabed930c4ba44228a5b70c2b2f5a469",
+              "source_uri": "mcp://upload/06a61d0d69078bf3bc0e1dbd073f7480d4ba6eabeb463c87cdd3fcfb640fa6d9"
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 3,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 729,
+          "expected_found": {
+            "memory/2026-10-06-graphrag-ingestion-canary.md": false,
+            "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+          },
+          "response_sha256": "3a87abc50babc147b90bee9fbd8ea4578df823bb2fded6511fc20e3c61f649f4"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 3487,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-15-graphrag-ingestion-failure.md",
+            "memory/2026-10-27-write-conflict-retry.md"
+          ],
+          "scores": [
+            0.016208354383707047,
+            0.015367966145277023
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 729,
+          "expected_found": {
+            "memory/2026-10-06-graphrag-ingestion-canary.md": false,
+            "project/graphrag-memory-sync/note/live-canary-20261006.md": false
+          },
+          "response_sha256": "3e1c2fd59be9281e4221a800c7439621d1476c75923597c577cee3218fdbbb47"
+        }
+      ],
+      "summary": {
+        "seed_in_corpus": true,
+        "support_in_corpus": false,
+        "off_finds_seed": false,
+        "off_finds_support": false,
+        "on_finds_seed": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 2,
+        "stable_off": true,
+        "stable_on": true
+      }
+    },
+    {
+      "id": "Q8",
+      "question": "How should a stale Muevelo stateful failure be triaged before declaring the feature branch regressed?",
+      "seed": [
+        "memory/2026-08-04.md"
+      ],
+      "support": [
+        "memory/error-log.md"
+      ],
+      "coverage": {
+        "memory/2026-08-04.md": true,
+        "memory/error-log.md": false
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 4442,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-21.md",
+            "memory/2026-07-16.md"
+          ],
+          "scores": [
+            0.013593203388154507,
+            0.01321052573621273
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 795,
+          "expected_found": {
+            "memory/2026-08-04.md": false,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "ebc7200809c1d9b1c82951e3e13009eb769af04f3ee47e73c439586e66e2c068"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 4662,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-21.md",
+            "memory/2026-07-16.md"
+          ],
+          "scores": [
+            0.013593203388154507,
+            0.01321052573621273
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 795,
+          "expected_found": {
+            "memory/2026-08-04.md": false,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "eaa4cf7d45d15d09a7fa90ddca6b3b0a076522ca5c50415b55941de80ab25a38"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 4614,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-21.md",
+            "memory/2026-07-16.md"
+          ],
+          "scores": [
+            0.013593203388154507,
+            0.01321052573621273
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 795,
+          "expected_found": {
+            "memory/2026-08-04.md": false,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "eaa4cf7d45d15d09a7fa90ddca6b3b0a076522ca5c50415b55941de80ab25a38"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 4482,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-21.md",
+            "memory/2026-07-16.md"
+          ],
+          "scores": [
+            0.013593203388154507,
+            0.01321052573621273
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 795,
+          "expected_found": {
+            "memory/2026-08-04.md": false,
+            "memory/error-log.md": false
+          },
+          "response_sha256": "ebc7200809c1d9b1c82951e3e13009eb769af04f3ee47e73c439586e66e2c068"
+        }
+      ],
+      "summary": {
+        "seed_in_corpus": true,
+        "support_in_corpus": false,
+        "off_finds_seed": false,
+        "off_finds_support": false,
+        "on_finds_seed": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true
+      }
+    }
+  ]
+}

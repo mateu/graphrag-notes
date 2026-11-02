@@ -1,0 +1,1 @@
+`graph-eval-20261102.json` is the sanitized Q1–Q8 baseline from the read-only clawd graph evaluation on 2026-11-02 (service build 0dbb186); it contains paths, scores, graph diagnostics, timing and hashes, not note bodies or credentials.
