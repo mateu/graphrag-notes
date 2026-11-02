@@ -70,6 +70,19 @@ fn editor_source_id(expected: &Note) -> Result<RecordId> {
         .ok_or_else(|| DbError::NoteRevisionConflict("(missing note ID)".into()))
 }
 
+/// Match the full-text `ascii` filter's deunicode/class-token normalization for
+/// the bounded any-term fallback coverage gate and its eligibility check.
+fn lexical_coverage_terms(query: &str) -> Vec<String> {
+    let mut terms = deunicode::deunicode(query)
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| !term.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    terms.sort_unstable();
+    terms.dedup();
+    terms
+}
+
 /// Keep the entity upsert semantics aligned with `Repository::upsert_entity`:
 /// explicit identities identify rows, existing type/creation time survive, and
 /// legacy metadata aliases merge distinctly, while extracted metadata reflects
@@ -1109,6 +1122,64 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
+        let mut all_term_results = self
+            .fulltext_search_notes_with_operator(query, limit, since, source_uri.clone(), false)
+            .await?;
+
+        // SurrealDB's default match operator requires every analyzed term in a
+        // single chunk. Natural-language recall queries often spread their
+        // useful terms across neighbouring chunks, so backfill a bounded
+        // suffix with the engine's OR operator. Keep the all-term prefix
+        // intact: an exact/all-term result remains more relevant than any
+        // partial match, while the suffix retains native BM25 ordering.
+        if all_term_results.len() < limit && lexical_coverage_terms(query).len() >= 2 {
+            let any_term_results = self
+                .fulltext_search_notes_with_operator(query, limit, since, source_uri, true)
+                .await?;
+            for result in any_term_results {
+                if all_term_results
+                    .iter()
+                    .all(|existing| existing.id != result.id)
+                {
+                    all_term_results.push(result);
+                    if all_term_results.len() == limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(all_term_results)
+    }
+
+    async fn fulltext_search_notes_with_operator(
+        &self,
+        query: &str,
+        limit: usize,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        source_uri: Option<String>,
+        any_term: bool,
+    ) -> Result<Vec<SearchResult>> {
+        let (
+            search_content_operator,
+            content_operator,
+            title_operator,
+            coverage_predicate,
+            match_tier,
+        ) = if any_term {
+            (
+                    "@0,OR@",
+                    "@1,OR@",
+                    "@2,OR@",
+                    "AND array::len(array::filter($terms, |$term| string::contains(string::concat(' ', string::trim(string::replace(string::slug(search_content ?? ''), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::slug(content), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::slug(title ?? ''), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')))) >= 2",
+                    1,
+                )
+        } else {
+            ("@0@", "@1@", "@2@", "", 0)
+        };
+        // Keep the fallback coverage gate aligned with the full-text `ascii`
+        // filter, which applies `deunicode` after class tokenization.
+        let terms = lexical_coverage_terms(query);
         let since = since.map(|ts| ts.to_rfc3339());
         // Case folding and outer whitespace are the only equivalences here:
         // punctuation and internal whitespace can distinguish note titles.
@@ -1119,7 +1190,7 @@ impl Repository {
         // The physical native keys mirror note IDs, preserving all tie types.
         let results: Vec<SearchResult> = self
             .db
-            .query(
+            .query(format!(
                 r#"
                 SELECT
                     record_id AS id,
@@ -1130,13 +1201,15 @@ impl Repository {
                     record_id.created_at AS created_at,
                     record_id.source_id.uri AS source_uri,
                     exact_title_match,
+                    {match_tier} AS lexical_match_tier,
                     fts_score
                 FROM (
                     SELECT id, record_id,
                         ($normalized_title != '' AND string::lowercase(string::trim(title ?? '')) = $normalized_title) AS exact_title_match,
                         (search::score(0) * 0.7 + search::score(1) * 0.2 + search::score(2) * 0.1) AS fts_score
                     FROM note_search
-                    WHERE (search_content @0@ $query OR content @1@ $query OR title @2@ $query)
+                    WHERE (search_content {search_content_operator} $query OR content {content_operator} $query OR title {title_operator} $query)
+                      {coverage_predicate}
                       AND ($since = NONE OR created_at >= <datetime>$since)
                       AND ($source_uri = NONE OR source_id.uri = $source_uri)
                       AND (
@@ -1149,8 +1222,9 @@ impl Repository {
                 )
                 ORDER BY exact_title_match DESC, fts_score DESC, id ASC
             "#,
-            )
+            ))
             .bind(("query", query.to_string()))
+            .bind(("terms", terms))
             .bind(("normalized_title", normalized_title))
             .bind(("limit", limit))
             .bind(("since", since))

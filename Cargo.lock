@@ -1834,6 +1834,7 @@ version = "0.1.0-rc.5"
 dependencies = [
  "chrono",
  "ciborium",
+ "deunicode",
  "graphrag-core",
  "serde",
  "serde_json",
