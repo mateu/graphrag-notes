@@ -1857,8 +1857,8 @@ impl Repository {
         } else {
             Vec::new()
         };
-        candidate_ids.sort_unstable();
-        candidate_ids.dedup();
+        candidate_ids.sort_by_cached_key(|id| id.to_sql());
+        candidate_ids.dedup_by(|left, right| left.to_sql() == right.to_sql());
         if use_lexeme_index && candidate_ids.is_empty() {
             return Ok(Vec::new());
         }

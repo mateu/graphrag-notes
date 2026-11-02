@@ -2639,3 +2639,77 @@ async fn graph_entity_complex_rank_pages_match_unchanged_primary_scan() {
         );
     }
 }
+
+#[tokio::test]
+async fn graph_entity_projection_preserves_equal_valued_native_identities() {
+    use surrealdb::types::{Number, Value};
+    for object_keys in [false, true] {
+        for names in [["Compiler", "Compiler"], ["Alpha", "Beta"]] {
+            let repo = Repository::new(init_memory().await.unwrap());
+            let endpoint = note(
+                &repo,
+                RecordId::new("note", "native-identity"),
+                None,
+                None,
+                timestamp(),
+            )
+            .await;
+            let mut ids = Vec::new();
+            for (index, number) in [Number::Int(1), Number::Float(1.0)].into_iter().enumerate() {
+                let key = if object_keys {
+                    let mut object = Object::new();
+                    object.insert("value", Value::Number(number));
+                    RecordIdKey::Object(object)
+                } else {
+                    RecordIdKey::Array(vec![Value::Number(number)].into())
+                };
+                let id = alias_entity_at(&repo, RecordId::new("entity", key), names[index]).await;
+                alias_mention(&repo, &endpoint, &id, serde_json::json!({"aliases": []})).await;
+                ids.push(id);
+            }
+            let query = if names[0] == names[1] {
+                "Compiler"
+            } else {
+                "alpha beta"
+            };
+            for limit in [1, 10] {
+                let expected = repo
+                    .find_graph_entities_original_alias_order(query, limit, Some(&[]), None, None)
+                    .await
+                    .unwrap();
+                let actual = repo
+                    .find_graph_entities_for_search(query, limit, &[], None, None)
+                    .await
+                    .unwrap();
+                if limit == 10 {
+                    assert_eq!(expected.len(), 2);
+                }
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap(),
+                    "object={object_keys}, names={names:?}, limit={limit}"
+                );
+            }
+            repo.db
+                .query("DELETE $id")
+                .bind(("id", ids[0].clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let expected = repo
+                .find_graph_entities_original_alias_order(query, 10, Some(&[]), None, None)
+                .await
+                .unwrap();
+            let actual = repo
+                .find_graph_entities_for_search(query, 10, &[], None, None)
+                .await
+                .unwrap();
+            assert_eq!(expected.len(), 1);
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+    }
+}

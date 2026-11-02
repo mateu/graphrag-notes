@@ -13,24 +13,25 @@ pub(super) const MIGRATION: Migration = Migration {
 DEFINE TABLE IF NOT EXISTS entity_lexeme SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS entity ON entity_lexeme TYPE record<entity>;
 DEFINE FIELD IF NOT EXISTS lexeme ON entity_lexeme TYPE string;
-DEFINE INDEX IF NOT EXISTS uq_entity_lexeme ON entity_lexeme FIELDS entity, lexeme UNIQUE;
+DEFINE FIELD IF NOT EXISTS entity_identity ON entity_lexeme TYPE string;
+DEFINE INDEX IF NOT EXISTS uq_entity_lexeme ON entity_lexeme FIELDS entity_identity, lexeme UNIQUE;
 DEFINE INDEX IF NOT EXISTS idx_entity_lexeme_lookup ON entity_lexeme FIELDS lexeme;
 
 DEFINE FUNCTION fn::materialize_entity_lexemes($entity: record<entity>) {
-    DELETE entity_lexeme WHERE entity = $entity AND type::string(entity) = type::string($entity);
+    DELETE entity_lexeme WHERE entity_identity = type::string($entity);
     LET $row = (SELECT * FROM $entity)[0];
     IF $row != NONE {
         LET $values = array::flatten(array::concat([$row.name, $row.canonical_name], IF type::is_array($row.metadata.aliases) THEN $row.metadata.aliases ELSE [] END, (SELECT VALUE metadata.aliases ?? [] FROM mentions WHERE out = $entity)));
         FOR $value IN $values {
             IF type::is_string($value) {
                 LET $lexeme = string::trim(string::replace(string::lowercase($value), <regex>"[^\\p{L}\\p{N}]+", ' '));
-                IF $lexeme != '' { INSERT INTO entity_lexeme (entity, lexeme) VALUES ($entity, $lexeme) ON DUPLICATE KEY UPDATE entity = $entity; };
+                IF $lexeme != '' { INSERT INTO entity_lexeme (entity, entity_identity, lexeme) VALUES ($entity, type::string($entity), $lexeme) ON DUPLICATE KEY UPDATE entity = $entity; };
             };
         };
     };
     RETURN NONE;
 };
-DEFINE EVENT delete_entity_lexemes ON entity WHEN $event = 'DELETE' THEN (DELETE entity_lexeme WHERE entity = $before.id AND type::string(entity) = type::string($before.id));
+DEFINE EVENT delete_entity_lexemes ON entity WHEN $event = 'DELETE' THEN (DELETE entity_lexeme WHERE entity_identity = type::string($before.id));
 -- All routine mutations add candidates incrementally. Removed/renamed values
 -- may remain as safe extras; only backfill rebuilds aggregate mention aliases.
 DEFINE FUNCTION fn::add_entity_lexemes($entity: record<entity>, $aliases: any) {
@@ -38,7 +39,7 @@ DEFINE FUNCTION fn::add_entity_lexemes($entity: record<entity>, $aliases: any) {
         FOR $value IN array::distinct($aliases) {
             IF type::is_string($value) {
                 LET $lexeme = string::trim(string::replace(string::lowercase($value), <regex>"[^\\p{L}\\p{N}]+", ' '));
-                IF $lexeme != '' { INSERT INTO entity_lexeme (entity, lexeme) VALUES ($entity, $lexeme) ON DUPLICATE KEY UPDATE entity = $entity; };
+                IF $lexeme != '' { INSERT INTO entity_lexeme (entity, entity_identity, lexeme) VALUES ($entity, type::string($entity), $lexeme) ON DUPLICATE KEY UPDATE entity = $entity; };
             };
         };
     };

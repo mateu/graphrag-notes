@@ -543,6 +543,23 @@ mod tests {
             );
             v024_entity_lexeme_index::backfill(&db).await.unwrap();
         }
+        db.query("UPDATE entity SET name = 'Shared Compiler', canonical_name = 'shared compiler'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        v024_entity_lexeme_index::backfill(&db).await.unwrap();
+        let shared: Vec<RecordId> = db
+            .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme = 'shared compiler'")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(
+            shared.len(),
+            130,
+            "shared spellings must retain every exact-native identity"
+        );
     }
 
     #[tokio::test]
