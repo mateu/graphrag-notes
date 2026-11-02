@@ -4117,6 +4117,7 @@ mod tests {
                 vec_distance: Some(0.1),
                 fts_score: Some(0.5),
                 exact_title_match: false,
+                lexical_match_tier: 0,
                 fusion: FusionEvidence {
                     fused_score: 0.4,
                     ..Default::default()
