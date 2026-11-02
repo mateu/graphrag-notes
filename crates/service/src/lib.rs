@@ -9,6 +9,7 @@ mod server;
 mod status;
 mod tools;
 mod uploads;
+mod usage;
 
 pub use credentials::{Capability, Credential, CredentialFile, Principal};
 pub use server::{run, serve, ServiceError, ServiceOptions};
