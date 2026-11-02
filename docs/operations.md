@@ -152,8 +152,9 @@ numbered migration rather than editing one that may already have run.
 
 ## Shared-service usage records
 
-The shared service (`graphrag serve`) logs one INFO line per MCP tool call
-under the `graphrag_usage` target. Each line names the authenticated principal
+The shared service (`graphrag serve`) logs one INFO line per MCP tool call,
+named `graphrag_usage` (for example
+`2026-11-02T01:00:00Z  INFO graphrag_usage principal="…" tool="search_notes" …`). Each line names the authenticated principal
 and tool, the outcome (`ok` or the stable error code) and latency, and records
 allowlisted options (`mode`, `graph`, `scope`, `limit`), the query length and
 result statistics: hit count, top score and, for `build_context`, graph

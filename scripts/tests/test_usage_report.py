@@ -9,29 +9,30 @@ usage_report = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(usage_report)
 
 SEARCH = (
-    '2026-11-02T01:00:00.000001Z  INFO graphrag_usage: tool call principal="openclaw.clawd" '
+    '2026-11-02T01:00:00.000001Z  INFO graphrag_usage principal="openclaw.clawd" '
     'tool="search_notes" outcome="ok" elapsed_ms=42.5 mode="hybrid" graph="on" scope="notes" '
     "limit=3 query_chars=18 query_terms=3 hits=3 top_score=0.82\n"
 )
 EMPTY = SEARCH.replace("hits=3 top_score=0.82", "hits=0").replace("42.5", "10.0")
 CONTEXT = (
-    '\x1b[2m2026-11-02T01:05:00.000001Z\x1b[0m \x1b[32m INFO\x1b[0m graphrag_usage: tool call '
+    '\x1b[2m2026-11-02T01:05:00.000001Z\x1b[0m \x1b[32m INFO\x1b[0m graphrag_usage: graphrag_usage '
     'principal="openclaw.clawd" tool="build_context" outcome="ok" elapsed_ms=120.0 graph="on" '
     "hits=4 top_score=0.02 graph_considered=7 graph_selected=1 total_tokens=1013\n"
 )
 FAILED = (
-    '2026-11-02T01:06:00.000001Z  INFO graphrag_usage: tool call principal="shiva-importer" '
+    '2026-11-02T01:06:00.000001Z  INFO graphrag_usage principal="shiva-importer" '
     'tool="capture_note" outcome="busy" elapsed_ms=1.0\n'
 )
 
 
 class UsageReportTest(unittest.TestCase):
     def test_parses_plain_and_ansi_lines_and_ignores_other_logs(self):
-        records = [usage_report.parse_line(line) for line in (SEARCH, CONTEXT, "2026 INFO other: x\n")]
+        records = [usage_report.parse_line(line) for line in (SEARCH, CONTEXT, "2026 INFO other: x\n", "2026  INFO tool call principal=\"x\" tool=\"y\"\n")]
         self.assertEqual(records[0]["hits"], 3.0)
         self.assertEqual(records[0]["mode"], "hybrid")
         self.assertEqual(records[1]["graph_selected"], 1.0)
         self.assertIsNone(records[2])
+        self.assertIsNone(records[3])
 
     def test_summarizes_empty_rate_errors_and_graph_contribution(self):
         records = [usage_report.parse_line(line) for line in (SEARCH, EMPTY, CONTEXT, FAILED)]
