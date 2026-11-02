@@ -2526,3 +2526,49 @@ async fn graph_entity_lexeme_index_matches_full_scan_and_tracks_mutations() {
         .unwrap();
     assert!(deleted.is_empty());
 }
+
+#[tokio::test]
+async fn graph_entity_indexed_chunks_preserve_global_order_and_cap() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let endpoint = note(
+        &repo,
+        RecordId::new("note", "chunk-endpoint"),
+        None,
+        None,
+        timestamp(),
+    )
+    .await;
+    for index in 0..70 {
+        let entity = alias_entity(
+            &repo,
+            &format!("chunk-{index:03}"),
+            &format!("Chunk Engine {:03}", 70 - index),
+            true,
+        )
+        .await;
+        alias_mention(
+            &repo,
+            &endpoint,
+            &entity,
+            serde_json::json!({"aliases": ["Chunk Alias"]}),
+        )
+        .await;
+    }
+    for query in ["Chunk Alias", "where is chunk alias", "chunk"] {
+        for limit in [1, 10, 70] {
+            let expected = repo
+                .find_graph_entities_original_alias_order(query, limit, Some(&[]), None, None)
+                .await
+                .unwrap();
+            let actual = repo
+                .find_graph_entities_for_search(query, limit, &[], None, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap(),
+                "query={query}, limit={limit}"
+            );
+        }
+    }
+}

@@ -1869,28 +1869,71 @@ impl Repository {
                 LIMIT $limit
                 "#,
         );
-        let mut query = self
-            .db
-            .query(query)
-            .bind(("query", normalized_query.to_string()))
+        let bind_query = |sql: String| {
+            let mut request = self
+                .db
+                .query(sql)
+                .bind(("query", normalized_query.to_string()))
+                .bind(("limit", limit))
+                .bind(("since", scope.and_then(|value| value.since.clone())))
+                .bind((
+                    "source_uri",
+                    scope.and_then(|value| value.source_uri.clone()),
+                ));
+            if let Some(scope) = scope {
+                request = request
+                    .bind(("ranked_notes", scope.ranked_note_ids.clone()))
+                    .bind(("ranked_limit", scope.ranked_note_ids.len().max(1) as i64));
+            }
+            for (index, prefix) in prefixes.iter().enumerate() {
+                request = request.bind((format!("prefix_{index}"), prefix.clone()));
+            }
+            request
+        };
+        if !use_lexeme_index {
+            return bind_query(query).await?.take(0).map_err(Into::into);
+        }
+        // Bind native record IDs as request parameters, not row-correlated
+        // expression values: the latter can still produce a DynamicScan at
+        // execution time. Bound statement chunks keep every mentions lookup
+        // eligible for the existing association index without out IN scans.
+        let mut rows: Vec<surrealdb_types::Value> = Vec::new();
+        for chunk in candidate_ids.chunks(64) {
+            let statements = chunk
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    let parameter = format!("$graph_entity_bound_{index}");
+                    query
+                        .replace("$graph_entity_lexeme_candidates", &parameter)
+                        .replace("out = $graph_entity_id", &format!("out = {parameter}"))
+                        .replace(
+                            "LET $graph_entity_id = id;",
+                            &format!("LET $graph_entity_id = {parameter};"),
+                        )
+                })
+                .collect::<Vec<_>>()
+                .join(";\n");
+            let mut request = bind_query(statements);
+            for (index, id) in chunk.iter().enumerate() {
+                request = request.bind((format!("graph_entity_bound_{index}"), id.clone()));
+            }
+            let mut response = request.await?.check()?;
+            for index in 0..chunk.len() {
+                rows.extend(response.take::<Vec<surrealdb_types::Value>>(index)?);
+            }
+        }
+        // Apply the authoritative global ordering/cap only after all candidates
+        // have been evaluated. Native values preserve record IDs and metadata.
+        self.db
+            .query(format!(
+                "SELECT * FROM $rows ORDER BY {ordering} LIMIT $limit"
+            ))
+            .bind(("rows", rows))
             .bind(("limit", limit))
-            .bind(("graph_entity_lexeme_candidates", candidate_ids))
-            .bind(("since", scope.and_then(|value| value.since.clone())))
-            .bind((
-                "source_uri",
-                scope.and_then(|value| value.source_uri.clone()),
-            ));
-        if let Some(scope) = scope {
-            query = query
-                .bind(("ranked_notes", scope.ranked_note_ids.clone()))
-                .bind(("ranked_limit", scope.ranked_note_ids.len().max(1) as i64))
-                .bind(("since", scope.since.clone()))
-                .bind(("source_uri", scope.source_uri.clone()));
-        }
-        for (index, prefix) in prefixes.iter().enumerate() {
-            query = query.bind((format!("prefix_{index}"), prefix.clone()));
-        }
-        query.await?.take(0).map_err(Into::into)
+            .await?
+            .take(0)
+            .map_err(Into::into)
     }
 
     /// Return only possible lexical matches. The caller still executes the
