@@ -21,6 +21,7 @@ tracing.workspace = true
 chrono.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+deunicode.workspace = true
 
 [dev-dependencies]
 ciborium = "0.2.2"

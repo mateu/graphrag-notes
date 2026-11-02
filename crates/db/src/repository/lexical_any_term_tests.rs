@@ -53,3 +53,20 @@ async fn keyword_fallback_does_not_count_substrings_as_extra_terms() {
 
     assert!(results.is_empty());
 }
+
+#[tokio::test]
+async fn keyword_fallback_matches_ascii_folded_tokens() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let accented = repo
+        .create_note(Note::new("café résumé migration notes"))
+        .await
+        .unwrap();
+
+    let results = repo
+        .fulltext_search("cafe resume deploy", 10)
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(record_id_to_string(&results[0].id), id(&accented));
+}

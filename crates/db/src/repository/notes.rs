@@ -1153,15 +1153,14 @@ impl Repository {
                     "@0,OR@",
                     "@1,OR@",
                     "@2,OR@",
-                    "AND array::len(array::filter($terms, |$term| string::contains(string::concat(' ', string::trim(string::replace(string::lowercase(search_content ?? ''), <regex>\"[^\\\\p{L}\\\\p{N}]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::lowercase(content), <regex>\"[^\\\\p{L}\\\\p{N}]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::lowercase(title ?? ''), <regex>\"[^\\\\p{L}\\\\p{N}]+\", ' ')), ' '), string::concat(' ', $term, ' ')))) >= 2",
+                    "AND array::len(array::filter($terms, |$term| string::contains(string::concat(' ', string::trim(string::replace(string::slug(search_content ?? ''), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::slug(content), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::slug(title ?? ''), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')))) >= 2",
                 )
             } else {
                 ("@0@", "@1@", "@2@", "")
             };
-        // Keep the fallback coverage gate aligned with the full-text ascii
-        // analyzer: punctuation separates terms rather than becoming part of
-        // a literal substring (for example, `surrealdb,` -> `surrealdb`).
-        let mut terms = query
+        // Keep the fallback coverage gate aligned with the full-text `ascii`
+        // filter, which applies `deunicode` after class tokenization.
+        let mut terms = deunicode::deunicode(query)
             .split(|character: char| !character.is_alphanumeric())
             .filter(|term| !term.is_empty())
             .map(str::to_lowercase)
