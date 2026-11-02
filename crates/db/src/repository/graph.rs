@@ -1906,11 +1906,12 @@ impl Repository {
                 .map_err(Into::into),
             GraphEntityMatchTier::ContainedPhrase => {
                 let words = query.split_whitespace().collect::<Vec<_>>();
-                let lexemes = (0..words.len())
-                    .flat_map(|start| {
-                        ((start + 1)..=words.len()).map(move |end| words[start..end].join(" "))
-                    })
-                    .collect::<Vec<_>>();
+                let mut lexemes = Vec::new();
+                for start in 0..words.len() {
+                    for end in (start + 1)..=words.len() {
+                        lexemes.push(words[start..end].join(" "));
+                    }
+                }
                 self.db
                     .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme IN $lexemes")
                     .bind(("lexemes", lexemes))
