@@ -1840,25 +1840,31 @@ impl Repository {
         } else {
             format!("{direct_order}canonical_name ASC, id ASC")
         };
-        let candidate_ids = if use_lexeme_index {
+        // Bound n-gram allocation without dropping long-phrase matches: unusually
+        // long queries retain the authoritative full-scan path.
+        let use_lexeme_index =
+            use_lexeme_index && normalized_query.split_whitespace().count() <= 64;
+        let mut candidate_ids = if use_lexeme_index {
             self.graph_entity_lexeme_candidates(normalized_query, tier, prefixes)
                 .await?
         } else {
             Vec::new()
         };
+        candidate_ids.sort_unstable();
+        candidate_ids.dedup();
         if use_lexeme_index && candidate_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let candidate_condition = if use_lexeme_index {
-            "AND id IN $graph_entity_lexeme_candidates"
+        let entity_source = if use_lexeme_index {
+            "$graph_entity_lexeme_candidates"
         } else {
-            ""
+            "entity"
         };
         let query = format!(
             r#"
                 SELECT id, name, canonical_name, object::extend(metadata ?? {{}}, {{ aliases: graph_current_aliases }}) AS metadata{select_specificity}{select_prefix_plausibility}{select_direct}
-                FROM (SELECT id, name, canonical_name, metadata, ({aliases}) AS graph_current_aliases FROM entity)
-                WHERE ({match_condition}) {candidate_condition} {mention_condition}
+                FROM (SELECT id, name, canonical_name, metadata, ({aliases}) AS graph_current_aliases FROM {entity_source})
+                WHERE ({match_condition}) {mention_condition}
                 ORDER BY {ordering}
                 LIMIT $limit
                 "#,

@@ -2410,20 +2410,50 @@ async fn graph_entity_lexeme_index_matches_full_scan_and_tracks_mutations() {
     )
     .await;
 
-    for query in ["Needle Token", "where is needle token", "orion"] {
-        let original = repo
-            .find_graph_entities_original_alias_order(query, 10, Some(&[]), None, None)
-            .await
-            .unwrap();
-        let indexed = repo
-            .find_graph_entities_for_search(query, 10, &[], None, None)
-            .await
-            .unwrap();
-        assert_eq!(
-            serde_json::to_value(indexed).unwrap(),
-            serde_json::to_value(original).unwrap(),
-            "query={query}"
-        );
+    let second = alias_entity(&repo, "lexeme-second", "Orion Engine Two", true).await;
+    alias_mention(
+        &repo,
+        &visible,
+        &second,
+        serde_json::json!({"aliases": ["Needle Token"]}),
+    )
+    .await;
+
+    for query in [
+        "Needle Token",
+        "where is needle token",
+        "needle token orion engine",
+        "orion",
+        "Hidden Needle",
+        &format!("{} needle token", "unmatched ".repeat(65)),
+    ] {
+        for limit in [1, 10] {
+            for source_uri in [
+                None,
+                Some("fixture://lexeme".to_owned()),
+                Some("fixture://elsewhere".to_owned()),
+            ] {
+                let original = repo
+                    .find_graph_entities_original_alias_order(
+                        query,
+                        limit,
+                        Some(&[]),
+                        None,
+                        source_uri.clone(),
+                    )
+                    .await
+                    .unwrap();
+                let indexed = repo
+                    .find_graph_entities_for_search(query, limit, &[], None, source_uri.clone())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    serde_json::to_value(indexed).unwrap(),
+                    serde_json::to_value(original).unwrap(),
+                    "query={query}, limit={limit}, source_uri={source_uri:?}"
+                );
+            }
+        }
     }
     let hidden_rows: Vec<RecordId> = repo
         .db

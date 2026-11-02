@@ -495,6 +495,7 @@ mod tests {
             .take(0)
             .unwrap();
         assert_eq!(lexemes, ["atlas engine", "atlas evidence", "atlas prime"]);
+        v024_entity_lexeme_index::backfill(&db).await.unwrap();
         apply_all(&db).await.unwrap();
         let repeated: Vec<String> = db
             .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = entity:lexeme ORDER BY lexeme")
@@ -587,15 +588,7 @@ mod tests {
     #[tokio::test]
     async fn v023_backfills_remote_job_family_from_v022_history_and_journal() {
         let db = raw_memory_db().await;
-        apply_all(&db).await.unwrap();
-        db.query(
-            "REMOVE FIELD remote_enrichment_job ON processing_job; \
-             DELETE schema_migration WHERE version = 23;",
-        )
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+        apply_migrations(&db, &MIGRATIONS[..22]).await.unwrap();
         assert_eq!(current_version(&db).await.unwrap(), 22);
         let v022_before = load_applied_migrations(&db)
             .await
