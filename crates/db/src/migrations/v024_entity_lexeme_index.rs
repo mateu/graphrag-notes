@@ -30,11 +30,10 @@ DEFINE FUNCTION fn::materialize_entity_lexemes($entity: record<entity>) {
     };
     RETURN NONE;
 };
-DEFINE EVENT materialize_entity_lexemes ON entity WHEN $event = 'CREATE' OR ($event = 'UPDATE' AND ($before.name != $after.name OR $before.canonical_name != $after.canonical_name OR $before.metadata.aliases != $after.metadata.aliases)) THEN fn::materialize_entity_lexemes($after.id);
 DEFINE EVENT delete_entity_lexemes ON entity WHEN $event = 'DELETE' THEN (DELETE entity_lexeme WHERE entity = $before.id);
--- Mention removals may leave extra candidates: the authoritative query rejects
--- them. Incremental additions avoid quadratic rebuilds for high-degree entities.
-DEFINE FUNCTION fn::add_mention_entity_lexemes($entity: record<entity>, $aliases: any) {
+-- All routine mutations add candidates incrementally. Removed/renamed values
+-- may remain as safe extras; only backfill rebuilds aggregate mention aliases.
+DEFINE FUNCTION fn::add_entity_lexemes($entity: record<entity>, $aliases: any) {
     IF type::is_array($aliases) {
         FOR $value IN array::distinct($aliases) {
             IF type::is_string($value) {
@@ -45,7 +44,8 @@ DEFINE FUNCTION fn::add_mention_entity_lexemes($entity: record<entity>, $aliases
     };
     RETURN NONE;
 };
-DEFINE EVENT materialize_mention_entity_lexemes ON mentions WHEN $event != 'DELETE' THEN fn::add_mention_entity_lexemes($after.out, $after.metadata.aliases);
+DEFINE EVENT materialize_entity_lexemes ON entity WHEN $event != 'DELETE' THEN fn::add_entity_lexemes($after.id, array::concat([$after.name, $after.canonical_name], IF type::is_array($after.metadata.aliases) THEN $after.metadata.aliases ELSE [] END));
+DEFINE EVENT materialize_mention_entity_lexemes ON mentions WHEN $event != 'DELETE' THEN fn::add_entity_lexemes($after.out, $after.metadata.aliases);
 "#,
 };
 
