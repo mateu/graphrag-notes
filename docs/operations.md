@@ -150,6 +150,29 @@ rejected with a clear error; do not manually edit migration records. New
 application migrations must be additive, immutable, and committed as a new
 numbered migration rather than editing one that may already have run.
 
+## Shared-service usage records
+
+The shared service (`graphrag serve`) logs one INFO line per MCP tool call
+under the `graphrag_usage` target. Each line names the authenticated principal
+and tool, the outcome (`ok` or the stable error code) and latency, and records
+allowlisted options (`mode`, `graph`, `scope`, `limit`), the query length and
+result statistics: hit count, top score and, for `build_context`, graph
+candidates considered/selected, relevance drops and total tokens. Lines never
+contain query text, record IDs, content, titles or source URIs.
+
+Summarize them per principal and tool:
+
+```bash
+scripts/usage_report.py ~/.graphrag/shared/logs/service.stderr.log --since 2026-11-02
+scripts/usage_report.py service.stderr.log --principal openclaw.clawd --json
+```
+
+The report shows call counts by day, error codes, latency p50/p95, the
+empty-result rate, median hits and top score, the option mix, and how often
+the graph contributed a selected `build_context` candidate. An empty result or
+a low top score is a retrieval-quality signal; it does not show whether the
+client used a nonempty result.
+
 ## Doctor and embedding compatibility
 
 Run the read-only local-stack diagnostic before changing providers or
