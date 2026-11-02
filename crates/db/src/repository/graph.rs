@@ -1587,6 +1587,7 @@ impl Repository {
             scope,
             graph_alias_eligible_sql,
             graph_entity_aliases_local_sql,
+            true,
         )
         .await
     }
@@ -1704,6 +1705,7 @@ impl Repository {
                     scope.as_ref(),
                     alias_predicate,
                     extracted_aliases_query,
+                    false,
                 )
                 .await?;
             if !rows.is_empty() {
@@ -1723,6 +1725,7 @@ impl Repository {
         scope: Option<&GraphEntityQueryScope>,
         alias_predicate: fn(&str, &str) -> String,
         extracted_aliases_query: fn(&str) -> String,
+        use_lexeme_index: bool,
     ) -> Result<Vec<GraphEntityMatch>> {
         // Keep stored names and aliases on the exact same lexical boundary
         // contract as `graph_query_normalize`: punctuation becomes a space,
@@ -1837,11 +1840,25 @@ impl Repository {
         } else {
             format!("{direct_order}canonical_name ASC, id ASC")
         };
+        let candidate_ids = if use_lexeme_index {
+            self.graph_entity_lexeme_candidates(normalized_query, tier, prefixes)
+                .await?
+        } else {
+            Vec::new()
+        };
+        if use_lexeme_index && candidate_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let candidate_condition = if use_lexeme_index {
+            "AND id IN $graph_entity_lexeme_candidates"
+        } else {
+            ""
+        };
         let query = format!(
             r#"
                 SELECT id, name, canonical_name, object::extend(metadata ?? {{}}, {{ aliases: graph_current_aliases }}) AS metadata{select_specificity}{select_prefix_plausibility}{select_direct}
                 FROM (SELECT id, name, canonical_name, metadata, ({aliases}) AS graph_current_aliases FROM entity)
-                WHERE ({match_condition}) {mention_condition}
+                WHERE ({match_condition}) {candidate_condition} {mention_condition}
                 ORDER BY {ordering}
                 LIMIT $limit
                 "#,
@@ -1851,6 +1868,7 @@ impl Repository {
             .query(query)
             .bind(("query", normalized_query.to_string()))
             .bind(("limit", limit))
+            .bind(("graph_entity_lexeme_candidates", candidate_ids))
             .bind(("since", scope.and_then(|value| value.since.clone())))
             .bind((
                 "source_uri",
@@ -1867,6 +1885,61 @@ impl Repository {
             query = query.bind((format!("prefix_{index}"), prefix.clone()));
         }
         query.await?.take(0).map_err(Into::into)
+    }
+
+    /// Return only possible lexical matches. The caller still executes the
+    /// original tier predicate against these IDs, so visibility, scope,
+    /// specificity, ordering, and caps remain authoritative there.
+    async fn graph_entity_lexeme_candidates(
+        &self,
+        query: &str,
+        tier: GraphEntityMatchTier,
+        prefixes: &[String],
+    ) -> Result<Vec<RecordId>> {
+        match tier {
+            GraphEntityMatchTier::Exact => self
+                .db
+                .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme = $query")
+                .bind(("query", query.to_owned()))
+                .await?
+                .take(0)
+                .map_err(Into::into),
+            GraphEntityMatchTier::ContainedPhrase => {
+                let words = query.split_whitespace().collect::<Vec<_>>();
+                let lexemes = (0..words.len())
+                    .flat_map(|start| {
+                        ((start + 1)..=words.len()).map(move |end| words[start..end].join(" "))
+                    })
+                    .collect::<Vec<_>>();
+                self.db
+                    .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme IN $lexemes")
+                    .bind(("lexemes", lexemes))
+                    .await?
+                    .take(0)
+                    .map_err(Into::into)
+            }
+            GraphEntityMatchTier::Prefix => {
+                let mut query = self.db.query(
+                    "SELECT VALUE entity FROM entity_lexeme WHERE "
+                        .to_owned()
+                        + &prefixes
+                            .iter()
+                            .enumerate()
+                            .map(|(index, _)| format!("(lexeme >= $prefix_{index} AND lexeme < $prefix_upper_{index})"))
+                            .collect::<Vec<_>>()
+                            .join(" OR "),
+                );
+                for (index, prefix) in prefixes.iter().enumerate() {
+                    query = query
+                        .bind((format!("prefix_{index}"), prefix.clone()))
+                        .bind((
+                            format!("prefix_upper_{index}"),
+                            format!("{prefix}\u{10ffff}"),
+                        ));
+                }
+                query.await?.take(0).map_err(Into::into)
+            }
+        }
     }
 
     /// Fetch visible note IDs mentioned by any supplied entities in one

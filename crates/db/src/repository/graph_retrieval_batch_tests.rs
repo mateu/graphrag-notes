@@ -2371,3 +2371,113 @@ async fn graph_alias_fast_path_short_circuits_only_bounded_string_arrays_and_kee
         );
     }
 }
+
+#[tokio::test]
+async fn graph_entity_lexeme_index_matches_full_scan_and_tracks_mutations() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "lexeme", "fixture://lexeme").await;
+    let visible = note(
+        &repo,
+        RecordId::new("note", "lexeme-visible"),
+        Some(owner.clone()),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    let hidden = note(
+        &repo,
+        RecordId::new("note", "lexeme-hidden"),
+        Some(owner),
+        Some(2),
+        timestamp(),
+    )
+    .await;
+    let entity = alias_entity(&repo, "lexeme", "Orion Engine", true).await;
+    alias_mention(
+        &repo,
+        &visible,
+        &entity,
+        serde_json::json!({"aliases": ["Needle Token"]}),
+    )
+    .await;
+    // The index intentionally contains this hidden alias, while the existing
+    // tier SQL remains the authority that rejects its evidence.
+    alias_mention(
+        &repo,
+        &hidden,
+        &entity,
+        serde_json::json!({"aliases": ["Hidden Needle"]}),
+    )
+    .await;
+
+    for query in ["Needle Token", "where is needle token", "orion"] {
+        let original = repo
+            .find_graph_entities_original_alias_order(query, 10, Some(&[]), None, None)
+            .await
+            .unwrap();
+        let indexed = repo
+            .find_graph_entities_for_search(query, 10, &[], None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(indexed).unwrap(),
+            serde_json::to_value(original).unwrap(),
+            "query={query}"
+        );
+    }
+    let hidden_rows: Vec<RecordId> = repo
+        .db
+        .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme = 'hidden needle'")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(hidden_rows, vec![entity.clone()]);
+
+    repo.db.query("UPDATE $entity SET name = 'Renamed Engine', canonical_name = 'renamed engine', metadata = { aliases: ['Fresh Alias'] }").bind(("entity", entity.clone())).await.unwrap().check().unwrap();
+    let lexemes: Vec<String> = repo
+        .db
+        .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = $entity ORDER BY lexeme")
+        .bind(("entity", entity.clone()))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(lexemes.contains(&"fresh alias".to_owned()));
+    assert!(lexemes.contains(&"renamed engine".to_owned()));
+
+    repo.db
+        .query("DELETE mentions WHERE in = $note")
+        .bind(("note", visible))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let remaining: Vec<String> = repo
+        .db
+        .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = $entity ORDER BY lexeme")
+        .bind(("entity", entity.clone()))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(!remaining.contains(&"needle token".to_owned()));
+    assert!(remaining.contains(&"hidden needle".to_owned()));
+    let deleted_entity = entity.clone();
+    repo.db
+        .query("DELETE $entity")
+        .bind(("entity", entity))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let deleted: Vec<serde_json::Value> = repo
+        .db
+        .query("SELECT * FROM entity_lexeme WHERE entity = $entity")
+        .bind(("entity", deleted_entity))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(deleted.is_empty());
+}

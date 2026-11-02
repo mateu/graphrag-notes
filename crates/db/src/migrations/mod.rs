@@ -27,6 +27,7 @@ mod v020_source_policy_migration;
 mod v021_note_search;
 mod v022_source_entity_enrichment;
 mod v023_remote_job_family;
+mod v024_entity_lexeme_index;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -39,7 +40,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 23;
+pub const LATEST_SCHEMA_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -78,6 +79,7 @@ const MIGRATIONS: &[Migration] = &[
     v021_note_search::MIGRATION,
     v022_source_entity_enrichment::MIGRATION,
     v023_remote_job_family::MIGRATION,
+    v024_entity_lexeme_index::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -347,6 +349,12 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
 
     if migration.version == v021_note_search::MIGRATION.version {
         v021_note_search::backfill(db)
+            .await
+            .map_err(|error| migration_failed(migration, error))?;
+    }
+
+    if migration.version == v024_entity_lexeme_index::MIGRATION.version {
+        v024_entity_lexeme_index::backfill(db)
             .await
             .map_err(|error| migration_failed(migration, error))?;
     }
