@@ -317,6 +317,7 @@ pub(crate) fn zero_budget_augment_context(
         dropped_near_duplicates: 0,
         dropped_for_relevance: 0,
         dropped_for_budget: 0,
+        dropped_for_source_cap: 0,
         dropped_for_entity_filter: 0,
         graph_candidates_considered: 0,
         graph_candidates_selected: 0,
@@ -332,6 +333,7 @@ pub(crate) fn zero_budget_augment_context(
         diagnostics,
         dropped_duplicates: 0,
         dropped_for_budget: 0,
+        dropped_for_source_cap: 0,
         dropped_for_entity_filter: 0,
     }
 }
@@ -342,12 +344,13 @@ pub(crate) fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> Stri
         TokenCountMode::Estimated => "estimated",
     };
     format!(
-        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_entity_filter={}; graph_considered={}; graph_selected={}; graph_dropped={}",
+        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_source_cap={}; dropped_for_entity_filter={}; graph_considered={}; graph_selected={}; graph_dropped={}",
         diagnostics.header_tokens,
         diagnostics.dropped_duplicates,
         diagnostics.dropped_near_duplicates,
         diagnostics.dropped_for_relevance,
         diagnostics.dropped_for_budget,
+        diagnostics.dropped_for_source_cap,
         diagnostics.dropped_for_entity_filter,
         diagnostics.graph_candidates_considered,
         diagnostics.graph_candidates_selected,
@@ -1276,6 +1279,7 @@ mod tests {
             dropped_near_duplicates: 2,
             dropped_for_relevance: 3,
             dropped_for_budget: 4,
+            dropped_for_source_cap: 0,
             dropped_for_entity_filter: 5,
             graph_candidates_considered: 6,
             graph_candidates_selected: 2,
@@ -1283,7 +1287,7 @@ mod tests {
         };
         assert_eq!(
             packing_diagnostics_text(&diagnostics),
-            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_entity_filter=5; graph_considered=6; graph_selected=2; graph_dropped=4"
+            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_source_cap=0; dropped_for_entity_filter=5; graph_considered=6; graph_selected=2; graph_dropped=4"
         );
     }
 

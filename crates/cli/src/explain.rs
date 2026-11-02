@@ -276,6 +276,7 @@ mod tests {
             dropped_near_duplicates: 0,
             dropped_for_relevance: 0,
             dropped_for_budget: 3,
+            dropped_for_source_cap: 0,
             dropped_for_entity_filter: 4,
             graph_candidates_considered: 5,
             graph_candidates_selected: 1,
