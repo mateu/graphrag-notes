@@ -1109,6 +1109,7 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
+        let started = std::time::Instant::now();
         let mut all_term_results = self
             .fulltext_search_notes_with_operator(
                 query,
@@ -1119,6 +1120,8 @@ impl Repository {
                 Vec::new(),
             )
             .await?;
+
+        tracing::debug!(phase = "note_fulltext_all", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "Retrieval phase completed");
 
         // SurrealDB's default match operator requires every analyzed term in a
         // single chunk. Natural-language recall queries often spread their
@@ -1132,9 +1135,11 @@ impl Repository {
             Vec::new()
         };
         if terms.len() >= 2 {
+            let started = std::time::Instant::now();
             let any_term_results = self
                 .fulltext_search_notes_with_operator(query, limit, since, source_uri, true, terms)
                 .await?;
+            tracing::debug!(phase = "note_fulltext_any", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "Retrieval phase completed");
             for result in any_term_results {
                 if all_term_results
                     .iter()

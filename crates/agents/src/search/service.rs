@@ -827,7 +827,8 @@ impl SearchAgent {
             .await?;
         let hits = graph_results.hits;
 
-        Ok(
+        let started = Instant::now();
+        let context =
             crate::context_packing::build_augment_context_from_hits_with_graph(
                 query.to_string(),
                 scope,
@@ -836,8 +837,9 @@ impl SearchAgent {
                 options,
                 entity_filtered,
                 graph_results.summary,
-            ),
-        )
+            );
+        debug!(phase = "context_packing", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "Retrieval phase completed");
+        Ok(context)
     }
 
     fn graph_lexical_limit(&self) -> usize {
