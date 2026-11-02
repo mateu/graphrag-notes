@@ -32,8 +32,20 @@ DEFINE FUNCTION fn::materialize_entity_lexemes($entity: record<entity>) {
 };
 DEFINE EVENT materialize_entity_lexemes ON entity WHEN $event = 'CREATE' OR ($event = 'UPDATE' AND ($before.name != $after.name OR $before.canonical_name != $after.canonical_name OR $before.metadata.aliases != $after.metadata.aliases)) THEN fn::materialize_entity_lexemes($after.id);
 DEFINE EVENT delete_entity_lexemes ON entity WHEN $event = 'DELETE' THEN (DELETE entity_lexeme WHERE entity = $before.id);
-DEFINE EVENT materialize_mention_entity_lexemes ON mentions WHEN $event != 'DELETE' THEN fn::materialize_entity_lexemes($after.out);
-DEFINE EVENT delete_mention_entity_lexemes ON mentions WHEN $event = 'DELETE' THEN fn::materialize_entity_lexemes($before.out);
+-- Mention removals may leave extra candidates: the authoritative query rejects
+-- them. Incremental additions avoid quadratic rebuilds for high-degree entities.
+DEFINE FUNCTION fn::add_mention_entity_lexemes($entity: record<entity>, $aliases: any) {
+    IF type::is_array($aliases) {
+        FOR $value IN array::distinct($aliases) {
+            IF type::is_string($value) {
+                LET $lexeme = string::trim(string::replace(string::lowercase($value), <regex>"[^\\p{L}\\p{N}]+", ' '));
+                IF $lexeme != '' { INSERT INTO entity_lexeme (entity, lexeme) VALUES ($entity, $lexeme) ON DUPLICATE KEY UPDATE entity = $entity; };
+            };
+        };
+    };
+    RETURN NONE;
+};
+DEFINE EVENT materialize_mention_entity_lexemes ON mentions WHEN $event != 'DELETE' THEN fn::add_mention_entity_lexemes($after.out, $after.metadata.aliases);
 "#,
 };
 

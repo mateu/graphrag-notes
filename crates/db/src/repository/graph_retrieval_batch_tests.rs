@@ -2491,8 +2491,14 @@ async fn graph_entity_lexeme_index_matches_full_scan_and_tracks_mutations() {
         .unwrap()
         .take(0)
         .unwrap();
-    assert!(!remaining.contains(&"needle token".to_owned()));
+    // Stale mention lexemes are safe candidates, not authority to match.
+    assert!(remaining.contains(&"needle token".to_owned()));
     assert!(remaining.contains(&"hidden needle".to_owned()));
+    let matches = repo
+        .find_graph_entities_for_search("Needle Token", 10, &[], None, None)
+        .await
+        .unwrap();
+    assert!(matches.iter().all(|hit| hit.id != entity));
     let deleted_entity = entity.clone();
     repo.db
         .query("DELETE $entity")
