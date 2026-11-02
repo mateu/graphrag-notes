@@ -1904,8 +1904,10 @@ impl Repository {
         // expression values: the latter can still produce a DynamicScan at
         // execution time. Bound statement chunks keep every mentions lookup
         // eligible for the existing association index without out IN scans.
-        let mut rows: Vec<surrealdb_types::Value> = Vec::new();
-        for chunk in candidate_ids.chunks(64) {
+        let evaluate_chunk = async |chunk: &[RecordId]| -> Result<Vec<surrealdb_types::Value>> {
+            if chunk.is_empty() {
+                return Ok(Vec::new());
+            }
             let statements = chunk
                 .iter()
                 .enumerate()
@@ -1939,10 +1941,32 @@ impl Repository {
             }
             let mut response = request.await?.check()?;
             let statements_per_entity = if scope.is_some() { 5 } else { 3 };
+            let mut chunk_rows = Vec::new();
             for index in 0..chunk.len() {
-                rows.extend(response.take::<Vec<surrealdb_types::Value>>(
+                chunk_rows.extend(response.take::<Vec<surrealdb_types::Value>>(
                     (index + 1) * statements_per_entity - 1,
                 )?);
+            }
+            Ok(chunk_rows)
+        };
+        let mut rows = Vec::new();
+        // Independent, read-only pages may run concurrently. Keep both SQL
+        // request size and in-flight work bounded, then preserve collection
+        // order before the authoritative global SQL sort and cap.
+        for group in candidate_ids.chunks(64 * 8) {
+            let mut chunks = group.chunks(64);
+            let (a, b, c, d, e, f, g, h) = tokio::join!(
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+            );
+            for chunk in [a, b, c, d, e, f, g, h] {
+                rows.extend(chunk?);
             }
         }
         // Apply the authoritative global ordering/cap only after all candidates
