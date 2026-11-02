@@ -1121,7 +1121,11 @@ impl Repository {
             )
             .await?;
 
-        tracing::debug!(phase = "note_fulltext_all", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "Retrieval phase completed");
+        tracing::debug!(
+            phase = "note_fulltext_all",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Retrieval phase completed"
+        );
 
         // SurrealDB's default match operator requires every analyzed term in a
         // single chunk. Natural-language recall queries often spread their
@@ -1139,7 +1143,11 @@ impl Repository {
             let any_term_results = self
                 .fulltext_search_notes_with_operator(query, limit, since, source_uri, true, terms)
                 .await?;
-            tracing::debug!(phase = "note_fulltext_any", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "Retrieval phase completed");
+            tracing::debug!(
+                phase = "note_fulltext_any",
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "Retrieval phase completed"
+            );
             for result in any_term_results {
                 if all_term_results
                     .iter()
