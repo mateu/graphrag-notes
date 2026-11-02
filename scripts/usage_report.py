@@ -20,9 +20,10 @@ import sys
 from collections import Counter, defaultdict
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
-# Production `graphrag serve` omits targets: "<ts>  INFO graphrag_usage principal=...".
-# With targets enabled the same record reads "INFO graphrag_usage: graphrag_usage ...".
-LINE = re.compile(r"^(?P<ts>\S+)\s+INFO\s+(?:graphrag_usage: )?graphrag_usage (?P<fields>principal=.*)$")
+# Production `graphrag serve` omits targets and prefixes active spans, e.g.
+# "<ts>  INFO serve_inner: graphrag_usage principal=...". With targets enabled
+# the same record reads "INFO graphrag_usage: graphrag_usage principal=...".
+LINE = re.compile(r"^(?P<ts>\S+)\s+INFO\s+(?:\S+: )*graphrag_usage (?P<fields>principal=.*)$")
 FIELD = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*"|\S+)')
 NUMERIC = {
     "elapsed_ms", "limit", "query_chars", "query_terms", "hits", "top_score",

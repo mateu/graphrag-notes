@@ -13,6 +13,12 @@ SEARCH = (
     'tool="search_notes" outcome="ok" elapsed_ms=42.5 mode="hybrid" graph="on" scope="notes" '
     "limit=3 query_chars=18 query_terms=3 hits=3 top_score=0.82\n"
 )
+# Verbatim shape of a production line from fam (graphrag serve, 2026-11-02).
+PRODUCTION = (
+    '2026-11-02T01:24:18.069390Z  INFO serve_inner: graphrag_usage principal="openclaw-clawd-daily" '
+    'tool="search_notes" outcome="ok" elapsed_ms=22.1 mode="keyword" graph="off" scope="notes" '
+    "limit=5 query_chars=18 query_terms=3 hits=5 top_score=12.272516250610352\n"
+)
 EMPTY = SEARCH.replace("hits=3 top_score=0.82", "hits=0").replace("42.5", "10.0")
 CONTEXT = (
     '\x1b[2m2026-11-02T01:05:00.000001Z\x1b[0m \x1b[32m INFO\x1b[0m graphrag_usage: graphrag_usage '
@@ -33,6 +39,11 @@ class UsageReportTest(unittest.TestCase):
         self.assertEqual(records[1]["graph_selected"], 1.0)
         self.assertIsNone(records[2])
         self.assertIsNone(records[3])
+
+    def test_parses_the_production_line_with_its_span_prefix(self):
+        record = usage_report.parse_line(PRODUCTION)
+        self.assertEqual(record["principal"], "openclaw-clawd-daily")
+        self.assertEqual((record["hits"], record["mode"]), (5.0, "keyword"))
 
     def test_summarizes_empty_rate_errors_and_graph_contribution(self):
         records = [usage_report.parse_line(line) for line in (SEARCH, EMPTY, CONTEXT, FAILED)]
