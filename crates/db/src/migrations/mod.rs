@@ -507,6 +507,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v024_backfill_cursor_preserves_mixed_numeric_primary_order() {
+        use surrealdb::types::{Number, RecordIdKey, Value};
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..23]).await.unwrap();
+        let mut keys = (1..=128)
+            .map(|n| vec![Value::Number(Number::Int(1)), Value::Number(Number::Int(n))])
+            .collect::<Vec<_>>();
+        keys.push(vec![
+            Value::Number(Number::Float(1.0)),
+            Value::Number(Number::Int(0)),
+        ]);
+        keys.push(vec![
+            Value::Number(Number::Float(1.0)),
+            Value::Number(Number::Int(127)),
+        ]);
+        for (index, key) in keys.into_iter().enumerate() {
+            db.query("CREATE $id SET name = $name, canonical_name = $name, entity_type = 'concept', metadata = {}")
+                .bind(("id", RecordId::new("entity", RecordIdKey::Array(key.into()))))
+                .bind(("name", format!("cursor{index}")))
+                .await.unwrap().check().unwrap();
+        }
+        apply_all(&db).await.unwrap();
+        for _ in 0..2 {
+            let entities: Vec<RecordId> = db
+                .query("SELECT VALUE entity FROM entity_lexeme")
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            assert_eq!(
+                entities.len(),
+                130,
+                "every native record key must be indexed"
+            );
+            v024_entity_lexeme_index::backfill(&db).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn v019_preserves_legacy_ids_and_old_backup_identity_without_conflating_scopes() {
         use graphrag_core::{Entity, EntityType};
         let db = raw_memory_db().await;

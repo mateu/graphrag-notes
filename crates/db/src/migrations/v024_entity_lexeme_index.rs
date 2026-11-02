@@ -17,7 +17,7 @@ DEFINE INDEX IF NOT EXISTS uq_entity_lexeme ON entity_lexeme FIELDS entity, lexe
 DEFINE INDEX IF NOT EXISTS idx_entity_lexeme_lookup ON entity_lexeme FIELDS lexeme;
 
 DEFINE FUNCTION fn::materialize_entity_lexemes($entity: record<entity>) {
-    DELETE entity_lexeme WHERE entity = $entity;
+    DELETE entity_lexeme WHERE entity = $entity AND type::string(entity) = type::string($entity);
     LET $row = (SELECT * FROM $entity)[0];
     IF $row != NONE {
         LET $values = array::flatten(array::concat([$row.name, $row.canonical_name], IF type::is_array($row.metadata.aliases) THEN $row.metadata.aliases ELSE [] END, (SELECT VALUE metadata.aliases ?? [] FROM mentions WHERE out = $entity)));
@@ -30,7 +30,7 @@ DEFINE FUNCTION fn::materialize_entity_lexemes($entity: record<entity>) {
     };
     RETURN NONE;
 };
-DEFINE EVENT delete_entity_lexemes ON entity WHEN $event = 'DELETE' THEN (DELETE entity_lexeme WHERE entity = $before.id);
+DEFINE EVENT delete_entity_lexemes ON entity WHEN $event = 'DELETE' THEN (DELETE entity_lexeme WHERE entity = $before.id AND type::string(entity) = type::string($before.id));
 -- All routine mutations add candidates incrementally. Removed/renamed values
 -- may remain as safe extras; only backfill rebuilds aggregate mention aliases.
 DEFINE FUNCTION fn::add_entity_lexemes($entity: record<entity>, $aliases: any) {
@@ -62,7 +62,7 @@ pub(super) async fn backfill(db: &DbConnection) -> Result<()> {
             })),
         );
         let ids: Vec<RecordId> = db
-            .query("RETURN ((SELECT VALUE id FROM $range ORDER BY id ASC LIMIT 128) ?? []);")
+            .query("RETURN ((SELECT VALUE id FROM $range LIMIT 128) ?? []);")
             .bind(("range", range))
             .await?
             .take(0)?;

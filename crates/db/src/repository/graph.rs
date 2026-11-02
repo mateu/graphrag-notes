@@ -1823,7 +1823,7 @@ impl Repository {
             // otherwise change which duplicate relations contribute.
             (
                 format!(
-                    ", {{ LET $graph_entity_id = id; LET $graph_direct_mentions = (SELECT id, in FROM mentions WHERE out = $graph_entity_id AND in IN $ranked_notes AND {eligible} ORDER BY id ASC LIMIT $ranked_limit); (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM $graph_direct_mentions)) ?? 2147483647); }} AS graph_direct_rank"
+                    ", {{ LET $graph_entity_id = id; LET $graph_direct_mentions = IF array::len((SELECT VALUE id FROM mentions WHERE out = $graph_entity_id AND NOT (type::is_number(record::id(id)) OR type::is_string(record::id(id)) OR type::is_uuid(record::id(id))) LIMIT 1)) = 0 THEN (SELECT id, in FROM mentions WHERE out = $graph_entity_id AND in IN $ranked_notes AND {eligible} ORDER BY id ASC LIMIT $ranked_limit) ELSE (SELECT id, in FROM mentions WITH NOINDEX WHERE out = $graph_entity_id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit) END; (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM $graph_direct_mentions)) ?? 2147483647); }} AS graph_direct_rank"
                 ),
                 format!(
                     "AND {{ LET $graph_entity_id = id; array::len((SELECT VALUE in FROM mentions WHERE out = $graph_entity_id AND {eligible} LIMIT 1)) > 0; }}"
@@ -1832,6 +1832,13 @@ impl Repository {
             )
         } else {
             (String::new(), String::new(), "")
+        };
+        let (select_direct, mention_condition, direct_order) = if !use_lexeme_index
+            && scope.is_some()
+        {
+            (format!(", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"), format!("AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"), "graph_direct_rank ASC, ")
+        } else {
+            (select_direct, mention_condition, direct_order)
         };
         let ordering = if phrase_specificity.is_some() {
             format!("graph_match_specificity DESC, {direct_order}canonical_name ASC, id ASC")
@@ -1904,13 +1911,25 @@ impl Repository {
                 .enumerate()
                 .map(|(index, _)| {
                     let parameter = format!("$graph_entity_bound_{index}");
-                    query
-                        .replace("$graph_entity_lexeme_candidates", &parameter)
-                        .replace("out = $graph_entity_id", &format!("out = {parameter}"))
-                        .replace(
-                            "LET $graph_entity_id = id;",
-                            &format!("LET $graph_entity_id = {parameter};"),
-                        )
+                    // Evaluate mentions statements before entering any entity
+                    // SELECT row context. Even a bound parameter can retain a
+                    // correlated DynamicScan when nested beneath that context.
+                    let extracted = extracted_aliases
+                        .replace("FROM mentions WHERE out = $parent.id", &format!("FROM mentions WITH NOINDEX WHERE out = {parameter}"))
+                        .replace("LET $graph_entity_id = id;", &format!("LET $graph_entity_id = {parameter};"))
+                        .replace("out = $graph_entity_id", &format!("out = {parameter}"));
+                    let direct = select_direct.strip_prefix(", ").and_then(|value| value.strip_suffix(" AS graph_direct_rank"));
+                    let mut setup = format!("LET $graph_entity_row = (SELECT * FROM {parameter})[0]; LET $graph_entity_aliases = IF string::starts_with($graph_entity_row.identity_key ?? '', 'extracted-v1:') THEN {extracted} ELSE $graph_entity_row.metadata.aliases ?? [] END; ");
+                    if let Some(direct) = direct {
+                        let direct = direct.replace("LET $graph_entity_id = id;", &format!("LET $graph_entity_id = {parameter};")).replace("out = $graph_entity_id", &format!("out = {parameter}"));
+                        let exists = mention_condition.trim_start_matches("AND ").replace("LET $graph_entity_id = id;", &format!("LET $graph_entity_id = {parameter};")).replace("out = $graph_entity_id", &format!("out = {parameter}"));
+                        setup.push_str(&format!("LET $graph_entity_direct_rank = {direct}; LET $graph_entity_has_mentions = {exists}; "));
+                    }
+                    let mut statement = query.replace("$graph_entity_lexeme_candidates", &parameter).replace(&aliases, "$graph_entity_aliases");
+                    if direct.is_some() {
+                        statement = statement.replace(&select_direct, ", $graph_entity_direct_rank AS graph_direct_rank").replace(&mention_condition, "AND $graph_entity_has_mentions");
+                    }
+                    format!("{setup}{statement}")
                 })
                 .collect::<Vec<_>>()
                 .join(";\n");
@@ -1919,8 +1938,11 @@ impl Repository {
                 request = request.bind((format!("graph_entity_bound_{index}"), id.clone()));
             }
             let mut response = request.await?.check()?;
+            let statements_per_entity = if scope.is_some() { 5 } else { 3 };
             for index in 0..chunk.len() {
-                rows.extend(response.take::<Vec<surrealdb_types::Value>>(index)?);
+                rows.extend(response.take::<Vec<surrealdb_types::Value>>(
+                    (index + 1) * statements_per_entity - 1,
+                )?);
             }
         }
         // Apply the authoritative global ordering/cap only after all candidates

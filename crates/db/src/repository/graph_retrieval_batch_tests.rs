@@ -2572,3 +2572,70 @@ async fn graph_entity_indexed_chunks_preserve_global_order_and_cap() {
         }
     }
 }
+
+#[tokio::test]
+async fn graph_entity_complex_rank_pages_match_unchanged_primary_scan() {
+    use surrealdb::types::{Number, Value};
+    let repo = Repository::new(init_memory().await.unwrap());
+    let low = note(
+        &repo,
+        RecordId::new("note", "complex-low"),
+        None,
+        None,
+        timestamp(),
+    )
+    .await;
+    let high = note(
+        &repo,
+        RecordId::new("note", "complex-high"),
+        None,
+        None,
+        timestamp(),
+    )
+    .await;
+    let first = alias_entity(&repo, "complex-first", "Complex Compiler", true).await;
+    let second = alias_entity(&repo, "complex-second", "Complex Compiler", true).await;
+    for (a, b, note) in [
+        (Number::Int(1), 1, &low),
+        (Number::Int(1), 3, &high),
+        (Number::Float(1.0), 0, &low),
+    ] {
+        let key = RecordIdKey::Array(vec![Value::Number(a), Value::Number(Number::Int(b))].into());
+        repo.db.query("CREATE $id SET in = $note, out = $entity, metadata = { aliases: ['Complex Needle'] }")
+            .bind(("id", RecordId::new("mentions", key))).bind(("note", note.clone())).bind(("entity", first.clone()))
+            .await.unwrap().check().unwrap();
+    }
+    alias_mention(
+        &repo,
+        &high,
+        &second,
+        serde_json::json!({"aliases":["Complex Needle"]}),
+    )
+    .await;
+    for limit in [1, 2] {
+        let expected = repo
+            .find_graph_entities_original_alias_order(
+                "Complex Needle",
+                limit,
+                Some(&[high.clone(), low.clone()]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let actual = repo
+            .find_graph_entities_for_search(
+                "Complex Needle",
+                limit,
+                &[high.clone(), low.clone()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+}
