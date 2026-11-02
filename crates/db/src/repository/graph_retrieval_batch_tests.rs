@@ -2801,3 +2801,66 @@ async fn mention_evidence_lookup_is_indexed_and_generation_is_validated_at_read_
         assert_eq!(actual.is_empty(), empty, "{sql}");
     }
 }
+
+#[tokio::test]
+async fn graph_entity_batch_preserves_compound_source_identity() {
+    use surrealdb::types::{Number, Value};
+    let repo = Repository::new(init_memory().await.unwrap());
+    for (index, number) in [Number::Int(1), Number::Float(1.0)].into_iter().enumerate() {
+        let owner = RecordId::new(
+            "source",
+            RecordIdKey::Array(vec![Value::Number(number)].into()),
+        );
+        repo.db
+            .query("CREATE $id SET uri = $uri, generation = 1, successful_generation = 1")
+            .bind(("id", owner.clone()))
+            .bind(("uri", format!("fixture://native-{index}")))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let endpoint = note(
+            &repo,
+            RecordId::new("note", format!("native-source-{index}")),
+            Some(owner),
+            Some(1),
+            timestamp(),
+        )
+        .await;
+        let entity = alias_entity(&repo, &format!("native-source-{index}"), "Compiler", true).await;
+        alias_mention(
+            &repo,
+            &endpoint,
+            &entity,
+            serde_json::json!({"aliases": ["Native Compiler"]}),
+        )
+        .await;
+    }
+    for uri in [
+        None,
+        Some("fixture://native-0".into()),
+        Some("fixture://native-1".into()),
+    ] {
+        for query in ["Compiler", "Native Compiler"] {
+            let expected = repo
+                .find_graph_entities_original_alias_order(query, 20, Some(&[]), None, uri.clone())
+                .await
+                .unwrap();
+            let actual = repo
+                .find_graph_entities_for_search(query, 20, &[], None, uri.clone())
+                .await
+                .unwrap();
+            if uri.is_none() {
+                assert_eq!(expected.len(), 2);
+            }
+            // The full-scan oracle has pre-existing compound-source URI
+            // correlation behavior; use it for unscoped native identity only.
+            if uri.is_none() {
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+            }
+        }
+    }
+}

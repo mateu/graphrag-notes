@@ -2191,6 +2191,7 @@ impl Repository {
         // content/vectors. Native record arrays are direct record lookups.
         let mut response = self.db.query(r#"
             LET $notes = SELECT id, source_id, source_generation, created_at FROM $ids;
+            SELECT VALUE id FROM $notes WHERE source_id != NONE AND NOT (type::is_number(record::id(source_id)) OR type::is_string(record::id(source_id)) OR type::is_uuid(record::id(source_id)));
             LET $source_ids = array::distinct(array::filter($notes.source_id, |$id| $id != NONE));
             LET $sources = SELECT id, successful_generation, uri FROM $source_ids;
             LET $source_map = object::from_entries(array::map($sources, |$s| [type::string($s.id), $s]));
@@ -2204,8 +2205,14 @@ impl Repository {
             .bind(("since", scope.and_then(|s| s.since.clone())))
             .bind(("source_uri", scope.and_then(|s| s.source_uri.clone())))
             .await?.check()?;
+        // Equal-valued compound source keys must retain individual native
+        // dereferences, just like compound entity/note keys above.
+        let compound_sources: Vec<RecordId> = response.take(1)?;
+        if !compound_sources.is_empty() {
+            return Ok(None);
+        }
         Ok(Some(GraphCandidateEvidence {
-            eligible_notes: response.take(4)?,
+            eligible_notes: response.take(5)?,
             mentions,
         }))
     }
