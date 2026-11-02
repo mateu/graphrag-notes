@@ -28,6 +28,7 @@ mod v021_note_search;
 mod v022_source_entity_enrichment;
 mod v023_remote_job_family;
 mod v024_entity_lexeme_index;
+mod v025_mention_lexeme_evidence;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -40,7 +41,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 24;
+pub const LATEST_SCHEMA_VERSION: u32 = 25;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -80,6 +81,7 @@ const MIGRATIONS: &[Migration] = &[
     v022_source_entity_enrichment::MIGRATION,
     v023_remote_job_family::MIGRATION,
     v024_entity_lexeme_index::MIGRATION,
+    v025_mention_lexeme_evidence::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -359,6 +361,12 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
             .map_err(|error| migration_failed(migration, error))?;
     }
 
+    if migration.version == 25 {
+        v025_mention_lexeme_evidence::backfill(db)
+            .await
+            .map_err(|error| migration_failed(migration, error))?;
+    }
+
     let recorded = db
         .query(
             "INSERT INTO schema_migration (version, name, checksum, applied_at) \
@@ -476,6 +484,75 @@ mod tests {
         assert_eq!(migrations[1].name, "embedding_metadata");
         assert_eq!(migrations[2].name, "source_lifecycle");
         assert_eq!(migrations[3].name, "edge_proposals");
+    }
+
+    #[tokio::test]
+    async fn v025_mention_evidence_tracks_backfill_rebind_rename_delete_and_restore() {
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..24]).await.unwrap();
+        db.query("CREATE entity:a CONTENT {name: 'Atlas', canonical_name: 'atlas', entity_type: 'concept'}; CREATE entity:b CONTENT {name: 'Boreal', canonical_name: 'boreal', entity_type: 'concept'}; CREATE note:a CONTENT {content: 'a'}; CREATE note:b CONTENT {content: 'b'}; CREATE mentions:a SET in = note:a, out = entity:a, metadata = {aliases: ['First Alias']};").await.unwrap().check().unwrap();
+        apply_all(&db).await.unwrap();
+        for _ in 0..2 {
+            v025_mention_lexeme_evidence::backfill(&db).await.unwrap();
+        }
+        let lexemes: Vec<String> = db
+            .query("SELECT VALUE lexeme FROM mention_lexeme ORDER BY lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(lexemes, ["atlas", "first alias"]);
+        db.query("UPDATE mentions:a SET in = note:b, out = entity:b, metadata = {aliases: ['Second Alias']}; UPDATE entity:b SET canonical_name = 'renamed boreal';").await.unwrap().check().unwrap();
+        let lexemes: Vec<String> = db
+            .query("SELECT VALUE lexeme FROM mention_lexeme ORDER BY lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(lexemes, ["renamed boreal", "second alias"]);
+        let notes: Vec<RecordId> = db
+            .query("SELECT VALUE note FROM mention_lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(notes.iter().all(|id| *id == RecordId::new("note", "b")));
+        db.query("DELETE mentions:a")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let rows: Vec<RecordId> = db
+            .query("SELECT VALUE id FROM mention_lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(rows.is_empty());
+        // Portable restore and extraction both write the underlying relation;
+        // database events must not depend on a particular repository method.
+        db.query(
+            "CREATE mentions:a SET in = note:a, out = entity:a, metadata = {aliases: ['Restored']}",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let lexemes: Vec<String> = db
+            .query("SELECT VALUE lexeme FROM mention_lexeme ORDER BY lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(lexemes, ["atlas", "restored"]);
+        db.query("DELETE entity:a").await.unwrap().check().unwrap();
+        let rows: Vec<RecordId> = db
+            .query("SELECT VALUE id FROM mention_lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(rows.is_empty());
     }
 
     #[tokio::test]

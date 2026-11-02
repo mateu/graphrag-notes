@@ -2538,11 +2538,11 @@ async fn graph_entity_indexed_chunks_preserve_global_order_and_cap() {
         timestamp(),
     )
     .await;
-    for index in 0..70 {
+    for index in 0..130 {
         let entity = alias_entity(
             &repo,
             &format!("chunk-{index:03}"),
-            &format!("Chunk Engine {:03}", 70 - index),
+            &format!("Chunk Engine {:03}", 130 - index),
             true,
         )
         .await;
@@ -2555,7 +2555,7 @@ async fn graph_entity_indexed_chunks_preserve_global_order_and_cap() {
         .await;
     }
     for query in ["Chunk Alias", "where is chunk alias", "chunk"] {
-        for limit in [1, 10, 70] {
+        for limit in [1, 10, 130] {
             let expected = repo
                 .find_graph_entities_original_alias_order(query, limit, Some(&[]), None, None)
                 .await
@@ -2711,5 +2711,93 @@ async fn graph_entity_projection_preserves_equal_valued_native_identities() {
                 serde_json::to_value(expected).unwrap()
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn mention_evidence_lookup_is_indexed_and_generation_is_validated_at_read_time() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(
+        &repo,
+        "evidence-generation",
+        "fixture://evidence-generation",
+    )
+    .await;
+    let evidence = note(
+        &repo,
+        RecordId::new("note", "evidence-generation"),
+        Some(owner.clone()),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    let entity = alias_entity(&repo, "evidence-generation", "Generation Engine", true).await;
+    alias_mention(
+        &repo,
+        &evidence,
+        &entity,
+        serde_json::json!({"aliases": ["Generation Alias"]}),
+    )
+    .await;
+    let plan: Vec<serde_json::Value> = repo
+        .db
+        .query("SELECT VALUE entity FROM mention_lexeme WHERE lexeme = $lexeme EXPLAIN FULL")
+        .bind(("lexeme", "generation alias"))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(serde_json::to_string(&plan)
+        .unwrap()
+        .contains("idx_mention_lexeme_lookup"));
+    for generation in [1, 2, 1] {
+        repo.db
+            .query("UPDATE $owner SET successful_generation = $generation")
+            .bind(("owner", owner.clone()))
+            .bind(("generation", generation))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let actual = repo
+            .find_graph_entities_for_search("Generation Alias", 10, &[], None, None)
+            .await
+            .unwrap();
+        let oracle = repo
+            .find_graph_entities_fresh_parent_alias_order(
+                "Generation Alias",
+                10,
+                Some(&[]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(oracle).unwrap()
+        );
+        assert_eq!(actual.is_empty(), generation != 1);
+        // Generation promotion must not rewrite / cache eligibility in evidence.
+        let projected: Vec<RecordId> = repo
+            .db
+            .query("SELECT VALUE mention FROM mention_lexeme WHERE lexeme = 'generation alias'")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(projected.len(), 1);
+    }
+    for (sql, empty) in [
+        ("DELETE source:`evidence-generation`", true),
+        ("CREATE source:`evidence-generation` SET uri = 'fixture://evidence-generation', generation = 2, successful_generation = 1, status = 'failed'", false),
+        ("UPDATE note:`evidence-generation` SET source_generation = 2", true),
+        ("UPDATE note:`evidence-generation` SET source_generation = NONE", false),
+    ] {
+        repo.db.query(sql).await.unwrap().check().unwrap();
+        let actual = repo.find_graph_entities_for_search("Generation Alias", 10, &[], None, None).await.unwrap();
+        let oracle = repo.find_graph_entities_fresh_parent_alias_order("Generation Alias", 10, Some(&[]), None, None).await.unwrap();
+        assert_eq!(serde_json::to_value(&actual).unwrap(), serde_json::to_value(oracle).unwrap(), "{sql}");
+        assert_eq!(actual.is_empty(), empty, "{sql}");
     }
 }

@@ -3036,7 +3036,10 @@ mod tests {
         let vectorless_summary = create_backup(&repo, &vectorless_archive, false)
             .await
             .unwrap();
-        assert_eq!(vectorless_summary.schema_version, 23);
+        assert_eq!(
+            vectorless_summary.schema_version,
+            migrations::latest_version()
+        );
         assert!(!vectorless_summary.includes_embeddings);
         assert_eq!(
             vectorless_summary,
@@ -3069,7 +3072,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let archive = temp.path().join("schema23-archive");
         let summary = create_backup(&repo, &archive, true).await.unwrap();
-        assert_eq!(summary.schema_version, 23);
+        assert_eq!(summary.schema_version, migrations::latest_version());
         assert!(summary.includes_embeddings);
         assert_eq!(summary, verify_backup(&archive).unwrap());
         assert_eq!(summary.record_counts.get("proposed_edge"), Some(&1));
@@ -3186,7 +3189,7 @@ mod tests {
                 "REMOVE FIELD remote_enrichment_job ON processing_job; \
                  UPDATE processing_job UNSET remote_enrichment_job; \
                  UPDATE $job UNSET remote_input.enrichment; \
-                 DELETE schema_migration WHERE version = 23;",
+                 DELETE schema_migration WHERE version >= 23;",
             )
             .bind(("job", original_job))
             .await
