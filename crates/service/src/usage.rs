@@ -129,7 +129,9 @@ pub(crate) fn record(principal: &str, tool: &str, elapsed_ms: f64, usage: &Usage
         graph_selected = usage.graph_selected,
         dropped_for_relevance = usage.dropped_for_relevance,
         total_tokens = usage.total_tokens,
-        "tool call"
+        // The message names the record because the production CLI subscriber
+        // omits targets (`with_target(false)`).
+        "graphrag_usage"
     );
 }
 
@@ -233,7 +235,9 @@ mod tests {
         }
         let buffer = Buffer::default();
         let writer = buffer.clone();
+        // Same builder settings as the CLI's production subscriber.
         let subscriber = tracing_subscriber::fmt()
+            .with_target(false)
             .with_ansi(false)
             .with_writer(move || writer.clone())
             .finish();
@@ -249,11 +253,10 @@ mod tests {
         });
         let line = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
         let fields = line
-            .split_once("graphrag_usage: tool call ")
-            .unwrap()
+            .split_once(" INFO graphrag_usage ")
+            .expect(&line)
             .1
             .trim_end();
-        assert!(line.contains(" INFO graphrag_usage: tool call "), "{line}");
         assert_eq!(
             fields,
             r#"principal="openclaw.clawd" tool="search_notes" outcome="ok" elapsed_ms=12.3 mode="hybrid" hits=2 top_score=0.9"#
