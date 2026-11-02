@@ -2,8 +2,7 @@
 """Compare exact serialized matcher results (including metadata, order and cap).
 
 Usage: issue166-compare.py baseline.jsonl optimized.jsonl
-The Rust issue166_benchmark example emits one JSON record per query. Timings
-are deliberately not compared; any result/order/metadata change is a failure.
+The Rust issue166_benchmark example emits one JSON record per query. Timings enforce the revised issue166 gate; any result/order/metadata change fails.
 """
 import json
 import sys
@@ -28,7 +27,9 @@ def main():
             f'p50={after[query]["p50_ms"]:.3f} ms '
             f'p95={after[query]["p95_ms"]:.3f} ms'
         )
-    failed = [q for q, r in after.items() if r["p95_ms"] >= 100]
+    failed = [q for q, r in after.items()
+              if (q != "openc" and r["p95_ms"] >= 250)
+              or r["p95_ms"] > before[q]["p95_ms"]]
     if failed:
         print("LATENCY TARGET NOT MET: " + ", ".join(failed), file=sys.stderr)
         return 2

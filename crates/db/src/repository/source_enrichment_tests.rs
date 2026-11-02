@@ -373,7 +373,16 @@ async fn rollback_requires_confirmation_preserves_content_and_prevents_policy_ab
     let plan = plan(&source, "Atlas");
     let opening = rows(&repo, "note").await;
     prepared(&repo, &plan).await;
+    assert!(rows(&repo, "mention_lexeme").await.is_empty());
     repo.promote_source_entity_enrichment(&plan).await.unwrap();
+    assert_eq!(
+        repo.find_graph_entities_for_search("Atlas", 20, &[], None, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(!rows(&repo, "mention_lexeme").await.is_empty());
     assert!(repo
         .rollback_source_entity_enrichment(&plan, false)
         .await
@@ -383,6 +392,12 @@ async fn rollback_requires_confirmation_preserves_content_and_prevents_policy_ab
         .await
         .unwrap();
     assert_eq!(result.status, "rolled_back");
+    assert!(rows(&repo, "mention_lexeme").await.is_empty());
+    assert!(repo
+        .find_graph_entities_for_search("Atlas", 20, &[], None, None)
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(
         repo.rollback_source_entity_enrichment(&plan, true)
             .await

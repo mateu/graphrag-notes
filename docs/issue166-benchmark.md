@@ -13,7 +13,7 @@ symlinks. Never pass a live database or the shared database directory.
    copying. Keep the original read-only.
 2. Build the example on the baseline and optimized revisions:
    `CARGO_BUILD_JOBS=2 RUSTC_WRAPPER= cargo build --release -p graphrag-db --example issue166_benchmark`.
-3. Run each binary sequentially against its own backup copy:
+3. Run each binary sequentially sequentially against the same backup copy (baseline first, then final):
    `issue166_benchmark BACKUP_COPY > RESULTS.jsonl 2> migration.log`.
    Opening applies migrations; the stderr timer includes database opening and
    schema initialization/backfill. Keep this separate from warm query latency.
@@ -23,7 +23,7 @@ symlinks. Never pass a live database or the shared database directory.
 5. Compare baseline and optimized JSONL:
    `python3 scripts/issue166-compare.py BEFORE.jsonl AFTER.jsonl`.
    Results include IDs, metadata, order, and the 20-result cap. A mismatch
-   fails; identical results with any p95 >=100ms exits 2 rather than passing.
+   fails; identical results with any non-prefix p95 >=250ms, or any p95 slower than baseline (including `openc`), exits 2 rather than passing.
 
 The public scoped matcher is called with an empty ranked-note list and no
 time/source constraint; this includes authoritative endpoint eligibility.
@@ -57,7 +57,7 @@ only the owned issue166 temporary directory after copying evidence out.
 No service restart, deploy, merge, or changes to other temporary files belong
 to this benchmark.
 
-## Measured outcome (not accepted)
+## Historical measured outcome (superseded head and gate)
 
 All eight query payloads match baseline exactly. Warm p95 gate fails in four cases. Three warmups, twenty measured calls sequentially on the pinned fam backup copy.
 
@@ -73,3 +73,20 @@ All eight query payloads match baseline exactly. Warm p95 gate fails in four cas
 |openc|[0, 0, 2755]|620.49|650.25|
 
 Backup manifest SHA256: `bb9b2c37a93c3100c16e7b1c078fb2e6925d2e4944c4bc0a14d59ce7bf09df41`. Original schema23 →25 open/migrate:126.249s; baseline23→24:65.280s. EXPLAIN FULL used idx_entity_lexeme_lookup, idx_mentions_entity_note, idx_mention_lexeme_lookup, idx_mention_lexeme_entity; zero TableScan operators. Remaining cost scales with equality mention probes and global SQL candidate evaluation. No canonicalization.
+
+
+## Revised acceptance and sync coverage audit
+
+Owner decision on #166: every non-prefix warm p95 <250ms and no query p95
+slower than 25bf7c9, including the `openc` fall-through. Results must be identical.
+The <100ms target is future work, not this PR's acceptance gate.
+
+| Write boundary | Regression evidence |
+|---|---|
+| mention create/rebind/delete; entity rename | `v025_mention_evidence_tracks_backfill_rebind_rename_delete_and_restore` |
+| re-extraction | `graph_entity_reextraction_replaces_mention_evidence` exercises public replacement API and old/new matching |
+| source deletion; generation promotion | `mention_evidence_lookup_is_indexed_and_generation_is_validated_at_read_time` compares fresh-parent oracle after each transition |
+| policy staging/promotion/rollback | `rollback_requires_confirmation_preserves_content_and_prevents_policy_aba` checks derived evidence and matcher visibility |
+| portable export/import | `vector_backup_restores_entity_mentions_with_optional_embeddings` compares complete matcher payloads before/after restore |
+
+These cover mutation boundaries, not an exhaustive concurrent-write guarantee.

@@ -2864,3 +2864,59 @@ async fn graph_entity_batch_preserves_compound_source_identity() {
         }
     }
 }
+
+#[tokio::test]
+async fn graph_entity_reextraction_replaces_mention_evidence() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let extracted = |name: &str| {
+        let mut entity = Entity::new(name, graphrag_core::EntityType::Concept);
+        entity.metadata = serde_json::json!({"aliases": [format!("{name} alias")]});
+        entity
+    };
+    let original = repo
+        .create_note_and_replace_entities(
+            Note::new("Extraction fixture"),
+            vec![extracted("Prior Nebula")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.find_graph_entities_for_search("Prior Nebula", 20, &[], None, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let id = record_id_to_string(original.id.as_ref().unwrap());
+    repo.update_note_and_replace_entities(&id, original, vec![extracted("Replacement Nebula")])
+        .await
+        .unwrap();
+    for (query, expected) in [
+        ("Prior Nebula", 0),
+        ("Replacement Nebula", 1),
+        ("Prior Nebula alias", 0),
+        ("Replacement Nebula alias", 1),
+    ] {
+        let actual = repo
+            .find_graph_entities_for_search(query, 20, &[], None, None)
+            .await
+            .unwrap();
+        let oracle = repo
+            .find_graph_entities_fresh_parent_alias_order(query, 20, Some(&[]), None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(oracle).unwrap()
+        );
+        assert_eq!(actual.len(), expected);
+    }
+    let stale: Vec<RecordId> = repo
+        .db
+        .query("SELECT VALUE mention FROM mention_lexeme WHERE lexeme = 'prior nebula'")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(stale.is_empty());
+}

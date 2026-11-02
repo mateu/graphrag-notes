@@ -2627,6 +2627,22 @@ mod tests {
                 .embedding,
             vector.iter().map(|value| *value as f32).collect::<Vec<_>>()
         );
+        // Portable import rebuilds derived evidence, which is not exported.
+        for query in ["Unembedded extracted entity", "Computed entity vector"] {
+            let before = repo
+                .find_graph_entities_for_search(query, 20, &[], None, None)
+                .await
+                .unwrap();
+            let after = restored
+                .find_graph_entities_for_search(query, 20, &[], None, None)
+                .await
+                .unwrap();
+            assert_eq!(before.len(), 1);
+            assert_eq!(
+                serde_json::to_value(before).unwrap(),
+                serde_json::to_value(after).unwrap()
+            );
+        }
         let restored_entities = restored.get_entities_for_note(&note_id).await.unwrap();
         assert_eq!(restored_entities.len(), 2);
         assert!(restored_entities
