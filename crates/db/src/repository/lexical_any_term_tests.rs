@@ -1,5 +1,6 @@
 use super::*;
 use crate::init_memory;
+use std::time::Instant;
 
 fn id(note: &Note) -> String {
     record_id_to_string(note.id.as_ref().unwrap())
@@ -86,6 +87,36 @@ async fn keyword_fallback_uses_analyzed_terms_when_punctuation_has_no_spaces() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(record_id_to_string(&results[0].id), id(&partial_match));
+}
+
+#[tokio::test]
+async fn keyword_fallback_uses_analyzer_terms_across_letter_digit_transitions() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let partial_match = repo
+        .create_note(Note::new("bge 3 deployment"))
+        .await
+        .unwrap();
+
+    let results = repo
+        .fulltext_search("bge3 deployment recovery", 10)
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(record_id_to_string(&results[0].id), id(&partial_match));
+}
+
+#[tokio::test]
+async fn analyzer_call_reports_query_term_latency() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let started = Instant::now();
+    let terms = repo
+        .analyze_lexical_terms("bge3 deployment recovery")
+        .await
+        .unwrap();
+    eprintln!("analyzer call elapsed: {:?}", started.elapsed());
+
+    assert_eq!(terms, ["3", "bge", "deployment", "recovery"]);
 }
 
 #[tokio::test]

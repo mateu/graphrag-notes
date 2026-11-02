@@ -70,19 +70,6 @@ fn editor_source_id(expected: &Note) -> Result<RecordId> {
         .ok_or_else(|| DbError::NoteRevisionConflict("(missing note ID)".into()))
 }
 
-/// Match the full-text `ascii` filter's deunicode/class-token normalization for
-/// the bounded any-term fallback coverage gate and its eligibility check.
-fn lexical_coverage_terms(query: &str) -> Vec<String> {
-    let mut terms = deunicode::deunicode(query)
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|term| !term.is_empty())
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>();
-    terms.sort_unstable();
-    terms.dedup();
-    terms
-}
-
 /// Keep the entity upsert semantics aligned with `Repository::upsert_entity`:
 /// explicit identities identify rows, existing type/creation time survive, and
 /// legacy metadata aliases merge distinctly, while extracted metadata reflects
@@ -1123,7 +1110,14 @@ impl Repository {
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
         let mut all_term_results = self
-            .fulltext_search_notes_with_operator(query, limit, since, source_uri.clone(), false)
+            .fulltext_search_notes_with_operator(
+                query,
+                limit,
+                since,
+                source_uri.clone(),
+                false,
+                Vec::new(),
+            )
             .await?;
 
         // SurrealDB's default match operator requires every analyzed term in a
@@ -1132,9 +1126,14 @@ impl Repository {
         // suffix with the engine's OR operator. Keep the all-term prefix
         // intact: an exact/all-term result remains more relevant than any
         // partial match, while the suffix retains native BM25 ordering.
-        if all_term_results.len() < limit && lexical_coverage_terms(query).len() >= 2 {
+        let terms = if all_term_results.len() < limit {
+            self.analyze_lexical_terms(query).await?
+        } else {
+            Vec::new()
+        };
+        if terms.len() >= 2 {
             let any_term_results = self
-                .fulltext_search_notes_with_operator(query, limit, since, source_uri, true)
+                .fulltext_search_notes_with_operator(query, limit, since, source_uri, true, terms)
                 .await?;
             for result in any_term_results {
                 if all_term_results
@@ -1152,6 +1151,17 @@ impl Repository {
         Ok(all_term_results)
     }
 
+    pub(super) async fn analyze_lexical_terms(&self, query: &str) -> Result<Vec<String>> {
+        let mut terms: Vec<String> = self
+            .db
+            .query("RETURN array::distinct(search::analyze('ascii', $query));")
+            .bind(("query", query.to_string()))
+            .await?
+            .take(0)?;
+        terms.sort_unstable();
+        Ok(terms)
+    }
+
     async fn fulltext_search_notes_with_operator(
         &self,
         query: &str,
@@ -1159,6 +1169,7 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
         any_term: bool,
+        terms: Vec<String>,
     ) -> Result<Vec<SearchResult>> {
         let (
             search_content_operator,
@@ -1171,15 +1182,12 @@ impl Repository {
                     "@0,OR@",
                     "@1,OR@",
                     "@2,OR@",
-                    "AND array::len(array::filter($terms, |$term| string::contains(string::concat(' ', string::trim(string::replace(string::slug(search_content ?? ''), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::slug(content), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::slug(title ?? ''), <regex>\"[-_]+\", ' ')), ' '), string::concat(' ', $term, ' ')))) >= 2",
+                    "AND array::len(array::filter($terms, |$term| array::includes(search::analyze('ascii', search_content ?? ''), $term) OR array::includes(search::analyze('ascii', content), $term) OR array::includes(search::analyze('ascii', title ?? ''), $term))) >= 2",
                     1,
                 )
         } else {
             ("@0@", "@1@", "@2@", "", 0)
         };
-        // Keep the fallback coverage gate aligned with the full-text `ascii`
-        // filter, which applies `deunicode` after class tokenization.
-        let terms = lexical_coverage_terms(query);
         let since = since.map(|ts| ts.to_rfc3339());
         // Case folding and outer whitespace are the only equivalences here:
         // punctuation and internal whitespace can distinguish note titles.

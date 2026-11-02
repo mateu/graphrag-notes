@@ -984,7 +984,7 @@ mod tests {
             Some("Roadmap\n\ncurrent-live-marker is indexed")
         );
         assert!(repo
-            .fulltext_search("obsolete-retired-marker", 10)
+            .fulltext_search("obsolete retired", 10)
             .await
             .unwrap()
             .iter()
