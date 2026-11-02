@@ -412,9 +412,11 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         }
     }
     let dropped_for_source_cap = capped.len();
-    exclusions.extend(capped.into_iter().map(|candidate| {
-        candidate.explanation(crate::InclusionReason::SourceCap)
-    }));
+    exclusions.extend(
+        capped
+            .into_iter()
+            .map(|candidate| candidate.explanation(crate::InclusionReason::SourceCap)),
+    );
     let chunks = selected
         .into_iter()
         .map(|selected| selected.chunk)
@@ -507,7 +509,11 @@ fn source_is_capped(
 ) -> bool {
     candidate.hit.source_uri.as_ref().is_some_and(|uri| {
         options.max_chunks_per_source.is_some_and(|cap| {
-            selected.iter().filter(|item| item.chunk.source_uri.as_ref() == Some(uri)).count() >= cap
+            selected
+                .iter()
+                .filter(|item| item.chunk.source_uri.as_ref() == Some(uri))
+                .count()
+                >= cap
         })
     })
 }
@@ -1663,30 +1669,52 @@ mod tests {
             hits.push(other);
         }
         build_augment_context_from_hits(
-            "query".into(), SearchScope::Notes, None, hits,
+            "query".into(),
+            SearchScope::Notes,
+            None,
+            hits,
             AugmentOptions {
                 max_chunks: 2,
                 max_chunks_per_source: cap,
                 novelty_weight: 0.0,
                 max_total_tokens: 1000,
                 ..options()
-            }, 0,
+            },
+            0,
         )
     }
 
     #[test]
     fn source_cap_displaces_same_source_and_explains_exclusion() {
         let context = source_cap_fixture(Some(1), true);
-        assert_eq!(context.chunks.iter().map(|chunk| chunk.id.as_str()).collect::<Vec<_>>(), vec!["note:a", "note:c"]);
+        assert_eq!(
+            context
+                .chunks
+                .iter()
+                .map(|chunk| chunk.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["note:a", "note:c"]
+        );
         assert_eq!(context.diagnostics.dropped_for_source_cap, 1);
         assert_eq!(context.dropped_for_source_cap, 1);
-        assert!(context.exclusions.iter().any(|item| item.result_id == "note:b" && item.inclusion == crate::InclusionReason::SourceCap));
+        assert!(context
+            .exclusions
+            .iter()
+            .any(|item| item.result_id == "note:b"
+                && item.inclusion == crate::InclusionReason::SourceCap));
     }
 
     #[test]
     fn unset_source_cap_preserves_selection() {
         let context = source_cap_fixture(None, true);
-        assert_eq!(context.chunks.iter().map(|chunk| chunk.id.as_str()).collect::<Vec<_>>(), vec!["note:a", "note:b"]);
+        assert_eq!(
+            context
+                .chunks
+                .iter()
+                .map(|chunk| chunk.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["note:a", "note:b"]
+        );
         assert_eq!(context.diagnostics.dropped_for_source_cap, 0);
     }
 
@@ -1700,9 +1728,19 @@ mod tests {
     #[test]
     fn missing_source_uris_are_not_capped() {
         let context = build_augment_context_from_hits(
-            "query".into(), SearchScope::Notes, None,
-            vec![hit("note:a", 1.0, "alpha evidence"), hit("note:b", 0.9, "bravo details")],
-            AugmentOptions { max_chunks_per_source: Some(1), max_total_tokens: 1000, ..options() }, 0,
+            "query".into(),
+            SearchScope::Notes,
+            None,
+            vec![
+                hit("note:a", 1.0, "alpha evidence"),
+                hit("note:b", 0.9, "bravo details"),
+            ],
+            AugmentOptions {
+                max_chunks_per_source: Some(1),
+                max_total_tokens: 1000,
+                ..options()
+            },
+            0,
         );
         assert_eq!(context.chunks.len(), 2);
         assert_eq!(context.diagnostics.dropped_for_source_cap, 0);

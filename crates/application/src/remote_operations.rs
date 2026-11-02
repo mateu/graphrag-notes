@@ -213,8 +213,13 @@ impl RemoteApplicationOperations for EmbeddedApplication {
         let mut options = self.augment_options.clone();
         options.max_chunks = request.max_chunks.unwrap_or(options.max_chunks);
         options.max_chunks_per_source = request.max_chunks_per_source;
-        if options.max_chunks_per_source.is_some_and(|cap| cap == 0 || cap > options.max_chunks) {
-            return Err(ApplicationError::Validation("max_chunks_per_source must be between 1 and max_chunks".into()));
+        if options
+            .max_chunks_per_source
+            .is_some_and(|cap| cap == 0 || cap > options.max_chunks)
+        {
+            return Err(ApplicationError::Validation(
+                "max_chunks_per_source must be between 1 and max_chunks".into(),
+            ));
         }
         options.max_total_tokens = request.max_total_tokens.unwrap_or(options.max_total_tokens);
         options.max_chunk_tokens = request.max_chunk_tokens.unwrap_or(options.max_chunk_tokens);

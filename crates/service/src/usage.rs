@@ -68,8 +68,8 @@ pub(crate) fn summarize(
         }
     }
     if tool == "build_context" {
-        usage.max_chunks_per_source = count(args.get("max_chunks_per_source"))
-            .filter(|cap| (1..=200).contains(cap));
+        usage.max_chunks_per_source =
+            count(args.get("max_chunks_per_source")).filter(|cap| (1..=200).contains(cap));
     }
     let structured = match result {
         Err(_) => {
@@ -211,8 +211,18 @@ mod tests {
 
     #[test]
     fn source_cap_logs_only_bounded_integers() {
-        for (value, expected) in [(json!(1), Some(1)), (json!(200), Some(200)), (json!(0), None), (json!(201), None), (json!("private"), None)] {
-            let usage = summarize("build_context", Some(&args(json!({"max_chunks_per_source": value}))), &ok(json!({"data": {}})));
+        for (value, expected) in [
+            (json!(1), Some(1)),
+            (json!(200), Some(200)),
+            (json!(0), None),
+            (json!(201), None),
+            (json!("private"), None),
+        ] {
+            let usage = summarize(
+                "build_context",
+                Some(&args(json!({"max_chunks_per_source": value}))),
+                &ok(json!({"data": {}})),
+            );
             assert_eq!(usage.max_chunks_per_source, expected);
         }
     }
