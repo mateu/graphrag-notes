@@ -1158,10 +1158,16 @@ impl Repository {
             } else {
                 ("@0@", "@1@", "@2@", "")
             };
-        let terms = query
-            .split_whitespace()
+        // Keep the fallback coverage gate aligned with the full-text ascii
+        // analyzer: punctuation separates terms rather than becoming part of
+        // a literal substring (for example, `surrealdb,` -> `surrealdb`).
+        let mut terms = query
+            .split(|character: char| !character.is_alphanumeric())
+            .filter(|term| !term.is_empty())
             .map(str::to_lowercase)
             .collect::<Vec<_>>();
+        terms.sort_unstable();
+        terms.dedup();
         let since = since.map(|ts| ts.to_rfc3339());
         // Case folding and outer whitespace are the only equivalences here:
         // punctuation and internal whitespace can distinguish note titles.

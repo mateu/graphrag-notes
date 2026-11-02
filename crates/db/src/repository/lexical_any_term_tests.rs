@@ -27,7 +27,7 @@ async fn keyword_search_falls_back_to_any_term_bm25_without_displacing_all_term_
     }
 
     let results = repo
-        .fulltext_search("surrealdb 3.3.5 fam deploy", 3)
+        .fulltext_search("surrealdb, 3.3.5 fam deploy", 3)
         .await
         .unwrap();
 
