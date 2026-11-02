@@ -27,6 +27,7 @@ mod v020_source_policy_migration;
 mod v021_note_search;
 mod v022_source_entity_enrichment;
 mod v023_remote_job_family;
+mod v024_entity_lexeme_index;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -39,7 +40,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 23;
+pub const LATEST_SCHEMA_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -78,6 +79,7 @@ const MIGRATIONS: &[Migration] = &[
     v021_note_search::MIGRATION,
     v022_source_entity_enrichment::MIGRATION,
     v023_remote_job_family::MIGRATION,
+    v024_entity_lexeme_index::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -351,6 +353,12 @@ async fn apply_one(db: &DbConnection, migration: Migration) -> Result<()> {
             .map_err(|error| migration_failed(migration, error))?;
     }
 
+    if migration.version == v024_entity_lexeme_index::MIGRATION.version {
+        v024_entity_lexeme_index::backfill(db)
+            .await
+            .map_err(|error| migration_failed(migration, error))?;
+    }
+
     let recorded = db
         .query(
             "INSERT INTO schema_migration (version, name, checksum, applied_at) \
@@ -471,6 +479,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v024_backfills_entity_and_mention_alias_lexemes_idempotently() {
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..23]).await.unwrap();
+        db.query("CREATE entity:lexeme CONTENT { name: 'Atlas Engine', canonical_name: 'atlas engine', entity_type: 'concept', metadata: { aliases: ['Atlas Prime'] } }; CREATE note:lexeme CONTENT { content: 'fictional' }; CREATE mentions:lexeme SET in = note:lexeme, out = entity:lexeme, metadata = { aliases: ['Atlas Evidence'] };")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        apply_all(&db).await.unwrap();
+        let lexemes: Vec<String> = db
+            .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = entity:lexeme ORDER BY lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(lexemes, ["atlas engine", "atlas evidence", "atlas prime"]);
+        v024_entity_lexeme_index::backfill(&db).await.unwrap();
+        apply_all(&db).await.unwrap();
+        let repeated: Vec<String> = db
+            .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = entity:lexeme ORDER BY lexeme")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(repeated, lexemes);
+    }
+
+    #[tokio::test]
+    async fn v024_backfill_cursor_preserves_mixed_numeric_primary_order() {
+        use surrealdb::types::{Number, RecordIdKey, Value};
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..23]).await.unwrap();
+        let mut keys = (1..=128)
+            .map(|n| vec![Value::Number(Number::Int(1)), Value::Number(Number::Int(n))])
+            .collect::<Vec<_>>();
+        keys.push(vec![
+            Value::Number(Number::Float(1.0)),
+            Value::Number(Number::Int(0)),
+        ]);
+        keys.push(vec![
+            Value::Number(Number::Float(1.0)),
+            Value::Number(Number::Int(127)),
+        ]);
+        for (index, key) in keys.into_iter().enumerate() {
+            db.query("CREATE $id SET name = $name, canonical_name = $name, entity_type = 'concept', metadata = {}")
+                .bind(("id", RecordId::new("entity", RecordIdKey::Array(key.into()))))
+                .bind(("name", format!("cursor{index}")))
+                .await.unwrap().check().unwrap();
+        }
+        apply_all(&db).await.unwrap();
+        for _ in 0..2 {
+            let entities: Vec<RecordId> = db
+                .query("SELECT VALUE entity FROM entity_lexeme")
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            assert_eq!(
+                entities.len(),
+                130,
+                "every native record key must be indexed"
+            );
+            v024_entity_lexeme_index::backfill(&db).await.unwrap();
+        }
+        db.query("UPDATE entity SET name = 'Shared Compiler', canonical_name = 'shared compiler'")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        v024_entity_lexeme_index::backfill(&db).await.unwrap();
+        let shared: Vec<RecordId> = db
+            .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme = 'shared compiler'")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(
+            shared.len(),
+            130,
+            "shared spellings must retain every exact-native identity"
+        );
+    }
+
+    #[tokio::test]
     async fn v019_preserves_legacy_ids_and_old_backup_identity_without_conflating_scopes() {
         use graphrag_core::{Entity, EntityType};
         let db = raw_memory_db().await;
@@ -552,15 +644,7 @@ mod tests {
     #[tokio::test]
     async fn v023_backfills_remote_job_family_from_v022_history_and_journal() {
         let db = raw_memory_db().await;
-        apply_all(&db).await.unwrap();
-        db.query(
-            "REMOVE FIELD remote_enrichment_job ON processing_job; \
-             DELETE schema_migration WHERE version = 23;",
-        )
-        .await
-        .unwrap()
-        .check()
-        .unwrap();
+        apply_migrations(&db, &MIGRATIONS[..22]).await.unwrap();
         assert_eq!(current_version(&db).await.unwrap(), 22);
         let v022_before = load_applied_migrations(&db)
             .await

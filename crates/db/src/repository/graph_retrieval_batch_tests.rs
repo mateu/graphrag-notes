@@ -1676,6 +1676,15 @@ async fn graph_alias_local_binding_preserves_duplicate_mentions_before_direct_ra
             .check()
             .unwrap();
     }
+    // Verify the rank-page lookup can use the association index even though
+    // its cap is applied in relation-ID order (not index endpoint order).
+    let plans: Vec<serde_json::Value> = repo.db
+        .query("SELECT id, in FROM mentions WHERE out = $entity AND in IN $ranked_notes ORDER BY id ASC LIMIT 2 EXPLAIN FULL")
+        .bind(("entity", first.clone()))
+        .bind(("ranked_notes", vec![best_rank.clone(), lower_rank.clone()]))
+        .await.unwrap().take(0).unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_mentions_access_plan(&plans[0], true);
     let ranked = [best_rank, lower_rank];
     for limit in [1, 2] {
         let rows = assert_alias_query_matches_original(
@@ -2369,5 +2378,338 @@ async fn graph_alias_fast_path_short_circuits_only_bounded_string_arrays_and_kee
             "graph-alias-plan={}",
             serde_json::json!({"original": plans[0], "candidate": plans[1]})
         );
+    }
+}
+
+#[tokio::test]
+async fn graph_entity_lexeme_index_matches_full_scan_and_tracks_mutations() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "lexeme", "fixture://lexeme").await;
+    let visible = note(
+        &repo,
+        RecordId::new("note", "lexeme-visible"),
+        Some(owner.clone()),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    let hidden = note(
+        &repo,
+        RecordId::new("note", "lexeme-hidden"),
+        Some(owner),
+        Some(2),
+        timestamp(),
+    )
+    .await;
+    let entity = alias_entity(&repo, "lexeme", "Orion Engine", true).await;
+    alias_mention(
+        &repo,
+        &visible,
+        &entity,
+        serde_json::json!({"aliases": ["Needle Token"]}),
+    )
+    .await;
+    // The index intentionally contains this hidden alias, while the existing
+    // tier SQL remains the authority that rejects its evidence.
+    alias_mention(
+        &repo,
+        &hidden,
+        &entity,
+        serde_json::json!({"aliases": ["Hidden Needle"]}),
+    )
+    .await;
+
+    let second = alias_entity(&repo, "lexeme-second", "Orion Engine Two", true).await;
+    alias_mention(
+        &repo,
+        &visible,
+        &second,
+        serde_json::json!({"aliases": ["Needle Token"]}),
+    )
+    .await;
+
+    for query in [
+        "Needle Token",
+        "where is needle token",
+        "needle token orion engine",
+        "orion",
+        "Hidden Needle",
+        &format!("{} needle token", "unmatched ".repeat(65)),
+    ] {
+        for limit in [1, 10] {
+            for source_uri in [
+                None,
+                Some("fixture://lexeme".to_owned()),
+                Some("fixture://elsewhere".to_owned()),
+            ] {
+                let original = repo
+                    .find_graph_entities_original_alias_order(
+                        query,
+                        limit,
+                        Some(&[]),
+                        None,
+                        source_uri.clone(),
+                    )
+                    .await
+                    .unwrap();
+                let indexed = repo
+                    .find_graph_entities_for_search(query, limit, &[], None, source_uri.clone())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    serde_json::to_value(indexed).unwrap(),
+                    serde_json::to_value(original).unwrap(),
+                    "query={query}, limit={limit}, source_uri={source_uri:?}"
+                );
+            }
+        }
+    }
+    let hidden_rows: Vec<RecordId> = repo
+        .db
+        .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme = 'hidden needle'")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(hidden_rows, vec![entity.clone()]);
+
+    repo.db.query("UPDATE $entity SET name = 'Renamed Engine', canonical_name = 'renamed engine', metadata = { aliases: ['Fresh Alias'] }").bind(("entity", entity.clone())).await.unwrap().check().unwrap();
+    let lexemes: Vec<String> = repo
+        .db
+        .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = $entity ORDER BY lexeme")
+        .bind(("entity", entity.clone()))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(lexemes.contains(&"fresh alias".to_owned()));
+    assert!(lexemes.contains(&"renamed engine".to_owned()));
+
+    repo.db
+        .query("DELETE mentions WHERE in = $note")
+        .bind(("note", visible))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let remaining: Vec<String> = repo
+        .db
+        .query("SELECT VALUE lexeme FROM entity_lexeme WHERE entity = $entity ORDER BY lexeme")
+        .bind(("entity", entity.clone()))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    // Stale mention lexemes are safe candidates, not authority to match.
+    assert!(remaining.contains(&"needle token".to_owned()));
+    assert!(remaining.contains(&"hidden needle".to_owned()));
+    let matches = repo
+        .find_graph_entities_for_search("Needle Token", 10, &[], None, None)
+        .await
+        .unwrap();
+    assert!(matches.iter().all(|hit| hit.id != entity));
+    let deleted_entity = entity.clone();
+    repo.db
+        .query("DELETE $entity")
+        .bind(("entity", entity))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let deleted: Vec<serde_json::Value> = repo
+        .db
+        .query("SELECT * FROM entity_lexeme WHERE entity = $entity")
+        .bind(("entity", deleted_entity))
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert!(deleted.is_empty());
+}
+
+#[tokio::test]
+async fn graph_entity_indexed_chunks_preserve_global_order_and_cap() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let endpoint = note(
+        &repo,
+        RecordId::new("note", "chunk-endpoint"),
+        None,
+        None,
+        timestamp(),
+    )
+    .await;
+    for index in 0..70 {
+        let entity = alias_entity(
+            &repo,
+            &format!("chunk-{index:03}"),
+            &format!("Chunk Engine {:03}", 70 - index),
+            true,
+        )
+        .await;
+        alias_mention(
+            &repo,
+            &endpoint,
+            &entity,
+            serde_json::json!({"aliases": ["Chunk Alias"]}),
+        )
+        .await;
+    }
+    for query in ["Chunk Alias", "where is chunk alias", "chunk"] {
+        for limit in [1, 10, 70] {
+            let expected = repo
+                .find_graph_entities_original_alias_order(query, limit, Some(&[]), None, None)
+                .await
+                .unwrap();
+            let actual = repo
+                .find_graph_entities_for_search(query, limit, &[], None, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap(),
+                "query={query}, limit={limit}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn graph_entity_complex_rank_pages_match_unchanged_primary_scan() {
+    use surrealdb::types::{Number, Value};
+    let repo = Repository::new(init_memory().await.unwrap());
+    let low = note(
+        &repo,
+        RecordId::new("note", "complex-low"),
+        None,
+        None,
+        timestamp(),
+    )
+    .await;
+    let high = note(
+        &repo,
+        RecordId::new("note", "complex-high"),
+        None,
+        None,
+        timestamp(),
+    )
+    .await;
+    let first = alias_entity(&repo, "complex-first", "Complex Compiler", true).await;
+    let second = alias_entity(&repo, "complex-second", "Complex Compiler", true).await;
+    for (a, b, note) in [
+        (Number::Int(1), 1, &low),
+        (Number::Int(1), 3, &high),
+        (Number::Float(1.0), 0, &low),
+    ] {
+        let key = RecordIdKey::Array(vec![Value::Number(a), Value::Number(Number::Int(b))].into());
+        repo.db.query("CREATE $id SET in = $note, out = $entity, metadata = { aliases: ['Complex Needle'] }")
+            .bind(("id", RecordId::new("mentions", key))).bind(("note", note.clone())).bind(("entity", first.clone()))
+            .await.unwrap().check().unwrap();
+    }
+    alias_mention(
+        &repo,
+        &high,
+        &second,
+        serde_json::json!({"aliases":["Complex Needle"]}),
+    )
+    .await;
+    for limit in [1, 2] {
+        let expected = repo
+            .find_graph_entities_original_alias_order(
+                "Complex Needle",
+                limit,
+                Some(&[high.clone(), low.clone()]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let actual = repo
+            .find_graph_entities_for_search(
+                "Complex Needle",
+                limit,
+                &[high.clone(), low.clone()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn graph_entity_projection_preserves_equal_valued_native_identities() {
+    use surrealdb::types::{Number, Value};
+    for object_keys in [false, true] {
+        for names in [["Compiler", "Compiler"], ["Alpha", "Beta"]] {
+            let repo = Repository::new(init_memory().await.unwrap());
+            let endpoint = note(
+                &repo,
+                RecordId::new("note", "native-identity"),
+                None,
+                None,
+                timestamp(),
+            )
+            .await;
+            let mut ids = Vec::new();
+            for (index, number) in [Number::Int(1), Number::Float(1.0)].into_iter().enumerate() {
+                let key = if object_keys {
+                    let mut object = Object::new();
+                    object.insert("value", Value::Number(number));
+                    RecordIdKey::Object(object)
+                } else {
+                    RecordIdKey::Array(vec![Value::Number(number)].into())
+                };
+                let id = alias_entity_at(&repo, RecordId::new("entity", key), names[index]).await;
+                alias_mention(&repo, &endpoint, &id, serde_json::json!({"aliases": []})).await;
+                ids.push(id);
+            }
+            let query = if names[0] == names[1] {
+                "Compiler"
+            } else {
+                "alpha beta"
+            };
+            for limit in [1, 10] {
+                let expected = repo
+                    .find_graph_entities_original_alias_order(query, limit, Some(&[]), None, None)
+                    .await
+                    .unwrap();
+                let actual = repo
+                    .find_graph_entities_for_search(query, limit, &[], None, None)
+                    .await
+                    .unwrap();
+                if limit == 10 {
+                    assert_eq!(expected.len(), 2);
+                }
+                assert_eq!(
+                    serde_json::to_value(actual).unwrap(),
+                    serde_json::to_value(expected).unwrap(),
+                    "object={object_keys}, names={names:?}, limit={limit}"
+                );
+            }
+            repo.db
+                .query("DELETE $id")
+                .bind(("id", ids[0].clone()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let expected = repo
+                .find_graph_entities_original_alias_order(query, 10, Some(&[]), None, None)
+                .await
+                .unwrap();
+            let actual = repo
+                .find_graph_entities_for_search(query, 10, &[], None, None)
+                .await
+                .unwrap();
+            assert_eq!(expected.len(), 1);
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
     }
 }

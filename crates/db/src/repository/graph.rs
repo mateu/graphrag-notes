@@ -1587,6 +1587,7 @@ impl Repository {
             scope,
             graph_alias_eligible_sql,
             graph_entity_aliases_local_sql,
+            true,
         )
         .await
     }
@@ -1704,6 +1705,7 @@ impl Repository {
                     scope.as_ref(),
                     alias_predicate,
                     extracted_aliases_query,
+                    false,
                 )
                 .await?;
             if !rows.is_empty() {
@@ -1723,6 +1725,7 @@ impl Repository {
         scope: Option<&GraphEntityQueryScope>,
         alias_predicate: fn(&str, &str) -> String,
         extracted_aliases_query: fn(&str) -> String,
+        use_lexeme_index: bool,
     ) -> Result<Vec<GraphEntityMatch>> {
         // Keep stored names and aliases on the exact same lexical boundary
         // contract as `graph_query_normalize`: punctuation becomes a space,
@@ -1814,21 +1817,28 @@ impl Repository {
             .map(|plausibility| format!(", {plausibility} AS graph_prefix_plausibility"))
             .unwrap_or_default();
         let (select_direct, mention_condition, direct_order) = if scope.is_some() {
-            // The direct-rank page is unordered and mentions are non-unique.
-            // Keep its original scan: an association index could change the
-            // capped subset when duplicate mentions outnumber ranked notes.
-            // Preserve the existence scan's original error/iteration order.
+            // The original table scan visits relation IDs in primary-key order.
+            // Materialize the indexed per-entity subset in that same order before
+            // applying the non-unique direct-rank cap; index endpoint order would
+            // otherwise change which duplicate relations contribute.
             (
                 format!(
-                    ", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"
+                    ", {{ LET $graph_entity_id = id; LET $graph_direct_mentions = IF array::len((SELECT VALUE id FROM mentions WHERE out = $graph_entity_id AND NOT (type::is_number(record::id(id)) OR type::is_string(record::id(id)) OR type::is_uuid(record::id(id))) LIMIT 1)) = 0 THEN (SELECT id, in FROM mentions WHERE out = $graph_entity_id AND in IN $ranked_notes AND {eligible} ORDER BY id ASC LIMIT $ranked_limit) ELSE (SELECT id, in FROM mentions WITH NOINDEX WHERE out = $graph_entity_id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit) END; (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM $graph_direct_mentions)) ?? 2147483647); }} AS graph_direct_rank"
                 ),
                 format!(
-                    "AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"
+                    "AND {{ LET $graph_entity_id = id; array::len((SELECT VALUE in FROM mentions WHERE out = $graph_entity_id AND {eligible} LIMIT 1)) > 0; }}"
                 ),
                 "graph_direct_rank ASC, ",
             )
         } else {
             (String::new(), String::new(), "")
+        };
+        let (select_direct, mention_condition, direct_order) = if !use_lexeme_index
+            && scope.is_some()
+        {
+            (format!(", (array::min((SELECT VALUE array::find_index($ranked_notes, in) FROM mentions WHERE out = $parent.id AND in IN $ranked_notes AND {eligible} LIMIT $ranked_limit)) ?? 2147483647) AS graph_direct_rank"), format!("AND array::len((SELECT VALUE in FROM mentions WHERE out = $parent.id AND {eligible} LIMIT 1)) > 0"), "graph_direct_rank ASC, ")
+        } else {
+            (select_direct, mention_condition, direct_order)
         };
         let ordering = if phrase_specificity.is_some() {
             format!("graph_match_specificity DESC, {direct_order}canonical_name ASC, id ASC")
@@ -1837,36 +1847,195 @@ impl Repository {
         } else {
             format!("{direct_order}canonical_name ASC, id ASC")
         };
+        // Bound n-gram allocation without dropping long-phrase matches: unusually
+        // long queries retain the authoritative full-scan path.
+        let use_lexeme_index =
+            use_lexeme_index && normalized_query.split_whitespace().count() <= 64;
+        let mut candidate_ids = if use_lexeme_index {
+            self.graph_entity_lexeme_candidates(normalized_query, tier, prefixes)
+                .await?
+        } else {
+            Vec::new()
+        };
+        candidate_ids.sort_by_cached_key(|id| id.to_sql());
+        candidate_ids.dedup_by(|left, right| left.to_sql() == right.to_sql());
+        if use_lexeme_index && candidate_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let entity_source = if use_lexeme_index {
+            "$graph_entity_lexeme_candidates"
+        } else {
+            "entity"
+        };
         let query = format!(
             r#"
                 SELECT id, name, canonical_name, object::extend(metadata ?? {{}}, {{ aliases: graph_current_aliases }}) AS metadata{select_specificity}{select_prefix_plausibility}{select_direct}
-                FROM (SELECT id, name, canonical_name, metadata, ({aliases}) AS graph_current_aliases FROM entity)
+                FROM (SELECT id, name, canonical_name, metadata, ({aliases}) AS graph_current_aliases FROM {entity_source})
                 WHERE ({match_condition}) {mention_condition}
                 ORDER BY {ordering}
                 LIMIT $limit
                 "#,
         );
-        let mut query = self
-            .db
-            .query(query)
-            .bind(("query", normalized_query.to_string()))
+        let bind_query = |sql: String| {
+            let mut request = self
+                .db
+                .query(sql)
+                .bind(("query", normalized_query.to_string()))
+                .bind(("limit", limit))
+                .bind(("since", scope.and_then(|value| value.since.clone())))
+                .bind((
+                    "source_uri",
+                    scope.and_then(|value| value.source_uri.clone()),
+                ));
+            if let Some(scope) = scope {
+                request = request
+                    .bind(("ranked_notes", scope.ranked_note_ids.clone()))
+                    .bind(("ranked_limit", scope.ranked_note_ids.len().max(1) as i64));
+            }
+            for (index, prefix) in prefixes.iter().enumerate() {
+                request = request.bind((format!("prefix_{index}"), prefix.clone()));
+            }
+            request
+        };
+        if !use_lexeme_index {
+            return bind_query(query).await?.take(0).map_err(Into::into);
+        }
+        // Bind native record IDs as request parameters, not row-correlated
+        // expression values: the latter can still produce a DynamicScan at
+        // execution time. Bound statement chunks keep every mentions lookup
+        // eligible for the existing association index without out IN scans.
+        let evaluate_chunk = async |chunk: &[RecordId]| -> Result<Vec<surrealdb_types::Value>> {
+            if chunk.is_empty() {
+                return Ok(Vec::new());
+            }
+            let statements = chunk
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    let parameter = format!("$graph_entity_bound_{index}");
+                    // Evaluate mentions statements before entering any entity
+                    // SELECT row context. Even a bound parameter can retain a
+                    // correlated DynamicScan when nested beneath that context.
+                    let extracted = extracted_aliases
+                        .replace("FROM mentions WHERE out = $parent.id", &format!("FROM mentions WITH NOINDEX WHERE out = {parameter}"))
+                        .replace("LET $graph_entity_id = id;", &format!("LET $graph_entity_id = {parameter};"))
+                        .replace("out = $graph_entity_id", &format!("out = {parameter}"));
+                    let direct = select_direct.strip_prefix(", ").and_then(|value| value.strip_suffix(" AS graph_direct_rank"));
+                    let mut setup = format!("LET $graph_entity_row = (SELECT * FROM {parameter})[0]; LET $graph_entity_aliases = IF string::starts_with($graph_entity_row.identity_key ?? '', 'extracted-v1:') THEN {extracted} ELSE $graph_entity_row.metadata.aliases ?? [] END; ");
+                    if let Some(direct) = direct {
+                        let direct = direct.replace("LET $graph_entity_id = id;", &format!("LET $graph_entity_id = {parameter};")).replace("out = $graph_entity_id", &format!("out = {parameter}"));
+                        let exists = mention_condition.trim_start_matches("AND ").replace("LET $graph_entity_id = id;", &format!("LET $graph_entity_id = {parameter};")).replace("out = $graph_entity_id", &format!("out = {parameter}"));
+                        setup.push_str(&format!("LET $graph_entity_direct_rank = {direct}; LET $graph_entity_has_mentions = {exists}; "));
+                    }
+                    let mut statement = query.replace("$graph_entity_lexeme_candidates", &parameter).replace(&aliases, "$graph_entity_aliases");
+                    if direct.is_some() {
+                        statement = statement.replace(&select_direct, ", $graph_entity_direct_rank AS graph_direct_rank").replace(&mention_condition, "AND $graph_entity_has_mentions");
+                    }
+                    format!("{setup}{statement}")
+                })
+                .collect::<Vec<_>>()
+                .join(";\n");
+            let mut request = bind_query(statements);
+            for (index, id) in chunk.iter().enumerate() {
+                request = request.bind((format!("graph_entity_bound_{index}"), id.clone()));
+            }
+            let mut response = request.await?.check()?;
+            let statements_per_entity = if scope.is_some() { 5 } else { 3 };
+            let mut chunk_rows = Vec::new();
+            for index in 0..chunk.len() {
+                chunk_rows.extend(response.take::<Vec<surrealdb_types::Value>>(
+                    (index + 1) * statements_per_entity - 1,
+                )?);
+            }
+            Ok(chunk_rows)
+        };
+        let mut rows = Vec::new();
+        // Independent, read-only pages may run concurrently. Keep both SQL
+        // request size and in-flight work bounded, then preserve collection
+        // order before the authoritative global SQL sort and cap.
+        for group in candidate_ids.chunks(64 * 8) {
+            let mut chunks = group.chunks(64);
+            let (a, b, c, d, e, f, g, h) = tokio::join!(
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+                evaluate_chunk(chunks.next().unwrap_or(&[])),
+            );
+            for chunk in [a, b, c, d, e, f, g, h] {
+                rows.extend(chunk?);
+            }
+        }
+        // Apply the authoritative global ordering/cap only after all candidates
+        // have been evaluated. Native values preserve record IDs and metadata.
+        self.db
+            .query(format!(
+                "SELECT * FROM $rows ORDER BY {ordering} LIMIT $limit"
+            ))
+            .bind(("rows", rows))
             .bind(("limit", limit))
-            .bind(("since", scope.and_then(|value| value.since.clone())))
-            .bind((
-                "source_uri",
-                scope.and_then(|value| value.source_uri.clone()),
-            ));
-        if let Some(scope) = scope {
-            query = query
-                .bind(("ranked_notes", scope.ranked_note_ids.clone()))
-                .bind(("ranked_limit", scope.ranked_note_ids.len().max(1) as i64))
-                .bind(("since", scope.since.clone()))
-                .bind(("source_uri", scope.source_uri.clone()));
+            .await?
+            .take(0)
+            .map_err(Into::into)
+    }
+
+    /// Return only possible lexical matches. The caller still executes the
+    /// original tier predicate against these IDs, so visibility, scope,
+    /// specificity, ordering, and caps remain authoritative there.
+    async fn graph_entity_lexeme_candidates(
+        &self,
+        query: &str,
+        tier: GraphEntityMatchTier,
+        prefixes: &[String],
+    ) -> Result<Vec<RecordId>> {
+        match tier {
+            GraphEntityMatchTier::Exact => self
+                .db
+                .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme = $query")
+                .bind(("query", query.to_owned()))
+                .await?
+                .take(0)
+                .map_err(Into::into),
+            GraphEntityMatchTier::ContainedPhrase => {
+                let words = query.split_whitespace().collect::<Vec<_>>();
+                let mut lexemes = Vec::new();
+                for start in 0..words.len() {
+                    for end in (start + 1)..=words.len() {
+                        lexemes.push(words[start..end].join(" "));
+                    }
+                }
+                self.db
+                    .query("SELECT VALUE entity FROM entity_lexeme WHERE lexeme IN $lexemes")
+                    .bind(("lexemes", lexemes))
+                    .await?
+                    .take(0)
+                    .map_err(Into::into)
+            }
+            GraphEntityMatchTier::Prefix => {
+                let mut query = self.db.query(
+                    "SELECT VALUE entity FROM entity_lexeme WHERE "
+                        .to_owned()
+                        + &prefixes
+                            .iter()
+                            .enumerate()
+                            .map(|(index, _)| format!("(lexeme >= $prefix_{index} AND lexeme < $prefix_upper_{index})"))
+                            .collect::<Vec<_>>()
+                            .join(" OR "),
+                );
+                for (index, prefix) in prefixes.iter().enumerate() {
+                    query = query
+                        .bind((format!("prefix_{index}"), prefix.clone()))
+                        .bind((
+                            format!("prefix_upper_{index}"),
+                            format!("{prefix}\u{10ffff}"),
+                        ));
+                }
+                query.await?.take(0).map_err(Into::into)
+            }
         }
-        for (index, prefix) in prefixes.iter().enumerate() {
-            query = query.bind((format!("prefix_{index}"), prefix.clone()));
-        }
-        query.await?.take(0).map_err(Into::into)
     }
 
     /// Fetch visible note IDs mentioned by any supplied entities in one
