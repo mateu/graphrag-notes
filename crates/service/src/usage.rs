@@ -216,6 +216,50 @@ mod tests {
         assert_eq!(summarize("nope", None, &protocol).outcome, "protocol_error");
     }
 
+    /// Pins the formatted line shape that scripts/usage_report.py parses.
+    #[test]
+    fn formatted_record_matches_the_usage_report_parser() {
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buffer = Buffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let usage = Usage {
+            outcome: "ok".into(),
+            mode: Some("hybrid"),
+            hits: Some(2),
+            top_score: Some(0.9),
+            ..Usage::default()
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            record("openclaw.clawd", "search_notes", 12.34, &usage)
+        });
+        let line = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        let fields = line
+            .split_once("graphrag_usage: tool call ")
+            .unwrap()
+            .1
+            .trim_end();
+        assert!(line.contains(" INFO graphrag_usage: tool call "), "{line}");
+        assert_eq!(
+            fields,
+            r#"principal="openclaw.clawd" tool="search_notes" outcome="ok" elapsed_ms=12.3 mode="hybrid" hits=2 top_score=0.9"#
+        );
+    }
+
     #[test]
     fn unknown_option_values_are_not_logged_verbatim() {
         let args = args(json!({"mode": "injected free text", "graph": 5}));
