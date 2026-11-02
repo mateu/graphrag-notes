@@ -785,6 +785,14 @@ async fn response_and_argument_bounds_and_errors_are_actionable_and_sanitized() 
         error(&fixture.tool(TOKEN_READ, "build_context", request).await)["code"],
         "invalid_input"
     );
+    for (max_chunks, cap) in [(2, 0), (2, 3), (200, 201), (0, 1)] {
+        let request =
+            json!({"query": "atlas", "max_chunks": max_chunks, "max_chunks_per_source": cap});
+        assert_eq!(
+            error(&fixture.tool(TOKEN_READ, "build_context", request).await)["code"],
+            "invalid_input"
+        );
+    }
     assert_eq!(fixture.application.searches.load(Ordering::SeqCst), 1);
     let mut request = search();
     request["query"] = json!("provider-error");

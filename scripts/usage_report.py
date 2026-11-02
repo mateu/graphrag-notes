@@ -26,7 +26,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 LINE = re.compile(r"^(?P<ts>\S+)\s+INFO\s+(?:\S+: )*graphrag_usage (?P<fields>principal=.*)$")
 FIELD = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*"|\S+)')
 NUMERIC = {
-    "elapsed_ms", "limit", "query_chars", "query_terms", "hits", "top_score",
+    "max_chunks_per_source", "elapsed_ms", "limit", "query_chars", "query_terms", "hits", "top_score",
     "graph_considered", "graph_selected", "dropped_for_relevance", "total_tokens",
 }
 
@@ -85,6 +85,9 @@ def summarize(records):
                     "/".join(str(r.get(k, "-")) for k in ("mode", "graph", "scope")) for r in ok
                 )),
             })
+        caps = [r["max_chunks_per_source"] for r in ok if "max_chunks_per_source" in r]
+        if caps:
+            entry["max_chunks_per_source"] = dict(Counter(str(int(cap)) for cap in caps))
         selected = [r["graph_selected"] for r in ok if "graph_selected" in r]
         if selected:
             entry["graph_contributed"] = sum(1 for s in selected if s > 0)
@@ -108,6 +111,8 @@ def render(summary):
                 f"  empty {e['empty_results']} ({e['empty_rate']:.0%}), median hits {e['hits_median']}, "
                 f"median top score {e['top_score_median']}; mode/graph/scope {e['options']}"
             )
+        if "max_chunks_per_source" in e:
+            lines.append(f"  max_chunks_per_source {e['max_chunks_per_source']}")
         if "graph_contributed_rate" in e:
             lines.append(f"  graph contributed to {e['graph_contributed']} ({e['graph_contributed_rate']:.0%}) contexts")
     return "\n".join(lines)

@@ -92,6 +92,7 @@ fn context_request() -> BuildContextRequest {
         source_uri: None,
         entity_filter: None,
         max_chunks: Some(3),
+        max_chunks_per_source: None,
         max_total_tokens: Some(400),
         max_chunk_tokens: Some(100),
     }

@@ -375,6 +375,10 @@ pub(crate) enum Commands {
         #[arg(long)]
         max_chunk_tokens: Option<usize>,
 
+        /// Prefer this many chunks per source (1..=limit); relax if no other source fits
+        #[arg(long)]
+        max_chunks_per_source: Option<usize>,
+
         /// Accepted-edge graph retrieval policy
         #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
         graph: GraphModeArg,

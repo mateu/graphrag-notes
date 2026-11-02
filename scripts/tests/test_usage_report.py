@@ -45,6 +45,13 @@ class UsageReportTest(unittest.TestCase):
         self.assertEqual(record["principal"], "openclaw-clawd-daily")
         self.assertEqual((record["hits"], record["mode"]), (5.0, "keyword"))
 
+    def test_optional_source_cap_is_numeric_and_reported(self):
+        record = usage_report.parse_line(CONTEXT.rstrip() + " max_chunks_per_source=1\n")
+        self.assertEqual(record["max_chunks_per_source"], 1.0)
+        summary = usage_report.summarize([record, usage_report.parse_line(CONTEXT)])
+        self.assertEqual(summary[0]["max_chunks_per_source"], {"1": 1})
+        self.assertIn("max_chunks_per_source {'1': 1}", usage_report.render(summary))
+
     def test_summarizes_empty_rate_errors_and_graph_contribution(self):
         records = [usage_report.parse_line(line) for line in (SEARCH, EMPTY, CONTEXT, FAILED)]
         by_tool = {(e["principal"], e["tool"]): e for e in usage_report.summarize(records)}

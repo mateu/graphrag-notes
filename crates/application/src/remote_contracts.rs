@@ -90,6 +90,7 @@ pub struct BuildContextRequest {
     pub source_uri: Option<String>,
     pub entity_filter: Option<String>,
     pub max_chunks: Option<usize>,
+    pub max_chunks_per_source: Option<usize>,
     pub max_total_tokens: Option<usize>,
     pub max_chunk_tokens: Option<usize>,
 }

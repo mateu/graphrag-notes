@@ -345,3 +345,14 @@ conversational path. Keep uncertain direct-command retries exact too.
 Tool availability enables explicit retrieval and capture. It does not replace
 OpenClaw memory or authorize automatic transcript imports. Hermes and Windows
 integration are outside this issue.
+
+### Small context budgets and source diversity
+
+`build_context` accepts optional `max_chunks_per_source` (1 through `max_chunks`);
+CLI callers can use `augment --max-chunks-per-source`. The default is unset,
+preserving existing selection. For `max_chunks <= 3`, opt into a cap of **1**
+to prefer supporting evidence from another note. Chunks without a source URI
+are uncapped. When no other candidate fits, the cap relaxes to fill the budget
+rather than withholding the only available source. Excluded chunks report
+`source_cap` and `dropped_for_source_cap`; usage records and the weekly report
+include the requested cap without recording source identities.

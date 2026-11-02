@@ -328,6 +328,7 @@ async fn accepted_evidence_edge_reaches_missed_fact_off_on_on_off_and_undo_remov
         source_uri: None,
         entity_filter: None,
         max_chunks: Some(2),
+        max_chunks_per_source: None,
         max_total_tokens: Some(1000),
         max_chunk_tokens: Some(400),
     };

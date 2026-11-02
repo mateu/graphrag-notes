@@ -17,6 +17,7 @@ pub(crate) struct Usage {
     pub graph: Option<&'static str>,
     pub scope: Option<&'static str>,
     pub limit: Option<u64>,
+    pub max_chunks_per_source: Option<u64>,
     pub query_chars: Option<usize>,
     pub query_terms: Option<usize>,
     pub hits: Option<usize>,
@@ -65,6 +66,10 @@ pub(crate) fn summarize(
             usage.query_chars = Some(query.chars().count());
             usage.query_terms = Some(query.split_whitespace().count());
         }
+    }
+    if tool == "build_context" {
+        usage.max_chunks_per_source =
+            count(args.get("max_chunks_per_source")).filter(|cap| (1..=200).contains(cap));
     }
     let structured = match result {
         Err(_) => {
@@ -121,6 +126,7 @@ pub(crate) fn record(principal: &str, tool: &str, elapsed_ms: f64, usage: &Usage
         graph = usage.graph,
         scope = usage.scope,
         limit = usage.limit,
+        max_chunks_per_source = usage.max_chunks_per_source,
         query_chars = usage.query_chars,
         query_terms = usage.query_terms,
         hits = usage.hits,
@@ -201,6 +207,24 @@ mod tests {
             (Some(7), Some(1), Some(2))
         );
         assert_eq!((usage.total_tokens, usage.limit), (Some(1013), Some(4)));
+    }
+
+    #[test]
+    fn source_cap_logs_only_bounded_integers() {
+        for (value, expected) in [
+            (json!(1), Some(1)),
+            (json!(200), Some(200)),
+            (json!(0), None),
+            (json!(201), None),
+            (json!("private"), None),
+        ] {
+            let usage = summarize(
+                "build_context",
+                Some(&args(json!({"max_chunks_per_source": value}))),
+                &ok(json!({"data": {}})),
+            );
+            assert_eq!(usage.max_chunks_per_source, expected);
+        }
     }
 
     #[test]

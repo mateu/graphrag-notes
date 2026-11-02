@@ -19,6 +19,7 @@ pub enum InclusionReason {
     NearDuplicate,
     RelevanceThreshold,
     TokenBudget,
+    SourceCap,
     DiagnosticLimit,
 }
 
