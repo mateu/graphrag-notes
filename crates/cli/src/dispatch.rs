@@ -266,6 +266,7 @@ pub(crate) async fn execute(
             entity,
             max_tokens,
             max_chunk_tokens,
+            max_chunks_per_source,
             graph,
             raw,
             format,
@@ -281,6 +282,7 @@ pub(crate) async fn execute(
                 entity,
                 max_tokens.unwrap_or(config.augment.max_tokens),
                 max_chunk_tokens.unwrap_or(config.augment.max_chunk_tokens),
+                max_chunks_per_source,
                 graph,
                 config.search.clone(),
                 config.augment.clone(),
@@ -2037,6 +2039,7 @@ pub(crate) async fn cmd_augment(
     entity: Option<String>,
     max_tokens: usize,
     max_chunk_tokens: usize,
+    max_chunks_per_source: Option<usize>,
     graph: GraphModeArg,
     search_config: SearchConfig,
     augment_config: AugmentConfig,
@@ -2064,7 +2067,11 @@ pub(crate) async fn cmd_augment(
         SearchScopeArg::All => SearchScope::All,
     };
 
-    let options = augment_options(limit, max_tokens, max_chunk_tokens, &augment_config);
+    if max_chunks_per_source.is_some_and(|cap| cap == 0 || cap > limit) {
+        anyhow::bail!("--max-chunks-per-source must be between 1 and --limit");
+    }
+    let mut options = augment_options(limit, max_tokens, max_chunk_tokens, &augment_config);
+    options.max_chunks_per_source = max_chunks_per_source;
     let (ctx, embedding_identity) = if should_sample_augment_candidates(explain, &options) {
         let search = configured_search_agent(repo, tei, &search_config);
         let embedding_identity = search.embedding_identity();

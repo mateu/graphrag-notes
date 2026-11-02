@@ -175,6 +175,9 @@ struct ContextInput {
     entity_filter: Option<String>,
     #[schemars(range(min = 0, max = 200))]
     max_chunks: Option<usize>,
+    /// Prefer source diversity, relaxing the cap when no other candidate fits.
+    #[schemars(range(min = 1, max = 200))]
+    max_chunks_per_source: Option<usize>,
     #[schemars(range(min = 0, max = 32768))]
     max_total_tokens: Option<usize>,
     #[schemars(range(min = 0, max = 8192))]
@@ -711,6 +714,9 @@ impl ToolService {
                     || !string_bound(input.source_uri.as_deref(), 2048)
                     || !string_bound(input.entity_filter.as_deref(), 512)
                     || !bounded(input.max_chunks, 200)
+                    || input.max_chunks_per_source.is_some_and(|cap| {
+                        cap == 0 || cap > input.max_chunks.unwrap_or(200) || cap > 200
+                    })
                     || !bounded(input.max_total_tokens, 32768)
                     || !bounded(input.max_chunk_tokens, 8192)
                 {
@@ -729,6 +735,7 @@ impl ToolService {
                     source_uri: input.source_uri,
                     entity_filter: input.entity_filter,
                     max_chunks: input.max_chunks,
+                    max_chunks_per_source: input.max_chunks_per_source,
                     max_total_tokens: input.max_total_tokens,
                     max_chunk_tokens: input.max_chunk_tokens,
                 };

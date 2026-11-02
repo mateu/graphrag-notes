@@ -59,6 +59,10 @@ impl TokenCounter for ConservativeTokenCounter {
 #[derive(Clone)]
 pub struct AugmentOptions {
     pub max_chunks: usize,
+    /// Prefer at most this many chunks per source URI (None preserves ranking).
+    /// Chunks without a URI are uncapped. If no uncapped candidate fits, relax
+    /// the cap to fill the remaining budget; the cap alone never empties context.
+    pub max_chunks_per_source: Option<usize>,
     pub max_total_tokens: usize,
     pub max_chunk_tokens: usize,
     /// Weight of novelty in greedy MMR-style selection. `0.0` preserves the
@@ -77,6 +81,7 @@ impl fmt::Debug for AugmentOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AugmentOptions")
             .field("max_chunks", &self.max_chunks)
+            .field("max_chunks_per_source", &self.max_chunks_per_source)
             .field("max_total_tokens", &self.max_total_tokens)
             .field("max_chunk_tokens", &self.max_chunk_tokens)
             .field("novelty_weight", &self.novelty_weight)
@@ -91,6 +96,7 @@ impl Default for AugmentOptions {
     fn default() -> Self {
         Self {
             max_chunks: 8,
+            max_chunks_per_source: None,
             max_total_tokens: 1200,
             max_chunk_tokens: 180,
             novelty_weight: 0.25,
@@ -151,6 +157,7 @@ pub struct AugmentDiagnostics {
     pub dropped_near_duplicates: usize,
     pub dropped_for_relevance: usize,
     pub dropped_for_budget: usize,
+    pub dropped_for_source_cap: usize,
     pub dropped_for_entity_filter: usize,
     pub graph_candidates_considered: usize,
     pub graph_candidates_selected: usize,
@@ -173,6 +180,7 @@ pub struct AugmentContext {
     // first augmentation API. New code should use `diagnostics`.
     pub dropped_duplicates: usize,
     pub dropped_for_budget: usize,
+    pub dropped_for_source_cap: usize,
     pub dropped_for_entity_filter: usize,
 }
 
@@ -317,8 +325,14 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
     let mut selected = Vec::new();
     let mut dropped_near_duplicates = 0usize;
     let mut dropped_for_budget = 0usize;
+    let mut capped = Vec::new();
+    let mut relaxing_source_cap = false;
 
-    while !candidates.is_empty() && selected.len() < options.max_chunks {
+    while (!candidates.is_empty() || !capped.is_empty()) && selected.len() < options.max_chunks {
+        if candidates.is_empty() {
+            candidates = std::mem::take(&mut capped);
+            relaxing_source_cap = true;
+        }
         let selected_tokens = selected
             .iter()
             .map(|selected: &SelectedChunk| &selected.full_tokens)
@@ -339,6 +353,10 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             .map(|(index, _)| index)
             .expect("candidates is non-empty");
         let candidate = candidates.swap_remove(next_index);
+        if !relaxing_source_cap && source_is_capped(&candidate, &selected, &options) {
+            capped.push(candidate);
+            continue;
+        }
         let selection = selection_evidence(&candidate, &selected_tokens, options.novelty_weight);
 
         if let Some((matching_result_id, jaccard_similarity)) = selected
@@ -384,12 +402,25 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         });
     }
 
+    // Include unvisited capped candidates in the same diagnostic accounting.
+    let mut remaining = Vec::new();
+    for candidate in candidates {
+        if source_is_capped(&candidate, &selected, &options) {
+            capped.push(candidate);
+        } else {
+            remaining.push(candidate);
+        }
+    }
+    let dropped_for_source_cap = capped.len();
+    exclusions.extend(capped.into_iter().map(|candidate| {
+        candidate.explanation(crate::InclusionReason::SourceCap)
+    }));
     let chunks = selected
         .into_iter()
         .map(|selected| selected.chunk)
         .collect::<Vec<_>>();
     exclusions.extend(
-        candidates
+        remaining
             .into_iter()
             .map(|candidate| candidate.explanation(crate::InclusionReason::DiagnosticLimit)),
     );
@@ -406,6 +437,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         dropped_near_duplicates,
         dropped_for_relevance,
         dropped_for_budget,
+        dropped_for_source_cap,
         dropped_for_entity_filter,
         graph_candidates_considered: graph_summary.candidates_considered,
         graph_candidates_selected: chunks.iter().filter(|chunk| chunk.graph.is_some()).count(),
@@ -422,6 +454,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         total_tokens,
         dropped_duplicates,
         dropped_for_budget,
+        dropped_for_source_cap,
         dropped_for_entity_filter,
         diagnostics,
     }
@@ -442,6 +475,7 @@ pub(crate) fn empty_context(
         dropped_near_duplicates: 0,
         dropped_for_relevance: 0,
         dropped_for_budget: 0,
+        dropped_for_source_cap: 0,
         dropped_for_entity_filter,
         graph_candidates_considered: graph_summary.candidates_considered,
         // Retrieval may have selected graph hits before the packer runs, but
@@ -460,9 +494,22 @@ pub(crate) fn empty_context(
         total_tokens: 0,
         dropped_duplicates: 0,
         dropped_for_budget: 0,
+        dropped_for_source_cap: 0,
         dropped_for_entity_filter,
         diagnostics,
     }
+}
+
+fn source_is_capped(
+    candidate: &Candidate,
+    selected: &[SelectedChunk],
+    options: &AugmentOptions,
+) -> bool {
+    candidate.hit.source_uri.as_ref().is_some_and(|uri| {
+        options.max_chunks_per_source.is_some_and(|cap| {
+            selected.iter().filter(|item| item.chunk.source_uri.as_ref() == Some(uri)).count() >= cap
+        })
+    })
 }
 
 #[derive(Debug)]
@@ -1600,6 +1647,65 @@ mod tests {
             max_chunk_tokens: 30,
             ..Default::default()
         }
+    }
+
+    fn source_cap_fixture(cap: Option<usize>, other_source: bool) -> AugmentContext {
+        let mut hits = vec![
+            hit("note:a", 1.0, "alpha first evidence"),
+            hit("note:b", 0.9, "bravo second details"),
+        ];
+        for hit in &mut hits {
+            hit.source_uri = Some("source:one".into());
+        }
+        if other_source {
+            let mut other = hit("note:c", 0.8, "charlie supporting facts");
+            other.source_uri = Some("source:two".into());
+            hits.push(other);
+        }
+        build_augment_context_from_hits(
+            "query".into(), SearchScope::Notes, None, hits,
+            AugmentOptions {
+                max_chunks: 2,
+                max_chunks_per_source: cap,
+                novelty_weight: 0.0,
+                max_total_tokens: 1000,
+                ..options()
+            }, 0,
+        )
+    }
+
+    #[test]
+    fn source_cap_displaces_same_source_and_explains_exclusion() {
+        let context = source_cap_fixture(Some(1), true);
+        assert_eq!(context.chunks.iter().map(|chunk| chunk.id.as_str()).collect::<Vec<_>>(), vec!["note:a", "note:c"]);
+        assert_eq!(context.diagnostics.dropped_for_source_cap, 1);
+        assert_eq!(context.dropped_for_source_cap, 1);
+        assert!(context.exclusions.iter().any(|item| item.result_id == "note:b" && item.inclusion == crate::InclusionReason::SourceCap));
+    }
+
+    #[test]
+    fn unset_source_cap_preserves_selection() {
+        let context = source_cap_fixture(None, true);
+        assert_eq!(context.chunks.iter().map(|chunk| chunk.id.as_str()).collect::<Vec<_>>(), vec!["note:a", "note:b"]);
+        assert_eq!(context.diagnostics.dropped_for_source_cap, 0);
+    }
+
+    #[test]
+    fn source_cap_relaxes_when_only_same_source_candidates_remain() {
+        let context = source_cap_fixture(Some(1), false);
+        assert_eq!(context.chunks.len(), 2);
+        assert_eq!(context.diagnostics.dropped_for_source_cap, 0);
+    }
+
+    #[test]
+    fn missing_source_uris_are_not_capped() {
+        let context = build_augment_context_from_hits(
+            "query".into(), SearchScope::Notes, None,
+            vec![hit("note:a", 1.0, "alpha evidence"), hit("note:b", 0.9, "bravo details")],
+            AugmentOptions { max_chunks_per_source: Some(1), max_total_tokens: 1000, ..options() }, 0,
+        );
+        assert_eq!(context.chunks.len(), 2);
+        assert_eq!(context.diagnostics.dropped_for_source_cap, 0);
     }
 
     #[test]
