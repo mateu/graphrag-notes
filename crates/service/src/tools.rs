@@ -529,16 +529,32 @@ impl ServerHandler for ToolService {
         let id = context.id.clone();
         let started = std::time::Instant::now();
         let principal_id = principal(&context).map(|p| p.instance_id.clone()).ok();
-        let tool = request.name.to_string();
+        // Client-supplied names outside the catalog are never logged verbatim.
+        let tool = catalog()
+            .into_iter()
+            .find(|(_, tool)| tool.name == request.name)
+            .map_or_else(|| "unknown".to_string(), |(_, tool)| tool.name.to_string());
         let arguments = request.arguments.clone();
-        let result = self.dispatch_tool(request, context).await;
+        let result = self.finish_tool_call(id, request, context).await;
+        // Record the final response, after the complete-RPC size check.
         crate::usage::record(
             principal_id.as_deref().unwrap_or("unauthenticated"),
             &tool,
             started.elapsed().as_secs_f64() * 1000.0,
             &crate::usage::summarize(&tool, arguments.as_ref(), &result),
         );
-        let result = result?;
+        result
+    }
+}
+
+impl ToolService {
+    async fn finish_tool_call(
+        &self,
+        id: rmcp::model::RequestId,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let result = self.dispatch_tool(request, context).await?;
         // Serialize the exact SDK response model, including the echoed RPC ID.
         // The HTTP transport adds no further JSON body fields.
         let response = rmcp::model::JsonRpcResponse {
