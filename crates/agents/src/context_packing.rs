@@ -1726,6 +1726,41 @@ mod tests {
     }
 
     #[test]
+    fn source_cap_relaxes_when_other_source_cannot_fit() {
+        let mut first = hit("note:a", 1.0, "alpha first evidence");
+        first.source_uri = Some("source:one".into());
+        let mut second = hit("note:b", 0.9, "bravo second details");
+        second.source_uri = first.source_uri.clone();
+        let mut other = hit("note:c", 0.8, "charlie supporting facts");
+        other.source_uri = Some("source:two".into());
+        other.title = Some("unfittable header ".repeat(1000));
+        let context = build_augment_context_from_hits(
+            "query".into(),
+            SearchScope::Notes,
+            None,
+            vec![first, second, other],
+            AugmentOptions {
+                max_chunks: 2,
+                max_chunks_per_source: Some(1),
+                novelty_weight: 0.0,
+                max_total_tokens: 1000,
+                ..options()
+            },
+            0,
+        );
+        assert_eq!(
+            context
+                .chunks
+                .iter()
+                .map(|chunk| chunk.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["note:a", "note:b"]
+        );
+        assert_eq!(context.diagnostics.dropped_for_budget, 1);
+        assert_eq!(context.diagnostics.dropped_for_source_cap, 0);
+    }
+
+    #[test]
     fn missing_source_uris_are_not_capped() {
         let context = build_augment_context_from_hits(
             "query".into(),
