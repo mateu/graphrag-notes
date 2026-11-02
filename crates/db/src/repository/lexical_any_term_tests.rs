@@ -38,3 +38,18 @@ async fn keyword_search_falls_back_to_any_term_bm25_without_displacing_all_term_
     assert!(results.iter().all(|result| result.fts_score.is_some()));
     assert!(results[1].fts_score.unwrap() > results[2].fts_score.unwrap());
 }
+
+#[tokio::test]
+async fn keyword_fallback_does_not_count_substrings_as_extra_terms() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    repo.create_note(Note::new("memory asynchronous"))
+        .await
+        .unwrap();
+
+    let results = repo
+        .fulltext_search("memory sync recovery", 10)
+        .await
+        .unwrap();
+
+    assert!(results.is_empty());
+}

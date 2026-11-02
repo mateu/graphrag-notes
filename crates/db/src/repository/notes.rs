@@ -1153,7 +1153,7 @@ impl Repository {
                     "@0,OR@",
                     "@1,OR@",
                     "@2,OR@",
-                    "AND array::len(array::filter($terms, |$term| string::contains(string::lowercase(search_content ?? ''), $term) OR string::contains(string::lowercase(content), $term) OR string::contains(string::lowercase(title ?? ''), $term))) >= 2",
+                    "AND array::len(array::filter($terms, |$term| string::contains(string::concat(' ', string::trim(string::replace(string::lowercase(search_content ?? ''), <regex>\"[^\\\\p{L}\\\\p{N}]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::lowercase(content), <regex>\"[^\\\\p{L}\\\\p{N}]+\", ' ')), ' '), string::concat(' ', $term, ' ')) OR string::contains(string::concat(' ', string::trim(string::replace(string::lowercase(title ?? ''), <regex>\"[^\\\\p{L}\\\\p{N}]+\", ' ')), ' '), string::concat(' ', $term, ' ')))) >= 2",
                 )
             } else {
                 ("@0@", "@1@", "@2@", "")
