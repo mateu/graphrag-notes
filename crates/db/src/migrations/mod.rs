@@ -457,6 +457,80 @@ fn migration_failed(migration: Migration, error: impl std::fmt::Display) -> DbEr
     }
 }
 
+/// Historical-schema constructors, excluded from normal production builds.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use super::{apply_migrations, DbConnection, DbError, Result, MIGRATIONS};
+    use surrealdb::engine::local::Mem;
+    use surrealdb::Surreal;
+    use uuid::Uuid;
+
+    /// Create a fresh, isolated database with only the registered migrations
+    /// through `version`. Later definitions have never been installed, so
+    /// production initialization can apply them even when they use plain DEFINE.
+    pub async fn init_memory_at_version(version: u32) -> Result<DbConnection> {
+        let prefix_len = MIGRATIONS.partition_point(|migration| migration.version <= version);
+        if version != 0
+            && MIGRATIONS[..prefix_len]
+                .last()
+                .map(|migration| migration.version)
+                != Some(version)
+        {
+            return Err(DbError::UnsupportedSchemaVersion {
+                version,
+                latest: super::latest_version(),
+            });
+        }
+        let db = DbConnection::new(Surreal::new::<Mem>(()).await?);
+        let namespace = format!("graphrag_fixture_{}", Uuid::new_v4().simple());
+        db.use_ns(namespace).use_db("notes").await?;
+        apply_migrations(&db, &MIGRATIONS[..prefix_len]).await?;
+        Ok(db)
+    }
+
+    /// Seed a small historical fixture from typed logical records, retaining
+    /// only top-level fields defined by its actual schema. This is deliberately not the
+    /// production portable restore, which synthesizes latest-schema authority.
+    pub async fn copy_fixture_records(source: &DbConnection, target: &DbConnection) -> Result<()> {
+        let schema = target
+            .query("INFO FOR DB")
+            .await?
+            .take::<Option<serde_json::Value>>(0)?
+            .ok_or_else(|| DbError::SchemaInit("missing fixture database schema".into()))?;
+        let tables = schema["tables"].as_object().ok_or_else(|| {
+            DbError::SchemaInit("fixture database has no table definitions".into())
+        })?;
+        for table in crate::PORTABLE_TABLES {
+            if !tables.contains_key(*table) {
+                continue;
+            }
+            let info = target
+                .query(format!("INFO FOR TABLE {table}"))
+                .await?
+                .take::<Option<serde_json::Value>>(0)?
+                .ok_or_else(|| DbError::SchemaInit(format!("missing fixture table {table}")))?;
+            let fields = info["fields"].as_object().ok_or_else(|| {
+                DbError::SchemaInit(format!("fixture table {table} has no field definitions"))
+            })?;
+            let mut records: Vec<surrealdb_types::Object> = source
+                .query(format!("SELECT * FROM {table}"))
+                .await?
+                .take(0)?;
+            for record in &mut records {
+                record.retain(|field, _| field == "id" || fields.contains_key(field));
+            }
+            if !records.is_empty() {
+                target
+                    .query(format!("INSERT INTO {table} $records"))
+                    .bind(("records", records))
+                    .await?
+                    .check()?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +544,97 @@ mod tests {
         let db = Surreal::new::<Mem>(()).await.unwrap();
         db.use_ns("graphrag").use_db("notes").await.unwrap();
         DbConnection::new(db)
+    }
+
+    #[tokio::test]
+    async fn historical_fixture_latest_minus_one_upgrades_without_redefining_objects() {
+        // Keep this relative to the registry: a new plain-DEFINE migration must
+        // be absent from the fixture, not removed by another hand-written list.
+        let previous = MIGRATIONS[MIGRATIONS.len() - 2].version;
+        let db = test_support::init_memory_at_version(previous)
+            .await
+            .unwrap();
+        assert_eq!(current_version(&db).await.unwrap(), previous);
+        assert_eq!(
+            applied_migrations(&db).await.unwrap().len(),
+            MIGRATIONS.len() - 1
+        );
+        db.query("CREATE note:historical SET content = 'older corpus';")
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+
+        for _ in 0..2 {
+            crate::schema::initialize_schema(&db).await.unwrap();
+        }
+        assert_eq!(current_version(&db).await.unwrap(), latest_version());
+        assert_eq!(
+            applied_migrations(&db).await.unwrap().len(),
+            MIGRATIONS.len()
+        );
+        let content: Vec<String> = db
+            .query("SELECT VALUE content FROM note:historical")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(content, ["older corpus"]);
+    }
+
+    #[tokio::test]
+    async fn historical_fixture_copy_preserves_typed_data_without_later_fields_or_tables() {
+        let source = test_support::init_memory_at_version(latest_version())
+            .await
+            .unwrap();
+        source.query("CREATE source:historical SET source_type = 'manual', status = 'ready', title = 'kept'; CREATE note:historical SET content = 'older corpus', source_id = source:historical;")
+            .await.unwrap().check().unwrap();
+        let before: Vec<serde_json::Value> = source
+            .query("SELECT source_id, created_at FROM note:historical")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let target = test_support::init_memory_at_version(1).await.unwrap();
+        test_support::copy_fixture_records(&source, &target)
+            .await
+            .unwrap();
+        assert_eq!(current_version(&target).await.unwrap(), 1);
+        let sources: Vec<serde_json::Value> = target
+            .query("SELECT * FROM source:historical")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0]["title"], "kept");
+        assert!(sources[0]
+            .get("status")
+            .is_none_or(serde_json::Value::is_null));
+        crate::schema::initialize_schema(&target).await.unwrap();
+        let after: Vec<serde_json::Value> = target
+            .query("SELECT source_id, created_at FROM note:historical")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn historical_fixture_boundaries_are_validated_and_namespaces_are_isolated() {
+        let empty = test_support::init_memory_at_version(0).await.unwrap();
+        assert_eq!(current_version(&empty).await.unwrap(), 0);
+        let latest = test_support::init_memory_at_version(latest_version())
+            .await
+            .unwrap();
+        assert_eq!(current_version(&latest).await.unwrap(), latest_version());
+        // These clients must not share even their migration history.
+        assert_eq!(current_version(&empty).await.unwrap(), 0);
+        assert!(matches!(
+            test_support::init_memory_at_version(latest_version() + 1).await,
+            Err(DbError::UnsupportedSchemaVersion { .. })
+        ));
     }
 
     #[tokio::test]
