@@ -243,25 +243,25 @@ Do not register a runner, create/change the Environment, alter repository or
 branch protection settings, or modify the live service as part of this PR.
 The owner must separately approve and perform these steps **before use**:
 
-1. Create/protect the `fam-production` GitHub Environment. Require a trusted
-   human reviewer, prevent self-review, disallow protection-rule bypass, and
+1. Create/protect the `fam-production` GitHub Environment. Require reviewer
+   `mateu`, prevent self-review, disallow protection-rule bypass, and
    allow deployments from **selected branch `main` only**, not tags. Verify
    these settings before registering the runner: merely referencing an
    Environment in YAML does not establish protection. Approval is required
    for dry runs as well as migrations. Review the SHA, workflow revision,
    migration/rehearsal plan and rollback readiness before approving.
-2. Create a dedicated runner group `fam-production`, restricted to this
-   repository and the selected workflow
-   `mateu/graphrag-notes/.github/workflows/deploy-fam.yml@refs/heads/main`.
-   No PR, fork, branch, or other workflow may use it. Labels are routing, **not
-   authorization**: repository scoping alone does not block another workflow
-   in this repository. Workflow-level group restrictions require appropriate
-   GitHub organization/enterprise support. If this personal repository or
-   plan cannot enforce them, **leave the runner unregistered and the workflow
-   inactive**; obtain owner approval for an enforceable hosting/isolation
-   design first. Do not substitute a broadly accessible runner or relax this
-   requirement. Audit all existing runner groups/workflows for overlapping
-   access before activation.
+2. Target the runner with labels `[self-hosted, macOS, fam-graphrag-deploy]`.
+   Runner groups are organization-only and are not available to this personal
+   repository owned by `mateu`. Labels are routing, **not authorization**.
+   Register the runner **only to `mateu/graphrag-notes`**, never to another
+   repository or as a shared runner. The deploy job only runs on
+   `refs/heads/main`; the `fam-production` Environment must require reviewer
+   `mateu` and allow main-only deployments. These are compensating controls,
+   not workflow-level runner isolation: repository scoping alone does not
+   block another workflow in this repository. Audit all workflows before
+   activation and after workflow changes so only the approved deployment
+   workflow targets these labels. Fork PR workflows must never run on this
+   runner; keep all PR checks on hosted runners.
 3. On fam, install a checksum-verified GitHub Actions runner from the official
    runner download instructions into a dedicated directory, never the service
    checkout/state directory. Use a dedicated, non-admin deployment account,
@@ -277,18 +277,19 @@ The owner must separately approve and perform these steps **before use**:
    YAML/logs. Rotate it by replacing the Environment secret and revoking the
    old service credential through the separately approved credential runbook.
 4. With a short-lived registration token supplied interactively (never saved
-   in docs/logs), configure `./config.sh` for this repository, runner group
-   `fam-production`, and custom label `fam-graphrag-deploy`. Retain the default
+   in docs/logs), configure `./config.sh` for this repository only, with
+   custom label `fam-graphrag-deploy`. Retain the default
    `self-hosted` and `macOS` labels. Install/start its service using the
    platform runner instructions under the approved account. Do not enable
    runner access for public forks or PR workflows. Keep the runner's workspace
    separate from the deploy script's managed checkout. Pin/verify runner
    upgrades and keep macOS/build tools patched.
-5. Inspect Environment and group policy in GitHub, then approve one explicit
-   dry-run dispatch. Confirm an invalid/non-main SHA fails in the hosted
+5. Inspect Environment policy and repository-only runner registration in GitHub,
+   then approve one explicit dry-run dispatch. Confirm an invalid/non-main SHA fails in the hosted
    validator without reaching fam, branch dispatches skip both jobs, and a
    valid main SHA waits for Environment review before the runner starts.
-   Confirm a different workflow cannot select the group. Do not weaken
+   Confirm no other workflow targets the deployment runner labels, including
+   fork PR workflows. Do not weaken
    protection to run these checks. A live cutover needs separate owner
    approval after reviewing the dry-run evidence.
 
@@ -344,10 +345,10 @@ active deployment to finish; inspect the script lock and service health first.
 Use GitHub's short-lived removal token with `./config.sh remove`, uninstall the
 old runner service per the macOS instructions, remove its GitHub registration,
 and securely remove its credentials/work directory. Re-register the replacement
-with a fresh token and exactly the same restricted group/labels; recheck policy
-and repeat the approved dry run. Rotate any host probe or read-only Git
+with a fresh token and the same repository-only registration and labels;
+recheck policy and repeat the approved dry run. Rotate any host probe or read-only Git
 credential it could access. For permanent removal, also disable the deployment
-workflow and retain Environment/group protection until access is revoked.
+workflow and retain Environment protection until access is revoked.
 
 For suspected compromise, immediately revoke runner access and exposed tokens,
 block new approvals/dispatches, and preserve runner audit logs and run IDs.
@@ -356,8 +357,9 @@ failed databases and lock state using the script's recovery runbook. Never
 blindly delete a lock, rerun a failed deployment, point the old binary at a
 migrated database, or restore from an unverified backup. Preserve evidence and
 obtain owner authorization before recovery changes. Rebuild the runner from
-trusted media, rotate all reachable credentials, audit group/Environment rules
-and workflow revisions, and repeat dry-run qualification before reactivation.
+trusted media, rotate all reachable credentials, audit repository-only runner
+registration, Environment rules and workflow revisions, and repeat dry-run
+qualification before reactivation.
 
 ### Workflow lint (no production access)
 
