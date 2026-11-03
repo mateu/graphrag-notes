@@ -2920,3 +2920,184 @@ async fn graph_entity_reextraction_replaces_mention_evidence() {
         .unwrap();
     assert!(stale.is_empty());
 }
+
+/// #216: staged contained-phrase evaluation must return exactly the full
+/// evaluation's page. The fixture spans several stages, a hub entity, many
+/// same-spelling duplicates sharing endpoints, a hidden alias that inflates
+/// one candidate's bound, ties at every stage boundary, and every scope.
+#[tokio::test]
+async fn graph_phrase_staging_matches_full_evaluation_for_hubs_duplicates_and_ties() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let owner = source(&repo, "staging", "fixture://staging").await;
+    let mut visible = Vec::new();
+    for index in 0..12 {
+        visible.push(
+            note(
+                &repo,
+                RecordId::new("note", format!("staging-visible-{index:02}")),
+                Some(owner.clone()),
+                Some(1),
+                timestamp(),
+            )
+            .await,
+        );
+    }
+    let hidden = note(
+        &repo,
+        RecordId::new("note", "staging-hidden"),
+        Some(owner.clone()),
+        Some(2),
+        timestamp(),
+    )
+    .await;
+    let ranked = note(
+        &repo,
+        RecordId::new("note", "staging-ranked"),
+        Some(owner),
+        Some(1),
+        timestamp(),
+    )
+    .await;
+    // Same-spelling duplicates: many entities share one canonical name and
+    // alias and point at a few shared endpoints.
+    for index in 0..150 {
+        let entity = alias_entity(&repo, &format!("dup-{index:03}"), "Kestrel", true).await;
+        alias_mention(
+            &repo,
+            &visible[index % 3],
+            &entity,
+            serde_json::json!({"aliases": ["Kestrel", "kestrel"]}),
+        )
+        .await;
+    }
+    // The tie that only a later stage can win: same specificity, but the
+    // only ranked direct mention, and last in candidate order.
+    let late = alias_entity(&repo, "zz-ranked", "Kestrel", true).await;
+    alias_mention(
+        &repo,
+        &ranked,
+        &late,
+        serde_json::json!({"aliases": ["Kestrel"]}),
+    )
+    .await;
+    // A hub: one entity mentioned by every visible note.
+    let hub = alias_entity(&repo, "hub", "Canary", true).await;
+    for endpoint in &visible {
+        alias_mention(
+            &repo,
+            endpoint,
+            &hub,
+            serde_json::json!({"aliases": ["Canary"]}),
+        )
+        .await;
+    }
+    // A hidden mention's long alias inflates this candidate's bound only.
+    let inflated = alias_entity(&repo, "inflated", "Rollout", true).await;
+    alias_mention(
+        &repo,
+        &visible[5],
+        &inflated,
+        serde_json::json!({"aliases": []}),
+    )
+    .await;
+    alias_mention(
+        &repo,
+        &hidden,
+        &inflated,
+        serde_json::json!({"aliases": ["Kestrel Boundary Canary Rollout"]}),
+    )
+    .await;
+    // Visible only through a hidden endpoint: never matches.
+    let invisible = alias_entity(&repo, "invisible", "Kestrel Boundary", true).await;
+    alias_mention(
+        &repo,
+        &hidden,
+        &invisible,
+        serde_json::json!({"aliases": []}),
+    )
+    .await;
+    let legacy = alias_entity(&repo, "legacy", "Boundary Canary", false).await;
+    alias_mention(&repo, &visible[7], &legacy, serde_json::json!({})).await;
+
+    let query = "what did the kestrel boundary canary rollout show";
+    let late_ranked = [ranked.clone()];
+    for ranked_ids in [&[][..], &late_ranked[..]] {
+        for (since, uri) in [
+            (None, None),
+            (Some(timestamp() - chrono::Duration::seconds(1)), None),
+            (Some(timestamp() + chrono::Duration::seconds(1)), None),
+            (None, Some("fixture://staging".to_string())),
+            (None, Some("fixture://elsewhere".to_string())),
+        ] {
+            for limit in [1, 2, 4, 63, 64, 65, 200] {
+                let expected = repo
+                    .find_graph_entities_original_alias_order(
+                        query,
+                        limit,
+                        Some(ranked_ids),
+                        since,
+                        uri.clone(),
+                    )
+                    .await
+                    .unwrap();
+                let actual = repo
+                    .find_graph_entities_for_search(query, limit, ranked_ids, since, uri.clone())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    serde_json::to_value(&actual).unwrap(),
+                    serde_json::to_value(&expected).unwrap(),
+                    "ranked={}, since={since:?}, uri={uri:?}, limit={limit}",
+                    ranked_ids.len()
+                );
+            }
+        }
+    }
+    // The longer legacy phrase leads; among the 151 equal `kestrel`
+    // candidates the last-evaluated one wins only by its direct rank.
+    // Repetition never changes the page.
+    let first = repo
+        .find_graph_entities_for_search(query, 2, &late_ranked, None, None)
+        .await
+        .unwrap();
+    assert_eq!(first[0].id, legacy);
+    assert_eq!(first[1].id, late);
+    for _ in 0..3 {
+        let again = repo
+            .find_graph_entities_for_search(query, 2, &late_ranked, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&again).unwrap(),
+            serde_json::to_value(&first).unwrap()
+        );
+    }
+    // An unsafe mention shape anywhere among the candidates keeps the
+    // authoritative per-entity path, also when it is the last candidate.
+    alias_mention(
+        &repo,
+        &visible[9],
+        &late,
+        serde_json::json!({"aliases": "Kestrel"}),
+    )
+    .await;
+    // The original contract surfaces this alias coercion error; the staged
+    // path must neither hide it nor return a partial page instead.
+    let outcome = |result: Result<Vec<GraphEntityMatch>>| match result {
+        Ok(rows) => Ok(serde_json::to_value(rows).unwrap()),
+        Err(error) => Err(error.to_string()),
+    };
+    for limit in [1, 4, 200] {
+        let expected = repo
+            .find_graph_entities_original_alias_order(query, limit, Some(&late_ranked), None, None)
+            .await;
+        let actual = repo
+            .find_graph_entities_for_search(query, limit, &late_ranked, None, None)
+            .await;
+        assert_eq!(
+            outcome(actual),
+            outcome(expected),
+            "unsafe shape, limit={limit}"
+        );
+    }
+}

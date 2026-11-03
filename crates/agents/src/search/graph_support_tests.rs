@@ -834,3 +834,117 @@ fn reviewed_strength_never_calibrates_above_its_anchor() {
         }
     }
 }
+
+/// Packed chunk IDs, score bits and tokens: a byte-stable context summary.
+fn packed(context: &AugmentContext) -> (Vec<(String, u32)>, usize) {
+    (
+        context
+            .chunks
+            .iter()
+            .map(|chunk| (chunk.id.clone(), chunk.score.to_bits()))
+            .collect(),
+        context.total_tokens,
+    )
+}
+
+/// #216 hub negative: a query entity mentioned by many notes contributes
+/// only weak hop-0 mention seeds. None of them enters the fixed budget,
+/// graph-off is unchanged, and the result is deterministic.
+///
+/// Known limitation, recorded rather than fixed here: such a hub fills the
+/// `max_seed_notes` frontier before hybrid anchors are added, so a reviewed
+/// neighbor of a retrieved anchor is not traversed while the hub is matched.
+#[tokio::test]
+async fn hub_entity_mention_seeds_stay_out_of_the_fixed_budget() {
+    let corpus = corpus(8).await;
+    let support = lexical_note(
+        &corpus.repo,
+        "Kestrel canary boundary detail with the exact head and coverage numbers",
+    )
+    .await;
+    link_entity(&corpus.repo, &support, "Kestrel").await;
+    accept(
+        &corpus.repo,
+        &corpus.anchor,
+        &support,
+        EdgeType::DerivedFrom,
+    )
+    .await;
+    let search = agent(&corpus.repo, GraphRetrievalConfig::default());
+    let off_before = context(&search, fixed_budget(2), GraphMode::Off).await;
+    let mut hub_notes = Vec::new();
+    for index in 0..40 {
+        let note = lexical_note(
+            &corpus.repo,
+            &format!("release train checklist item {index}"),
+        )
+        .await;
+        link_entity(&corpus.repo, &note, "Canary").await;
+        hub_notes.push(id(&note));
+    }
+
+    let off = context(&search, fixed_budget(2), GraphMode::Off).await;
+    assert_eq!(packed(&off), packed(&off_before));
+    let on = context(&search, fixed_budget(2), GraphMode::On).await;
+    assert!(on.total_tokens <= 1000);
+    assert!(on.chunks.iter().all(|chunk| !hub_notes.contains(&chunk.id)));
+    assert_eq!(on.chunks[0].id, id(&corpus.anchor));
+    assert_eq!(on.diagnostics.graph_candidates_added, 0);
+    assert!(
+        on.diagnostics.graph_candidates_considered
+            <= GraphRetrievalConfig::default().max_seed_notes + 1
+    );
+    let on_again = context(&search, fixed_budget(2), GraphMode::On).await;
+    assert_eq!(packed(&on_again), packed(&on));
+}
+
+/// #216 duplicate negative: many same-spelling entity records (one per
+/// extraction) for the query term all mention near-copies of one note. They
+/// share the bounded entity page with the reviewed support's entity and
+/// never displace it or enter the budget.
+#[tokio::test]
+async fn duplicate_entity_records_do_not_crowd_out_reviewed_support() {
+    let corpus = corpus(8).await;
+    let support = lexical_note(
+        &corpus.repo,
+        "Kestrel canary boundary detail with the exact head and coverage numbers",
+    )
+    .await;
+    link_entity(&corpus.repo, &support, "Kestrel").await;
+    accept(
+        &corpus.repo,
+        &corpus.anchor,
+        &support,
+        EdgeType::DerivedFrom,
+    )
+    .await;
+    let mut copies = Vec::new();
+    for index in 0..30 {
+        let copy = lexical_note(&corpus.repo, "boundary rollout copy of a checklist").await;
+        let mut entity = Entity::new("Boundary", EntityType::Project);
+        entity.identity_key = Some(format!("extracted-v1:fixture-boundary-{index:02}"));
+        entity.metadata = serde_json::json!({});
+        let entity = corpus.repo.upsert_entity(entity).await.unwrap();
+        corpus
+            .repo
+            .link_note_to_entity(copy.id.as_ref().unwrap(), entity.id.as_ref().unwrap())
+            .await
+            .unwrap();
+        copies.push(id(&copy));
+    }
+    let search = agent(&corpus.repo, GraphRetrievalConfig::default());
+    let (anchor_id, support_id) = (id(&corpus.anchor), id(&support));
+
+    let off = context(&search, fixed_budget(2), GraphMode::Off).await;
+    let on = context(&search, fixed_budget(2), GraphMode::On).await;
+    assert_eq!(
+        chunk_ids(&off),
+        vec![anchor_id.clone(), id(&corpus.fillers[0])]
+    );
+    assert_eq!(chunk_ids(&on), vec![anchor_id, support_id]);
+    assert!(on.chunks.iter().all(|chunk| !copies.contains(&chunk.id)));
+    assert!(on.total_tokens <= 1000);
+    // Deterministic across repeated runs, including the tie-heavy entity page.
+    let again = context(&search, fixed_budget(2), GraphMode::On).await;
+    assert_eq!(packed(&again), packed(&on));
+}
