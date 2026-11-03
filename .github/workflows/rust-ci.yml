@@ -143,6 +143,8 @@ jobs:
         run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::graph_retrieval_batch_tests::edge_batches_preserve_pre_limit_filters_direction_confidence_cycles_and_sources
       - name: Provenance membership index and upgrade plans
         run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::provenance_index_tests::provenance_membership_indexes_preserve_upgrade_and_fresh_results --nocapture
+      - name: Exact-vector scan exception and filtered exactness
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::exact_vector_plan_policy_tests::exact_vector_scan_exception_preserves_plans_and_filtered_top_k --nocapture
       - name: Compare deterministic fixture with tests/baselines/retrieval-v1.json
         run: python3 scripts/run-exact-rust-test.py -p graphrag-cli --bin graphrag --test-name eval::tests::committed_retrieval_fixture_matches_versioned_baseline --nocapture
 

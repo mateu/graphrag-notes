@@ -266,3 +266,14 @@ full-scan at the unchanged base. Therefore the current subset guards do not
 satisfy universal AC-1; this delivery is **not delivery-ready** until that scope
 conflict is resolved. The ignored scan diagnostic is evidence, not a passing
 plan-regression test. See the inventory for each status.
+
+## Exact-vector plan exception (#191)
+
+The retrieval lane also runs the named non-ignored
+`repository::exact_vector_plan_policy_tests::exact_vector_scan_exception_preserves_plans_and_filtered_top_k`
+guard on every PR/main push. [The explicit policy](exact-vector-plan-policy.md)
+allows only the three exact-vector table scans; it pins their known
+KnnTopK/TableScan shapes and independently verifies filtered exact results.
+It must not be reported as indexed/no-scan coverage. A changed access path
+requires exactness qualification and policy review. Other hot paths retain
+the indexed/no-scan requirement.
