@@ -263,3 +263,117 @@ Use `graphrag folders add NAME PATH`, `graphrag sync NAME --dry-run`, then
 `graphrag sync NAME` for explicit folder ingestion. See [folder sync](folder-sync.md)
 for include/exclude rules, durable resume, missing-file previews, and confirmed
 pruning that preserves manual notes.
+
+## Human-initiated fam deployments
+
+[`scripts/deploy-fam.sh`](../scripts/deploy-fam.sh) versions the fam recipe. It
+**does not deploy on merge**, provision a runner, or change the service plist or
+configuration. Production use remains a separately authorized operator action.
+It needs macOS launchd, Python 3.9+, Git, the pinned Rust toolchain under
+`~/.cargo/bin`, and an already running, quiesced service (all durable jobs must
+be completed). Never enable shell tracing or put a token on the command line.
+
+```bash
+# Inherit GRAPHRAG_TOKEN from the operator's environment/secret manager.
+# Supply a full commit already reachable from origin/main, never a tag/short SHA.
+scripts/deploy-fam.sh FULL_40_CHARACTER_SHA --dry-run
+scripts/deploy-fam.sh FULL_40_CHARACTER_SHA
+```
+
+Defaults: source repository `~/dev/graphrag-notes`, state `~/.graphrag/shared`,
+label `com.hunter.graphrag.shared`, plist in `~/Library/LaunchAgents`, service
+port **31057**, rehearsal port **31201**. `--help` lists scratch overrides
+(`--state`, `--repo`, `--label`, `--plist`, `--port`, `--rehearsal-port`, `--backup`,
+`--query`). The plist must match the exact binary/config/database/loopback port
+selected; it is read, never rewritten. Credentials come from the existing
+plist's credential file for the service and inherited `GRAPHRAG_TOKEN` for read
+probes. They are not copied into backups, command arguments, reports or logs.
+Child output (which can include private data) is captured but never rendered or
+persisted by the deploy tool. Command names, exit codes and timings are recorded.
+
+The dry run is read-only, checks **cached** `origin/main`, current service,
+verified vector-inclusive backup and disk capacity; it neither fetches nor
+builds nor stops anything. Real deployment fetches fail-closed and verifies both
+requested and deployed commits' ancestry. A private detached build worktree
+leaves the source checkout unchanged; its HEAD must equal the requested SHA.
+Builds use `RUSTC_WRAPPER= CARGO_BUILD_JOBS=2 nice -n 10 cargo build --release
+--locked -p graphrag-cli`. Check `uptime` before running on fam. The script records
+the actual toolchain and binary SHA256. Repeating a successful exact SHA with
+its matching installed binary is a no-op.
+
+A verified portable seed with embeddings is required **before stopping** the
+service. The default is the prior deployment's `pre_deploy_backups.portable`;
+`--backup` selects another old-binary-compatible archive. If migration files
+differ, the candidate must restore this seed into a temporary DB, reach the
+expected schema, preserve every per-table count, and pass authenticated keyword,
+hybrid graph-on search and `build_context` on a separate loopback port. The
+rehearsal process, restored DB and temporary archive are removed on success or
+failure. It refuses unfinished jobs, to prevent validation from starting work.
+The current live DB is never opened by rehearsal.
+
+After preflight/rehearsal pass, cutover joins the old process after `bootout`,
+verifies a byte-for-byte cold copy, and creates/verifies a **fresh** portable
+backup with embeddings from the stopped database. A fresh backup failure
+restarts the old binary without installing the candidate. This offline capture
+necessarily occurs after stop; the already verified seed is the pre-stop gate.
+The candidate is installed as `bin/graphrag.<sha7>` with an atomic active-binary
+replacement. The previous binary and JSON remain versioned. Offline schema and
+post-migration archive counts must match, then launchd readiness and all three
+authenticated read probes must pass. The log gate's byte offset is captured
+**after the old PID exits, before candidate bootstrap**: old shutdown cancellation
+ERRORs are excluded; any candidate-window ERROR fails. Missing/truncated logs fail
+closed. Log files must not rotate during the cutover.
+
+### Recovery and retention
+
+The atomic `deploy.lock` is held from preflight through recovery. Never remove a
+lock because it looks old: identify the PID/owner and reconcile service/database
+ownership first. A stopped or otherwise non-running service is refused as a
+possible interrupted deployment. No automatic retry is attempted.
+
+* Before any candidate DB-opening attempt: restore the old binary and restart;
+  the database has not crossed the candidate boundary.
+* After any candidate DB-opening attempt (including a failed command): stop and
+  join the candidate; use the **previous binary** to restore the verified fresh
+  portable backup into a nonexistent location. Re-export/verify restored counts,
+  move the failed database aside, then swap the fresh restore into `database`.
+  Only then install/start the old binary and restore its deployment JSON.
+* If the candidate cannot be proven stopped, restoration fails, or counts differ,
+  recovery fails closed. Reconcile launchd/PID ownership and the backup evidence
+  manually before taking any further action. Do not launch the old binary against
+  the existing database.
+
+This conservative boundary applies even with no application migration diff:
+SurrealDB **3.2 → 3.3** can change the physical format independently (see the
+upgrade note above). A cold copy is evidence/last-resort physical recovery, not
+the automatic cross-version rollback path.
+
+Every cutover keeps `backups/deploy-TIMESTAMP-PID/REPORT.md`, `deployment.json`,
+`previous-binary`, `previous-deployment.json`, the verified `cold-database`, and
+pre/post portable archives. After migrated rollback, `failed-database` is retained
+there too. The active success record is `bin/graphrag.deployment.json`; a failed
+attempt's report does not replace the restored previous success record. Do not
+remove cold copies, portable archives, old binaries or failed-migration DBs until
+an operator has verified recovery and approved retention cleanup. No automatic
+pruning is performed.
+
+### Isolated acceptance rehearsal
+
+Never test the script by stopping production. Restore a verified archive with an
+old-compatible binary into a **new scratch state**, use a **scratch launchd
+label**, and choose an unused port such as **31200** (internal migration rehearsal
+on **31201**). Provide a scratch plist whose binary, DB, config and log paths all
+point inside that state; reference the existing read-only service credential file
+without copying it. The config must preserve provider/embedding identity but use
+the scratch DB. Set the scratch deployment JSON to the actual restored old binary
+and schema, and invoke with all scratch overrides and the verified seed. After
+checking REPORT.md, record counts, hashes and probe results, boot out only the
+scratch label and remove only the owned scratch state/plist. Leave production's
+label, port, database, binary and checkout untouched.
+
+The fake launchctl/service fault-injection suite is automatically discovered in
+the existing required **format** CI lane (no extra pending required job):
+
+```bash
+python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+```
