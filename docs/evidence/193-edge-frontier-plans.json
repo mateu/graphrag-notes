@@ -1,0 +1,1850 @@
+{
+  "issue": 193,
+  "base": "0d9b855",
+  "fixture": "256 pre-migration rows per accepted edge table; alternating inbound/outbound endpoints; one bound note:other frontier; empty visited; min confidence 0; limit 5; nullable scope bindings",
+  "migration": 27,
+  "plans": [
+    {
+      "inbound": false,
+      "outbound": true,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'supports'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "access": "= note:other",
+                                    "direction": "Forward",
+                                    "index": "idx_supports_in"
+                                  },
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 858251,
+                                    "output_batches": 1,
+                                    "output_rows": 128,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "IndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 4064708,
+                                "output_batches": 1,
+                                "output_rows": 128,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 107917,
+                            "output_batches": 1,
+                            "output_rows": 128,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 78250,
+                        "output_batches": 1,
+                        "output_rows": 128,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 15541,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'supports'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 9999,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 20417,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'supports' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM supports WHERE in = $note_0 AND (record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ((record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ($since = NONE OR out.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR out.*.source_id.uri = $source_uri)) AND out NOT IN $visited_0 AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "supports"
+    },
+    {
+      "inbound": true,
+      "outbound": false,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'supports'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "access": "= note:other",
+                                    "direction": "Forward",
+                                    "index": "idx_supports_out"
+                                  },
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 868708,
+                                    "output_batches": 1,
+                                    "output_rows": 128,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "IndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 4190459,
+                                "output_batches": 1,
+                                "output_rows": 128,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 107293,
+                            "output_batches": 1,
+                            "output_rows": 128,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 25624,
+                        "output_batches": 1,
+                        "output_rows": 128,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 16167,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'supports'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 8668,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 19958,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'supports' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM supports WHERE out = $note_0 AND (record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ((record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ($since = NONE OR in.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR in.*.source_id.uri = $source_uri)) AND in NOT IN $visited_0 AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "supports"
+    },
+    {
+      "inbound": true,
+      "outbound": true,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'supports'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "in = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] OR out = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "branches": "2",
+                                    "table": "supports"
+                                  },
+                                  "children": [
+                                    {
+                                      "attributes": {
+                                        "access": "= note:other",
+                                        "direction": "Forward",
+                                        "index": "idx_supports_in"
+                                      },
+                                      "context": "Db",
+                                      "metrics": {
+                                        "elapsed_ns": 836042,
+                                        "output_batches": 1,
+                                        "output_rows": 128,
+                                        "records_fetched": 0
+                                      },
+                                      "operator": "IndexScan"
+                                    },
+                                    {
+                                      "attributes": {
+                                        "access": "= note:other",
+                                        "direction": "Forward",
+                                        "index": "idx_supports_out"
+                                      },
+                                      "context": "Db",
+                                      "metrics": {
+                                        "elapsed_ns": 786833,
+                                        "output_batches": 1,
+                                        "output_rows": 128,
+                                        "records_fetched": 0
+                                      },
+                                      "operator": "IndexScan"
+                                    }
+                                  ],
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 186625,
+                                    "output_batches": 2,
+                                    "output_rows": 256,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "UnionIndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "in = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] OR out = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 7736041,
+                                "output_batches": 2,
+                                "output_rows": 256,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 184541,
+                            "output_batches": 2,
+                            "output_rows": 256,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 25707,
+                        "output_batches": 1,
+                        "output_rows": 256,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 24250,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'supports'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 7457,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 18875,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'supports' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM supports WHERE ((in = $note_0 AND (record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ((record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ($since = NONE OR out.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR out.*.source_id.uri = $source_uri)) AND out NOT IN $visited_0) OR (out = $note_0 AND (record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ((record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ($since = NONE OR in.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR in.*.source_id.uri = $source_uri)) AND in NOT IN $visited_0)) AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "supports"
+    },
+    {
+      "inbound": false,
+      "outbound": true,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'contradicts'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "access": "= note:other",
+                                    "direction": "Forward",
+                                    "index": "idx_contradicts_in"
+                                  },
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 899668,
+                                    "output_batches": 1,
+                                    "output_rows": 128,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "IndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 3929375,
+                                "output_batches": 1,
+                                "output_rows": 128,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 93167,
+                            "output_batches": 1,
+                            "output_rows": 128,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 20209,
+                        "output_batches": 1,
+                        "output_rows": 128,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 15333,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'contradicts'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 6541,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 16416,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'contradicts' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM contradicts WHERE in = $note_0 AND (record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ((record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ($since = NONE OR out.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR out.*.source_id.uri = $source_uri)) AND out NOT IN $visited_0 AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "contradicts"
+    },
+    {
+      "inbound": true,
+      "outbound": false,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'contradicts'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "access": "= note:other",
+                                    "direction": "Forward",
+                                    "index": "idx_contradicts_out"
+                                  },
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 866042,
+                                    "output_batches": 1,
+                                    "output_rows": 128,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "IndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 4031999,
+                                "output_batches": 1,
+                                "output_rows": 128,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 95334,
+                            "output_batches": 1,
+                            "output_rows": 128,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 20833,
+                        "output_batches": 1,
+                        "output_rows": 128,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 12541,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'contradicts'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 7375,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 17874,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'contradicts' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM contradicts WHERE out = $note_0 AND (record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ((record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ($since = NONE OR in.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR in.*.source_id.uri = $source_uri)) AND in NOT IN $visited_0 AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "contradicts"
+    },
+    {
+      "inbound": true,
+      "outbound": true,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'contradicts'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "in = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] OR out = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "branches": "2",
+                                    "table": "contradicts"
+                                  },
+                                  "children": [
+                                    {
+                                      "attributes": {
+                                        "access": "= note:other",
+                                        "direction": "Forward",
+                                        "index": "idx_contradicts_in"
+                                      },
+                                      "context": "Db",
+                                      "metrics": {
+                                        "elapsed_ns": 912958,
+                                        "output_batches": 1,
+                                        "output_rows": 128,
+                                        "records_fetched": 0
+                                      },
+                                      "operator": "IndexScan"
+                                    },
+                                    {
+                                      "attributes": {
+                                        "access": "= note:other",
+                                        "direction": "Forward",
+                                        "index": "idx_contradicts_out"
+                                      },
+                                      "context": "Db",
+                                      "metrics": {
+                                        "elapsed_ns": 838250,
+                                        "output_batches": 1,
+                                        "output_rows": 128,
+                                        "records_fetched": 0
+                                      },
+                                      "operator": "IndexScan"
+                                    }
+                                  ],
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 201459,
+                                    "output_batches": 2,
+                                    "output_rows": 256,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "UnionIndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "in = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] OR out = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 8035666,
+                                "output_batches": 2,
+                                "output_rows": 256,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 201126,
+                            "output_batches": 2,
+                            "output_rows": 256,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 23832,
+                        "output_batches": 1,
+                        "output_rows": 256,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 21208,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'contradicts'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 6542,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 17875,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'contradicts' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM contradicts WHERE ((in = $note_0 AND (record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ((record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ($since = NONE OR out.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR out.*.source_id.uri = $source_uri)) AND out NOT IN $visited_0) OR (out = $note_0 AND (record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ((record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ($since = NONE OR in.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR in.*.source_id.uri = $source_uri)) AND in NOT IN $visited_0)) AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "contradicts"
+    },
+    {
+      "inbound": false,
+      "outbound": true,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'related_to'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "access": "= note:other",
+                                    "direction": "Forward",
+                                    "index": "idx_related_to_in"
+                                  },
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 960333,
+                                    "output_batches": 1,
+                                    "output_rows": 128,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "IndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 4167667,
+                                "output_batches": 1,
+                                "output_rows": 128,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 98124,
+                            "output_batches": 1,
+                            "output_rows": 128,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 20251,
+                        "output_batches": 1,
+                        "output_rows": 128,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 13250,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'related_to'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 6834,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 20791,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'related_to' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM related_to WHERE in = $note_0 AND (record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ((record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ($since = NONE OR out.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR out.*.source_id.uri = $source_uri)) AND out NOT IN $visited_0 AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "related_to"
+    },
+    {
+      "inbound": true,
+      "outbound": false,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'related_to'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "access": "= note:other",
+                                    "direction": "Forward",
+                                    "index": "idx_related_to_out"
+                                  },
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 849208,
+                                    "output_batches": 1,
+                                    "output_rows": 128,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "IndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 4190125,
+                                "output_batches": 1,
+                                "output_rows": 128,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 108251,
+                            "output_batches": 1,
+                            "output_rows": 128,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 18293,
+                        "output_batches": 1,
+                        "output_rows": 128,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 14709,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'related_to'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 6541,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 19084,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'related_to' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM related_to WHERE out = $note_0 AND (record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ((record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ($since = NONE OR in.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR in.*.source_id.uri = $source_uri)) AND in NOT IN $visited_0 AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "related_to"
+    },
+    {
+      "inbound": true,
+      "outbound": true,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'related_to'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "in = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] OR out = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "branches": "2",
+                                    "table": "related_to"
+                                  },
+                                  "children": [
+                                    {
+                                      "attributes": {
+                                        "access": "= note:other",
+                                        "direction": "Forward",
+                                        "index": "idx_related_to_in"
+                                      },
+                                      "context": "Db",
+                                      "metrics": {
+                                        "elapsed_ns": 879833,
+                                        "output_batches": 1,
+                                        "output_rows": 128,
+                                        "records_fetched": 0
+                                      },
+                                      "operator": "IndexScan"
+                                    },
+                                    {
+                                      "attributes": {
+                                        "access": "= note:other",
+                                        "direction": "Forward",
+                                        "index": "idx_related_to_out"
+                                      },
+                                      "context": "Db",
+                                      "metrics": {
+                                        "elapsed_ns": 840583,
+                                        "output_batches": 1,
+                                        "output_rows": 128,
+                                        "records_fetched": 0
+                                      },
+                                      "operator": "IndexScan"
+                                    }
+                                  ],
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 181584,
+                                    "output_batches": 2,
+                                    "output_rows": 256,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "UnionIndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "in = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] OR out = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 8175541,
+                                "output_batches": 2,
+                                "output_rows": 256,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 198874,
+                            "output_batches": 2,
+                            "output_rows": 256,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 25000,
+                        "output_batches": 1,
+                        "output_rows": 256,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 22125,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'related_to'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 6917,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 17417,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'related_to' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM related_to WHERE ((in = $note_0 AND (record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ((record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ($since = NONE OR out.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR out.*.source_id.uri = $source_uri)) AND out NOT IN $visited_0) OR (out = $note_0 AND (record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ((record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ($since = NONE OR in.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR in.*.source_id.uri = $source_uri)) AND in NOT IN $visited_0)) AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "related_to"
+    },
+    {
+      "inbound": false,
+      "outbound": true,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'derived_from'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "access": "= note:other",
+                                    "direction": "Forward",
+                                    "index": "idx_derived_from_in"
+                                  },
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 917833,
+                                    "output_batches": 1,
+                                    "output_rows": 128,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "IndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 4128459,
+                                "output_batches": 1,
+                                "output_rows": 128,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 98416,
+                            "output_batches": 1,
+                            "output_rows": 128,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 20417,
+                        "output_batches": 1,
+                        "output_rows": 128,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 15167,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'derived_from'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 7375,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 19833,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'derived_from' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM derived_from WHERE in = $note_0 AND (record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ((record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ($since = NONE OR out.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR out.*.source_id.uri = $source_uri)) AND out NOT IN $visited_0 AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "derived_from"
+    },
+    {
+      "inbound": true,
+      "outbound": false,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'derived_from'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "access": "= note:other",
+                                    "direction": "Forward",
+                                    "index": "idx_derived_from_out"
+                                  },
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 952292,
+                                    "output_batches": 1,
+                                    "output_rows": 128,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "IndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 4201875,
+                                "output_batches": 1,
+                                "output_rows": 128,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 90209,
+                            "output_batches": 1,
+                            "output_rows": 128,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 17083,
+                        "output_batches": 1,
+                        "output_rows": 128,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 13917,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'derived_from'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 6208,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 15625,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'derived_from' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM derived_from WHERE out = $note_0 AND (record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ((record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ($since = NONE OR in.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR in.*.source_id.uri = $source_uri)) AND in NOT IN $visited_0 AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "derived_from"
+    },
+    {
+      "inbound": true,
+      "outbound": true,
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id, edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, graph_confidence"
+          },
+          "children": [
+            {
+              "attributes": {
+                "fields": "edge_type = 'derived_from'"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "limit": "$limit"
+                  },
+                  "children": [
+                    {
+                      "attributes": {
+                        "sort_keys": "graph_confidence DESC, id ASC"
+                      },
+                      "children": [
+                        {
+                          "attributes": {
+                            "fields": "graph_confidence = IF confidence = NONE THEN 1f ELSE confidence END"
+                          },
+                          "children": [
+                            {
+                              "attributes": {
+                                "predicate": "in = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] OR out = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                              },
+                              "children": [
+                                {
+                                  "attributes": {
+                                    "branches": "2",
+                                    "table": "derived_from"
+                                  },
+                                  "children": [
+                                    {
+                                      "attributes": {
+                                        "access": "= note:other",
+                                        "direction": "Forward",
+                                        "index": "idx_derived_from_in"
+                                      },
+                                      "context": "Db",
+                                      "metrics": {
+                                        "elapsed_ns": 861374,
+                                        "output_batches": 1,
+                                        "output_rows": 128,
+                                        "records_fetched": 0
+                                      },
+                                      "operator": "IndexScan"
+                                    },
+                                    {
+                                      "attributes": {
+                                        "access": "= note:other",
+                                        "direction": "Forward",
+                                        "index": "idx_derived_from_out"
+                                      },
+                                      "context": "Db",
+                                      "metrics": {
+                                        "elapsed_ns": 829291,
+                                        "output_batches": 1,
+                                        "output_rows": 128,
+                                        "records_fetched": 0
+                                      },
+                                      "operator": "IndexScan"
+                                    }
+                                  ],
+                                  "context": "Db",
+                                  "metrics": {
+                                    "elapsed_ns": 236584,
+                                    "output_batches": 2,
+                                    "output_rows": 256,
+                                    "records_fetched": 0
+                                  },
+                                  "operator": "UnionIndexScan"
+                                }
+                              ],
+                              "context": "Db",
+                              "expressions": [
+                                {
+                                  "role": "predicate",
+                                  "sql": "in = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND NONE = NONE OR out.*.created_at >= <datetime>  NONE AND NONE = NONE OR out.*.source_id.uri = NONE AND out NOTINSIDE [] OR out = note:other AND record::tb(...) = 'note' AND type::is_range(...) = false AND out.*.id != NONE AND out.*.source_id = NONE OR out.*.source_generation = NONE OR out.*.source_generation = out.*.source_id.successful_generation AND record::tb(...) = 'note' AND type::is_range(...) = false AND in.*.id != NONE AND in.*.source_id = NONE OR in.*.source_generation = NONE OR in.*.source_generation = in.*.source_id.successful_generation AND NONE = NONE OR in.*.created_at >= <datetime>  NONE AND NONE = NONE OR in.*.source_id.uri = NONE AND in NOTINSIDE [] AND confidence = NONE OR confidence >= 0f"
+                                }
+                              ],
+                              "metrics": {
+                                "elapsed_ns": 7701792,
+                                "output_batches": 2,
+                                "output_rows": 256,
+                                "records_fetched": 0
+                              },
+                              "operator": "Filter"
+                            }
+                          ],
+                          "context": "Db",
+                          "expressions": [
+                            {
+                              "role": "graph_confidence",
+                              "sql": "IF confidence = NONE THEN 1f ELSE confidence END"
+                            }
+                          ],
+                          "metrics": {
+                            "elapsed_ns": 206126,
+                            "output_batches": 2,
+                            "output_rows": 256,
+                            "records_fetched": 0
+                          },
+                          "operator": "Compute"
+                        }
+                      ],
+                      "context": "Db",
+                      "metrics": {
+                        "elapsed_ns": 23292,
+                        "output_batches": 1,
+                        "output_rows": 256,
+                        "records_fetched": 0
+                      },
+                      "operator": "SortByKey"
+                    }
+                  ],
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "limit",
+                      "sql": "$limit"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 20166,
+                    "output_batches": 1,
+                    "output_rows": 5,
+                    "records_fetched": 0
+                  },
+                  "operator": "Limit"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "edge_type",
+                  "sql": "'derived_from'"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 6626,
+                "output_batches": 1,
+                "output_rows": 5,
+                "records_fetched": 0
+              },
+              "operator": "Compute"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 19416,
+            "output_batches": 1,
+            "output_rows": 5,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 5
+        }
+      ],
+      "sql": "SELECT id, 'derived_from' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence FROM derived_from WHERE ((in = $note_0 AND (record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ((record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ($since = NONE OR out.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR out.*.source_id.uri = $source_uri)) AND out NOT IN $visited_0) OR (out = $note_0 AND (record::tb(out) = 'note' AND type::is_range(record::id(out)) = false AND out.*.id IS NOT NONE AND (out.*.source_id IS NONE OR out.*.source_generation IS NONE OR out.*.source_generation = out.*.source_id.successful_generation)) AND ((record::tb(in) = 'note' AND type::is_range(record::id(in)) = false AND in.*.id IS NOT NONE AND (in.*.source_id IS NONE OR in.*.source_generation IS NONE OR in.*.source_generation = in.*.source_id.successful_generation)) AND ($since = NONE OR in.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR in.*.source_id.uri = $source_uri)) AND in NOT IN $visited_0)) AND (confidence = NONE OR confidence >= $min_confidence) ORDER BY graph_confidence DESC, id ASC LIMIT $limit;",
+      "table": "derived_from"
+    },
+    {
+      "plan": [
+        {
+          "attributes": {
+            "projections": "id"
+          },
+          "children": [
+            {
+              "attributes": {
+                "predicate": "record::tb(...) = 'note' AND type::is_range(...) = false AND id.*.id != NONE AND id.*.source_id = NONE OR id.*.source_generation = NONE OR id.*.source_generation = id.*.source_id.successful_generation AND NONE = NONE OR id.*.created_at >= <datetime>  NONE AND NONE = NONE OR id.*.source_id.uri = NONE"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "record_id": "note:other"
+                  },
+                  "context": "Db",
+                  "expressions": [
+                    {
+                      "role": "record_id",
+                      "sql": "note:other"
+                    }
+                  ],
+                  "metrics": {
+                    "elapsed_ns": 354333,
+                    "output_batches": 1,
+                    "output_rows": 1,
+                    "records_fetched": 0
+                  },
+                  "operator": "RecordIdScan"
+                }
+              ],
+              "context": "Db",
+              "expressions": [
+                {
+                  "role": "predicate",
+                  "sql": "record::tb(...) = 'note' AND type::is_range(...) = false AND id.*.id != NONE AND id.*.source_id = NONE OR id.*.source_generation = NONE OR id.*.source_generation = id.*.source_id.successful_generation AND NONE = NONE OR id.*.created_at >= <datetime>  NONE AND NONE = NONE OR id.*.source_id.uri = NONE"
+                }
+              ],
+              "metrics": {
+                "elapsed_ns": 374459,
+                "output_batches": 1,
+                "output_rows": 1,
+                "records_fetched": 0
+              },
+              "operator": "Filter"
+            }
+          ],
+          "context": "Db",
+          "metrics": {
+            "elapsed_ns": 377209,
+            "output_batches": 1,
+            "output_rows": 1,
+            "records_fetched": 0
+          },
+          "operator": "SelectProject",
+          "total_rows": 1
+        }
+      ],
+      "qualification": "bound_endpoint_hydration",
+      "sql": "SELECT id FROM $endpoint WHERE ((record::tb(id) = 'note' AND type::is_range(record::id(id)) = false AND id.*.id IS NOT NONE AND (id.*.source_id IS NONE OR id.*.source_generation IS NONE OR id.*.source_generation = id.*.source_id.successful_generation)) AND ($since = NONE OR id.*.created_at >= <datetime>$since) AND ($source_uri = NONE OR id.*.source_id.uri = $source_uri)) EXPLAIN FULL"
+    }
+  ]
+}

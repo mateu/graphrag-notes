@@ -135,6 +135,12 @@ jobs:
         run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::hot_retrieval_plan_tests::indexed_hot_retrieval_statements_keep_their_access_paths --nocapture
       - name: Entity and mentions plans with historical negative controls
         run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::hot_retrieval_plan_tests::entity_lexeme_and_bound_mention_statements_reject_historical_scans --nocapture
+      - name: Accepted edge frontier indexes in every direction
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::edge_frontier_plan_tests::accepted_edge_frontiers_use_indexes_in_every_direction --nocapture
+      - name: Accepted edge native ID and self-loop scan differential
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::edge_frontier_plan_tests::indexed_edge_frontiers_match_scans_for_native_ids_and_self_loops
+      - name: Accepted edge differential behavior
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::graph_retrieval_batch_tests::edge_batches_preserve_pre_limit_filters_direction_confidence_cycles_and_sources
       - name: Provenance membership index and upgrade plans
         run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::provenance_index_tests::provenance_membership_indexes_preserve_upgrade_and_fresh_results --nocapture
       - name: Compare deterministic fixture with tests/baselines/retrieval-v1.json
