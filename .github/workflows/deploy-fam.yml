@@ -1,0 +1,108 @@
+name: Deploy fam (owner approved)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full 40-character commit SHA reachable from main
+        required: true
+        type: string
+      dry_run:
+        description: Preflight only; do not touch the service
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# Shared by dry runs and cutovers; never interrupt a migration/rollback.
+concurrency:
+  group: fam-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'mateu/graphrag-notes' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require a full SHA on main before requesting production approval
+        env:
+          DEPLOY_SHA: ${{ inputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git cat-file -e "$DEPLOY_SHA^{commit}"
+          git merge-base --is-ancestor "$DEPLOY_SHA" refs/remotes/origin/main
+
+  deploy:
+    needs: validate
+    if: github.repository == 'mateu/graphrag-notes' && github.ref == 'refs/heads/main'
+    environment:
+      name: fam-production
+    # Register ONLY after owner approval and workflow-level runner restrictions.
+    runs-on:
+      group: fam-production
+      labels: [self-hosted, macOS, fam-graphrag-deploy]
+    timeout-minutes: 180
+    steps:
+      # Use the approved main workflow commit, never the input as executable code.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+          clean: true
+      - name: Recheck main ancestry and invoke the versioned deployment script
+        env:
+          DEPLOY_SHA: ${{ inputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GRAPHRAG_TOKEN: ${{ secrets.FAM_GRAPHRAG_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git cat-file -e "$DEPLOY_SHA^{commit}"
+          git merge-base --is-ancestor "$DEPLOY_SHA" refs/remotes/origin/main
+          touch "$RUNNER_TEMP/fam-deploy-start"
+          args=("$DEPLOY_SHA" --repo "$GITHUB_WORKSPACE")
+          if [[ "$DRY_RUN" == true ]]; then args+=(--dry-run); fi
+          scripts/deploy-fam.sh "${args[@]}"
+      - name: Stage only current-run reports and the current deployment snapshot
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/fam-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$evidence"
+          # Dry-run/no-op/preflight failures may not produce a new report.
+          if [[ -f "$RUNNER_TEMP/fam-deploy-start" ]]; then
+            while IFS= read -r -d '' report; do
+              report_dir=$(basename "$(dirname "$report")")
+              mkdir -p "$evidence/$report_dir"
+              cp "$report" "$evidence/$report_dir/REPORT.md"
+            done < <(find "$HOME/.graphrag/shared/backups" -type f -name REPORT.md \
+              -newer "$RUNNER_TEMP/fam-deploy-start" -print0)
+            if [[ -f "$HOME/.graphrag/shared/bin/graphrag.deployment.json" ]]; then
+              cp "$HOME/.graphrag/shared/bin/graphrag.deployment.json" \
+                "$evidence/graphrag.deployment.json"
+            fi
+          fi
+          printf '%s\n' 'Deployment JSON is a current-state snapshot, not proof of this run succeeding.' \
+            'Dry runs and no-ops do not create a new script REPORT.md. Consult the step conclusion.' \
+            > "$evidence/README.txt"
+      - name: Preserve deployment evidence (including failed cutovers)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fam-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fam-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
