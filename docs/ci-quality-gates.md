@@ -144,10 +144,22 @@ workspace crates stay at opt-level 0. Local measurement (Apple Silicon, 18 cores
 | Cold `--no-run` build (wall / CPU) | 88s / 10 min | 160s / 23 min | 197s / 34 min |
 
 Opt-level 2 was no faster than 1 and costs about 50% more dependency compile
-CPU, so 1 is used. A cold CI build therefore gets slower; with per-lane caches
-that cost is paid only when `Cargo.lock`, manifests or the toolchain change.
-No fixture, replay count, assertion or concurrency setting changed. The CI
-before/after comparison is the first nightly or manual run after merge.
+CPU, so 1 is used. No fixture, replay count, assertion or concurrency setting
+changed.
+
+CI measurement, cold manual run on the PR branch
+([41582026970](https://github.com/mateu/graphrag-notes/actions/runs/41582026970),
+no cache for the new keys): nextest dropped from **810s to 214s** (3,237 to about
+830 test-seconds; the slowest test went from 233s to 47s). Compilation took
+19m01s cold. About 11 minutes of that is the RocksDB C++ build script
+(`surrealdb-librocksdb-sys`), whose output the shared `cargo check` cache used
+to provide. It is not caused by the opt-level change: locally with `-j 4` the
+build script took 111s with that crate at opt-level 0 and 119s at opt-level 1.
+rust-cache falls back to the lane's previous entry when only `Cargo.lock`
+changes, so the cold cost recurs only after a toolchain change, a key bump, a
+dependency change to RocksDB itself, or eviction (seven days without access or
+the 10 GB repository limit). Until
+main has saved the new keys, PR runs on these lanes are cold.
 
 ## Audit exemption policy
 
