@@ -383,6 +383,9 @@ pub struct NoteMeta {
 pub trait AlchemistReads: Send + Sync {
     /// Exact current content and revision of a canonical record ID.
     async fn pinned_record(&self, id: &str) -> graphrag_db::Result<RecordInspection>;
+    /// The stored record ID behind a public `note:key`, preserving string
+    /// keys that look like UUIDs. `None` for missing or hidden notes.
+    async fn resolve_note(&self, id: &str) -> graphrag_db::Result<Option<RecordId>>;
     /// Accepted note edges of the four persisted relation tables, both
     /// directions, at most `per_note_limit` per note and table.
     async fn accepted_edges(
@@ -409,6 +412,10 @@ pub trait AlchemistReads: Send + Sync {
 impl AlchemistReads for Repository {
     async fn pinned_record(&self, id: &str) -> graphrag_db::Result<RecordInspection> {
         self.inspect_record(id, 0).await
+    }
+
+    async fn resolve_note(&self, id: &str) -> graphrag_db::Result<Option<RecordId>> {
+        self.resolve_visible_note_id(id).await
     }
 
     async fn accepted_edges(

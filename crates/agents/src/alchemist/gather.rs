@@ -46,6 +46,9 @@ pub(crate) struct EvidenceChunk {
     pub source_uri: Option<String>,
     pub conversation_id: Option<String>,
     pub path: Vec<PathStep>,
+    /// Stored note record ID. UUID-shaped string keys stay strings, so graph
+    /// reads never re-parse the public ID. `None` for messages and summaries.
+    pub record: Option<RecordId>,
     /// Cleared when the post-generation re-check finds a newer revision.
     pub current: bool,
 }
@@ -95,6 +98,7 @@ impl EvidenceSet {
             source_uri: meta.source_uri.or(pinned.provenance.source_uri),
             conversation_id: pinned.provenance.conversation_id,
             path,
+            record: None,
             current: true,
         });
         true
@@ -185,6 +189,17 @@ pub(crate) async fn query(
             set.truncated = true;
             break;
         }
+        let record = if chunk.id.starts_with("note:") {
+            match reads.resolve_note(&chunk.id).await? {
+                Some(record) => Some(record),
+                None => {
+                    set.unpinned.push(chunk.id.clone());
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         let Some(pinned) = pin(reads, &chunk.id).await? else {
             set.unpinned.push(chunk.id.clone());
             continue;
@@ -215,6 +230,7 @@ pub(crate) async fn query(
         if !set.push(pinned, &text, meta, path, budgets, counter.as_ref()) {
             break;
         }
+        set.chunks.last_mut().expect("pushed chunk").record = record;
     }
     Ok(set)
 }
@@ -227,11 +243,17 @@ pub(crate) async fn seed(
     budgets: &SynthesisBudgets,
     augment: &AugmentOptions,
 ) -> Result<EvidenceSet, AlchemistError> {
-    let seed_id = parse_record_id(id, Some("note")).map_err(|_| {
+    parse_record_id(id, Some("note")).map_err(|_| {
         AlchemistError::Invalid("seed must be a canonical note:ID (a note chunk)".into())
     })?;
+    let not_found =
+        || AlchemistError::NotFound(format!("seed {} is not a visible note", id.trim()));
+    // Resolve the stored key type: UUID-shaped string keys must not be read
+    // as native UUIDs.
+    let Some(seed_id) = reads.resolve_note(id).await? else {
+        return Err(not_found());
+    };
     let seed_key = record_id_to_string(&seed_id);
-    let not_found = || AlchemistError::NotFound(format!("seed {seed_key} is not a visible note"));
     let mut meta = reads.visible_notes(std::slice::from_ref(&seed_id)).await?;
     let Some(seed_meta) = meta.remove(&seed_key) else {
         return Err(not_found());
@@ -245,14 +267,16 @@ pub(crate) async fn seed(
         ..Default::default()
     };
     let content = pinned.content.clone();
-    set.push(
+    if set.push(
         pinned,
         &content,
         seed_meta,
         Vec::new(),
         budgets,
         counter.as_ref(),
-    );
+    ) {
+        set.chunks[0].record = Some(seed_id.clone());
+    }
 
     let mut visited: Vec<RecordId> = vec![seed_id.clone()];
     let mut seen: HashSet<String> = HashSet::from([seed_key.clone()]);
@@ -347,6 +371,7 @@ pub(crate) async fn seed(
                 exhausted = true;
                 break;
             }
+            set.chunks.last_mut().expect("pushed chunk").record = Some(neighbour.clone());
             seen.insert(key.clone());
             paths.insert(key, path);
             visited.push(neighbour.clone());
@@ -367,7 +392,7 @@ pub(crate) async fn relations_among(
     let ids: Vec<RecordId> = set
         .chunks
         .iter()
-        .filter_map(|chunk| parse_record_id(&chunk.id, Some("note")).ok())
+        .filter_map(|chunk| chunk.record.clone())
         .collect();
     let (relations, truncated) = reads.accepted_edges_among(&ids).await?;
     set.relations = relations;

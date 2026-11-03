@@ -30,6 +30,45 @@ pub(super) fn edges_among_sql(note_count: usize) -> String {
 }
 
 impl Repository {
+    /// Resolve a public `note:key` ID to its stored record ID. Application
+    /// notes use string keys, including UUID-shaped ones that
+    /// [`parse_record_id`] reads as native UUIDs; portable imports may carry
+    /// native numeric or UUID keys. As in `inspect_record`, an ambiguous pair
+    /// is rejected and a hidden literal record never redirects to another key.
+    /// Missing and hidden notes resolve to `None`.
+    #[instrument(skip(self))]
+    pub async fn resolve_visible_note_id(&self, id: &str) -> Result<Option<RecordId>> {
+        #[derive(Deserialize, SurrealValue)]
+        struct Candidate {
+            id: RecordId,
+            visible: bool,
+        }
+        let typed = parse_record_id(id, Some("note"))?;
+        let literal = normalize_note_id(id.trim());
+        let mut candidates = vec![literal.clone()];
+        if typed != literal {
+            candidates.push(typed);
+        }
+        let rows: Vec<Candidate> = self
+            .db
+            .query(format!(
+                "SELECT id, {VISIBLE_NOTE_CONDITION} AS visible FROM $candidates"
+            ))
+            .bind(("candidates", candidates))
+            .await?
+            .take(0)?;
+        if rows.len() > 1 {
+            return Err(DbError::QueryFailed(format!(
+                "{id} exists with both string and native keys; reimport these records with distinct IDs"
+            )));
+        }
+        Ok(rows
+            .into_iter()
+            .next()
+            .filter(|row| row.visible)
+            .map(|row| row.id))
+    }
+
     /// Accepted note edges whose two endpoints are both in `note_ids`, in
     /// every relation table, sorted by table and ID. The flag reports whether
     /// a per-note limit was reached (only possible with duplicate edges).
@@ -129,6 +168,34 @@ mod tests {
             .unwrap()
             .0
             .is_empty());
+
+        // UUID-shaped string keys (manual capture) keep their string type.
+        let uuid = "6f1c2a5e-8d1b-4c4f-9a43-1d2e3f4a5b6c";
+        db.query(format!(
+            "CREATE type::record('note', '{uuid}') SET content='Fictional capture'"
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let resolved = repo
+            .resolve_visible_note_id(&format!("note:{uuid}"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved, RecordId::new("note", uuid.to_string()));
+        assert_ne!(
+            resolved,
+            parse_record_id(&format!("note:{uuid}"), None).unwrap()
+        );
+        assert_eq!(
+            repo.resolve_visible_note_id("note:a").await.unwrap(),
+            Some(a.clone())
+        );
+        assert_eq!(
+            repo.resolve_visible_note_id("note:missing").await.unwrap(),
+            None
+        );
 
         let sql = edges_among_sql(1);
         for (index, statement) in sql.split_terminator(';').enumerate() {

@@ -430,6 +430,7 @@ fn chunk(id: &str, content: &str) -> EvidenceChunk {
         source_uri: None,
         conversation_id: None,
         path: Vec::new(),
+        record: None,
         current: true,
     }
 }
@@ -779,8 +780,12 @@ async fn hub_neighbours_cannot_crowd_out_relations_among_the_evidence() {
         )
         .await
         .unwrap();
+    let member = |id: &str| EvidenceChunk {
+        record: Some(parse(id)),
+        ..chunk(id, id)
+    };
     let mut set = gather::EvidenceSet {
-        chunks: vec![chunk(&hub, "hub"), chunk(&digest, "digest")],
+        chunks: vec![member(&hub), member(&digest)],
         ..Default::default()
     };
     gather::relations_among(&corpus.repo, &mut set)
@@ -800,4 +805,92 @@ async fn hub_neighbours_cannot_crowd_out_relations_among_the_evidence() {
     let generator = FixtureSynthesisGenerator::fixed(draft(vec![], vec![]));
     let outcome = run(&corpus, &generator, &seed_plan(&hub)).await.unwrap();
     assert!(outcome.usage.neighbourhood_truncated);
+}
+
+#[tokio::test]
+async fn uuid_shaped_string_keys_are_resolved_not_reparsed() {
+    // Librarian and manual capture store UUID-shaped *string* keys, which a
+    // plain parse would turn into native UUIDs that match no stored note.
+    let corpus = corpus().await;
+    let capture = |content: &str| Note::new(content).with_title("Captured");
+    let first = corpus
+        .repo
+        .create_note_and_replace_entities(
+            capture("Fictional capture: the orchard gate was repainted green."),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let summary = corpus
+        .repo
+        .create_note_and_replace_entities(
+            capture("Fictional recap: the orchard gate was repainted green last week."),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let (first_id, summary_id) = (first.id.clone().unwrap(), summary.id.clone().unwrap());
+    assert!(matches!(
+        first_id.key,
+        surrealdb::types::RecordIdKey::String(_)
+    ));
+    assert_ne!(
+        graphrag_db::parse_record_id(&record_id_to_string(&first_id), None).unwrap(),
+        first_id,
+        "fixture must exercise the string-versus-native ambiguity"
+    );
+    corpus
+        .repo
+        .create_edge(&summary_id, &first_id, EdgeType::DerivedFrom, None)
+        .await
+        .unwrap();
+    let (first, summary) = (
+        record_id_to_string(&first_id),
+        record_id_to_string(&summary_id),
+    );
+    let generator = FixtureSynthesisGenerator::fixed(draft(
+        vec![claim(
+            "The gate was repainted green.",
+            vec![
+                cite(&first, "the orchard gate was repainted green"),
+                cite(&summary, "the orchard gate was repainted green last week"),
+            ],
+        )],
+        vec![],
+    ));
+    let outcome = run(&corpus, &generator, &seed_plan(&first)).await.unwrap();
+    let ids: Vec<&str> = outcome
+        .synthesis
+        .evidence
+        .iter()
+        .map(|item| item.chunk_id.as_str())
+        .collect();
+    assert_eq!(ids, [first.as_str(), summary.as_str()]);
+    assert_eq!(outcome.synthesis.relations.len(), 1);
+    assert_eq!(
+        outcome.synthesis.claims[0].strength.independent_origins, 1,
+        "the recap and its origin share one lineage"
+    );
+    // Query mode resolves build_context IDs the same way.
+    let query = SynthesisPlan {
+        input: SynthesisInput::Query {
+            query: "orchard gate repainted green".into(),
+            scope: SearchScope::Notes,
+            graph: GraphMode::Off,
+        },
+        ..seed_plan(&first)
+    };
+    let outcome = run(&corpus, &generator, &query).await.unwrap();
+    let ids: Vec<&str> = outcome
+        .synthesis
+        .evidence
+        .iter()
+        .map(|item| item.chunk_id.as_str())
+        .collect();
+    assert!(
+        ids.contains(&first.as_str()) && ids.contains(&summary.as_str()),
+        "{ids:?}"
+    );
+    assert_eq!(outcome.synthesis.relations.len(), 1);
+    assert_eq!(outcome.synthesis.claims[0].strength.independent_origins, 1);
 }

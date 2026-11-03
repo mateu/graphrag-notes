@@ -54,6 +54,8 @@ graphrag --server https://notes.example/mcp synthesize --seed note:abc123
   has a fanout limit, and a full fanout page is reported as a truncated
   neighbourhood. Only visible notes are included, and proposal tables are
   never read.
+- Note IDs are resolved to their stored key type before any graph read, so
+  UUID-shaped string keys (manual capture) are never mistaken for native UUIDs.
 - In both modes, the accepted edges *among* the evidence come from an indexed
   query. Endpoints are restricted to the evidence set before any limit, so
   edges from a high-degree note to outside notes cannot hide a lineage or
