@@ -51,8 +51,13 @@ graphrag --server https://notes.example/mcp synthesize --seed note:abc123
   paths.
 - **Seed mode** walks accepted `supports`, `contradicts`, `derived_from` and
   `related_to` edges in both directions, at most two hops. Each note and table
-  has a fanout limit, and only visible notes are included. Proposal tables are
+  has a fanout limit, and a full fanout page is reported as a truncated
+  neighbourhood. Only visible notes are included, and proposal tables are
   never read.
+- In both modes, the accepted edges *among* the evidence come from an indexed
+  query. Endpoints are restricted to the evidence set before any limit, so
+  edges from a high-degree note to outside notes cannot hide a lineage or
+  contradiction edge between evidence notes.
 
 MCP clients call `synthesize_notes` with the same fields: `query` or `seed`,
 `scope`, `graph`, `max_chunks`, `max_context_tokens`, `max_output_tokens`,
@@ -111,8 +116,9 @@ them.
 
 ## Guarantees and limits
 
-- **No writes.** Storage is reached only through a read-only interface (record
-  inspection, accepted-edge reads and visible-note reads). Tests snapshot
+- **No writes.** Storage is reached only through a read-only interface: record
+  inspection, accepted-edge reads, accepted edges among the evidence, and
+  visible-note reads. Tests snapshot
   every table before and after synthesis in both modes.
   - Caveat: query mode reuses `build_context`. Its shared embedding adapter
     can record a query-embedding cache entry, exactly as `build_context`

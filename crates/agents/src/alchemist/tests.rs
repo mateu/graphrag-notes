@@ -738,3 +738,66 @@ async fn same_source_chunks_do_not_corroborate_each_other_end_to_end() {
         vec![LineageReason::SameSource]
     );
 }
+
+#[tokio::test]
+async fn hub_neighbours_cannot_crowd_out_relations_among_the_evidence() {
+    let corpus = corpus().await;
+    // Both members have many higher-confidence derived_from edges to
+    // outsiders; the low-confidence lineage edge between them must survive.
+    let (hub, digest) = (
+        note(&corpus.repo, "Hub", "Fictional hub index of orchard pages.").await,
+        note(
+            &corpus.repo,
+            "Digest",
+            "Fictional digest of the orchard hub index.",
+        )
+        .await,
+    );
+    let parse = |id: &str| graphrag_db::parse_record_id(id, Some("note")).unwrap();
+    for index in 0..40 {
+        let outside = note(
+            &corpus.repo,
+            "Outside",
+            &format!("Fictional outside page {index}."),
+        )
+        .await;
+        for (from, to) in [(&hub, &outside), (&outside, &digest)] {
+            corpus
+                .repo
+                .create_edge(&parse(from), &parse(to), EdgeType::DerivedFrom, Some(1.0))
+                .await
+                .unwrap();
+        }
+    }
+    corpus
+        .repo
+        .create_edge(
+            &parse(&digest),
+            &parse(&hub),
+            EdgeType::DerivedFrom,
+            Some(0.1),
+        )
+        .await
+        .unwrap();
+    let mut set = gather::EvidenceSet {
+        chunks: vec![chunk(&hub, "hub"), chunk(&digest, "digest")],
+        ..Default::default()
+    };
+    gather::relations_among(&corpus.repo, &mut set)
+        .await
+        .unwrap();
+    assert_eq!(set.relations.len(), 1);
+    assert_eq!(record_id_to_string(&set.relations[0].in_id), digest);
+    assert!(!set.truncated);
+    let lineage = lineage::origin_groups(&set.chunks, &set.relations);
+    assert_eq!(
+        lineage.groups.len(),
+        1,
+        "the digest and its hub share an origin"
+    );
+
+    // A hub seed fills its fanout page, which is reported as truncation.
+    let generator = FixtureSynthesisGenerator::fixed(draft(vec![], vec![]));
+    let outcome = run(&corpus, &generator, &seed_plan(&hub)).await.unwrap();
+    assert!(outcome.usage.neighbourhood_truncated);
+}

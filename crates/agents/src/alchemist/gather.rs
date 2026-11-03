@@ -17,9 +17,6 @@ use surrealdb::types::RecordId;
 /// Accepted edges examined per frontier note and relation table while
 /// expanding a seed.
 pub(crate) const SEED_FANOUT: usize = 8;
-/// Accepted edges examined per evidence note and relation table when
-/// collecting the relations among the evidence.
-pub(crate) const RELATION_FANOUT: usize = 32;
 /// Excerpts shorter than this are not worth a prompt slot.
 const MIN_EXCERPT_TOKENS: usize = 16;
 
@@ -261,8 +258,9 @@ pub(crate) async fn seed(
     let mut seen: HashSet<String> = HashSet::from([seed_key.clone()]);
     let mut paths: HashMap<String, Vec<PathStep>> = HashMap::from([(seed_key, Vec::new())]);
     let mut frontier = vec![seed_id];
+    let mut exhausted = false;
     for _ in 0..budgets.max_hops.min(MAX_SEED_HOPS) {
-        if frontier.is_empty() || set.truncated {
+        if frontier.is_empty() || exhausted {
             break;
         }
         let exclude: HashMap<String, Vec<RecordId>> = frontier
@@ -273,6 +271,19 @@ pub(crate) async fn seed(
             .accepted_edges(&frontier, SEED_FANOUT, &exclude)
             .await?;
         let frontier_keys: Vec<String> = frontier.iter().map(record_id_to_string).collect();
+        // A full per-note page means the fanout limit may have hidden more.
+        let mut pages: HashMap<(String, &str), usize> = HashMap::new();
+        for edge in &edges {
+            for endpoint in [&edge.in_id, &edge.out_id] {
+                let key = record_id_to_string(endpoint);
+                if frontier_keys.contains(&key) {
+                    *pages.entry((key, edge.edge_type.as_str())).or_default() += 1;
+                }
+            }
+        }
+        if pages.values().any(|count| *count >= SEED_FANOUT) {
+            set.truncated = true;
+        }
         // Deterministic candidate order: frontier order, then edge type and ID.
         let mut candidates: Vec<(RecordId, PathStep)> = Vec::new();
         for from in &frontier_keys {
@@ -315,6 +326,7 @@ pub(crate) async fn seed(
             };
             if set.chunks.len() >= budgets.max_chunks {
                 set.truncated = true;
+                exhausted = true;
                 break;
             }
             let Some(pinned) = pin(reads, &key).await? else {
@@ -332,6 +344,7 @@ pub(crate) async fn seed(
                 budgets,
                 counter.as_ref(),
             ) {
+                exhausted = true;
                 break;
             }
             seen.insert(key.clone());
@@ -344,36 +357,22 @@ pub(crate) async fn seed(
     Ok(set)
 }
 
-/// Accepted edges whose two endpoints are both evidence notes.
+/// Accepted edges whose two endpoints are both evidence notes. Endpoints are
+/// filtered to the evidence set before any limit applies, so high-degree
+/// notes cannot crowd out a lineage or contradiction edge between members.
 pub(crate) async fn relations_among(
     reads: &dyn AlchemistReads,
-    chunks: &[EvidenceChunk],
-) -> Result<Vec<NoteEdgeRow>, AlchemistError> {
-    let ids: Vec<RecordId> = chunks
+    set: &mut EvidenceSet,
+) -> Result<(), AlchemistError> {
+    let ids: Vec<RecordId> = set
+        .chunks
         .iter()
         .filter_map(|chunk| parse_record_id(&chunk.id, Some("note")).ok())
         .collect();
-    if ids.len() < 2 {
-        return Ok(Vec::new());
-    }
-    let members: HashSet<String> = ids.iter().map(record_id_to_string).collect();
-    let mut seen = HashSet::new();
-    let mut relations: Vec<NoteEdgeRow> = reads
-        .accepted_edges(&ids, RELATION_FANOUT, &HashMap::new())
-        .await?
-        .into_iter()
-        .filter(|edge| {
-            members.contains(&record_id_to_string(&edge.in_id))
-                && members.contains(&record_id_to_string(&edge.out_id))
-                && seen.insert(record_id_to_string(&edge.id))
-        })
-        .collect();
-    relations.sort_by(|a, b| {
-        a.edge_type
-            .cmp(&b.edge_type)
-            .then_with(|| record_id_to_string(&a.id).cmp(&record_id_to_string(&b.id)))
-    });
-    Ok(relations)
+    let (relations, truncated) = reads.accepted_edges_among(&ids).await?;
+    set.relations = relations;
+    set.truncated |= truncated;
+    Ok(())
 }
 
 /// Re-read every chunk the draft cites. A chunk edited, superseded or

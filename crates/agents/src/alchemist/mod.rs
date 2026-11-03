@@ -396,6 +396,13 @@ pub trait AlchemistReads: Send + Sync {
         &self,
         note_ids: &[RecordId],
     ) -> graphrag_db::Result<HashMap<String, NoteMeta>>;
+    /// Accepted edges whose two endpoints are both in `note_ids`. Endpoints
+    /// are filtered before any limit, so outside neighbours cannot crowd
+    /// these out. The flag reports a reached limit.
+    async fn accepted_edges_among(
+        &self,
+        note_ids: &[RecordId],
+    ) -> graphrag_db::Result<(Vec<NoteEdgeRow>, bool)>;
 }
 
 #[async_trait]
@@ -445,6 +452,13 @@ impl AlchemistReads for Repository {
             })
             .collect())
     }
+
+    async fn accepted_edges_among(
+        &self,
+        note_ids: &[RecordId],
+    ) -> graphrag_db::Result<(Vec<NoteEdgeRow>, bool)> {
+        Repository::accepted_edges_among(self, note_ids).await
+    }
 }
 
 /// Run one bounded, read-only synthesis. Callers enforce the deadline by
@@ -466,7 +480,7 @@ pub async fn synthesize(
         } => gather::query(reads, search, query, *scope, *graph, &plan.budgets, augment).await?,
         SynthesisInput::Seed { id } => gather::seed(reads, id, &plan.budgets, augment).await?,
     };
-    evidence.relations = gather::relations_among(reads, &evidence.chunks).await?;
+    gather::relations_among(reads, &mut evidence).await?;
     let lineage = lineage::origin_groups(&evidence.chunks, &evidence.relations);
     let capabilities = generator.capabilities();
     let mut usage = SynthesisUsage {
@@ -801,7 +815,7 @@ fn gaps(
     if evidence.truncated {
         gap(
             GapKind::NeighbourhoodTruncated,
-            "Budgets cut the evidence set; more accepted neighbours or chunks were available."
+            "Budgets or fanout limits cut the evidence: more accepted neighbours, chunks or relations may exist."
                 .into(),
             Vec::new(),
         );

@@ -14,6 +14,8 @@ use graphrag_agents::{AugmentOptions, GraphMode, SearchAgent, SearchScope};
 use graphrag_db::Repository;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 /// Maximum characters in a seed record ID.
@@ -298,6 +300,9 @@ pub fn resolve_synthesis(
     })
 }
 
+/// Provider readiness checked inside the request's deadline.
+type Preflight<'a> = Pin<Box<dyn Future<Output = Result<(), ApplicationError>> + Send + 'a>>;
+
 /// Run one read-only synthesis under its whole-request deadline. Shared by
 /// the CLI (local) and the service (`synthesize_notes`).
 pub async fn synthesize_notes(
@@ -305,19 +310,37 @@ pub async fn synthesize_notes(
     request: SynthesisRequest,
     cancellation: ActionCancellation,
 ) -> Result<SynthesisResponse, SynthesisError> {
+    run_synthesis(context, request, cancellation, None).await
+}
+
+async fn run_synthesis<'a>(
+    context: SynthesisContext<'a>,
+    request: SynthesisRequest,
+    cancellation: ActionCancellation,
+    preflight: Option<Preflight<'a>>,
+) -> Result<SynthesisResponse, SynthesisError> {
     let runtime = context.runtime.ok_or(SynthesisError::Disabled)?;
     let plan = resolve_synthesis(runtime, &request)?;
     if cancellation.is_cancelled() {
         return Err(ApplicationError::Cancelled.into());
     }
     let deadline_ms = plan.budgets.deadline_ms;
-    let work = alchemist::synthesize(
-        context.repo,
-        context.search,
-        runtime.generator.as_ref(),
-        context.augment,
-        &plan,
-    );
+    // Provider readiness, retrieval, generation and verification all run
+    // inside one deadline.
+    let work = async {
+        if let Some(preflight) = preflight {
+            preflight.await?;
+        }
+        alchemist::synthesize(
+            context.repo,
+            context.search,
+            runtime.generator.as_ref(),
+            context.augment,
+            &plan,
+        )
+        .await
+        .map_err(SynthesisError::from)
+    };
     // Dropping the future on expiry or cancellation is safe: nothing is
     // written, so there is no partial state to roll back.
     let outcome = tokio::select! {
@@ -369,11 +392,13 @@ impl EmbeddedApplication {
         cancellation: ActionCancellation,
     ) -> Result<SynthesisResponse, SynthesisError> {
         let runtime = self.alchemist.as_ref().ok_or(SynthesisError::Disabled)?;
-        let plan = resolve_synthesis(runtime, &request)?;
-        if matches!(plan.input, SynthesisInput::Query { .. }) {
-            self.require_providers(false, &cancellation).await?;
-        }
-        synthesize_notes(
+        // Query mode embeds the question; check that provider within the
+        // deadline. Seed mode needs no provider before generation.
+        let probe = cancellation.clone();
+        let preflight: Option<Preflight<'_>> = request.query.is_some().then(|| {
+            Box::pin(async move { self.require_providers(false, &probe).await }) as Preflight<'_>
+        });
+        run_synthesis(
             SynthesisContext {
                 repo: &self.repo,
                 search: &self.search,
@@ -382,6 +407,7 @@ impl EmbeddedApplication {
             },
             request,
             cancellation,
+            preflight,
         )
         .await
     }
@@ -409,7 +435,37 @@ mod tests {
         }
     }
 
+    /// An embeddings provider whose readiness probe never answers in time.
+    struct SlowHealth;
+
+    #[async_trait::async_trait]
+    impl graphrag_agents::Embedder for SlowHealth {
+        async fn embed(&self, _: &str, _: bool) -> graphrag_agents::Result<Vec<f32>> {
+            unreachable!("readiness must time out first")
+        }
+        async fn embed_batch(
+            &self,
+            _: &[String],
+            _: bool,
+        ) -> graphrag_agents::Result<Vec<Vec<f32>>> {
+            unreachable!("readiness must time out first")
+        }
+        async fn health(&self) -> graphrag_agents::Result<bool> {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(true)
+        }
+        fn capabilities(&self) -> graphrag_agents::InferenceCapabilities {
+            DeterministicEmbedder::default().capabilities()
+        }
+    }
+
     async fn application() -> (EmbeddedApplication, String) {
+        application_with(Arc::new(DeterministicEmbedder::default())).await
+    }
+
+    async fn application_with(
+        embedder: graphrag_agents::SharedEmbedder,
+    ) -> (EmbeddedApplication, String) {
         let repo = Repository::new(graphrag_db::init_memory().await.unwrap());
         let note = repo
             .create_note(graphrag_core::Note::new(
@@ -417,7 +473,6 @@ mod tests {
             ))
             .await
             .unwrap();
-        let embedder: graphrag_agents::SharedEmbedder = Arc::new(DeterministicEmbedder::default());
         let application = EmbeddedApplication::new(
             repo.clone(),
             SearchAgent::new(repo, embedder.clone()),
@@ -532,6 +587,24 @@ mod tests {
         ));
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(slow.requests().len(), 1);
+
+        // Query-mode provider readiness counts against the same deadline.
+        let (slow, _) = application_with(Arc::new(SlowHealth)).await;
+        let slow = slow.with_alchemist(runtime(
+            FixtureSynthesisGenerator::fixed(draft.to_string()),
+            CitationPolicy::Drop,
+        ));
+        let started = std::time::Instant::now();
+        let request = SynthesisRequest {
+            deadline_ms: Some(60),
+            ..SynthesisRequest::for_query("when did the hive swarm?")
+        };
+        assert!(matches!(
+            slow.synthesize_notes(request, ActionCancellation::new())
+                .await,
+            Err(SynthesisError::DeadlineExceeded { deadline_ms: 60 })
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
 
         let cancelled = ActionCancellation::new();
         cancelled.cancel();
