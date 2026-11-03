@@ -1,0 +1,961 @@
+{
+  "issue": 192,
+  "migration": 26,
+  "fixture": "512 distractor/population rows per provenance table, plus numeric, missing and duplicate endpoints; actual Repository SQL and native bindings",
+  "plans": [
+    {
+      "phase": "v25-negative-control",
+      "plan": {
+        "attributes": {
+          "projections": "in, out"
+        },
+        "children": [
+          {
+            "attributes": {
+              "direction": "Forward",
+              "pre_decode_filter": "yes",
+              "predicate": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]",
+              "table": "note_from_conversation"
+            },
+            "context": "Db",
+            "metrics": {
+              "elapsed_ns": 812542,
+              "output_batches": 2,
+              "output_rows": 5,
+              "records_fetched": 0
+            },
+            "operator": "TableScan"
+          }
+        ],
+        "context": "Db",
+        "metrics": {
+          "elapsed_ns": 5833,
+          "output_batches": 2,
+          "output_rows": 5,
+          "records_fetched": 0
+        },
+        "operator": "SelectProject",
+        "total_rows": 5
+      },
+      "sql": "SELECT in, out FROM note_from_conversation WHERE in IN $note_ids"
+    },
+    {
+      "phase": "v25-negative-control",
+      "plan": {
+        "attributes": {
+          "projections": "in, out"
+        },
+        "children": [
+          {
+            "attributes": {
+              "direction": "Forward",
+              "pre_decode_filter": "yes",
+              "predicate": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]",
+              "table": "note_from_message"
+            },
+            "context": "Db",
+            "metrics": {
+              "elapsed_ns": 779500,
+              "output_batches": 2,
+              "output_rows": 5,
+              "records_fetched": 0
+            },
+            "operator": "TableScan"
+          }
+        ],
+        "context": "Db",
+        "metrics": {
+          "elapsed_ns": 5417,
+          "output_batches": 2,
+          "output_rows": 5,
+          "records_fetched": 0
+        },
+        "operator": "SelectProject",
+        "total_rows": 5
+      },
+      "sql": "SELECT in, out FROM note_from_message WHERE in IN $note_ids"
+    },
+    {
+      "phase": "upgraded",
+      "plan": {
+        "attributes": {
+          "projections": "in, out"
+        },
+        "children": [
+          {
+            "attributes": {
+              "predicate": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+            },
+            "children": [
+              {
+                "attributes": {
+                  "branches": "6",
+                  "table": "note_from_conversation"
+                },
+                "children": [
+                  {
+                    "attributes": {
+                      "access": "= note:`0`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 18042,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 22209,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:7",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 15375,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:missing",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 15375,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:no_provenance",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 5917,
+                      "output_batches": 0,
+                      "output_rows": 0,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 20209,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  }
+                ],
+                "context": "Db",
+                "metrics": {
+                  "elapsed_ns": 11625,
+                  "output_batches": 4,
+                  "output_rows": 5,
+                  "records_fetched": 0
+                },
+                "operator": "UnionIndexScan"
+              }
+            ],
+            "context": "Db",
+            "expressions": [
+              {
+                "role": "predicate",
+                "sql": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+              }
+            ],
+            "metrics": {
+              "elapsed_ns": 5334,
+              "output_batches": 4,
+              "output_rows": 5,
+              "records_fetched": 0
+            },
+            "operator": "Filter"
+          }
+        ],
+        "context": "Db",
+        "metrics": {
+          "elapsed_ns": 6793,
+          "output_batches": 4,
+          "output_rows": 5,
+          "records_fetched": 0
+        },
+        "operator": "SelectProject",
+        "total_rows": 5
+      },
+      "sql": "SELECT in, out FROM note_from_conversation WHERE in IN $note_ids"
+    },
+    {
+      "phase": "upgraded",
+      "plan": {
+        "attributes": {
+          "projections": "in, out"
+        },
+        "children": [
+          {
+            "attributes": {
+              "predicate": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+            },
+            "children": [
+              {
+                "attributes": {
+                  "branches": "6",
+                  "table": "note_from_message"
+                },
+                "children": [
+                  {
+                    "attributes": {
+                      "access": "= note:`0`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 20959,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 24750,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:7",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 16791,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:missing",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 18458,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:no_provenance",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 7709,
+                      "output_batches": 0,
+                      "output_rows": 0,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 26291,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  }
+                ],
+                "context": "Db",
+                "metrics": {
+                  "elapsed_ns": 10751,
+                  "output_batches": 4,
+                  "output_rows": 5,
+                  "records_fetched": 0
+                },
+                "operator": "UnionIndexScan"
+              }
+            ],
+            "context": "Db",
+            "expressions": [
+              {
+                "role": "predicate",
+                "sql": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+              }
+            ],
+            "metrics": {
+              "elapsed_ns": 5041,
+              "output_batches": 4,
+              "output_rows": 5,
+              "records_fetched": 0
+            },
+            "operator": "Filter"
+          }
+        ],
+        "context": "Db",
+        "metrics": {
+          "elapsed_ns": 6417,
+          "output_batches": 4,
+          "output_rows": 5,
+          "records_fetched": 0
+        },
+        "operator": "SelectProject",
+        "total_rows": 5
+      },
+      "sql": "SELECT in, out FROM note_from_message WHERE in IN $note_ids"
+    },
+    {
+      "phase": "post-upgrade-write",
+      "plan": {
+        "attributes": {
+          "projections": "in, out"
+        },
+        "children": [
+          {
+            "attributes": {
+              "predicate": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+            },
+            "children": [
+              {
+                "attributes": {
+                  "branches": "6",
+                  "table": "note_from_conversation"
+                },
+                "children": [
+                  {
+                    "attributes": {
+                      "access": "= note:`0`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 21958,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 24499,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:7",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 16834,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:missing",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 16542,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:no_provenance",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 6459,
+                      "output_batches": 0,
+                      "output_rows": 0,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 21750,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  }
+                ],
+                "context": "Db",
+                "metrics": {
+                  "elapsed_ns": 13166,
+                  "output_batches": 4,
+                  "output_rows": 5,
+                  "records_fetched": 0
+                },
+                "operator": "UnionIndexScan"
+              }
+            ],
+            "context": "Db",
+            "expressions": [
+              {
+                "role": "predicate",
+                "sql": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+              }
+            ],
+            "metrics": {
+              "elapsed_ns": 6416,
+              "output_batches": 4,
+              "output_rows": 5,
+              "records_fetched": 0
+            },
+            "operator": "Filter"
+          }
+        ],
+        "context": "Db",
+        "metrics": {
+          "elapsed_ns": 7250,
+          "output_batches": 4,
+          "output_rows": 5,
+          "records_fetched": 0
+        },
+        "operator": "SelectProject",
+        "total_rows": 5
+      },
+      "sql": "SELECT in, out FROM note_from_conversation WHERE in IN $note_ids"
+    },
+    {
+      "phase": "post-upgrade-write",
+      "plan": {
+        "attributes": {
+          "projections": "in, out"
+        },
+        "children": [
+          {
+            "attributes": {
+              "predicate": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+            },
+            "children": [
+              {
+                "attributes": {
+                  "branches": "6",
+                  "table": "note_from_message"
+                },
+                "children": [
+                  {
+                    "attributes": {
+                      "access": "= note:`0`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 27791,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 23875,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:7",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 18125,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:missing",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 31833,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:no_provenance",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 7667,
+                      "output_batches": 0,
+                      "output_rows": 0,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 24750,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  }
+                ],
+                "context": "Db",
+                "metrics": {
+                  "elapsed_ns": 14709,
+                  "output_batches": 4,
+                  "output_rows": 6,
+                  "records_fetched": 0
+                },
+                "operator": "UnionIndexScan"
+              }
+            ],
+            "context": "Db",
+            "expressions": [
+              {
+                "role": "predicate",
+                "sql": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+              }
+            ],
+            "metrics": {
+              "elapsed_ns": 7541,
+              "output_batches": 4,
+              "output_rows": 6,
+              "records_fetched": 0
+            },
+            "operator": "Filter"
+          }
+        ],
+        "context": "Db",
+        "metrics": {
+          "elapsed_ns": 8249,
+          "output_batches": 4,
+          "output_rows": 6,
+          "records_fetched": 0
+        },
+        "operator": "SelectProject",
+        "total_rows": 6
+      },
+      "sql": "SELECT in, out FROM note_from_message WHERE in IN $note_ids"
+    },
+    {
+      "phase": "fresh",
+      "plan": {
+        "attributes": {
+          "projections": "in, out"
+        },
+        "children": [
+          {
+            "attributes": {
+              "predicate": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+            },
+            "children": [
+              {
+                "attributes": {
+                  "branches": "6",
+                  "table": "note_from_conversation"
+                },
+                "children": [
+                  {
+                    "attributes": {
+                      "access": "= note:`0`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 20042,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 22958,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:7",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 15333,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:missing",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 15000,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:no_provenance",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 5709,
+                      "output_batches": 0,
+                      "output_rows": 0,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_conversation_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 20584,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  }
+                ],
+                "context": "Db",
+                "metrics": {
+                  "elapsed_ns": 11958,
+                  "output_batches": 4,
+                  "output_rows": 5,
+                  "records_fetched": 0
+                },
+                "operator": "UnionIndexScan"
+              }
+            ],
+            "context": "Db",
+            "expressions": [
+              {
+                "role": "predicate",
+                "sql": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+              }
+            ],
+            "metrics": {
+              "elapsed_ns": 5335,
+              "output_batches": 4,
+              "output_rows": 5,
+              "records_fetched": 0
+            },
+            "operator": "Filter"
+          }
+        ],
+        "context": "Db",
+        "metrics": {
+          "elapsed_ns": 6791,
+          "output_batches": 4,
+          "output_rows": 5,
+          "records_fetched": 0
+        },
+        "operator": "SelectProject",
+        "total_rows": 5
+      },
+      "sql": "SELECT in, out FROM note_from_conversation WHERE in IN $note_ids"
+    },
+    {
+      "phase": "fresh",
+      "plan": {
+        "attributes": {
+          "projections": "in, out"
+        },
+        "children": [
+          {
+            "attributes": {
+              "predicate": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+            },
+            "children": [
+              {
+                "attributes": {
+                  "branches": "6",
+                  "table": "note_from_message"
+                },
+                "children": [
+                  {
+                    "attributes": {
+                      "access": "= note:`0`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 21084,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 24083,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:7",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 15292,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:missing",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 15083,
+                      "output_batches": 1,
+                      "output_rows": 1,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:no_provenance",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 7292,
+                      "output_batches": 0,
+                      "output_rows": 0,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  },
+                  {
+                    "attributes": {
+                      "access": "= note:`7`",
+                      "direction": "Forward",
+                      "index": "idx_note_from_message_in"
+                    },
+                    "context": "Db",
+                    "metrics": {
+                      "elapsed_ns": 22751,
+                      "output_batches": 1,
+                      "output_rows": 2,
+                      "records_fetched": 0
+                    },
+                    "operator": "IndexScan"
+                  }
+                ],
+                "context": "Db",
+                "metrics": {
+                  "elapsed_ns": 11791,
+                  "output_batches": 4,
+                  "output_rows": 5,
+                  "records_fetched": 0
+                },
+                "operator": "UnionIndexScan"
+              }
+            ],
+            "context": "Db",
+            "expressions": [
+              {
+                "role": "predicate",
+                "sql": "in INSIDE [note:`0`, note:`7`, note:7, note:missing, note:no_provenance, note:`7`]"
+              }
+            ],
+            "metrics": {
+              "elapsed_ns": 5625,
+              "output_batches": 4,
+              "output_rows": 5,
+              "records_fetched": 0
+            },
+            "operator": "Filter"
+          }
+        ],
+        "context": "Db",
+        "metrics": {
+          "elapsed_ns": 6668,
+          "output_batches": 4,
+          "output_rows": 5,
+          "records_fetched": 0
+        },
+        "operator": "SelectProject",
+        "total_rows": 5
+      },
+      "sql": "SELECT in, out FROM note_from_message WHERE in IN $note_ids"
+    }
+  ]
+}
