@@ -788,35 +788,85 @@ fn contains_token(haystack: &str, needle: &str) -> bool {
     false
 }
 
-/// Wikilink targets (`[[path/stem|alias]]`, `[[stem#heading]]`), lowercased
-/// to their final path segment without a Markdown extension.
-fn wikilink_targets(text: &str) -> BTreeSet<String> {
-    let mut targets = BTreeSet::new();
-    let lower = text.to_lowercase();
-    let mut rest = lower.as_str();
+/// Lowercased directories of a `file://` source URI's path, outermost first.
+fn file_directories(uri: &str) -> Vec<String> {
+    let path = uri
+        .strip_prefix("file://")
+        .unwrap_or_default()
+        .to_lowercase();
+    let mut segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    segments.pop();
+    segments
+}
+
+/// Wikilinks in lowercased `text` (`[[dir/stem|alias]]`, `[[stem#heading]]`)
+/// as path segments, the last without a Markdown extension, plus the text
+/// outside the links.
+fn wikilinks(text: &str) -> (Vec<Vec<String>>, String) {
+    let mut links = Vec::new();
+    let mut outside = String::with_capacity(text.len());
+    let mut rest = text;
     while let Some(open) = rest.find("[[") {
-        rest = &rest[open + 2..];
-        let Some(close) = rest.find("]]") else {
+        let Some(close) = rest[open + 2..].find("]]") else {
             break;
         };
-        let inner = &rest[..close];
-        rest = &rest[close + 2..];
+        let inner = &rest[open + 2..open + 2 + close];
+        let end = open + 2 + close + 2;
         if inner.len() > 512 {
+            outside.push_str(&rest[..end]);
+            rest = &rest[end..];
             continue;
         }
+        outside.push_str(&rest[..open]);
+        outside.push(' ');
+        rest = &rest[end..];
         let target = inner.split(['|', '#']).next().unwrap_or_default().trim();
-        let segment = target.rsplit('/').next().unwrap_or_default();
-        let segment = segment.strip_suffix(".md").unwrap_or(segment);
-        if !segment.is_empty() {
-            targets.insert(segment.to_owned());
+        let reversed = target.rsplit('/').collect::<Vec<_>>();
+        let Some((last, directories)) = reversed.split_first() else {
+            continue;
+        };
+        let stem = last.strip_suffix(".md").unwrap_or(last);
+        if stem.is_empty() {
+            continue;
         }
+        let mut segments = directories
+            .iter()
+            .rev()
+            .filter(|segment| !segment.is_empty() && **segment != ".")
+            .map(|segment| (*segment).to_owned())
+            .collect::<Vec<_>>();
+        segments.push(stem.to_owned());
+        links.push(segments);
     }
-    targets
+    outside.push_str(rest);
+    (links, outside)
+}
+
+/// A wikilink names a file when its last segment is the file's stem and any
+/// directories that qualify it are the file's trailing directories:
+/// `[[project-a/design]]` names `.../project-a/design.md`, never
+/// `.../project-b/design.md`.
+fn wikilink_names(link: &[String], directories: &[String], stem: &str) -> bool {
+    let Some((last, qualifiers)) = link.split_last() else {
+        return false;
+    };
+    last == stem
+        && qualifiers.len() <= directories.len()
+        && qualifiers
+            .iter()
+            .rev()
+            .zip(directories.iter().rev())
+            .all(|(qualifier, directory)| qualifier == directory)
 }
 
 /// The strongest explicit reference from `text` to `target`. File-name forms
 /// are skipped when both sources share a file name (the reference would be
-/// ambiguous with a self-reference).
+/// ambiguous with a self-reference). A wikilink counts only through its own
+/// (directory-checked) target, never as a bare file-name mention.
 fn reference_kind(
     text: &str,
     target: &CandidateNote,
@@ -833,10 +883,15 @@ fn reference_kind(
     if own_file.is_some_and(|(own, _)| *own == name) || stem.chars().count() < 3 {
         return None;
     }
-    if wikilink_targets(text).contains(&stem) {
+    let (links, outside) = wikilinks(&text.to_lowercase());
+    let directories = file_directories(uri);
+    if links
+        .iter()
+        .any(|link| wikilink_names(link, &directories, &stem))
+    {
         return Some(CrossReferenceKind::Wikilink);
     }
-    if contains_token(&text.to_lowercase(), &name) {
+    if contains_token(&outside, &name) {
         return Some(CrossReferenceKind::FileName);
     }
     None
@@ -972,6 +1027,55 @@ mod tests {
         // Short stems/names never count.
         let short = note("short", Some("file:///vault/ab.md"), "x");
         assert_eq!(reference_kind("[[ab]] and ab.md", &short, None), None);
+    }
+
+    #[test]
+    fn qualified_wikilinks_must_name_the_source_directories() {
+        let target = note("target", Some("file:///vault/daily/2026-08-04.md"), "x");
+        for (text, expected) in [
+            ("[[daily/2026-08-04]]", Some(CrossReferenceKind::Wikilink)),
+            (
+                "[[vault/daily/2026-08-04|x]]",
+                Some(CrossReferenceKind::Wikilink),
+            ),
+            (
+                "[[/vault/./daily/2026-08-04]]",
+                Some(CrossReferenceKind::Wikilink),
+            ),
+            (
+                "[[Daily/2026-08-04.md#Decisions]]",
+                Some(CrossReferenceKind::Wikilink),
+            ),
+            ("[[weekly/2026-08-04]]", None),
+            ("[[other/daily/2026-08-04]]", None),
+            ("[[root/vault/daily/2026-08-04]]", None),
+            // A qualified wikilink never falls back to its bare file name.
+            ("[[weekly/2026-08-04.md]]", None),
+            ("[[elsewhere|see 2026-08-04.md]]", None),
+            // Plain file-name mentions outside wikilinks are unchanged.
+            (
+                "[[weekly/2026-08-04]] and 2026-08-04.md",
+                Some(CrossReferenceKind::FileName),
+            ),
+        ] {
+            assert_eq!(reference_kind(text, &target, None), expected, "{text}");
+        }
+
+        let index = note(
+            "index",
+            Some("file:///vault/index.md"),
+            "Design notes live in [[project-a/design]].",
+        );
+        let design_a = note("design-a", Some("file:///vault/project-a/design.md"), "A");
+        let design_b = note("design-b", Some("file:///vault/project-b/design.md"), "B");
+        assert_eq!(
+            cross_reference(&index, &design_a),
+            Some(CrossReferenceEvidence {
+                direction: CrossReferenceDirection::FromMentionsTo,
+                kind: CrossReferenceKind::Wikilink,
+            })
+        );
+        assert_eq!(cross_reference(&index, &design_b), None);
     }
 
     #[test]
