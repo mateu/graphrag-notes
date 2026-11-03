@@ -52,6 +52,17 @@ class UsageReportTest(unittest.TestCase):
         self.assertEqual(summary[0]["max_chunks_per_source"], {"1": 1})
         self.assertIn("max_chunks_per_source {'1': 1}", usage_report.render(summary))
 
+    def test_phase_durations_and_status_are_additive_and_optional(self):
+        row = usage_report.parse_line(SEARCH.rstrip() +
+            ' graph_status="timed_out" embedding_ms=1.2 lexical_ms=0.0 graph_entity_matching_ms=2000.1\n')
+        self.assertEqual(row["graph_status"], "timed_out")
+        self.assertEqual(row["graph_entity_matching_ms"], 2000.1)
+        self.assertNotIn("graph_note_hydration_ms", row)
+        summary = usage_report.summarize([row, usage_report.parse_line(SEARCH)])[0]
+        self.assertEqual(summary["graph_status"], {"timed_out": 1})
+        self.assertEqual(summary["phase_ms"]["lexical_ms"], {"p50": 0.0, "p95": 0.0})
+        self.assertEqual(summary["calls"], 2)
+
     def test_summarizes_empty_rate_errors_and_graph_contribution(self):
         records = [usage_report.parse_line(line) for line in (SEARCH, EMPTY, CONTEXT, FAILED)]
         by_tool = {(e["principal"], e["tool"]): e for e in usage_report.summarize(records)}

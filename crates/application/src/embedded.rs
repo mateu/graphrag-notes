@@ -298,6 +298,11 @@ impl ApplicationOperations for EmbeddedApplication {
         };
         let retrieval = async {
             if request.mode == SearchMode::Keyword {
+                crate::retrieval_usage::graph_status(if request.graph == GraphPolicy::Off {
+                    crate::retrieval_usage::GraphStatus::Off
+                } else {
+                    crate::retrieval_usage::GraphStatus::Skipped
+                });
                 self.search
                     .keyword_search_with_scope(
                         &request.query,

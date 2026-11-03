@@ -161,7 +161,61 @@ result statistics: hit count, top score and, for `build_context`, graph
 candidates considered/selected, relevance drops and total tokens. Lines never
 contain query text, record IDs, content, titles or source URIs.
 
-Summarize them per principal and tool:
+For `search_notes` and `build_context`, usage lines also expose executed
+retrieval phases as flat millisecond fields, rounded to 0.1 ms. The closed set is:
+
+| Field | Work measured |
+| --- | --- |
+| `embedding_ms` | Query embedding |
+| `lexical_ms` | Lexical retrieval |
+| `vector_fusion_ms` | Vector retrieval and baseline fusion |
+| `graph_query_candidates_ms` | Preparing ranked graph seed candidates |
+| `graph_entity_matching_ms` | Query-to-entity matching |
+| `graph_mentions_ms` | Mention lookup |
+| `graph_seed_evidence_ms` | Seed evidence lookup |
+| `graph_edge_expansion_ms` | Graph edge expansion |
+| `graph_note_hydration_ms` | Loading graph candidate notes |
+| `graph_provenance_ms` | Graph provenance lookup |
+| `context_packing_ms` | Context packing (`build_context`) |
+
+Phases that did not run are absent, not zero. Repeated phases (including
+multiple graph hops) are summed per request. Timings cover measured retrieval
+work, not the entire request wall time. These fields add no query text,
+fingerprints, record IDs or content.
+`graph_status` is `off` (explicitly disabled), `ok` (completed), `timed_out`
+(budget expired; unchanged graph-off results returned), or `skipped` (graph work
+not applicable). This is separate from `outcome`: a timeout fallback can have
+`outcome=ok`, while errors retain their existing outcome codes. Search responses
+include `data.graph_status` in the MCP result; `build_context` includes it in
+its diagnostics. The CLI JSON envelope wraps that MCP result in its own `data`.
+
+### Graph-phase budget and rollback
+
+The host's `[search]` configuration accepts `graph_phase_budget_ms` (milliseconds;
+default **2000**, **0** disables the bound). It covers graph candidate work,
+including hydration and provenance, not baseline lexical/vector retrieval,
+embedding, or context packing. Expiry abandons graph work and returns exactly
+the graph-off baseline (same records, order and scores) with
+`graph_status=timed_out`; it is not an overall request deadline. Keep a separate
+client timeout for deployment checks.
+
+Before running an older binary, **remove `graph_phase_budget_ms` from the
+configuration**: older `SearchConfig` uses `deny_unknown_fields` and rejects the
+new key. This configuration rollback does not override database-version rollback
+restrictions described above.
+
+### Post-deploy read probe
+
+Run [`scripts/post-deploy-probe.py`](../scripts/post-deploy-probe.py) after an
+owner-authorized deployment using an existing note's known keyword and a
+read-capable credential inherited from the environment. It checks remote
+`doctor`, keyword graph-off retrieval, inspection of the top note, and hybrid
+graph-on retrieval with `graph_status=ok`. It fails closed at the first failing
+step, with a per-command client timeout (15 seconds by default), and prints no
+note text or IDs. See [remote diagnostics](remote-diagnostics.md#post-deploy-read-probe)
+for invocation, doctor warning semantics, and isolated acceptance evidence.
+
+Summarize usage records per principal and tool:
 
 ```bash
 scripts/usage_report.py ~/.graphrag/shared/logs/service.stderr.log --since 2026-11-02
