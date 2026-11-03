@@ -55,3 +55,18 @@ Q1/Q3/Q8 replace `memory/error-log.md`; Q2/Q7 replace the out-of-scope
 retrieval changes in this issue. Q1/Q8 questions and seeds are untouched.
 The service upgrade since the old fixture explains lower call timings; those
 single-run deltas do not qualify performance.
+
+## Per-round, per-chunk pass rules (#204)
+
+`graph-eval-path-negatives.json` is entirely fictional: invented IDs, paths,
+hashes and question, and no note text. Each case runs `off,on,on,off` through
+the runner's projection and summary. Valid controls (one-hop outbound, two-hop
+outbound then inbound, unknown materiality) pin what may pass. Every other case
+must fail with its listed reasons: support missing from one on repetition,
+broken or gapped endpoint chain, wrong terminal, revisited node, unrelated
+chunk in the support file, expected chunk mapped to another file, disallowed
+type, direction or edge ID, missing fields, support already returned off (by
+file or by chunk ID), or a human `no`.
+
+Both dated baselines above are schema 1 reports without chunk IDs. They are
+kept unchanged. Re-graded under these rules they remain 0/8; no verdict changes.
