@@ -21,6 +21,14 @@ class EvaluationError(Exception):
     pass
 
 
+# v2 adds per-round `returned_ids` (opaque chunk record IDs) so path terminals
+# can be checked against the chunk that actually carried the graph evidence.
+REPORT_SCHEMA_VERSION = 2
+# Traversal labels emitted by the service's graph path steps.
+DIRECTIONS = ('outbound', 'inbound')
+STEP_FIELDS = ('edge_id', 'edge_type', 'direction', 'from_id', 'to_id')
+
+
 def require(condition, message):
     if not condition:
         raise EvaluationError(message)
@@ -74,6 +82,16 @@ def load_suite(value):
                     all(isinstance(x, str) and x for x in q[key]), 'missing question paths/relations')
         require(q.get('answer_differs_materially', 'unknown') in ('yes', 'no', 'unknown'),
                 'invalid human judgement')
+        # Optional per support path: the answer-bearing chunk IDs every graph-on round must deliver.
+        # Suites without them still run, but such questions cannot pass.
+        chunks = q.get('support_chunks', {})
+        require(isinstance(chunks, dict) and set(chunks) <= set(q['support']) and
+                all(isinstance(ids, list) and ids and all(isinstance(x, str) and x for x in ids) and
+                    len(set(ids)) == len(ids) for ids in chunks.values()),
+                'invalid support chunks')
+        directions = q.get('allowed_directions', list(DIRECTIONS))
+        require(isinstance(directions, list) and directions and all(d in DIRECTIONS for d in directions),
+                'invalid allowed directions')
     return value
 
 
@@ -97,6 +115,8 @@ def round_result(data, policy, elapsed, mapping, question):
                    if type(v) in (int, float, bool) or
                    (k == 'token_count_mode' and v in ('estimated', 'exact'))}
     row = {'policy': policy, 'elapsed_ms': elapsed, 'error': None, 'returned_paths': paths,
+           'returned_ids': [ch.get('id') if isinstance(ch.get('id'), str) and ch.get('id') else None
+                            for ch in chunks],
            'scores': [ch.get('score') for ch in chunks],
            'chunk_graph': [graph_fields(ch.get('graph')) for ch in chunks],
            'diagnostics': diagnostics, 'total_tokens': data.get('total_tokens'),
@@ -106,12 +126,47 @@ def round_result(data, policy, elapsed, mapping, question):
     return row
 
 
-def accepted_path(graph, allowed):
-    if not graph or not isinstance(graph.get('hops'), int) or graph['hops'] < 1:
+def accepted_path(graph, allowed, chunk_id, directions=DIRECTIONS):
+    """True only for a contiguous accepted path from the graph seed to `chunk_id`.
+
+    Every step needs all of STEP_FIELDS, an allowed type whose edge ID belongs to
+    that relation table, a permitted direction, and must start where the previous
+    step ended without revisiting a node.
+    """
+    if not isinstance(graph, dict) or not isinstance(chunk_id, str) or not chunk_id:
         return False
-    path = graph.get('path') or []
-    return len(path) == graph['hops'] and all(
-        step.get('edge_id') and step.get('edge_type') in allowed for step in path)
+    hops, path, node = graph.get('hops'), graph.get('path'), graph.get('seed_note_id')
+    if (type(hops) is not int or hops < 1 or not isinstance(path, list) or len(path) != hops or
+            not isinstance(node, str) or not node):
+        return False
+    visited = {node}
+    for step in path:
+        if not isinstance(step, dict) or not all(isinstance(step.get(k), str) and step[k] for k in STEP_FIELDS):
+            return False
+        if (step['edge_type'] not in allowed or not step['edge_id'].startswith(step['edge_type'] + ':') or
+                step['direction'] not in directions or step['from_id'] != node or step['to_id'] in visited):
+            return False
+        node = step['to_id']
+        visited.add(node)
+    return node == chunk_id
+
+
+def support_status(row, path, chunk_id, question):
+    """How one successful graph-on round returned one expected answer-bearing chunk."""
+    ids, paths, graphs = row.get('returned_ids'), row.get('returned_paths'), row.get('chunk_graph')
+    if not (isinstance(ids, list) and isinstance(paths, list) and isinstance(graphs, list) and
+            len(ids) == len(paths) == len(graphs)):
+        return 'missing_fields'
+    hits = [i for i, value in enumerate(ids) if value == chunk_id]
+    allowed = question.get('allowed_relations', [])
+    directions = question.get('allowed_directions', DIRECTIONS)
+    if any(paths[i] == path and accepted_path(graphs[i], allowed, chunk_id, directions) for i in hits):
+        return 'delivered'
+    if hits:
+        return 'invalid_path' if any(paths[i] == path for i in hits) else 'support_source_mismatch'
+    if any(p == path and not (isinstance(i, str) and i) for p, i in zip(paths, ids)):
+        return 'missing_fields'
+    return 'unrelated_chunk' if path in paths else 'support_missing'
 
 
 def summarize(question, rounds):
@@ -121,9 +176,6 @@ def summarize(question, rounds):
         return all(any(r.get('expected_found', {}).get(p, False) for r in rows) for p in question[key])
     def paths(rows):
         return set(p for r in rows for p in r['returned_paths'])
-    def via_path(p):
-        return any(path == p and accepted_path(g, question['allowed_relations'])
-                   for r in on for path, g in zip(r['returned_paths'], r['chunk_graph']))
     summary = {'off_finds_seed': found(off, 'seed'), 'on_finds_seed': found(on, 'seed'),
                'off_finds_support': found(off, 'support'), 'on_finds_support': found(on, 'support'),
                'on_same_paths_as_off': paths(off) == paths(on),
@@ -131,13 +183,42 @@ def summarize(question, rounds):
                'on_graph_selected': sum(r['diagnostics'].get('graph_candidates_selected', 0) for r in on),
                'stable_off': len({r['response_sha256'] for r in off}) == 1,
                'stable_on': len({r['response_sha256'] for r in on}) == 1}
-    # No support may already be present off; each required support needs its own accepted on-path.
-    conditions = {'off_lacks_support': not any(p in paths(off) for p in question['support']),
-                  'on_returns_support_via_allowed_path': all(via_path(p) for p in question['support'])}
+    expected = question.get('support_chunks') or {}
+    targets = [(p, c) for p in question['support'] for c in expected.get(p, [])]
+    unspecified = [p for p in question['support'] if not expected.get(p)]
+    reasons = set()
+    if any(r['error'] for r in rounds):
+        reasons.add('call_error')
+    if len(off) < 2 or len(on) < 2:
+        reasons.add('insufficient_rounds')
+    if unspecified or not targets:
+        reasons.add('support_chunk_unspecified')
+    if any(not isinstance(r.get('returned_ids'), list) for r in off):
+        reasons.add('missing_fields')
+    off_ids = {i for r in off for i in (r.get('returned_ids') or [])}
+    # Every successful on repetition must deliver every expected chunk on its own.
+    delivered = []
+    for r in on:
+        statuses = set() if r['error'] else {support_status(r, p, c, question) for p, c in targets}
+        reasons.update(statuses - {'delivered'})
+        delivered.append(not r['error'] and not unspecified and bool(targets) and statuses == {'delivered'})
+    successful = [d for r, d in zip(on, delivered) if not r['error']]
+    if any(successful) and not all(successful):
+        reasons.add('inconsistent_support')
+    # No support may already be present off, by file or by expected chunk.
+    conditions = {'off_lacks_support': not any(p in paths(off) for p in question['support']) and
+                  not any(c in off_ids for _, c in targets),
+                  'on_returns_support_via_allowed_path': bool(on) and all(delivered)}
+    if not conditions['off_lacks_support']:
+        reasons.add('off_has_support')
     judgement = question.get('answer_differs_materially', 'unknown')
+    if judgement == 'no':
+        reasons.add('human_rejected')
     summary.update(conditions)
+    summary['on_support_by_round'] = delivered
     summary['answer_differs_materially'] = judgement
-    summary['pass'] = ('fail' if any(r['error'] for r in rounds) or not all(conditions.values()) or judgement == 'no'
+    summary['fail_reasons'] = sorted(reasons)
+    summary['pass'] = ('fail' if reasons or not all(conditions.values())
                        else 'needs_judgement' if judgement == 'unknown' else 'pass')
     # Normalize any(...) above to a boolean even when a path is an empty list.
     summary['on_has_edge_path'] = bool(summary['on_has_edge_path'])
@@ -157,11 +238,14 @@ def evaluate(suite, mapping, client, params, policies):
             except (mcp.ImportFailure, EvaluationError, ValueError, TypeError, KeyError):
                 # Exception strings can echo queries/credentials; never export them.
                 row = {'policy': policy, 'elapsed_ms': round((time.monotonic() - started) * 1000),
-                       'error': 'context_failed', 'returned_paths': [], 'scores': [], 'chunk_graph': [],
-                       'diagnostics': {}, 'expected_found': {}, 'response_sha256': digest({'error': 'context_failed'})}
+                       'error': 'context_failed', 'returned_paths': [], 'returned_ids': [], 'scores': [],
+                       'chunk_graph': [], 'diagnostics': {}, 'expected_found': {},
+                       'response_sha256': digest({'error': 'context_failed'})}
             rounds.append(row)
         public.append({'id': q['id'], 'seed': q['seed'], 'support': q['support'],
+                       'support_chunks': q.get('support_chunks', {}),
                        'allowed_relations': q['allowed_relations'],
+                       'allowed_directions': q.get('allowed_directions', list(DIRECTIONS)),
                        'coverage': {p: p in set(mapping.values()) for p in q['seed'] + q['support']},
                        'rounds': rounds, 'summary': summarize(q, rounds)})
         private.append({'id': q['id'], 'rounds': raw})
@@ -259,7 +343,7 @@ def main(argv=None, client_factory=mcp.Client):
                             mcp_protocol=getattr(client, 'protocol', '2025-11-25'),
                             suite_sha256=hashlib.sha256(args.suite.read_bytes()).hexdigest(),
                             runner_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
-            report = {'schema_version': 1, 'read_only': True, 'metadata': metadata,
+            report = {'schema_version': REPORT_SCHEMA_VERSION, 'read_only': True, 'metadata': metadata,
                       'protocol': dict(params, policies=policies), 'questions': questions}
             json.dump(report, stream, indent=2, allow_nan=False)
             stream.write('\n')
@@ -269,8 +353,10 @@ def main(argv=None, client_factory=mcp.Client):
             print(json.dumps(report, indent=2))
         if args.summary or not args.json:
             for q in questions:
-                print('%s: %s on==off=%s graph_selected=%d' %
-                      (q['id'], q['summary']['pass'], q['summary']['on_same_paths_as_off'], q['summary']['on_graph_selected']))
+                reasons = q['summary']['fail_reasons']
+                print('%s: %s on==off=%s graph_selected=%d%s' %
+                      (q['id'], q['summary']['pass'], q['summary']['on_same_paths_as_off'],
+                       q['summary']['on_graph_selected'], ' reasons=' + ','.join(reasons) if reasons else ''))
             print('%d/%d pass' % (sum(q['summary']['pass'] == 'pass' for q in questions), len(questions)))
         if baseline:
             print(compare(report, baseline))

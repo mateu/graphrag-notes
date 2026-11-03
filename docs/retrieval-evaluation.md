@@ -148,11 +148,22 @@ Keep the suite and source map private. A suite has this shape:
     "question": "What prerequisite explains the fictional rollout order?",
     "seed": ["memory/fictional-seed.md"],
     "support": ["memory/fictional-support.md"],
+    "support_chunks": {"memory/fictional-support.md": ["note:fictional-answer-chunk"]},
     "allowed_relations": ["depends_on"],
+    "allowed_directions": ["outbound", "inbound"],
     "answer_differs_materially": "unknown"
   }]
 }
 ```
+
+`support_chunks` names, per support path, the opaque record ID of each
+answer-bearing chunk (the `id` that `build_context` returns for it). A daily
+file can hold many unrelated chunks, so a file-level match is not support.
+Every listed chunk must be delivered. Keys must be support paths and lists
+must be non-empty and unique. A question without chunk IDs for every support
+path still runs but cannot pass (`support_chunk_unspecified`).
+`allowed_directions` optionally narrows the traversal labels a path step may
+use (`outbound`, `inbound`; default both).
 
 The source map accepts `{ "upload-hash": "workspace-relative/path.md" }` or
 the importer's registry `files[path].parts[*].id = "source:<hash>"` (parts can
@@ -169,20 +180,43 @@ servers that do not support it. It does not emulate diversity client-side.
 
 A pass requires all four suite conditions:
 
-1. Graph-off lacks every required support at the specified budget.
-2. Graph-on returns every support with a nonempty accepted graph path, hops ≥ 1.
-3. Every edge in that support's path has an ID and a type in `allowed_relations`.
+1. Graph-off lacks every required support, by file and by expected chunk ID,
+   in every off round at the specified budget.
+2. **Every** graph-on round independently returns every expected support chunk
+   (by ID, from its support file) through a contiguous accepted path. The path
+   has `hops ≥ 1` steps (`hops` equals the step count). It starts at the
+   graph's `seed_note_id`, each step starts at the previous step's `to_id`, no
+   node repeats, and the last `to_id` is that chunk's ID.
+3. Every step has an edge ID, a type in `allowed_relations` whose edge ID
+   belongs to that relation table (`<type>:<key>`), and a permitted direction.
 4. A human judges that the answer differs materially (`answer_differs_materially: "yes"`).
 
 `related_to` never satisfies a typed requirement such as dependency, causality,
 supersession, or remediation. Allow it only for a question that explicitly
 requires relatedness. Zero-hop graph/entity matches do not prove traversal.
-The runner checks the service's accepted path evidence and the suite's allowed
-types; humans must review semantic correctness and source-revision freshness.
+The runner checks the service's path evidence: its shape, continuity, terminal
+and the suite's allowed types and directions. It does not check that the graph
+seed is the suite's seed file. Humans must review semantic correctness and
+source-revision freshness.
 The final condition defaults to `unknown`: otherwise successful retrieval is
 `needs_judgement`, not `pass`. A missing retrieval/path condition, call failure,
-or a human `"no"` is `fail`. Seed/support found flags summarize the union of
-repeated rounds; consult per-round paths and stability before claiming a result.
+missing field, or a human `"no"` is `fail`. Each summary lists sorted
+`fail_reasons`, which the `--summary` line also prints:
+
+- consistency: `inconsistent_support` (some successful on rounds delivered the
+  support and others did not; `on_support_by_round` shows which);
+- semantic/path, per on round: `support_missing` (neither the chunk nor its
+  file returned), `unrelated_chunk` (only other chunks of the support file),
+  `invalid_path` (the chunk without a valid path as above),
+  `support_source_mismatch` (the chunk ID mapped to another file);
+- baseline: `off_has_support`;
+- data/protocol: `call_error`, `insufficient_rounds` (fewer than two off or two
+  on rounds), `support_chunk_unspecified`, `missing_fields` (no chunk IDs or
+  misaligned per-chunk fields);
+- judgement: `human_rejected`.
+
+Seed/support found flags still summarize the union of repeated rounds at file
+level; only the pass conditions are per round and per chunk.
 
 ```sh
 python3 -I scripts/evaluate-graph-context.py \
@@ -197,13 +231,16 @@ Reports are exclusively created `0600` and refuse overwrite. Raw MCP responses
 is supplied; that directory must be owned by the current user, mode `0700`, and
 not a symlink. Otherwise content is discarded. The public report and `--json`
 stdout omit questions, note content, query entities and arbitrary text diagnostic
-fields. They contain source paths and graph IDs: review these identifiers before
-sharing. Errors never print server exception strings. Use new output/private
-paths per run. Failed calls exit 1, setup failures exit 2; exit 0 says calls
-succeeded, not that questions passed.
+fields. They contain source paths, opaque chunk record IDs and graph IDs: review
+these identifiers before sharing. Errors never print server exception strings.
+Use new output/private paths per run. Failed calls exit 1, setup failures exit
+2; exit 0 says calls succeeded, not that questions passed.
 
-Reports record per-round paths, scores, graph hops/steps/types/IDs, diagnostics,
-found flags, elapsed milliseconds and sanitized-response SHA-256 stability.
+Reports (`schema_version` 2) record per-round paths, chunk record IDs
+(`returned_ids`, aligned with `returned_paths` and `chunk_graph`), scores,
+graph hops/steps/types/IDs, diagnostics, found flags, elapsed milliseconds and
+sanitized-response SHA-256 stability. Each question row also records its
+`support_chunks` and effective `allowed_directions`.
 Hashes exclude timing, policy, and private fields (not byte hashes of the full
 response). Metadata includes endpoint host only, MCP protocol, timestamps,
 source-map size, suite and runner hashes. Optional `--binary-sha256`,
@@ -211,7 +248,10 @@ source-map size, suite and runner hashes. Optional `--binary-sha256`,
 `--accepted-edge-count` record operator-supplied snapshot identity; these claims
 do not freeze the live corpus. `--compare` prints per-question gained/lost paths
 for off/on, boolean flag flips, mean per-call elapsed delta and pass transitions,
-without note text. The sanitized 2026-11-02 fixture predates tri-state scoring;
+without note text. It accepts schema 1 baselines. Schema 1 rounds have no chunk
+IDs, so they cannot be re-graded as passes; the committed 2026-11-02 and
+2026-11-03 fixtures stay unchanged and remain 0/8 under the current rules.
+The sanitized 2026-11-02 fixture predates tri-state scoring;
 its absent edge paths are classified as fail. Its old support paths also
 predate the dated-support suite revision, so record that coverage difference
 when comparing. Preserve the same corpus, suite and protocol to isolate ranking
