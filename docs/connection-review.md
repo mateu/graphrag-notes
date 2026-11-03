@@ -134,7 +134,8 @@ A candidate is a cross-source `related_to` pair that passes every gate:
 - Notes from the same source, or from one chat conversation (directly or
   through any of its messages), are never paired.
   They are excluded before the per-endpoint neighbour limit, so adjacent chunks
-  cannot crowd out other sources. Identical content is a duplicate, not a relation.
+  and conversation siblings cannot crowd out other origins. Identical content is
+  a duplicate, not a relation.
 - Cosine similarity is at least `similarity_floor` (default 0.80).
 - A second signal is required: a shared *specific* entity, or an explicit
   cross-reference (one note names the other's record ID, source URI, wikilink
@@ -147,7 +148,9 @@ A candidate is a cross-source `related_to` pair that passes every gate:
   Dates and number-only names never count; a name mentioned
   by more than `max_entity_note_frequency` notes (default 10) is generic.
 - No accepted relation of any type, pending proposal or prior decision already
-  joins the pair.
+  joins the pair. Such notes never take a place in the neighbour budget (they
+  are read separately and only reported), so recorded pairs never hide the
+  next-best neighbours from later scans.
 
 Anchors come from `--note`, `--source`, or orphans by default (notes without an
 accepted relation of any type, `derived_from` included), in record-ID order.

@@ -45,7 +45,9 @@ const NOMINATION_SHARE: f64 = 0.6;
 pub struct CandidatePolicy {
     /// Minimum cosine similarity that nominates a pair.
     pub similarity_floor: f32,
-    /// Cross-source neighbours read per examined endpoint.
+    /// Cross-source neighbours not yet joined to an examined endpoint (by an
+    /// accepted relation or any proposal) read per endpoint. Joined ones are
+    /// read separately, up to as many again, and only reported.
     pub neighbors_per_endpoint: usize,
     /// Most candidates any one note may appear in per scan.
     pub max_per_endpoint: usize,

@@ -1012,3 +1012,40 @@ async fn legacy_scans_never_reclassify_candidate_proposals() {
     assert_eq!(after[0].status, ProposedEdgeStatus::Pending);
     assert_eq!(corpus.accepted_edge_count().await, 0);
 }
+
+#[tokio::test]
+async fn recorded_pairs_never_hide_the_next_neighbours() {
+    let corpus = Corpus::new().await;
+    let (hub, spokes) = hub(&corpus).await;
+    // One unjoined neighbour per scan: each persisting run must reach the
+    // next-best spoke instead of re-reading the pairs it already recorded.
+    let narrow = CandidatePolicy {
+        neighbors_per_endpoint: 1,
+        ..CandidatePolicy::default()
+    };
+    let agent = GardenerAgent::new(corpus.repo.clone());
+    let scan = || async {
+        agent
+            .scan_candidates(
+                &narrow,
+                request(CandidateScope::Notes(vec![hub.clone()]), false),
+            )
+            .await
+            .unwrap()
+    };
+    for (run, spoke) in spokes.iter().enumerate() {
+        let report = scan().await;
+        assert_eq!(pairs(&report), vec![unordered(&hub, spoke)], "run {run}");
+        // Recorded pairs are still reported, without taking the budget.
+        assert_eq!(
+            report.rejections.already_proposed,
+            usize::from(run > 0),
+            "run {run}"
+        );
+        assert_eq!(report.nominations, 1 + usize::from(run > 0), "run {run}");
+    }
+    let drained = scan().await;
+    assert!(drained.candidates.is_empty());
+    assert_eq!(drained.rejections.already_proposed, 1);
+    assert_eq!(corpus.proposal_count().await, spokes.len());
+}

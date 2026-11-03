@@ -174,10 +174,13 @@ impl Repository {
         Ok(query.await?.check()?.take(index)?)
     }
 
-    /// Nearest visible notes from a *different* origin than the anchor, at or
-    /// above `floor`, ordered by similarity then record ID. Same-source notes
-    /// are excluded before the limit, so adjacent chunks cannot crowd out
-    /// cross-source neighbours.
+    /// Nearest visible notes from a *different* origin than the anchor
+    /// (another source and chat conversation), at or above `floor`, ordered
+    /// by similarity then record ID: up to `limit` not yet joined to the
+    /// anchor, then up to `limit` already joined to it by an accepted relation
+    /// or any proposal, which the gate only reports. Same-origin and joined
+    /// notes are excluded before the limit, so adjacent chunks, conversation
+    /// siblings and recorded pairs cannot crowd out eligible neighbours.
     #[instrument(skip(self, anchor, counterpart_sources))]
     pub async fn candidate_similar_notes(
         &self,
@@ -191,8 +194,33 @@ impl Repository {
         }
         // Notes sharing a chat conversation with the anchor, directly or
         // through any of its messages (the origins `candidate_note_origins`
-        // compares), are excluded before the limit like same-source notes,
-        // so conversation siblings cannot crowd out eligible neighbours.
+        // compares), are excluded like same-source notes. Notes already
+        // joined to the anchor by an accepted relation or any proposal never
+        // take a place in the neighbour budget either: they are read
+        // separately (at most `limit` of them) only so the gate can report
+        // them, and recording proposals can never hide the next neighbours.
+        let joined = ACCEPTED_NOTE_EDGE_TABLES
+            .iter()
+            .chain(std::iter::once(&"proposed_edge"))
+            .map(|table| {
+                format!(
+                    "(SELECT VALUE out FROM {table} WHERE in = $anchor), \
+                     (SELECT VALUE in FROM {table} WHERE out = $anchor)"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let filters = format!(
+            "id != $anchor AND id NOT IN $excluded \
+             AND embedding IS NOT NONE AND array::len(embedding) = $dimension \
+             AND ($anchor_source = NONE OR source_id IS NONE OR source_id != $anchor_source) \
+             AND ($counterparts = NONE OR source_id IN $counterparts) \
+             AND {VISIBLE_NOTE_CONDITION} \
+             AND vector::similarity::cosine(embedding, $embedding) >= $floor"
+        );
+        let select = format!(
+            "SELECT {CANDIDATE_NOTE_FIELDS}, vector::similarity::cosine(embedding, $embedding) AS similarity"
+        );
         let mut response = self
             .db
             .query(format!(
@@ -203,14 +231,10 @@ impl Repository {
                      (SELECT VALUE in FROM note_from_conversation WHERE out IN $origins), \
                      (SELECT VALUE in FROM note_from_message WHERE out IN array::union($origins, \
                          (SELECT VALUE id FROM message WHERE conversation_id IN $origins)))) END; \
-                 SELECT {CANDIDATE_NOTE_FIELDS}, vector::similarity::cosine(embedding, $embedding) AS similarity \
-                 FROM note \
-                 WHERE id != $anchor AND id NOT IN $excluded \
-                 AND embedding IS NOT NONE AND array::len(embedding) = $dimension \
-                 AND ($anchor_source = NONE OR source_id IS NONE OR source_id != $anchor_source) \
-                 AND ($counterparts = NONE OR source_id IN $counterparts) \
-                 AND {VISIBLE_NOTE_CONDITION} \
-                 AND vector::similarity::cosine(embedding, $embedding) >= $floor \
+                 LET $joined = array::distinct(array::flatten([{joined}])); \
+                 {select} FROM note WHERE {filters} AND id NOT IN $joined \
+                 ORDER BY similarity DESC, id ASC LIMIT $limit; \
+                 {select} FROM $joined WHERE {filters} \
                  ORDER BY similarity DESC, id ASC LIMIT $limit;"
             ))
             .bind(("anchor", anchor.id.clone()))
@@ -222,7 +246,9 @@ impl Repository {
             .bind(("limit", limit))
             .await?
             .check()?;
-        let rows: Vec<CandidateNote> = response.take(2)?;
+        let mut rows: Vec<CandidateNote> = response.take(3)?;
+        let joined: Vec<CandidateNote> = response.take(4)?;
+        rows.extend(joined);
         Ok(rows)
     }
 
