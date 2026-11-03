@@ -648,3 +648,35 @@ async fn duplicate_content_and_shared_conversations_are_one_origin() {
     assert_eq!(report.rejections.duplicate_content, 1);
     assert_eq!(report.rejections.same_origin, 1);
 }
+
+#[tokio::test]
+async fn shared_dates_are_never_a_second_signal() {
+    let corpus = Corpus::new().await;
+    let alpha = corpus.source("alpha.md").await;
+    let beta = corpus.source("beta.md").await;
+    let date = || {
+        let mut entity = Entity::new("August 4 2026", EntityType::Date);
+        entity.metadata = serde_json::json!({});
+        entity
+    };
+    let left = corpus
+        .note(Some(&alpha), "Alpha standup notes", vector(1.0, 1), &[])
+        .await;
+    let right = corpus
+        .note(Some(&beta), "Beta standup notes", vector(0.95, 2), &[])
+        .await;
+    for id in [&left, &right] {
+        corpus
+            .repo
+            .upsert_entities_and_link_note(id, vec![date()])
+            .await
+            .unwrap();
+    }
+    let report = corpus
+        .scan(request(CandidateScope::Notes(vec![left]), false))
+        .await;
+    assert!(report.candidates.is_empty());
+    assert_eq!(report.nominations, 1);
+    assert_eq!(report.rejections.no_second_signal, 1);
+    assert_eq!(corpus.proposal_count().await, 0);
+}

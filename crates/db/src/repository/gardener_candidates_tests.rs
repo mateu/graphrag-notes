@@ -119,7 +119,11 @@ async fn similar_notes_exclude_the_anchor_source_before_the_neighbour_limit() {
     sourced(&repo, &gamma, "Gamma unrelated chunk", embedding(0.3, 6)).await;
 
     let anchor = repo
-        .candidate_anchor_notes(CandidateAnchorScope::Notes(&[anchor_id.clone()]), None, 5)
+        .candidate_anchor_notes(
+            CandidateAnchorScope::Notes(std::slice::from_ref(&anchor_id)),
+            None,
+            5,
+        )
         .await
         .unwrap()
         .remove(0);
@@ -189,7 +193,11 @@ async fn similarity_ties_and_anchor_pages_are_ordered_by_record_id() {
     );
 
     let page = repo
-        .candidate_anchor_notes(CandidateAnchorScope::Sources(&[beta.clone()]), None, 3)
+        .candidate_anchor_notes(
+            CandidateAnchorScope::Sources(std::slice::from_ref(&beta)),
+            None,
+            3,
+        )
         .await
         .unwrap();
     assert_eq!(

@@ -4,6 +4,7 @@
 //! SurrealDB and RocksDB, so one binary per crate saves disk and link time.
 //! Run one module with: `cargo test -p graphrag-service --test integration <module>::`.
 
+mod candidate_scan;
 mod endpoint_proposals;
 mod http_service;
 mod importer_adoption_export;

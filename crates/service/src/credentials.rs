@@ -25,6 +25,9 @@ pub enum Capability {
     Undo,
     Upload,
     Jobs,
+    /// Run bounded relationship candidate scans that record pending
+    /// proposals only; it grants no read, propose, accept, reject or undo.
+    Garden,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

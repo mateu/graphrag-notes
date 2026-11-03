@@ -26,6 +26,8 @@ pub(crate) struct ToolService {
     pub(crate) application: Arc<dyn RemoteApplicationOperations>,
     pub(crate) writes: Arc<Writes>,
     pub(crate) write_gate: Arc<Semaphore>,
+    /// Serializes candidate scans, each bounded by its own deadline.
+    pub(crate) garden_gate: Arc<Semaphore>,
     admission_gate: Arc<Semaphore>,
     cancellation_gate: Arc<Semaphore>,
 }
@@ -40,6 +42,7 @@ impl ToolService {
             application,
             writes,
             write_gate: Arc::new(Semaphore::new(concurrency)),
+            garden_gate: Arc::new(Semaphore::new(1)),
             admission_gate: Arc::new(Semaphore::new(concurrency)),
             cancellation_gate: Arc::new(Semaphore::new(crate::server::CANCELLATION_CAPACITY)),
         }
@@ -315,6 +318,7 @@ fn catalog() -> Vec<(Capability, Tool)> {
         ),
     ];
     tools.push(crate::endpoint_proposals::catalog());
+    tools.push(crate::candidate_scan::catalog());
     tools.extend(crate::mutations::catalog());
     tools.extend(crate::uploads::catalog());
     tools
@@ -609,6 +613,9 @@ impl ToolService {
         let result = match request.name.as_ref() {
             "propose_endpoint_relationship" => {
                 crate::endpoint_proposals::call(self, request, principal).await
+            }
+            crate::candidate_scan::TOOL => {
+                crate::candidate_scan::call(self, request, principal).await
             }
             "service_status" => {
                 let _: StatusInput = match parse(request.arguments) {

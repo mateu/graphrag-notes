@@ -938,6 +938,9 @@ pub(crate) async fn run() -> Result<()> {
             config.augment.max_tokens,
             config.augment.max_chunk_tokens,
             &config.augment,
+        ))
+        .with_candidate_policy(crate::garden_candidates::policy(
+            &config.gardener.candidates,
         ));
         let options = graphrag_service::ServiceOptions {
             listen: *listen,

@@ -708,11 +708,53 @@ pub(crate) enum GardenCommand {
         #[arg(long, value_enum, default_value_t = crate::output::OutputFormat::Human)]
         format: crate::output::OutputFormat,
     },
-    /// Generate reviewable proposals; accepted edge tables are never mutated
+    /// Generate reviewable proposals; accepted edge tables are never mutated.
+    /// With --max-candidates, run the bounded high-precision candidate scan
+    /// (cross-source pairs with a second signal; required with --server).
     Scan {
-        /// Preview candidate count without persisting proposals
+        /// Preview without persisting proposals
         #[arg(long)]
         dry_run: bool,
+        /// Run the high-precision candidate scan and return at most N
+        /// candidates (1–50). Required with --server.
+        #[arg(long, value_name = "N")]
+        max_candidates: Option<usize>,
+        /// Anchor notes examined (1–200; default 25)
+        #[arg(long, value_name = "N", requires = "max_candidates")]
+        max_endpoints: Option<usize>,
+        /// Wall-clock budget in milliseconds (100–60000; default 10000)
+        #[arg(long, value_name = "MS", requires = "max_candidates")]
+        deadline_ms: Option<u64>,
+        /// Examine these canonical note:ID anchors (repeatable; default: orphans)
+        #[arg(
+            long = "note",
+            value_name = "NOTE_ID",
+            requires = "max_candidates",
+            conflicts_with = "sources"
+        )]
+        notes: Vec<String>,
+        /// Examine the notes of these canonical source:ID values (repeatable)
+        #[arg(long = "source", value_name = "SOURCE_ID", requires = "max_candidates")]
+        sources: Vec<String>,
+        /// Only pair with notes of these canonical source:ID values (repeatable)
+        #[arg(
+            long = "counterpart-source",
+            value_name = "SOURCE_ID",
+            requires = "max_candidates"
+        )]
+        counterpart_sources: Vec<String>,
+        /// Resume after this note:ID (a previous receipt's next_after_note_id)
+        #[arg(long, value_name = "NOTE_ID", requires = "max_candidates")]
+        after: Option<String>,
+        /// Raise (never lower) the configured similarity floor for this scan
+        #[arg(long, requires = "max_candidates")]
+        min_similarity: Option<f32>,
+        /// Lower (never raise) the configured per-endpoint candidate cap
+        #[arg(long, requires = "max_candidates")]
+        max_per_endpoint: Option<usize>,
+        /// Receipt format for the candidate scan (default human)
+        #[arg(long, value_enum, requires = "max_candidates")]
+        format: Option<crate::output::OutputFormat>,
     },
     /// Scan and apply the explicitly configured auto-apply policy
     Apply {

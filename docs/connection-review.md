@@ -111,3 +111,62 @@ graphrag garden proposals accept --all --min-confidence 0.9 --yes \
 Both the explicit finite threshold in `[0, 1]` and `--yes` are required. The
 existing batch path applies only to Gardener similarity `related_to` proposals;
 it cannot bulk-approve logical support or contradiction claims.
+
+## High-precision candidate scan
+
+`garden scan` without options keeps the legacy similarity scan. Add
+`--max-candidates N` (1–50) to run the bounded candidate generator instead. The
+same operation runs inside the owning service, so it also works while
+`graphrag serve` holds the database:
+
+```sh
+graphrag garden scan --max-candidates 5 --dry-run
+graphrag garden scan --max-candidates 5 --source source:ID --counterpart-source source:OTHER
+graphrag --server http://127.0.0.1:3300/mcp garden scan --max-candidates 5 --dry-run --format json
+```
+
+A candidate is a cross-source `related_to` pair that passes every gate:
+
+- Notes from the same source, or sharing a chat conversation, are never paired.
+  They are excluded before the per-endpoint neighbour limit, so adjacent chunks
+  cannot crowd out other sources. Identical content is a duplicate, not a relation.
+- Cosine similarity is at least `similarity_floor` (default 0.80).
+- A second signal is required: a shared *specific* entity, or an explicit
+  cross-reference (one note names the other's record ID, source URI, wikilink
+  stem or file name). Dates and number-only names never count; a name mentioned
+  by more than `max_entity_note_frequency` notes (default 10) is generic.
+- No accepted relation of any type, pending proposal or prior decision already
+  joins the pair.
+
+Anchors come from `--note`, `--source`, or orphans by default (notes without an
+accepted relation of any type, `derived_from` included), in record-ID order.
+Candidates are ranked deterministically: cross-reference, then the number of
+shared specific entities, then similarity, then IDs. A note appears in at most
+`max_per_endpoint` candidates (default 2). `--max-candidates`, `--max-endpoints`
+(default 25) and `--deadline-ms` (default 10000, at most 60000) bound the run.
+`--min-similarity` can raise the floor and `--max-per-endpoint` can lower the
+cap; requests never loosen the configured policy:
+
+```toml
+[gardener.candidates]
+similarity_floor = 0.80
+neighbors_per_endpoint = 8
+max_per_endpoint = 2
+max_entity_note_frequency = 10
+```
+
+The receipt echoes every resolved limit and policy value, counts why nominated
+pairs were rejected, and reports `stop_reason` (`completed`, `endpoint_budget`,
+`candidate_budget` or `deadline`) plus a `--after` cursor while anchors remain.
+Zero candidates is a valid abstention. The CLI refuses a receipt that does not
+echo its request.
+
+Without `--dry-run`, each candidate becomes a **pending** proposal through the
+normal lifecycle, with generator `gardener-candidate` and its features
+(similarity, signals, shared entities with note frequencies, cross-reference,
+policy and requester) stored as versioned JSON in `reason`. Existing proposals
+are never refreshed and decided ones are never resurrected. The scan never
+accepts anything. `garden apply` and `garden proposals accept --all` select only
+legacy `gardener-similarity` proposals, so candidates are accepted only through
+individual review. Each examined endpoint runs one exact similarity scan over
+the notes, like the legacy scan, so keep `--max-endpoints` modest on large corpora.

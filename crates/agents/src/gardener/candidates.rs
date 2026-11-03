@@ -447,26 +447,59 @@ impl super::GardenerAgent {
             CandidateStopReason::Completed
         };
 
-        // 7. Pending-only persistence through the existing lifecycle.
+        // 7. Pending-only persistence through the existing lifecycle. Each
+        // pair is re-checked immediately before its upsert so a relation or
+        // proposal written concurrently since the gate read is skipped and
+        // counted, never refreshed. Candidates the deadline cuts off stay in
+        // the report without a proposal.
         if !request.dry_run {
-            for index in 0..report.candidates.len() {
-                if Instant::now() >= deadline {
+            let selected = std::mem::take(&mut report.candidates);
+            let mut remaining = selected.into_iter();
+            while let Some(mut candidate) = remaining.next() {
+                let fresh = if Instant::now() < deadline {
+                    before(
+                        deadline,
+                        repo.candidate_existing_links(&[
+                            candidate.from.clone(),
+                            candidate.to.clone(),
+                        ]),
+                    )
+                    .await?
+                } else {
+                    None
+                };
+                let Some(fresh) = fresh else {
                     report.stop_reason = CandidateStopReason::Deadline;
+                    report.candidates.push(candidate);
+                    report.candidates.extend(remaining);
                     break;
+                };
+                let links = ExistingLinks::from(fresh);
+                let pair = unordered(&candidate.from, &candidate.to);
+                if links.accepted.contains(&pair) {
+                    report.rejections.already_connected += 1;
+                    continue;
                 }
-                let candidate = &report.candidates[index];
+                if links.open.contains(&pair) {
+                    report.rejections.already_proposed += 1;
+                    continue;
+                }
+                if links.decided.contains(&pair) {
+                    report.rejections.prior_decision += 1;
+                    continue;
+                }
                 let draft = EdgeProposalDraft {
                     from_id: candidate.from.clone(),
                     to_id: candidate.to.clone(),
                     edge_type: EdgeType::RelatedTo,
                     confidence: candidate.similarity,
-                    reason: candidate_reason(candidate, &report, &request.requested_by),
+                    reason: candidate_reason(&candidate, &report, &request.requested_by),
                     generator: CANDIDATE_GENERATOR.into(),
                     generator_version: Some(CANDIDATE_CONTRACT.to_string()),
                     model: report.embedding_model.clone(),
                 };
-                let proposal = repo.upsert_edge_proposal(draft).await?;
-                report.candidates[index].proposal = Some(proposal);
+                candidate.proposal = Some(repo.upsert_edge_proposal(draft).await?);
+                report.candidates.push(candidate);
             }
         }
         finish(report)

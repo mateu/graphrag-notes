@@ -8,6 +8,7 @@ mod dispatch;
 mod doctor;
 mod eval;
 mod explain;
+mod garden_candidates;
 mod init;
 mod interactive;
 mod output;
