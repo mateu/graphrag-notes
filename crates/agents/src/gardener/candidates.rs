@@ -773,32 +773,40 @@ fn word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
 
-/// `needle` occurs in `haystack` as a whole token: not glued to a preceding
-/// or following identifier character (a trailing sentence period is fine).
-fn contains_token(haystack: &str, needle: &str) -> bool {
-    if needle.is_empty() {
-        return false;
-    }
+/// Starts of the whole-token occurrences of `needle` in `haystack`: not glued
+/// to a preceding or following identifier character (a trailing sentence
+/// period is fine).
+fn token_starts<'a>(haystack: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
     let bytes = haystack.as_bytes();
     let mut offset = 0;
-    while let Some(found) = haystack[offset..].find(needle) {
-        let start = offset + found;
-        let end = start + needle.len();
-        let before_ok = start == 0 || !word_byte(bytes[start - 1]);
-        let after_ok = match bytes.get(end) {
-            None => true,
-            Some(b'.') => bytes
-                .get(end + 1)
-                .is_none_or(|next| !next.is_ascii_alphanumeric()),
-            Some(next) => !word_byte(*next),
-        };
-        if before_ok && after_ok {
-            return true;
+    std::iter::from_fn(move || {
+        if needle.is_empty() {
+            return None;
         }
-        // Step one character so overlapping occurrences are still examined.
-        offset = start + haystack[start..].chars().next().map_or(1, char::len_utf8);
-    }
-    false
+        while let Some(found) = haystack.get(offset..)?.find(needle) {
+            let start = offset + found;
+            let end = start + needle.len();
+            // Step one character so overlapping occurrences are still examined.
+            offset = start + haystack[start..].chars().next().map_or(1, char::len_utf8);
+            let before_ok = start == 0 || !word_byte(bytes[start - 1]);
+            let after_ok = match bytes.get(end) {
+                None => true,
+                Some(b'.') => bytes
+                    .get(end + 1)
+                    .is_none_or(|next| !next.is_ascii_alphanumeric()),
+                Some(next) => !word_byte(*next),
+            };
+            if before_ok && after_ok {
+                return Some(start);
+            }
+        }
+        None
+    })
+}
+
+/// `needle` occurs in `haystack` as a whole token.
+fn contains_token(haystack: &str, needle: &str) -> bool {
+    token_starts(haystack, needle).next().is_some()
 }
 
 /// `uri` occurs in `text` as a complete URI: not glued to a preceding
@@ -832,19 +840,26 @@ fn contains_uri(text: &str, uri: &str) -> bool {
     false
 }
 
+/// Components of a written path, outermost first: a `scheme://` prefix is
+/// dropped, `/` and `\` separate, and empty and `.` segments are removed.
+/// `..` and a URL host stay, so they only ever match a directory of that
+/// exact name.
+fn path_components(path: &str) -> Vec<String> {
+    let path = path.rsplit_once("://").map_or(path, |(_, rest)| rest);
+    path.split(['/', '\\'])
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Lowercased directories of a `file://` source URI's path, outermost first.
 fn file_directories(uri: &str) -> Vec<String> {
-    let path = uri
+    let mut directories = uri
         .strip_prefix("file://")
-        .unwrap_or_default()
-        .to_lowercase();
-    let mut segments = path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    segments.pop();
-    segments
+        .map(|path| path_components(&path.to_lowercase()))
+        .unwrap_or_default();
+    directories.pop();
+    directories
 }
 
 /// Wikilinks in lowercased `text` (`[[dir/stem|alias]]`, `[[stem#heading]]`)
@@ -869,20 +884,17 @@ fn wikilinks(text: &str) -> (Vec<Vec<String>>, String) {
         outside.push(' ');
         rest = &rest[end..];
         let target = inner.split(['|', '#']).next().unwrap_or_default().trim();
-        let reversed = target.rsplit('/').collect::<Vec<_>>();
-        let Some((last, directories)) = reversed.split_first() else {
+        if target.ends_with(['/', '\\']) {
+            continue;
+        }
+        let mut segments = path_components(target);
+        let Some(last) = segments.pop() else {
             continue;
         };
-        let stem = last.strip_suffix(".md").unwrap_or(last);
+        let stem = last.strip_suffix(".md").unwrap_or(&last);
         if stem.is_empty() {
             continue;
         }
-        let mut segments = directories
-            .iter()
-            .rev()
-            .filter(|segment| !segment.is_empty() && **segment != ".")
-            .map(|segment| (*segment).to_owned())
-            .collect::<Vec<_>>();
         segments.push(stem.to_owned());
         links.push(segments);
     }
@@ -890,16 +902,12 @@ fn wikilinks(text: &str) -> (Vec<Vec<String>>, String) {
     (links, outside)
 }
 
-/// A wikilink names a file when its last segment is the file's stem and any
-/// directories that qualify it are the file's trailing directories:
-/// `[[project-a/design]]` names `.../project-a/design.md`, never
-/// `.../project-b/design.md`.
-fn wikilink_names(link: &[String], directories: &[String], stem: &str) -> bool {
-    let Some((last, qualifiers)) = link.split_last() else {
-        return false;
-    };
-    last == stem
-        && qualifiers.len() <= directories.len()
+/// The one rule for a reference written with a path: its directories must
+/// be the file's trailing directories, so `project-a/design` names
+/// `.../project-a/design.md`, never `.../project-b/design.md`. An
+/// unqualified reference (no directories) falls back to the bare name.
+fn names_trailing_directories(qualifiers: &[String], directories: &[String]) -> bool {
+    qualifiers.len() <= directories.len()
         && qualifiers
             .iter()
             .rev()
@@ -907,10 +915,46 @@ fn wikilink_names(link: &[String], directories: &[String], stem: &str) -> bool {
             .all(|(qualifier, directory)| qualifier == directory)
 }
 
+/// A wikilink names a file when its last segment is the file's stem and its
+/// directories pass [`names_trailing_directories`].
+fn wikilink_names(link: &[String], directories: &[String], stem: &str) -> bool {
+    let Some((last, qualifiers)) = link.split_last() else {
+        return false;
+    };
+    last == stem && names_trailing_directories(qualifiers, directories)
+}
+
+/// Directories written immediately before `text[start..]`, as in
+/// `project-a/design.md`, `[design](../a/design.md)` or
+/// `file:///vault/a/design.md`; empty for an unqualified mention.
+fn written_directories(text: &str, start: usize) -> Vec<String> {
+    let before = &text[..start];
+    if !before.ends_with(['/', '\\']) {
+        return Vec::new();
+    }
+    let token_start = before
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace() || "()[]{}<>\"'`|,;=*".contains(*c))
+        .map_or(0, |(index, c)| index + c.len_utf8());
+    path_components(&before[token_start..])
+}
+
+/// `name` occurs in lowercased `text` as a whole token whose written
+/// directories, if any, pass [`names_trailing_directories`]: a file URI or
+/// relative link to another folder's file of the same name never counts.
+fn mentions_file(text: &str, name: &str, directories: &[String]) -> bool {
+    token_starts(text, name)
+        .any(|start| names_trailing_directories(&written_directories(text, start), directories))
+}
+
 /// The strongest explicit reference from `text` to `target`. File-name forms
 /// are skipped when both sources share a file name (the reference would be
-/// ambiguous with a self-reference). A wikilink counts only through its own
-/// (directory-checked) target, never as a bare file-name mention.
+/// ambiguous with a self-reference). Every reference written with a path (a
+/// qualified wikilink, a file URI, a relative link) must name the target's
+/// trailing directories; only an unqualified name falls back to the file
+/// name or wikilink stem. A wikilink counts only through its own target,
+/// never as a bare file-name mention.
 fn reference_kind(
     text: &str,
     target: &CandidateNote,
@@ -935,7 +979,7 @@ fn reference_kind(
     {
         return Some(CrossReferenceKind::Wikilink);
     }
-    if contains_token(&outside, &name) {
+    if mentions_file(&outside, &name, &directories) {
         return Some(CrossReferenceKind::FileName);
     }
     None
@@ -1106,6 +1150,49 @@ mod tests {
             reference_kind("file:///vault/daily/2026-08-04.md.bak", &file, None),
             None
         );
+    }
+
+    #[test]
+    fn written_paths_must_name_the_targets_trailing_directories() {
+        use CrossReferenceKind::{FileName, SourceUri, Wikilink};
+        let target = note("target", Some("file:///vault/project-b/design.md"), "x");
+        for (text, expected) in [
+            // Wikilinks: an unqualified stem falls back; a path must match.
+            ("[[design]]", Some(Wikilink)),
+            ("[[project-b/design]]", Some(Wikilink)),
+            ("[[vault/project-b/design.md|Design]]", Some(Wikilink)),
+            ("[[/vault/./project-b/design#Goals]]", Some(Wikilink)),
+            ("[[project-a/design]]", None),
+            ("[[archive/vault/project-b/design]]", None),
+            ("[[../project-b/design]]", None),
+            ("[[project-b/]]", None),
+            // File URIs: the exact URI, never another folder's file.
+            ("file:///vault/project-b/design.md", Some(SourceUri)),
+            ("<file:///vault/project-b/design.md#goals>", Some(SourceUri)),
+            ("file:///vault/project-a/design.md", None),
+            ("file:///archive/vault/project-b/design.md", None),
+            ("https://example.test/project-b/design.md", None),
+            // Relative Markdown links and bare paths.
+            ("[design](design.md)", Some(FileName)),
+            ("[design](./design.md)", Some(FileName)),
+            ("[design](project-b/design.md)", Some(FileName)),
+            ("[design](vault/project-b/design.md)", Some(FileName)),
+            ("See project-b\\design.md.", Some(FileName)),
+            ("[design](project-a/design.md)", None),
+            ("[design](../project-a/design.md)", None),
+            // `..` cannot be resolved here, so it never verifies a path.
+            ("[design](../project-b/design.md)", None),
+            ("See project-a/design.md and project-a\\design.md", None),
+            // One qualifying mention suffices; a wikilink is never a bare name.
+            ("project-a/design.md, then design.md", Some(FileName)),
+            (
+                "[[project-a/design]] and project-b/design.md",
+                Some(FileName),
+            ),
+            ("[[project-a/design.md]]", None),
+        ] {
+            assert_eq!(reference_kind(text, &target, None), expected, "{text}");
+        }
     }
 
     #[test]

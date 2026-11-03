@@ -137,8 +137,12 @@ A candidate is a cross-source `related_to` pair that passes every gate:
 - Cosine similarity is at least `similarity_floor` (default 0.80).
 - A second signal is required: a shared *specific* entity, or an explicit
   cross-reference (one note names the other's record ID, source URI, wikilink
-  stem or file name). A wikilink qualified with directories
-  (`[[project-a/design]]`) must match the source's trailing directories.
+  stem or file name). A reference written with a path (a qualified wikilink
+  such as `[[project-a/design]]`, a file URI, or a relative link such as
+  `[design](project-a/design.md)`) must match the source's trailing
+  directories; only an unqualified name falls back to the file name or stem.
+  `.` segments are ignored, and a `..` path cannot be verified, so it never
+  counts. A source URI counts only when the complete URI is named.
   Dates and number-only names never count; a name mentioned
   by more than `max_entity_note_frequency` notes (default 10) is generic.
 - No accepted relation of any type, pending proposal or prior decision already
