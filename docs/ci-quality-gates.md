@@ -257,3 +257,5 @@ contexts and add `conditional migration and schema fixtures`, bound to GitHub
 Actions app ID `15368`, preserving `strict: true`. Plan checks stay in the
 already-required `retrieval regression baseline` context. Repository settings
 remain an owner action; workflow publication does not change branch protection.
+
+<!-- Temporary docs-only change to prove non-matching migration gate selection. -->
