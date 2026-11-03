@@ -44,12 +44,17 @@ use surrealdb_types::Variables;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+#[cfg(test)]
+type PlanCapture = Arc<std::sync::Mutex<Vec<(String, Variables)>>>;
+
 /// A database client together with process-local coordination scoped to that
 /// client identity. Cloning a connection preserves the same coordination;
 /// separately opened stores receive independent locks.
 #[derive(Clone, Debug)]
 pub struct DbConnection {
     client: Surreal<Db>,
+    #[cfg(test)]
+    plan_capture: Option<PlanCapture>,
     proposal_lifecycle_lock: Arc<Mutex<()>>,
     remote_job_transition_lock: Arc<Mutex<()>>,
     source_enrichment_worker_lock: Arc<Mutex<()>>,
@@ -270,6 +275,8 @@ fn query_statements(query: &str) -> Option<Vec<String>> {
 #[must_use = "queries do nothing unless you `.await` or poll them"]
 pub struct DbQuery {
     client: Surreal<Db>,
+    #[cfg(test)]
+    plan_capture: Option<PlanCapture>,
     query: String,
     variables: std::result::Result<Variables, String>,
     retry_transaction_conflicts: bool,
@@ -279,6 +286,8 @@ impl DbQuery {
     fn new(client: Surreal<Db>, query: String) -> Self {
         Self {
             client,
+            #[cfg(test)]
+            plan_capture: None,
             retry_transaction_conflicts: is_replayable_query(&query),
             query,
             variables: Ok(Variables::new()),
@@ -418,6 +427,13 @@ impl IntoFuture for DbQuery {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let variables = self.variables.map_err(surrealdb::Error::internal)?;
+            #[cfg(test)]
+            if let Some(capture) = &self.plan_capture {
+                capture
+                    .lock()
+                    .unwrap()
+                    .push((self.query.clone(), variables.clone()));
+            }
             let execute = || {
                 let query = self
                     .client
@@ -448,6 +464,8 @@ impl DbConnection {
     pub fn new(client: Surreal<Db>) -> Self {
         Self {
             client,
+            #[cfg(test)]
+            plan_capture: None,
             proposal_lifecycle_lock: Arc::new(Mutex::new(())),
             remote_job_transition_lock: Arc::new(Mutex::new(())),
             source_enrichment_worker_lock: Arc::new(Mutex::new(())),
@@ -457,7 +475,13 @@ impl DbConnection {
     /// Run a query, automatically retrying complete transactions and one
     /// statement when SurrealDB confirms they were aborted by a write conflict.
     pub fn query(&self, query: impl Into<String>) -> DbQuery {
-        DbQuery::new(self.client.clone(), query.into())
+        let request = DbQuery::new(self.client.clone(), query.into());
+        #[cfg(test)]
+        let request = DbQuery {
+            plan_capture: self.plan_capture.clone(),
+            ..request
+        };
+        request
     }
 
     pub(crate) fn proposal_lifecycle_lock(&self) -> Arc<Mutex<()>> {

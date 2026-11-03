@@ -257,3 +257,12 @@ contexts and add `conditional migration and schema fixtures`, bound to GitHub
 Actions app ID `15368`, preserving `strict: true`. Plan checks stay in the
 already-required `retrieval regression baseline` context. Repository settings
 remain an owner action; workflow publication does not change branch protection.
+
+### Current qualification limit
+
+The #179 inventory explicitly distinguishes indexed-path gates from existing
+scan gaps and incomplete paths. Exact-vector and provenance statements already
+full-scan at the unchanged base. Therefore the current subset guards do not
+satisfy universal AC-1; this delivery is **not delivery-ready** until that scope
+conflict is resolved. The ignored scan diagnostic is evidence, not a passing
+plan-regression test. See the inventory for each status.

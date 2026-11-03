@@ -131,6 +131,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: quality-gates-v1
+      - name: Indexed hot retrieval statement plans
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::hot_retrieval_plan_tests::indexed_hot_retrieval_statements_keep_their_access_paths --nocapture
+      - name: Entity and mentions plans with historical negative controls
+        run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::hot_retrieval_plan_tests::entity_lexeme_and_bound_mention_statements_reject_historical_scans --nocapture
       - name: Compare deterministic fixture with tests/baselines/retrieval-v1.json
         run: python3 scripts/run-exact-rust-test.py -p graphrag-cli --bin graphrag --test-name eval::tests::committed_retrieval_fixture_matches_versioned_baseline --nocapture
 
