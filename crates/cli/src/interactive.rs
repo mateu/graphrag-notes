@@ -680,11 +680,12 @@ async fn execute(
         "stats" => {
             let stats = application.stats().await?;
             println!(
-                "Notes: {}, entities: {}, sources: {}, edges: {}, conversations: {}, messages: {}",
+                "Notes: {}, entities: {}, sources: {}, edges: {} ({}), conversations: {}, messages: {}",
                 stats.note_count,
                 stats.entity_count,
                 stats.source_count,
                 stats.edge_count,
+                crate::dispatch::edge_breakdown(&stats),
                 stats.conversation_count,
                 stats.message_count
             );

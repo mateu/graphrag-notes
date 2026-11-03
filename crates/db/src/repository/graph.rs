@@ -2517,7 +2517,7 @@ impl Repository {
         {
             return Ok(Vec::new());
         }
-        let tables = ["supports", "contradicts", "related_to", "derived_from"]
+        let tables = ACCEPTED_NOTE_EDGE_TABLES
             .into_iter()
             .filter(|table| edge_types.iter().any(|edge_type| edge_type == table))
             .collect::<Vec<_>>();
@@ -2658,10 +2658,9 @@ impl Repository {
         let mut edges: Vec<NoteEdgeRow> = Vec::new();
         let limit = limit.max(1);
 
-        edges.extend(self.query_edges_table("supports", limit).await?);
-        edges.extend(self.query_edges_table("contradicts", limit).await?);
-        edges.extend(self.query_edges_table("related_to", limit).await?);
-        edges.extend(self.query_edges_table("derived_from", limit).await?);
+        for table in ACCEPTED_NOTE_EDGE_TABLES {
+            edges.extend(self.query_edges_table(table, limit).await?);
+        }
 
         Ok(edges)
     }
@@ -2672,10 +2671,9 @@ impl Repository {
         let note_id = normalize_note_id(note_id);
         let mut edges: Vec<NoteEdgeRow> = Vec::new();
 
-        edges.extend(self.query_edges_for_note("supports", &note_id).await?);
-        edges.extend(self.query_edges_for_note("contradicts", &note_id).await?);
-        edges.extend(self.query_edges_for_note("related_to", &note_id).await?);
-        edges.extend(self.query_edges_for_note("derived_from", &note_id).await?);
+        for table in ACCEPTED_NOTE_EDGE_TABLES {
+            edges.extend(self.query_edges_for_note(table, &note_id).await?);
+        }
 
         Ok(edges)
     }
