@@ -18,7 +18,7 @@ pub struct SuggestedConnection {
 
 /// The Gardener agent maintains graph health
 pub struct GardenerAgent {
-    repo: Repository,
+    pub(super) repo: Repository,
     /// Minimum similarity threshold for suggesting connections
     similarity_threshold: f32,
     auto_apply_threshold: f32,

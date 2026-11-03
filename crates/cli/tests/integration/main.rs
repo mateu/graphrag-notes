@@ -11,6 +11,7 @@ mod folder_sync_commands;
 mod init_commands;
 mod keyword_commands;
 mod navigation_commands;
+mod remote_candidate_scan_http;
 mod remote_capture_http;
 mod remote_commands;
 mod remote_doctor_http;

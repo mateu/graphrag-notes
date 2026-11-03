@@ -197,6 +197,15 @@ impl RemoteApplicationOperations for EmbeddedApplication {
         self.remote_endpoint_proposal_impl(caller, request).await
     }
 
+    async fn scan_relationship_candidates_remote(
+        &self,
+        caller: CallerIdentity,
+        request: RelationshipCandidateScanRequest,
+    ) -> ApplicationResult<RelationshipCandidateScanResponse> {
+        self.scan_relationship_candidates_impl(caller, request)
+            .await
+    }
+
     async fn build_context(
         &self,
         request: BuildContextRequest,

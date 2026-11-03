@@ -153,10 +153,10 @@ class CredentialProvisioning(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     credentials.provision(path, ["a"], [], [grant])
                 self.assertFalse(path.exists())
-            credentials.provision(path, ["a"], ["reader"], ["a=edit,delete,upload,jobs", "reader=reject"])
+            credentials.provision(path, ["a"], ["reader"], ["a=edit,delete,upload,jobs", "reader=reject,garden"])
             entries = json.loads((path / "credentials.json").read_text())["credentials"]
             self.assertEqual(entries[0]["capabilities"], ["read", "capture", "edit", "delete", "upload", "jobs"])
-            self.assertEqual(entries[1]["capabilities"], ["read", "reject"])
+            self.assertEqual(entries[1]["capabilities"], ["read", "reject", "garden"])
 
     def test_refuses_overwrite_and_invalid_ids_before_writing(self):
         with tempfile.TemporaryDirectory() as base:

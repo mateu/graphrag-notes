@@ -944,6 +944,9 @@ pub(crate) async fn run() -> Result<()> {
             config.augment.max_tokens,
             config.augment.max_chunk_tokens,
             &config.augment,
+        ))
+        .with_candidate_policy(crate::garden_candidates::policy(
+            &config.gardener.candidates,
         ));
         // Opt-in: without an enabled [alchemist] section synthesis stays off.
         let application = match crate::alchemist::runtime(&config) {

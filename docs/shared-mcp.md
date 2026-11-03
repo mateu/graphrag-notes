@@ -105,8 +105,9 @@ require HTTPS; loopback HTTP supports the encrypted tunnel recipe.
 Remote dispatch happens before local configuration/database/provider startup.
 It supports `search`, `inspect`, `augment`, `capture` and `add`, plus
 `notes show/edit/delete`, `garden review`, explicitly confirmed
-`garden proposals accept/reject/undo`, `upload`, `sources show` and
-`jobs list/show/cancel/resume`. See [revisioned mutations](shared-mcp-mutations.md)
+`garden proposals accept/reject/undo`, the bounded
+[`garden scan --max-candidates`](connection-review.md#high-precision-candidate-scan),
+`upload`, `sources show` and `jobs list/show/cancel/resume`. See [revisioned mutations](shared-mcp-mutations.md)
 and [uploaded sources/jobs](remote-upload-jobs.md) for permissions, reviewed
 revisions, stable request IDs and recovery. Host maintenance stays on the host.
 Local configuration, database and inference overrides are

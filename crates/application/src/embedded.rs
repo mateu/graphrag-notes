@@ -20,6 +20,8 @@ pub struct EmbeddedApplication {
     pub(crate) extractor: SharedEntityExtractor,
     pub(crate) runtime: LibrarianRuntimeConfig,
     pub(crate) augment_options: AugmentOptions,
+    /// Operator-owned precision policy for relationship candidate scans.
+    pub(crate) candidate_policy: graphrag_agents::gardener::CandidatePolicy,
     pub(crate) provider_observations: std::sync::Mutex<crate::remote_status::ProviderObservations>,
     /// `None` (the default) keeps Alchemist synthesis disabled.
     pub(crate) alchemist: Option<crate::AlchemistRuntime>,
@@ -40,6 +42,7 @@ impl EmbeddedApplication {
             extractor,
             runtime,
             augment_options: AugmentOptions::default(),
+            candidate_policy: graphrag_agents::gardener::CandidatePolicy::default(),
             provider_observations: std::sync::Mutex::new(
                 crate::remote_status::ProviderObservations::default(),
             ),
@@ -49,6 +52,15 @@ impl EmbeddedApplication {
 
     pub fn with_augment_options(mut self, options: AugmentOptions) -> Self {
         self.augment_options = options;
+        self
+    }
+
+    /// Replace the default candidate-scan policy with operator configuration.
+    pub fn with_candidate_policy(
+        mut self,
+        policy: graphrag_agents::gardener::CandidatePolicy,
+    ) -> Self {
+        self.candidate_policy = policy;
         self
     }
 

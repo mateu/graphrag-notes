@@ -73,6 +73,9 @@ pub(crate) fn summarize(
         usage.max_chunks_per_source =
             count(args.get("max_chunks_per_source")).filter(|cap| (1..=200).contains(cap));
     }
+    if tool == "scan_relationship_candidates" {
+        usage.limit = count(args.get("max_candidates"));
+    }
     let structured = match result {
         Err(_) => {
             usage.outcome = "protocol_error".into();
@@ -109,6 +112,7 @@ pub(crate) fn summarize(
     let items = match tool {
         "search_notes" => data.get("records"),
         "build_context" => data.get("chunks"),
+        "scan_relationship_candidates" => data.get("candidates"),
         _ => None,
     };
     if let Some(items) = items.and_then(Value::as_array) {

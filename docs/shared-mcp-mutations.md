@@ -22,6 +22,15 @@ python3 scripts/provision-mcp-credentials.py "$HOME/.graphrag/mcp-private" \
 Use an atomic mode-0600 policy replacement when changing existing grants;
 provisioning never overwrites an existing credential directory.
 
+The opt-in `garden` capability exposes only `scan_relationship_candidates`, the
+[bounded candidate scan](connection-review.md#high-precision-candidate-scan). It
+requires `max_candidates`, `max_endpoints`, `deadline_ms` and `dry_run`, records
+pending proposals only (actor `mcp:<instance_id>`), and grants no read, propose,
+accept, reject or undo. One scan runs at a time; a concurrent request is `busy`.
+A dry run that cuts candidates at `max_candidates` returns no
+`next_after_note_id` and sets `dry_run_cut` (count and guidance), because a
+repeated dry run would return the same page.
+
 ## Inspect, then edit
 
 ```bash

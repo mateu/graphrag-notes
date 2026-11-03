@@ -331,6 +331,7 @@ pub(crate) async fn execute(
                     config.gardener.auto_apply_threshold,
                     config.gardener.auto_apply,
                     config.gardener.max_suggestions,
+                    crate::garden_candidates::policy(&config.gardener.candidates),
                 )
                 .await?;
             }
@@ -2546,7 +2547,21 @@ pub(crate) async fn cmd_garden(
     auto_apply_threshold: f32,
     auto_apply: bool,
     max_suggestions: usize,
+    candidate_policy: graphrag_agents::gardener::CandidatePolicy,
 ) -> Result<()> {
+    // `--max-candidates` selects the bounded high-precision scan; it shares
+    // validation, policy tightening and receipts with the service tool.
+    if let Some((request, format)) = crate::garden_candidates::request(&command) {
+        let receipt = graphrag_application::scan_relationship_candidates(
+            &repo,
+            &candidate_policy,
+            "cli:local",
+            request.clone(),
+        )
+        .await?;
+        crate::garden_candidates::verify_receipt(&request, &receipt)?;
+        return crate::garden_candidates::print(format, &receipt);
+    }
     let gardener = GardenerAgent::new(repo.clone())
         .with_threshold(similarity_threshold)
         .with_auto_apply_policy(auto_apply, auto_apply_threshold)
@@ -2556,7 +2571,7 @@ pub(crate) async fn cmd_garden(
         GardenCommand::Review { .. } => {
             unreachable!("review is dispatched without a Gardener scan")
         }
-        GardenCommand::Scan { dry_run } => {
+        GardenCommand::Scan { dry_run, .. } => {
             let report = gardener.scan(dry_run).await?;
             if report.dry_run {
                 println!("Dry run: no proposals or accepted edges were changed.");

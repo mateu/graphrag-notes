@@ -285,13 +285,17 @@ impl Repository {
     #[instrument(skip(self, draft))]
     pub async fn upsert_edge_proposal(&self, mut draft: EdgeProposalDraft) -> Result<ProposedEdge> {
         let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
-        validate_note_edge(&draft.from_id, &draft.to_id, &draft.edge_type)?;
-        canonicalize_note_edge(&mut draft.from_id, &mut draft.to_id, &draft.edge_type);
-        draft.confidence = draft.confidence.clamp(0.0, 1.0);
-        let dedupe_key = edge_dedupe_key(&draft.from_id, &draft.to_id, &draft.edge_type);
+        let dedupe_key = prepare_edge_proposal(&mut draft)?;
 
         if let Some(existing) = self.find_proposal_by_dedupe_key(&dedupe_key).await? {
-            if existing.status == ProposedEdgeStatus::Pending {
+            // Only a proposal's own generator refreshes it. Another family's
+            // pending proposal (a review-only candidate, a reviewed endpoint
+            // assertion) is returned unchanged, so a legacy scan can never
+            // relabel it, drop its evidence or make it eligible for batch
+            // acceptance.
+            if existing.status == ProposedEdgeStatus::Pending
+                && existing.generator == draft.generator
+            {
                 #[derive(Deserialize, SurrealValue)]
                 struct UpdatedRow {
                     id: RecordId,
@@ -300,7 +304,7 @@ impl Repository {
                 let updated: Option<UpdatedRow> = self
                     .db
                     .query(
-                        "UPDATE $id SET confidence = $confidence, reason = $reason, generator = $generator, generator_version = $generator_version, model = $model, updated_at = time::now() WHERE status = 'pending' RETURN AFTER",
+                        "UPDATE $id SET confidence = $confidence, reason = $reason, generator_version = $generator_version, model = $model, updated_at = time::now() WHERE status = 'pending' AND generator = $generator RETURN AFTER",
                     )
                     .bind(("id", id.clone()))
                     .bind(("confidence", draft.confidence))
@@ -318,6 +322,30 @@ impl Repository {
             return Ok(existing);
         }
 
+        // A concurrent scan can pass the lookup above at the same time. The
+        // unique dedupe index elects one winner; reload it instead of
+        // surfacing a spurious duplicate-key failure.
+        match self
+            .insert_pending_edge_proposal(draft, &dedupe_key)
+            .await?
+        {
+            Some(created) => Ok(created),
+            None => self
+                .find_proposal_by_dedupe_key(&dedupe_key)
+                .await?
+                .ok_or_else(|| DbError::QueryFailed("create proposed_edge".into())),
+        }
+    }
+
+    /// Insert a new pending proposal for a draft prepared by
+    /// [`prepare_edge_proposal`]. When another writer already recorded the
+    /// dedupe key (the unique index elects one winner) this is `Ok(None)`:
+    /// it never refreshes an existing proposal.
+    pub(super) async fn insert_pending_edge_proposal(
+        &self,
+        draft: EdgeProposalDraft,
+        dedupe_key: &str,
+    ) -> Result<Option<ProposedEdge>> {
         #[derive(Deserialize, SurrealValue)]
         struct IdRow {
             id: RecordId,
@@ -327,7 +355,7 @@ impl Repository {
             .query(
                 "INSERT INTO proposed_edge (dedupe_key, in, out, edge_type, confidence, reason, generator, generator_version, model, status, created_at, updated_at) VALUES ($dedupe_key, $from, $to, $edge_type, $confidence, $reason, $generator, $generator_version, $model, 'pending', time::now(), time::now()) RETURN id",
             )
-            .bind(("dedupe_key", dedupe_key.clone()))
+            .bind(("dedupe_key", dedupe_key.to_owned()))
             .bind(("from", draft.from_id))
             .bind(("to", draft.to_id))
             .bind(("edge_type", draft.edge_type.to_string()))
@@ -344,11 +372,12 @@ impl Repository {
         let created = match created_result {
             Ok(created) => created,
             Err(error) => {
-                // A concurrent scan can pass the lookup above at the same
-                // time. The unique dedupe index elects one winner; reload it
-                // instead of surfacing a spurious duplicate-key failure.
-                if let Some(existing) = self.find_proposal_by_dedupe_key(&dedupe_key).await? {
-                    return Ok(existing);
+                if self
+                    .find_proposal_by_dedupe_key(dedupe_key)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(None);
                 }
                 return Err(error);
             }
@@ -361,6 +390,7 @@ impl Repository {
         self.get_edge_proposal(&id)
             .await?
             .ok_or_else(|| DbError::QueryFailed("created proposal disappeared".into()))
+            .map(Some)
     }
 
     /// Fetch a proposal by record id.
@@ -1065,26 +1095,19 @@ impl Repository {
             .ok_or_else(|| DbError::NotFound("note".into(), record_id_to_string(note_id)))
     }
 
-    /// Find orphan notes (no connections)
+    /// Find visible notes without an accepted relation to another visible
+    /// note. Every accepted note-edge table counts, in either direction.
     #[instrument(skip(self))]
     pub async fn find_orphan_notes(&self) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
             .query(format!(
-                r#"
-                SELECT * FROM note 
-                WHERE 
-                    {VISIBLE_NOTE_CONDITION} AND
-                    array::len((SELECT * FROM ->supports->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM <-supports<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM ->contradicts->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM <-contradicts<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM ->related_to->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM <-related_to<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0
-            "#
+                "LET $connected = {}; SELECT * FROM note WHERE {VISIBLE_NOTE_CONDITION} AND id NOT IN $connected ORDER BY id ASC;",
+                super::gardener_candidates::connected_note_ids_sql()
             ))
             .await?
-            .take(0)?;
+            .check()?
+            .take(1)?;
 
         Ok(notes)
     }
@@ -2705,6 +2728,18 @@ fn validate_note_edge(from_id: &RecordId, to_id: &RecordId, edge_type: &EdgeType
         return Err(DbError::QueryFailed("self-edges are not allowed".into()));
     }
     Ok(())
+}
+
+/// Validate and canonicalize a proposal draft; returns its dedupe key.
+pub(super) fn prepare_edge_proposal(draft: &mut EdgeProposalDraft) -> Result<String> {
+    validate_note_edge(&draft.from_id, &draft.to_id, &draft.edge_type)?;
+    canonicalize_note_edge(&mut draft.from_id, &mut draft.to_id, &draft.edge_type);
+    draft.confidence = draft.confidence.clamp(0.0, 1.0);
+    Ok(edge_dedupe_key(
+        &draft.from_id,
+        &draft.to_id,
+        &draft.edge_type,
+    ))
 }
 
 pub(crate) fn canonicalize_note_edge(

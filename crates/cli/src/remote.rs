@@ -1,5 +1,5 @@
 //! Remote dispatch runs before local configuration, database and provider bootstrap.
-use crate::cli::{Cli, Commands, GraphModeArg, SearchModeArg, SearchScopeArg};
+use crate::cli::{Cli, Commands, GardenCommand, GraphModeArg, SearchModeArg, SearchScopeArg};
 use crate::commands::{
     editor::{Draft, EditorOptions, EditorOutcome},
     navigation::shell_quote,
@@ -239,7 +239,12 @@ async fn invocation(cli: &Cli, server: &str) -> Result<Invocation> {
             let tags: Vec<String> = tags.as_deref().map(|tags|tags.split(',').map(|tag|tag.trim().to_string()).collect()).unwrap_or_default();
             return prepare_capture(cli,server,CaptureInput { content:content.as_deref(),file:None,title:title.as_deref(),tags:&tags,options:&EditorOptions::default(),format:OutputFormat::Human });
         }
-        _ => anyhow::bail!("remote mode supports search, inspect, augment, capture, notes edit/delete, connection review, reviewed proposals, upload, uploaded sources show and owned jobs; use host-side commands for database maintenance"),
+        Commands::Garden { command: command @ GardenCommand::Scan { .. } } => {
+            // The service runs only the bounded candidate scan, with explicit budgets.
+            let (request, format) = crate::garden_candidates::request(command).context("remote garden scan runs the bounded candidate scan; pass --max-candidates N (1–50) and check the echoed receipt")?;
+            (crate::garden_candidates::TOOL, serde_json::to_value(request)?, format, false)
+        }
+        _ => anyhow::bail!("remote mode supports search, inspect, augment, capture, notes edit/delete, connection review, reviewed proposals, garden scan --max-candidates, upload, uploaded sources show and owned jobs; use host-side commands for database maintenance"),
     };
     Ok(Invocation {
         tool,
@@ -319,6 +324,12 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
             .context("incompatible context response")?;
         print!("{context}");
         return Ok(());
+    }
+    if invocation.tool == crate::garden_candidates::TOOL {
+        let receipt = crate::garden_candidates::remote_receipt(&invocation.arguments, &value)?;
+        return output::print(invocation.format, invocation.tool, value, |writer| {
+            crate::garden_candidates::render(writer, &receipt)
+        });
     }
     let human = serde_json::to_string_pretty(&value)?;
     output::print(invocation.format, invocation.tool, value, |writer| {
@@ -422,6 +433,10 @@ fn validate_read_result(tool: &str, value: &Value) -> Result<()> {
                 .is_ok()
         }
         "capture_note" | "edit_note" | "delete_note" | "decide_proposal" => true,
+        "scan_relationship_candidates" => serde_json::from_value::<
+            graphrag_application::RelationshipCandidateScanResponse,
+        >(value["data"].clone())
+        .is_ok(),
         "propose_endpoint_relationship" => serde_json::from_value::<
             graphrag_application::RemoteEndpointProposalResponse,
         >(value["data"].clone())

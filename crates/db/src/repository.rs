@@ -16,6 +16,9 @@ mod exact_vector_plan_policy_tests;
 mod folder_sync;
 #[cfg(test)]
 mod fulltext_projection_tests;
+mod gardener_candidates;
+#[cfg(test)]
+mod gardener_candidates_tests;
 mod graph;
 #[cfg(test)]
 mod graph_retrieval_batch_tests;
@@ -48,6 +51,10 @@ mod title_score_diagnostic_tests;
 
 pub use chats::{EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEdgeRow};
 pub use folder_sync::FileSourceSnapshot;
+pub use gardener_candidates::{
+    CandidateAnchorScope, CandidateExistingLinks, CandidateExistingProposal, CandidateMention,
+    CandidateNameFrequency, CandidateNote, CandidateProposalOutcome, ACCEPTED_NOTE_EDGE_TABLES,
+};
 pub use graph::{SourceDeleteSummary, SourceImportAction, SourceImportPlan};
 use ids::normalize_note_id;
 pub use ids::parse_record_id;

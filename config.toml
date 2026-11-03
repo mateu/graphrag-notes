@@ -100,6 +100,14 @@ auto_apply = false
 # Maximum suggestions to generate per run
 max_suggestions = 50
 
+# Optional precision policy for `garden scan --max-candidates` and the service
+# tool `scan_relationship_candidates` (requests may only tighten it). Defaults:
+# [gardener.candidates]
+# similarity_floor = 0.80
+# neighbors_per_endpoint = 8
+# max_per_endpoint = 2
+# max_entity_note_frequency = 10
+
 [alchemist]
 # Read-only, citation-verified synthesis (`graphrag synthesize`, MCP
 # `synthesize_notes`). Opt-in; it uses the [inference] extraction provider and

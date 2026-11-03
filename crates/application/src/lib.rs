@@ -6,6 +6,8 @@ mod contracts;
 mod embedded;
 mod error;
 mod inference;
+mod remote_candidate_scan;
+mod remote_candidate_scan_contracts;
 mod remote_contracts;
 mod remote_endpoint_proposal_contracts;
 mod remote_endpoint_proposals;
@@ -31,6 +33,8 @@ pub use embedded::{
 pub use error::{ApplicationError, ApplicationFailure, ApplicationResult};
 /// Request-local retrieval telemetry shared by transports and the embedded engine.
 pub use graphrag_db::retrieval_usage;
+pub use remote_candidate_scan::scan_relationship_candidates;
+pub use remote_candidate_scan_contracts::*;
 pub use remote_contracts::*;
 pub use remote_endpoint_proposal_contracts::*;
 pub use remote_endpoint_proposals::remote_endpoint_proposal_fingerprint;
@@ -128,6 +132,17 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
     ) -> ApplicationResult<RemoteEndpointProposalResponse> {
         Err(ApplicationError::Compatibility(
             "Remote endpoint proposals are unavailable in this adapter".into(),
+        ))
+    }
+
+    /// Bounded, review-only candidate generation; never accepts an edge.
+    async fn scan_relationship_candidates_remote(
+        &self,
+        _caller: CallerIdentity,
+        _request: RelationshipCandidateScanRequest,
+    ) -> ApplicationResult<RelationshipCandidateScanResponse> {
+        Err(ApplicationError::Compatibility(
+            "Relationship candidate scans are unavailable in this adapter".into(),
         ))
     }
 
