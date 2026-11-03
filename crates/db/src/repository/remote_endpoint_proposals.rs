@@ -496,10 +496,60 @@ impl Repository {
         if request.edge_type.is_symmetric() {
             endpoints.sort();
         }
-        let dedupe = format!(
-            "reviewed-v1:{base}:{:x}",
-            Sha256::digest(serde_json::to_vec(&endpoints).map_err(|_| conflict())?)
-        );
+        let dedupe = match &request.assessment {
+            // Without typed evidence the legacy identity is unchanged, so
+            // stored legacy proposals deduplicate exactly as before.
+            None => format!(
+                "reviewed-v1:{base}:{:x}",
+                Sha256::digest(serde_json::to_vec(&endpoints).map_err(|_| conflict())?)
+            ),
+            // Typed evidence is part of what is reviewed. A pending or rejected
+            // hypothesis must not block the fresh explicit-statement or
+            // derivation proposal that its acceptance refusal asks for, while
+            // identical evidence still conflicts (in either order for a
+            // symmetric relation). Who nominated or typed the pair is
+            // provenance, not evidence, and stays out of the identity.
+            Some(typed) => {
+                let link = |role: relation_evidence::EndpointRole| {
+                    typed
+                        .link
+                        .as_ref()
+                        .filter(|link| link.endpoint == role)
+                        .map(|link| (&link.quote, &link.reference))
+                };
+                let mut sides = vec![
+                    (
+                        &request.from_id,
+                        &request.from_revision,
+                        &request.from_quote,
+                        &typed.from_support,
+                        link(relation_evidence::EndpointRole::From),
+                    ),
+                    (
+                        &request.to_id,
+                        &request.to_revision,
+                        &request.to_quote,
+                        &typed.to_support,
+                        link(relation_evidence::EndpointRole::To),
+                    ),
+                ];
+                if request.edge_type.is_symmetric() {
+                    sides.sort();
+                }
+                let claim = (
+                    typed.evidence_mode,
+                    typed.direction,
+                    typed.lineage,
+                    &typed.alternative_explanation,
+                    &typed.scope,
+                );
+                format!(
+                    "reviewed-evidence-v{}:{base}:{:x}",
+                    relation_evidence::EVIDENCE_ASSESSMENT_VERSION,
+                    Sha256::digest(serde_json::to_vec(&(sides, claim)).map_err(|_| conflict())?)
+                )
+            }
+        };
         let existing: Option<RecordId> = self
             .db
             .query("SELECT VALUE id FROM proposed_edge WHERE dedupe_key=$dedupe LIMIT 1")

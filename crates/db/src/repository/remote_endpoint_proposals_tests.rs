@@ -2,7 +2,7 @@ use super::*;
 use crate::init_memory;
 use graphrag_core::relation_evidence::{
     CandidateScore, DeclaredLineage, EvidenceAssessment, EvidenceAssessmentRequest, EvidenceMode,
-    LinkEvidenceRequest, RelationDirection,
+    LinkEvidenceRequest, ProposerDeclaration, RelationDirection,
 };
 use graphrag_core::MessageRole;
 
@@ -649,6 +649,17 @@ async fn propose_typed(
     edge_type: EdgeType,
     assessment: EvidenceAssessmentRequest,
 ) -> Result<ProposedEdge> {
+    propose_assessed(repo, a, b, request_id, edge_type, Some(assessment)).await
+}
+
+async fn propose_assessed(
+    repo: &Repository,
+    a: &Note,
+    b: &Note,
+    request_id: &str,
+    edge_type: EdgeType,
+    assessment: Option<EvidenceAssessmentRequest>,
+) -> Result<ProposedEdge> {
     let from = record_id_to_string(a.id.as_ref().unwrap());
     let to = record_id_to_string(b.id.as_ref().unwrap());
     let ra = repo.inspect_record(&from, 0).await.unwrap().revision;
@@ -673,7 +684,7 @@ async fn propose_typed(
             to_quote: b.content.clone(),
             edge_type,
             rationale,
-            assessment: Some(assessment),
+            assessment,
         })
         .await?;
     let id = parse_record_id(
@@ -834,6 +845,157 @@ async fn analogy_and_hypothesis_proposals_stay_pending_and_out_of_the_accepted_g
             .unwrap();
         assert_eq!(rejected.status, ProposedEdgeStatus::Rejected);
     }
+}
+
+fn is_conflict(result: &Result<ProposedEdge>) -> bool {
+    matches!(result, Err(DbError::MutationRevisionConflict(_)))
+}
+
+#[tokio::test]
+async fn typed_evidence_is_part_of_proposal_identity_while_legacy_identity_is_unchanged() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let a = repo
+        .create_note(Note::new(
+            "Canary results passed on the pinned build. Logs attached.",
+        ))
+        .await
+        .unwrap();
+    let b = repo
+        .create_note(Note::new("Release requires a passing canary."))
+        .await
+        .unwrap();
+    let hypothesis = typed(EvidenceMode::Hypothesis, RelationDirection::FromTo);
+    let speculative = propose_typed(
+        &repo,
+        &a,
+        &b,
+        "speculative",
+        EdgeType::Supports,
+        hypothesis.clone(),
+    )
+    .await
+    .unwrap();
+    let refused = repo
+        .accept_edge_proposal(
+            speculative.id.as_ref().unwrap(),
+            Some("reviewer".into()),
+            None,
+            true,
+        )
+        .await;
+    assert!(
+        matches!(&refused, Err(DbError::InvalidMutationRequest(message)) if message == PENDING_ONLY_EVIDENCE),
+        "{refused:?}"
+    );
+    repo.reject_edge_proposal(
+        speculative.id.as_ref().unwrap(),
+        Some("reviewer".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    // The rejected hypothesis still deduplicates identical evidence...
+    let repeated = propose_typed(
+        &repo,
+        &a,
+        &b,
+        "speculative-again",
+        EdgeType::Supports,
+        hypothesis,
+    )
+    .await;
+    assert!(is_conflict(&repeated), "{repeated:?}");
+    // ...but no longer blocks the fresh, evidenced proposal the refusal asks
+    // for, over the same endpoints, revisions and primary quotes.
+    let explicit = propose_typed(
+        &repo,
+        &a,
+        &b,
+        "explicit",
+        EdgeType::Supports,
+        typed(EvidenceMode::ExplicitStatement, RelationDirection::FromTo),
+    )
+    .await
+    .unwrap();
+    let mut more_support = typed(EvidenceMode::ExplicitStatement, RelationDirection::FromTo);
+    more_support.from_support = vec!["Logs attached.".into()];
+    let supported = propose_typed(&repo, &a, &b, "supported", EdgeType::Supports, more_support)
+        .await
+        .unwrap();
+    assert_eq!(explicit.status, ProposedEdgeStatus::Pending);
+    assert_ne!(explicit.id, speculative.id);
+    assert_ne!(supported.id, explicit.id);
+    // Who typed the pair is provenance, not evidence.
+    let mut retyped = typed(EvidenceMode::ExplicitStatement, RelationDirection::FromTo);
+    retyped.proposer = Some(ProposerDeclaration {
+        generator: "fictional-typer".into(),
+        generator_version: None,
+        model: None,
+    });
+    let repeated = propose_typed(&repo, &a, &b, "retyped", EdgeType::Supports, retyped).await;
+    assert!(is_conflict(&repeated), "{repeated:?}");
+    // Without typed evidence the legacy identity is unchanged: the same
+    // endpoints, revisions and quotes conflict under a new request ID.
+    propose_assessed(&repo, &a, &b, "legacy", EdgeType::Supports, None)
+        .await
+        .unwrap();
+    let repeated = propose_assessed(&repo, &a, &b, "legacy-again", EdgeType::Supports, None).await;
+    assert!(is_conflict(&repeated), "{repeated:?}");
+    // The accepted graph still holds one edge per pair and relation.
+    repo.accept_edge_proposal(
+        explicit.id.as_ref().unwrap(),
+        Some("reviewer".into()),
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(repo
+        .accept_edge_proposal(
+            supported.id.as_ref().unwrap(),
+            Some("reviewer".into()),
+            None,
+            true
+        )
+        .await
+        .is_err());
+    assert_eq!(count(&repo, "supports").await, 1);
+}
+
+#[tokio::test]
+async fn symmetric_typed_evidence_deduplicates_in_either_endpoint_order() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let a = repo
+        .create_note(Note::new("Queue latency rose in March. Alerts fired."))
+        .await
+        .unwrap();
+    let b = repo
+        .create_note(Note::new("Cache churn rose in March. Evictions doubled."))
+        .await
+        .unwrap();
+    let mut forward = typed(EvidenceMode::Hypothesis, RelationDirection::Symmetric);
+    forward.from_support = vec!["Alerts fired.".into()];
+    forward.to_support = vec!["Evictions doubled.".into()];
+    let mut mirrored = forward.clone();
+    std::mem::swap(&mut mirrored.from_support, &mut mirrored.to_support);
+    propose_typed(&repo, &a, &b, "forward", EdgeType::RelatedTo, forward)
+        .await
+        .unwrap();
+    let repeated = propose_typed(&repo, &b, &a, "mirrored", EdgeType::RelatedTo, mirrored).await;
+    assert!(is_conflict(&repeated), "{repeated:?}");
+    // Different support in the reversed order is still different evidence.
+    let mut fewer_spans = typed(EvidenceMode::Hypothesis, RelationDirection::Symmetric);
+    fewer_spans.from_support = vec!["Evictions doubled.".into()];
+    let fresh = propose_typed(
+        &repo,
+        &b,
+        &a,
+        "fewer-spans",
+        EdgeType::RelatedTo,
+        fewer_spans,
+    )
+    .await;
+    assert!(fresh.is_ok(), "{fresh:?}");
 }
 
 #[tokio::test]
