@@ -18,6 +18,9 @@ pub enum Capability {
     Propose,
     /// Explicit owned-source reviewed conversion only, never default.
     Enrich,
+    /// Read-only Alchemist synthesis (`synthesize_notes`), never default. It
+    /// grants no other tool, and that tool also requires `read`.
+    Alchemist,
     Edit,
     Delete,
     Accept,

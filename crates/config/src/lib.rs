@@ -43,6 +43,8 @@ pub struct RuntimeConfig {
     pub librarian: LibrarianConfig,
     pub logging: LoggingConfig,
     pub navigation: NavigationConfig,
+    /// Opt-in, read-only Alchemist synthesis. Disabled by default.
+    pub alchemist: AlchemistConfig,
     /// Explicit host-local Markdown roots. Folder sync never runs implicitly.
     pub folders: BTreeMap<String, FolderConfig>,
 }
@@ -242,6 +244,69 @@ impl Default for AugmentConfig {
             min_relevance: 0.0,
             near_duplicate_threshold: 0.85,
         }
+    }
+}
+
+/// What the Alchemist does with a claim whose citations do not verify.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlchemistCitationPolicy {
+    /// Drop uncited or unverifiable claims and count them.
+    #[default]
+    Drop,
+    /// Fail the request on any rejected citation.
+    Strict,
+}
+
+/// Opt-in, read-only synthesis over accepted relations (`graphrag
+/// synthesize`, MCP `synthesize_notes`). Disabled by default. The budgets are
+/// the operator's defaults and ceilings; requests may only tighten them. The
+/// provider and model are the `[inference]` extraction settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AlchemistConfig {
+    pub enabled: bool,
+    /// Evidence chunks per synthesis (1–32).
+    pub max_chunks: usize,
+    /// Evidence tokens shown to the model (1–32768).
+    pub max_context_tokens: usize,
+    /// Generated tokens (1–8192).
+    pub max_output_tokens: usize,
+    /// Whole-request deadline in milliseconds (1–300000).
+    pub deadline_ms: u64,
+    /// Accepted-edge hops around a seed note (1–2).
+    pub max_hops: usize,
+    pub citation_policy: AlchemistCitationPolicy,
+}
+
+impl Default for AlchemistConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_chunks: 8,
+            max_context_tokens: 4_000,
+            max_output_tokens: 1_024,
+            deadline_ms: 60_000,
+            max_hops: 2,
+            citation_policy: AlchemistCitationPolicy::Drop,
+        }
+    }
+}
+
+impl AlchemistConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        // Mirrors the agent's hard ceilings, which re-check every request.
+        if !(1..=32).contains(&self.max_chunks)
+            || !(1..=32_768).contains(&self.max_context_tokens)
+            || !(1..=8_192).contains(&self.max_output_tokens)
+            || !(1..=300_000).contains(&self.deadline_ms)
+            || !(1..=2).contains(&self.max_hops)
+        {
+            return Err(ConfigError::Validation(
+                "alchemist requires max_chunks 1..=32, max_context_tokens 1..=32768, max_output_tokens 1..=8192, deadline_ms 1..=300000 and max_hops 1..=2".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1057,6 +1122,7 @@ impl RuntimeConfig {
                 "inference.ollama_options must be a TOML/JSON object".into(),
             ));
         }
+        self.alchemist.validate()?;
         Ok(())
     }
 
@@ -1935,5 +2001,46 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("fusion_strategy"));
+    }
+
+    #[test]
+    fn alchemist_is_opt_in_and_bounded() {
+        let defaults = RuntimeConfig::default().alchemist;
+        assert!(!defaults.enabled);
+        assert_eq!(defaults.citation_policy, AlchemistCitationPolicy::Drop);
+        assert_eq!((defaults.max_chunks, defaults.max_hops), (8, 2));
+
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("graphrag.toml");
+        let load = |body: &str| {
+            fs::write(&config_path, body).unwrap();
+            RuntimeConfig::load_with_env_and_default_path(
+                Some(&config_path),
+                &CliOverrides::default(),
+                &env(&[]),
+                None,
+            )
+        };
+        let config =
+            load("[alchemist]\nenabled = true\nmax_chunks = 4\ncitation_policy = \"strict\"\n")
+                .unwrap();
+        assert!(config.alchemist.enabled);
+        assert_eq!(config.alchemist.max_chunks, 4);
+        assert_eq!(
+            config.alchemist.citation_policy,
+            AlchemistCitationPolicy::Strict
+        );
+        for invalid in [
+            "max_chunks = 0",
+            "max_chunks = 33",
+            "max_hops = 3",
+            "deadline_ms = 0",
+            "max_context_tokens = 40000",
+        ] {
+            let error = load(&format!("[alchemist]\n{invalid}\n")).unwrap_err();
+            assert!(error.to_string().contains("alchemist"), "{invalid}");
+        }
+        assert!(load("[alchemist]\ncitation_policy = \"lenient\"\n").is_err());
+        assert!(load("[alchemist]\nunknown = 1\n").is_err());
     }
 }

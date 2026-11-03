@@ -21,6 +21,8 @@ pub struct EmbeddedApplication {
     pub(crate) runtime: LibrarianRuntimeConfig,
     pub(crate) augment_options: AugmentOptions,
     pub(crate) provider_observations: std::sync::Mutex<crate::remote_status::ProviderObservations>,
+    /// `None` (the default) keeps Alchemist synthesis disabled.
+    pub(crate) alchemist: Option<crate::AlchemistRuntime>,
 }
 
 impl EmbeddedApplication {
@@ -41,6 +43,7 @@ impl EmbeddedApplication {
             provider_observations: std::sync::Mutex::new(
                 crate::remote_status::ProviderObservations::default(),
             ),
+            alchemist: None,
         }
     }
 
