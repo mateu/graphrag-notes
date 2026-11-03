@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Trusted, stdlib-only exact-head review policy and GitHub check publisher."""
 import argparse
+import fnmatch
 import datetime as dt
 import json
 import os
@@ -9,6 +10,69 @@ import urllib.request
 import urllib.error
 
 BOT = 'chatgpt-codex-connector[bot]'
+
+
+BOT_CONFIG = {'bots': {'renovate[bot]': ['29139614+renovate[bot]@users.noreply.github.com', 'bot@renovateapp.com'], 'dependabot[bot]': ['49699333+dependabot[bot]@users.noreply.github.com']}, 'paths': ['Cargo.lock', 'Cargo.toml', '*/Cargo.toml', 'package.json', '*/package.json', 'package-lock.json', '*/package-lock.json', 'pnpm-lock.yaml', '*/pnpm-lock.yaml', 'yarn.lock', '*/yarn.lock', 'requirements*.txt', '*/requirements*.txt', 'uv.lock', '*/uv.lock', 'poetry.lock', '*/poetry.lock']}
+
+
+def bot_exemption(head, pr, commits, files, config=None):
+    """GitHub API evidence only; missing/truncated/ambiguous evidence fails closed."""
+    config = config if config is not None else BOT_CONFIG
+    bots = config['bots']
+    if pr.get('user', {}).get('login') not in bots:
+        return False, 'author not allowlisted'
+    if (pr.get('head', {}).get('sha') != head or not commits or
+            len(commits) != pr.get('commits') or len(commits) >= 250 or
+            commits[-1].get('sha') != head):
+        return False, 'incomplete or stale commits'
+    for commit in commits:
+        for role in ('author', 'committer'):
+            login = (commit.get(role) or {}).get('login')
+            email = commit.get('commit', {}).get(role, {}).get('email')
+            if login not in bots or email not in bots[login]:
+                return False, 'commit author/committer not allowlisted'
+    if not files or len(files) != pr.get('changed_files') or len(files) >= 3000:
+        return False, 'incomplete changed files'
+    for file in files:
+        for path in (file.get('filename', ''), file.get('previous_filename', file.get('filename', ''))):
+            if (not path or any(part.startswith('.') or part in ('scripts', 'src') for part in path.split('/')) or
+                    not any(fnmatch.fnmatchcase(path, pattern) for pattern in config['paths'])):
+                return False, 'path not allowlisted'
+    # Title/branch are additional signals only, after attested identity and paths.
+    # Require explicit numeric from/to pairs, not mutable labels or body claims.
+    title = pr.get('title', '')
+    pairs = re.findall(r'from v?(\d+)\.\d+\.\d+ to v?(\d+)\.\d+\.\d+', title, re.I)
+    if re.search(r'\bmajor\b', title + ' ' + pr.get('head', {}).get('ref', ''), re.I):
+        return False, 'major update'
+    if not pairs:
+        return False, 'update type undetermined'
+    if any(old != new for old, new in pairs):
+        return False, 'major update'
+    # Where supplied, inspect diff versions too. Any changed major-version
+    # multiset is conservatively reviewed (including additions/removals).
+    for file in files:
+        patch = file.get('patch')
+        if not patch:
+            return False, 'manifest diff unavailable'
+        versions = {'-': [], '+': []}
+        lockfile = file['filename'].split('/')[-1] in ('Cargo.lock', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'uv.lock', 'poetry.lock')
+        for line in patch.splitlines():
+            if line[:1] in versions and not line.startswith(('---', '+++')):
+                found = re.findall(r'(?<![\w.])(\d+)\.\d+\.\d+(?!\d)', line[1:])
+                if not found and not (lockfile and re.match(r'\s*(?:"integrity"\s*:|checksum\s*=|integrity\s+)', line[1:])):
+                    return False, 'manifest change type undetermined'
+                versions[line[0]].extend(found)
+        if not versions['-'] or not versions['+'] or sorted(versions['-']) != sorted(versions['+']):
+            return False, 'diff major versions changed or undetermined'
+    return True, 'bot dependency update (author, commits, paths, non-major verified)'
+
+
+def evaluate_pr(head, pr, commits, files, *args, config=None, **kwargs):
+    exempt, reason = bot_exemption(head, pr, commits, files, config)
+    status, description = evaluate(head, *args, **kwargs)
+    if exempt and not pr['draft'] and status != 'failure':
+        return 'success', 'Exempt: ' + reason
+    return status, ('Not exempt: ' + reason + '; ' if not exempt else '') + description
 
 
 def timestamp(value):
@@ -125,7 +189,9 @@ class GitHub:
             check = self.api(f'{root}/check-runs/{existing["id"]}', pending, 'PATCH')
         else:
             check = self.api(f'{root}/check-runs', dict(pending, head_sha=head))
-        warning = gate_change_warning(self.pages(f'{root}/pulls/{number}/files'))
+        files = self.pages(f'{root}/pulls/{number}/files')
+        commits = self.pages(f'{root}/pulls/{number}/commits')
+        warning = gate_change_warning(files)
         commit = self.api(f'{root}/commits/{head}')
         since = timestamp(commit['commit']['committer']['date'])
         for event in self.pages(f'{root}/issues/{number}/timeline'):
@@ -149,11 +215,14 @@ class GitHub:
                     if error.code not in (404, 422):
                         raise
                     resolved_receipts[match[1]] = None
-        status, description = evaluate(head, pr['draft'], since,
+        status, description = evaluate_pr(head, pr, commits, files, pr['draft'], since,
             comments, threads,
             dt.datetime.now(dt.timezone.utc),
             int(os.environ.get('REVIEW_GATE_FALLBACK_MINUTES') or '20'),
             tuple(x.strip() for x in (os.environ.get('REVIEW_GATE_ATTESTERS') or self.repo.split('/')[0]).split(',')), resolved_receipts)
+        if self.api(f'{root}/pulls/{number}')['head']['sha'] != head:
+            print(number, head, 'superseded during evaluation')
+            return
         payload = {'name': 'Review gate', 'head_sha': head, 'status': 'in_progress' if status == 'pending' else 'completed',
             'output': {'title': description[:255], 'summary': f'PR #{number}, head `{head}`. {description}' + warning}}
         if status != 'pending':
