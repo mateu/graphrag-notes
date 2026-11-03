@@ -338,3 +338,79 @@ KnnTopK/TableScan shapes and independently verifies filtered exact results.
 It must not be reported as indexed/no-scan coverage. A changed access path
 requires exactness qualification and policy review. Other hot paths retain
 the indexed/no-scan requirement.
+
+## Exact-head Review gate (#225)
+
+`Review gate` is a separate GitHub Actions check on the PR head. Drafts and new
+heads are pending. Trusted `chatgpt-codex-connector[bot]` completed state or clean
+receipt comments must identify that head; old reviews and forged-author comments
+never satisfy it. Completed unresolved findings and unresolved review threads on
+that head fail the gate. Conflicting completed evidence fails closed.
+
+With no completed Codex verdict, an independent local review can qualify after
+20 minutes from the latest commit committer date or latest ready-for-review event,
+whichever is later. Repository variable `REVIEW_GATE_FALLBACK_MINUTES` overrides
+20; `REVIEW_GATE_ATTESTERS` is a comma-separated author allowlist (default repository
+owner `mateu`). Only trusted attesters may post the following, after obtaining an
+independent review (the implementer's own review is not sufficient):
+
+```text
+<!-- local-review:v1 {"commit_sha":"<full head SHA>","verdict":"clean","reviewer":"<independent reviewer id>"} -->
+```
+
+Helper (uses your authenticated `gh` identity):
+
+```sh
+python3 scripts/attest-local-review.py <PR> --commit-sha <reviewed-full-SHA> --reviewer <session-or-reviewer-id> --verdict clean
+```
+
+A non-clean attestation fails; stale or untrusted attestations are ignored. A
+completed Codex verdict takes precedence over local fallback. New commits require
+new review evidence. The schedule polls every five minutes (GitHub may delay it).
+To recover from delayed events or API failures, inspect the evaluator workflow
+logs and re-dispatch on **main**:
+
+```sh
+gh workflow run review-gate.yml --repo mateu/graphrag-notes --ref main
+```
+
+Workflow code is always checked out from the default branch, never a PR ref,
+including for fork PRs. The token grants only checks write, PR read, and issues
+read. No secrets or automatic review requests are used. Review threads and
+comments are paginated; excessively large individual threads fail closed.
+The evaluator is intentionally unavailable before its first default-branch merge;
+PR-version execution would violate this trust boundary. Recorded PR #188 fixtures
+qualify policy transitions offline but are not a live GitHub check proof.
+
+**Post-merge maintainer step (Hunter/Forge):** retain all existing contexts and
+add `Review gate`, GitHub Actions app ID **15368**, to main's required status
+checks, preserving strict up-to-date checks. Verify both live paths (Codex clean
+and independent fallback) and the required-context binding before closing #225.
+Publishing this workflow does not itself change branch protection.
+
+### Accepted trust boundary and soft guard
+
+Required checks bind only to the GitHub Actions app and check name, not the
+publishing workflow. A workflow merged or pushed into a non-fork PR could publish
+a fake `Review gate` success, including on the test-merge commit (whose checks
+can take precedence over head checks). Hunter explicitly accepted this residual
+limit: this gate guards accidental/premature merges, such as auto-merge before
+review; it does **not** protect against a malicious insider.
+
+Fork PR workflows cannot write checks with their `GITHUB_TOKEN`; fork workflow
+approval is configured for all external contributors. The trusted target evaluator
+can publish checks but never runs fork code.
+
+The required `format` job runs `python3 scripts/check-review-gate-name.py` and
+rejects the literal `Review gate` anywhere in other `.yml`/`.yaml` workflow files
+(including job names, check payloads, status contexts and comments). The evaluator
+adds a visible warning to its check summary when the PR changes or renames its
+workflow or `scripts/review-gate.py`. Such changes require explicit independent
+inspection, not a title/label exception. Tests cover both guards. These are soft
+guards: dynamic names, indirect publishers, or changes to the guard can evade
+them. They do not establish workflow provenance or prevent deliberate bypass.
+
+Hard-guarantee upgrades remain future work: publish through a dedicated GitHub
+App with its own required `integration_id`, or move this user-owned repository
+into an organization and use a ruleset `workflows` rule. That rule is org-only
+and unavailable here (the maintainer verified a 422 response).
