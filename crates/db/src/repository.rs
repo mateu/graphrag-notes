@@ -26,6 +26,8 @@ mod migration_probe;
 mod models;
 mod notes;
 mod portable;
+#[cfg(test)]
+mod provenance_index_tests;
 mod remote_capture;
 mod remote_endpoint_proposals;
 mod remote_jobs;

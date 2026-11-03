@@ -29,6 +29,7 @@ mod v022_source_entity_enrichment;
 mod v023_remote_job_family;
 mod v024_entity_lexeme_index;
 mod v025_mention_lexeme_evidence;
+mod v026_provenance_endpoint_indexes;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -41,7 +42,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 25;
+pub const LATEST_SCHEMA_VERSION: u32 = 26;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -82,6 +83,7 @@ const MIGRATIONS: &[Migration] = &[
     v023_remote_job_family::MIGRATION,
     v024_entity_lexeme_index::MIGRATION,
     v025_mention_lexeme_evidence::MIGRATION,
+    v026_provenance_endpoint_indexes::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
