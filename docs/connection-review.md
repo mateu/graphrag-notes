@@ -131,7 +131,8 @@ graphrag --server http://127.0.0.1:3300/mcp garden scan --max-candidates 5 --dry
 
 A candidate is a cross-source `related_to` pair that passes every gate:
 
-- Notes from the same source, or sharing a chat conversation, are never paired.
+- Notes from the same source, or from one chat conversation (directly or
+  through any of its messages), are never paired.
   They are excluded before the per-endpoint neighbour limit, so adjacent chunks
   cannot crowd out other sources. Identical content is a duplicate, not a relation.
 - Cosine similarity is at least `similarity_floor` (default 0.80).

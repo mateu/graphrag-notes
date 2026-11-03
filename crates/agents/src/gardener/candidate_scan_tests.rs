@@ -2,8 +2,8 @@
 use super::candidates::*;
 use super::GardenerAgent;
 use graphrag_core::{
-    record_id_to_string, ChatConversation, EdgeType, Entity, EntityType, Note, ProposedEdgeStatus,
-    Source, SourceType,
+    record_id_to_string, ChatConversation, ChatMessage, EdgeType, Entity, EntityType, Note,
+    ProposedEdgeStatus, Source, SourceType,
 };
 use graphrag_db::{init_memory, Repository};
 use std::time::Duration;
@@ -859,4 +859,122 @@ async fn persisting_runs_page_as_before_and_record_unassessed_proposals() {
         .unwrap();
     assert_eq!(accepted.status, ProposedEdgeStatus::Accepted);
     assert_eq!(corpus.accepted_edge_count().await, 1);
+}
+
+/// A fictional conversation with `messages` messages; returns their IDs.
+async fn conversation(corpus: &Corpus, uuid: &str, messages: usize) -> Vec<RecordId> {
+    let now = chrono::Utc::now();
+    let conversation = corpus
+        .repo
+        .upsert_conversation(
+            &ChatConversation {
+                uuid: uuid.into(),
+                name: "Fixture".into(),
+                summary: "Fixture".into(),
+                created_at: now,
+                updated_at: now,
+                account: None,
+                messages: vec![],
+            },
+            None,
+            serde_json::json!({}),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for index in 0..messages {
+        let message: ChatMessage = serde_json::from_value(serde_json::json!({
+            "sender": "human",
+            "text": format!("Fictional message {index} of {uuid}"),
+        }))
+        .unwrap();
+        ids.push(
+            corpus
+                .repo
+                .upsert_message(&conversation, uuid, index, &message, None)
+                .await
+                .unwrap(),
+        );
+    }
+    ids
+}
+
+#[tokio::test]
+async fn notes_from_messages_of_one_conversation_share_an_origin() {
+    let corpus = Corpus::new().await;
+    let rare = ["Osprey relay"];
+    let mut notes = Vec::new();
+    for (index, (file, cosine)) in [("alpha.md", 1.0), ("beta.md", 0.95), ("gamma.md", 0.93)]
+        .into_iter()
+        .enumerate()
+    {
+        let source = corpus.source(file).await;
+        let content = format!("Fictional Osprey relay note {index}");
+        notes.push(
+            corpus
+                .note(Some(&source), &content, vector(cosine, index + 1), &rare)
+                .await,
+        );
+    }
+    let shared = conversation(&corpus, "fixture-shared", 2).await;
+    let elsewhere = conversation(&corpus, "fixture-elsewhere", 1).await;
+    // The anchor and its sibling come from different messages of one
+    // conversation; the third note comes from another conversation.
+    for (note, message) in [
+        (&notes[0], &shared[0]),
+        (&notes[1], &shared[1]),
+        (&notes[2], &elsewhere[0]),
+    ] {
+        assert!(corpus
+            .repo
+            .link_note_to_message(note, message)
+            .await
+            .unwrap());
+    }
+    let report = corpus
+        .scan(request(CandidateScope::Notes(vec![notes[0].clone()]), true))
+        .await;
+    assert_eq!(report.nominations, 2);
+    assert_eq!(report.rejections.same_origin, 1);
+    assert_eq!(pairs(&report), vec![unordered(&notes[0], &notes[2])]);
+}
+
+#[tokio::test]
+async fn legacy_scans_never_reclassify_candidate_proposals() {
+    let corpus = Corpus::new().await;
+    let alpha = corpus.source("alpha.md").await;
+    let beta = corpus.source("beta.md").await;
+    let rare = ["Kestrel ledger"];
+    let anchor = corpus
+        .note(Some(&alpha), "Kestrel ledger plan", vector(1.0, 1), &rare)
+        .await;
+    corpus
+        .note(Some(&beta), "Kestrel ledger review", vector(0.95, 2), &rare)
+        .await;
+    let report = corpus
+        .scan(request(CandidateScope::Notes(vec![anchor]), false))
+        .await;
+    assert_eq!(report.candidates.len(), 1);
+    let before = corpus.repo.list_edge_proposals(None, 10).await.unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].generator, CANDIDATE_GENERATOR);
+
+    // A legacy maintenance run nominates the same orphan pair with automatic
+    // acceptance enabled at any score: the candidate keeps its family and
+    // evidence and stays pending for individual review.
+    let maintenance = GardenerAgent::new(corpus.repo.clone())
+        .with_auto_apply_policy(true, 0.0)
+        .run_maintenance()
+        .await
+        .unwrap();
+    assert!(maintenance.suggestions_generated >= 1);
+    assert_eq!(maintenance.connections_applied, 0);
+    let after = corpus.repo.list_edge_proposals(None, 10).await.unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].generator, CANDIDATE_GENERATOR);
+    assert_eq!(after[0].reason, before[0].reason);
+    assert_eq!(after[0].updated_at, before[0].updated_at);
+    assert_eq!(after[0].status, ProposedEdgeStatus::Pending);
+    assert_eq!(corpus.accepted_edge_count().await, 0);
 }

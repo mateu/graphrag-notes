@@ -305,6 +305,46 @@ impl Repository {
         Ok(links)
     }
 
+    /// Chat origins of candidate notes: each note's conversations, linked
+    /// directly or through the conversation of each message it came from (a
+    /// message whose record is gone stands for itself). Two notes share an
+    /// origin when their sets intersect.
+    pub async fn candidate_note_origins(
+        &self,
+        notes: &[RecordId],
+    ) -> Result<std::collections::HashMap<String, std::collections::BTreeSet<String>>> {
+        let notes = note_ids_only(notes);
+        let mut origins =
+            std::collections::HashMap::<String, std::collections::BTreeSet<String>>::new();
+        if notes.is_empty() {
+            return Ok(origins);
+        }
+        #[derive(Deserialize, SurrealValue)]
+        struct OriginRow {
+            note: RecordId,
+            origin: RecordId,
+        }
+        let mut response = self
+            .db
+            .query(
+                "SELECT in AS note, out AS origin FROM note_from_conversation WHERE in IN $notes; \
+                 SELECT in AS note, (out.conversation_id ?? out) AS origin FROM note_from_message WHERE in IN $notes;",
+            )
+            .bind(("notes", notes))
+            .await?
+            .check()?;
+        for index in 0..2 {
+            let rows: Vec<OriginRow> = response.take(index)?;
+            for row in rows {
+                origins
+                    .entry(record_id_to_string(&row.note))
+                    .or_default()
+                    .insert(record_id_to_string(&row.origin));
+            }
+        }
+        Ok(origins)
+    }
+
     /// Record a scan candidate as a new pending proposal unless an accepted
     /// relation of any type or a proposal of any kind already joins the pair.
     /// The pair-wide check and the insert run in one hold of the proposal

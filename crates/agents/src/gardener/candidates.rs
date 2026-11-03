@@ -194,8 +194,9 @@ pub struct RelationshipCandidate {
 /// Why nominated pairs were not selected.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CandidateRejections {
-    /// Both notes share chat-conversation provenance. (Same-source notes are
-    /// excluded before nomination and are not counted here.)
+    /// Both notes come from one chat conversation, directly or through any
+    /// of its messages. (Same-source notes are excluded before nomination
+    /// and are not counted here.)
     pub same_origin: usize,
     pub duplicate_content: usize,
     pub no_second_signal: usize,
@@ -549,7 +550,7 @@ impl super::GardenerAgent {
         }
         let note_ids = notes.into_values().collect::<Vec<_>>();
 
-        let Some(provenance) = before(deadline, repo.graph_note_provenance_ids(&note_ids)).await?
+        let Some(provenance) = before(deadline, repo.candidate_note_origins(&note_ids)).await?
         else {
             return Ok(None);
         };

@@ -433,3 +433,122 @@ async fn candidate_recording_rechecks_the_pair_under_the_lifecycle_lock_and_neve
     ));
     assert_eq!(repo.list_edge_proposals(None, 10).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn candidate_origins_resolve_messages_to_their_conversation() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    repo.db
+        .query(
+            r#"
+            CREATE conversation:x SET uuid='x', title='x', created_at=time::now(), updated_at=time::now();
+            CREATE conversation:y SET uuid='y', title='y', created_at=time::now(), updated_at=time::now();
+            CREATE message:m1 SET message_key='m1', conversation_id=conversation:x, conversation_uuid='x', message_index=0, role='user', content='one';
+            CREATE message:m2 SET message_key='m2', conversation_id=conversation:x, conversation_uuid='x', message_index=1, role='user', content='two';
+            CREATE message:m3 SET message_key='m3', conversation_id=conversation:y, conversation_uuid='y', message_index=0, role='user', content='three';
+            FOR $key IN ['a', 'b', 'c', 'd', 'e', 'f'] {
+                CREATE type::record('note', $key) SET content = string::concat('Fictional ', $key);
+            };
+            CREATE note_from_message:a SET in=note:a, out=message:m1;
+            CREATE note_from_message:b SET in=note:b, out=message:m2;
+            CREATE note_from_conversation:c SET in=note:c, out=conversation:x;
+            CREATE note_from_message:d SET in=note:d, out=message:m3;
+            CREATE note_from_message:f SET in=note:f, out=message:gone;
+            "#,
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let ids = ["a", "b", "c", "d", "e", "f"].map(|key| RecordId::new("note", key));
+    let origins = repo.candidate_note_origins(&ids).await.unwrap();
+    let id = |table: &str, key: &str| record_id_to_string(&RecordId::new(table, key));
+    let origin = |key: &str| {
+        origins
+            .get(&id("note", key))
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    // Different messages of one conversation, and the conversation itself,
+    // are one origin; another conversation's message is not.
+    assert_eq!(origin("a"), vec![id("conversation", "x")]);
+    assert_eq!(origin("b"), vec![id("conversation", "x")]);
+    assert_eq!(origin("c"), vec![id("conversation", "x")]);
+    assert_eq!(origin("d"), vec![id("conversation", "y")]);
+    assert!(origin("e").is_empty());
+    // A message whose record is gone stands for itself.
+    assert_eq!(origin("f"), vec![id("message", "gone")]);
+}
+
+#[tokio::test]
+async fn upserts_refresh_only_their_own_generators_pending_proposals() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let from = note(&repo, "Fictional crane survey").await;
+    let to = note(&repo, "Fictional crane follow-up").await;
+    let later = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let outcome = repo
+        .record_candidate_proposal_before(
+            EdgeProposalDraft {
+                from_id: from.clone(),
+                to_id: to.clone(),
+                edge_type: EdgeType::RelatedTo,
+                confidence: 0.9,
+                reason: "candidate evidence".into(),
+                generator: "gardener-candidate".into(),
+                generator_version: Some("1".into()),
+                model: None,
+            },
+            later,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let CandidateProposalOutcome::Created(candidate) = outcome else {
+        panic!("nothing joins the pair yet");
+    };
+    // A legacy scan nominating the same pair gets the candidate back
+    // unchanged: no relabel, no lost evidence, no batch-acceptance eligibility.
+    let legacy = repo
+        .upsert_gardener_proposal(&from, &to, 0.99, "legacy similarity".into(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(legacy.id, candidate.id);
+    assert_eq!(legacy.generator, "gardener-candidate");
+    let stored = repo
+        .get_edge_proposal(candidate.id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.generator, "gardener-candidate");
+    assert_eq!(stored.reason, "candidate evidence");
+    assert_eq!(stored.confidence, candidate.confidence);
+    assert_eq!(stored.updated_at, candidate.updated_at);
+    assert_eq!(
+        repo.accept_gardener_proposals_above(0.0, None)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        repo.get_edge_proposal(candidate.id.as_ref().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ProposedEdgeStatus::Pending
+    );
+
+    // A generator still refreshes its own pending proposal.
+    let left = note(&repo, "Fictional rail survey").await;
+    let right = note(&repo, "Fictional rail follow-up").await;
+    repo.upsert_gardener_proposal(&left, &right, 0.8, "first".into(), None, None)
+        .await
+        .unwrap();
+    let refreshed = repo
+        .upsert_gardener_proposal(&left, &right, 0.9, "second".into(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.reason, "second");
+    assert_eq!(refreshed.generator, "gardener-similarity");
+}

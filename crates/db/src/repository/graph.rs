@@ -288,7 +288,14 @@ impl Repository {
         let dedupe_key = prepare_edge_proposal(&mut draft)?;
 
         if let Some(existing) = self.find_proposal_by_dedupe_key(&dedupe_key).await? {
-            if existing.status == ProposedEdgeStatus::Pending {
+            // Only a proposal's own generator refreshes it. Another family's
+            // pending proposal (a review-only candidate, a reviewed endpoint
+            // assertion) is returned unchanged, so a legacy scan can never
+            // relabel it, drop its evidence or make it eligible for batch
+            // acceptance.
+            if existing.status == ProposedEdgeStatus::Pending
+                && existing.generator == draft.generator
+            {
                 #[derive(Deserialize, SurrealValue)]
                 struct UpdatedRow {
                     id: RecordId,
@@ -297,7 +304,7 @@ impl Repository {
                 let updated: Option<UpdatedRow> = self
                     .db
                     .query(
-                        "UPDATE $id SET confidence = $confidence, reason = $reason, generator = $generator, generator_version = $generator_version, model = $model, updated_at = time::now() WHERE status = 'pending' RETURN AFTER",
+                        "UPDATE $id SET confidence = $confidence, reason = $reason, generator_version = $generator_version, model = $model, updated_at = time::now() WHERE status = 'pending' AND generator = $generator RETURN AFTER",
                     )
                     .bind(("id", id.clone()))
                     .bind(("confidence", draft.confidence))
