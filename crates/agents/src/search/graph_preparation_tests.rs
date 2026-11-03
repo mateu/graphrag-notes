@@ -53,6 +53,12 @@ async fn legacy_graph(
         merge_graph_hits(&mut result.hits, graph.hits);
     }
     rank_scoped_results(&mut result.hits);
+    if result.hits.len() > limit {
+        result.summary.candidates_rank_limited = result.hits[limit..]
+            .iter()
+            .filter(|hit| hit.graph.is_some())
+            .count();
+    }
     result.hits.truncate(limit);
     result.summary.candidates_selected =
         result.hits.iter().filter(|hit| hit.graph.is_some()).count();

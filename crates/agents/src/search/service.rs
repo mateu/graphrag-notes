@@ -25,6 +25,9 @@ mod deadline_tests;
 #[cfg(test)]
 #[path = "graph_preparation_tests.rs"]
 mod preparation_tests;
+#[cfg(test)]
+#[path = "graph_support_tests.rs"]
+mod support_tests;
 
 /// Per-invocation graph policy. `auto` runs only when a bounded local graph
 /// candidate exists; `on` uses the same safe bounds but makes the request
@@ -113,6 +116,10 @@ pub struct GraphRetrievalSummary {
     pub candidates_considered: usize,
     pub candidates_selected: usize,
     pub candidates_dropped: usize,
+    /// Graph-evidenced hits removed by the shared ranked result limit. For
+    /// augmentation this is the over-fetch window, so these candidates never
+    /// reached the context packer.
+    pub candidates_rank_limited: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -733,6 +740,10 @@ impl SearchAgent {
 
         rank_scoped_results(&mut scoped_results);
         if scoped_results.len() > limit {
+            summary.candidates_rank_limited = scoped_results[limit..]
+                .iter()
+                .filter(|hit| hit.graph.is_some())
+                .count();
             scoped_results.truncate(limit);
         }
         summary.candidates_selected = scoped_results
@@ -1132,6 +1143,28 @@ impl SearchAgent {
             "Retrieval phase completed"
         );
         drop(seed_evidence_started);
+        // #186: a seed that the direct channels already retrieved anchors its
+        // accepted-edge paths at its calibrated retrieval strength. Lexical
+        // coverage remains the strength of every path, but alone it placed a
+        // top hit's accepted neighbor on a scale that could not reach even a
+        // small over-fetch window, so traversal only annotated direct hits.
+        let unit = calibrated_graph_score(1.0, &self.fusion);
+        let retrieval_anchors = baseline
+            .iter()
+            .filter(|hit| hit.hit_type == SearchHitType::Note)
+            .filter_map(|hit| {
+                let strength = self.graph.seed_score * hit.fusion.fused_score / unit;
+                (strength.is_finite() && strength > 0.0).then(|| (hit.id.clone(), strength))
+            })
+            .collect::<HashMap<_, _>>();
+        // Only a neighbor with its own bounded evidence for this query (a
+        // direct or lexical candidate, or a query-entity mention seed) may
+        // inherit an anchor's strength.
+        let corroborated = direct_candidates
+            .keys()
+            .chain(seed_strengths.keys())
+            .cloned()
+            .collect::<HashSet<_>>();
         entity_seed_ids.sort_by(|a, b| {
             let a_id = record_id_to_string(&a.note_id);
             let b_id = record_id_to_string(&b.note_id);
@@ -1287,7 +1320,24 @@ impl SearchAgent {
                     if confidence < self.graph.min_confidence {
                         continue;
                     }
-                    let score = from.score * self.graph.per_hop_decay * confidence;
+                    // A seed passes on its retrieval strength when it has one;
+                    // a traversed state passes on only its own path score.
+                    let anchor = if from.path.is_empty() {
+                        retrieval_anchors
+                            .get(&from.id)
+                            .copied()
+                            .unwrap_or_default()
+                            .max(from.score)
+                    } else {
+                        from.score
+                    };
+                    let (lexical, score) = graph_transition_strengths(
+                        from.lexical,
+                        anchor,
+                        self.graph.per_hop_decay,
+                        confidence,
+                        corroborated.contains(&neighbor_id),
+                    );
                     let decay = from.decay * self.graph.per_hop_decay;
                     let mut path = from.path.clone();
                     path.push(GraphPathStep {
@@ -1308,6 +1358,7 @@ impl SearchAgent {
                         path,
                         visited,
                         score,
+                        lexical,
                         decay,
                         initial_entity_rank: from.initial_entity_rank,
                     };
@@ -1518,6 +1569,10 @@ struct GraphFrontier {
     path: Vec<GraphPathStep>,
     visited: HashSet<String>,
     score: f32,
+    /// The pre-#186 path strength (seed query coverage times hop decay and
+    /// confidence), never lifted by a retrieval anchor. Neighbors without
+    /// their own query evidence continue from this chain.
+    lexical: f32,
     decay: f32,
     /// A lower value is a more specific/ranked local entity match. Hybrid
     /// seeds have no entity match and sort after every entity-derived seed at
@@ -1537,6 +1592,7 @@ impl GraphFrontier {
             path: Vec::new(),
             visited,
             score,
+            lexical: score,
             decay: 1.0,
             initial_entity_rank: usize::MAX,
         }
@@ -1784,6 +1840,30 @@ fn select_graph_seed_note_ids(
         }
     }
     selected
+}
+
+/// Path strengths for one accepted-edge transition, as `(lexical, score)`.
+///
+/// `lexical` is the pre-#186 chain: seed query coverage times hop decay and
+/// edge confidence. A neighbor with its own bounded query evidence
+/// (`corroborated`) may instead inherit `from_anchor`, which for a seed that
+/// the direct channels retrieved is its calibrated retrieval strength. A
+/// neighbor without query evidence never inherits an anchor, so a hub cannot
+/// lift unrelated neighbors and an unrelated bridge cannot pass an anchor on.
+fn graph_transition_strengths(
+    from_lexical: f32,
+    from_anchor: f32,
+    per_hop_decay: f32,
+    confidence: f32,
+    corroborated: bool,
+) -> (f32, f32) {
+    let lexical = from_lexical * per_hop_decay * confidence;
+    let score = if corroborated {
+        lexical.max(from_anchor * per_hop_decay * confidence)
+    } else {
+        lexical
+    };
+    (lexical, score)
 }
 
 fn graph_transition_priority(left: &GraphFrontier, right: &GraphFrontier) -> std::cmp::Ordering {

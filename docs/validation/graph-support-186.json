@@ -1,0 +1,661 @@
+{
+  "schema_version": 1,
+  "issue": 186,
+  "privacy": "Ranks, scores and counters; source paths only where the committed baseline fixture already publishes them (others are \"other\"); no record IDs, titles, snippets, query text or credentials.",
+  "protocol": {
+    "scope": "notes",
+    "max_chunks": 2,
+    "max_total_tokens": 1000,
+    "max_chunk_tokens": 400,
+    "policies": [
+      "off",
+      "on",
+      "on",
+      "off"
+    ]
+  },
+  "suite_sha256": "0c591bbac3e11386a8933e7582ce635926e4e72b4c4f729ce52c6ac08a430140",
+  "runner_sha256": "dfb42b21f6fee32d3a0214dc3ec473e4974807cb2a1d6ac9ba70f131d58bccb5",
+  "compare_fixture": "scripts/tests/fixtures/graph-eval-20261103.json",
+  "accepted_edges": {
+    "count": 1,
+    "edge": "derived_from:remote_0682ebdc5de3ea3a78338e1007b7d0ecaf92493eaee7ec902b5a0c68c4488203",
+    "from": "summary chunk (memory/2026-08-17.md)",
+    "to": "detail chunk (memory/2026-08-15.md)"
+  },
+  "baseline_binary_sha256": "8ac529fbb21686d1f34a5cc39af07d715b7374c2724142e2bce9452f9a4917cc",
+  "candidate_binary_sha256": "4ecb85049c905cbca01bde8aa12f0b8185e97019f742b00f6182ecee3ccb15bf",
+  "reproducibility": {
+    "live_vs_isolated_restore_identical_questions": {
+      "no_cap": "8/8",
+      "cap_1": "8/8"
+    },
+    "restore": "post-migration schema-27 portable backup, 218860 records, embeddings included, one accepted edge"
+  },
+  "fixed_suite_after_vs_before_identical_questions_except_added_counters": {
+    "no_cap": "8/8",
+    "cap_1": "8/8"
+  },
+  "fixed_suite_passes": {
+    "live-before-9b867f6-nocap": 0,
+    "live-before-9b867f6-cap1": 0,
+    "rehearsal-before-9b867f6-nocap": 0,
+    "rehearsal-before-9b867f6-cap1": 0,
+    "rehearsal-after-candidate-nocap": 0,
+    "rehearsal-after-candidate-cap1": 0
+  },
+  "fixed_suite_counters_after": {
+    "no_cap": {
+      "Q1": {
+        "on": {
+          "graph_candidates_considered": 5,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q2": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 3,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q3": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 4
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q4": {
+        "on": {
+          "graph_candidates_considered": 5,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q5": {
+        "on": {
+          "graph_candidates_considered": 6,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 6,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 6
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q6": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 4
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q7": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 3,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 3
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q8": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 4
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      }
+    },
+    "cap_1": {
+      "Q1": {
+        "on": {
+          "graph_candidates_considered": 5,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q2": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 3,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q3": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 4
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q4": {
+        "on": {
+          "graph_candidates_considered": 5,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q5": {
+        "on": {
+          "graph_candidates_considered": 6,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 6,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 6
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q6": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 4
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q7": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 3,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 3
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      },
+      "Q8": {
+        "on": {
+          "graph_candidates_considered": 4,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 4
+        },
+        "pass": "fail",
+        "on_same_paths_as_off": true,
+        "stable_on": true,
+        "stable_off": true
+      }
+    }
+  },
+  "q4": {
+    "window_graph_on_limit_8": {
+      "before": [
+        {
+          "rank": 1,
+          "path": "memory/2026-08-17.md",
+          "score": 0.016052
+        },
+        {
+          "rank": 2,
+          "path": "memory/2026-08-13-1111.md",
+          "score": 0.014924
+        },
+        {
+          "rank": 3,
+          "path": "other",
+          "score": 0.012286
+        },
+        {
+          "rank": 4,
+          "path": "other",
+          "score": 0.012183
+        },
+        {
+          "rank": 5,
+          "path": "other",
+          "score": 0.011111
+        },
+        {
+          "rank": 6,
+          "path": "other",
+          "score": 0.010937
+        },
+        {
+          "rank": 7,
+          "path": "other",
+          "score": 0.010769
+        },
+        {
+          "rank": 8,
+          "path": "other",
+          "score": 0.010606
+        }
+      ],
+      "after": [
+        {
+          "rank": 1,
+          "path": "memory/2026-08-17.md",
+          "score": 0.016052
+        },
+        {
+          "rank": 2,
+          "path": "memory/2026-08-13-1111.md",
+          "score": 0.014924
+        },
+        {
+          "rank": 3,
+          "path": "memory/2026-08-15.md",
+          "score": 0.012842
+        },
+        {
+          "rank": 4,
+          "path": "other",
+          "score": 0.012286
+        },
+        {
+          "rank": 5,
+          "path": "other",
+          "score": 0.012183
+        },
+        {
+          "rank": 6,
+          "path": "other",
+          "score": 0.011111
+        },
+        {
+          "rank": 7,
+          "path": "other",
+          "score": 0.010937
+        },
+        {
+          "rank": 8,
+          "path": "other",
+          "score": 0.010769
+        }
+      ]
+    },
+    "window_graph_off_limit_8": {
+      "before": [
+        {
+          "rank": 1,
+          "path": "memory/2026-08-17.md",
+          "score": 0.016052
+        },
+        {
+          "rank": 2,
+          "path": "memory/2026-08-13-1111.md",
+          "score": 0.014924
+        },
+        {
+          "rank": 3,
+          "path": "other",
+          "score": 0.012286
+        },
+        {
+          "rank": 4,
+          "path": "other",
+          "score": 0.012183
+        },
+        {
+          "rank": 5,
+          "path": "other",
+          "score": 0.011111
+        },
+        {
+          "rank": 6,
+          "path": "other",
+          "score": 0.010937
+        },
+        {
+          "rank": 7,
+          "path": "other",
+          "score": 0.010769
+        },
+        {
+          "rank": 8,
+          "path": "other",
+          "score": 0.010606
+        }
+      ],
+      "after": [
+        {
+          "rank": 1,
+          "path": "memory/2026-08-17.md",
+          "score": 0.016052
+        },
+        {
+          "rank": 2,
+          "path": "memory/2026-08-13-1111.md",
+          "score": 0.014924
+        },
+        {
+          "rank": 3,
+          "path": "other",
+          "score": 0.012286
+        },
+        {
+          "rank": 4,
+          "path": "other",
+          "score": 0.012183
+        },
+        {
+          "rank": 5,
+          "path": "other",
+          "score": 0.011111
+        },
+        {
+          "rank": 6,
+          "path": "other",
+          "score": 0.010937
+        },
+        {
+          "rank": 7,
+          "path": "other",
+          "score": 0.010769
+        },
+        {
+          "rank": 8,
+          "path": "other",
+          "score": 0.010606
+        }
+      ]
+    },
+    "detail_chunk_rank_limit_200": {
+      "before": {
+        "graph_off": 106,
+        "graph_on": 95,
+        "graph_on_score": 0.004918,
+        "evidence": "hop-0 entity mention seed, query coverage 6/14; full-text rank 5 only"
+      },
+      "after": {
+        "graph_off": 106,
+        "graph_on": 3,
+        "graph_on_score": 0.012842,
+        "evidence": "hops=1 outbound accepted derived_from from the summary chunk"
+      }
+    },
+    "context_fixed_budget": {
+      "before_on": {
+        "paths": [
+          "memory/2026-08-17.md",
+          "memory/2026-08-13-1111.md"
+        ],
+        "graph": [
+          {
+            "hops": 1,
+            "seed": "detail chunk (memory/2026-08-15.md)",
+            "graph_score": 0.003934,
+            "steps": [
+              {
+                "edge": "derived_from:remote_0682ebdc5de3ea3a78338e1007b7d0ecaf92493eaee7ec902b5a0c68c4488203",
+                "type": "derived_from",
+                "direction": "inbound",
+                "from": "detail chunk (memory/2026-08-15.md)",
+                "to": "summary chunk (memory/2026-08-17.md)"
+              }
+            ],
+            "contiguous_to_returned_chunk": true
+          },
+          null
+        ],
+        "total_tokens": null,
+        "counters": {
+          "graph_candidates_considered": 5,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 4
+        }
+      },
+      "after_on": {
+        "paths": [
+          "memory/2026-08-17.md",
+          "memory/2026-08-13-1111.md"
+        ],
+        "graph": [
+          {
+            "hops": 1,
+            "seed": "detail chunk (memory/2026-08-15.md)",
+            "graph_score": 0.003934,
+            "steps": [
+              {
+                "edge": "derived_from:remote_0682ebdc5de3ea3a78338e1007b7d0ecaf92493eaee7ec902b5a0c68c4488203",
+                "type": "derived_from",
+                "direction": "inbound",
+                "from": "detail chunk (memory/2026-08-15.md)",
+                "to": "summary chunk (memory/2026-08-17.md)"
+              }
+            ],
+            "contiguous_to_returned_chunk": true
+          },
+          null
+        ],
+        "total_tokens": 841,
+        "counters": {
+          "graph_candidates_considered": 5,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        }
+      },
+      "after_off": {
+        "paths": [
+          "memory/2026-08-17.md",
+          "memory/2026-08-13-1111.md"
+        ],
+        "graph": [
+          null,
+          null
+        ],
+        "total_tokens": 841,
+        "counters": {
+          "graph_candidates_considered": 0,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 0,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 0
+        }
+      },
+      "after_on_cap_1": {
+        "paths": [
+          "memory/2026-08-17.md",
+          "memory/2026-08-13-1111.md"
+        ],
+        "graph": [
+          {
+            "hops": 1,
+            "seed": "detail chunk (memory/2026-08-15.md)",
+            "graph_score": 0.003934,
+            "steps": [
+              {
+                "edge": "derived_from:remote_0682ebdc5de3ea3a78338e1007b7d0ecaf92493eaee7ec902b5a0c68c4488203",
+                "type": "derived_from",
+                "direction": "inbound",
+                "from": "detail chunk (memory/2026-08-15.md)",
+                "to": "summary chunk (memory/2026-08-17.md)"
+              }
+            ],
+            "contiguous_to_returned_chunk": true
+          },
+          null
+        ],
+        "total_tokens": 841,
+        "counters": {
+          "graph_candidates_considered": 5,
+          "graph_candidates_selected": 1,
+          "graph_candidates_dropped": 4,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        }
+      }
+    },
+    "slot_2_bound_after": {
+      "novelty_weight": 0.25,
+      "competitor": "memory/2026-08-13-1111.md",
+      "competitor_min_selection_score": 0.5898,
+      "detail_max_selection_score": 0.5442,
+      "meaning": "normalized relevance alone keeps the detail below the second direct hit at any novelty"
+    },
+    "diagnostic_budget_3_chunks_not_suite_protocol": {
+      "after_off": {
+        "paths": [
+          "memory/2026-08-17.md",
+          "memory/2026-08-13-1111.md",
+          "other"
+        ],
+        "graph": [
+          null,
+          null,
+          null
+        ],
+        "total_tokens": 994,
+        "counters": {
+          "graph_candidates_considered": 0,
+          "graph_candidates_selected": 0,
+          "graph_candidates_dropped": 0,
+          "graph_candidates_added": 0,
+          "graph_candidates_annotating": 0,
+          "graph_candidates_rank_limited": 0
+        }
+      },
+      "after_on": {
+        "paths": [
+          "memory/2026-08-17.md",
+          "memory/2026-08-13-1111.md",
+          "memory/2026-08-15.md"
+        ],
+        "graph": [
+          {
+            "hops": 1,
+            "seed": "detail chunk (memory/2026-08-15.md)",
+            "graph_score": 0.003934,
+            "steps": [
+              {
+                "edge": "derived_from:remote_0682ebdc5de3ea3a78338e1007b7d0ecaf92493eaee7ec902b5a0c68c4488203",
+                "type": "derived_from",
+                "direction": "inbound",
+                "from": "detail chunk (memory/2026-08-15.md)",
+                "to": "summary chunk (memory/2026-08-17.md)"
+              }
+            ],
+            "contiguous_to_returned_chunk": true
+          },
+          null,
+          {
+            "hops": 1,
+            "seed": "summary chunk (memory/2026-08-17.md)",
+            "graph_score": 0.012842,
+            "steps": [
+              {
+                "edge": "derived_from:remote_0682ebdc5de3ea3a78338e1007b7d0ecaf92493eaee7ec902b5a0c68c4488203",
+                "type": "derived_from",
+                "direction": "outbound",
+                "from": "summary chunk (memory/2026-08-17.md)",
+                "to": "detail chunk (memory/2026-08-15.md)"
+              }
+            ],
+            "contiguous_to_returned_chunk": true
+          }
+        ],
+        "total_tokens": 996,
+        "counters": {
+          "graph_candidates_considered": 5,
+          "graph_candidates_selected": 2,
+          "graph_candidates_dropped": 3,
+          "graph_candidates_added": 1,
+          "graph_candidates_annotating": 1,
+          "graph_candidates_rank_limited": 2
+        }
+      }
+    }
+  }
+}
