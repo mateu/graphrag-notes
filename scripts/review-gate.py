@@ -23,7 +23,7 @@ def marker(body, name):
         return None
 
 
-def evaluate(head, draft, since, comments, threads, now, minutes=20, attesters=('mateu',)):
+def evaluate(head, draft, since, comments, threads, now, minutes=20, attesters=('mateu',), resolved_receipts=None):
     """Return (pending|success|failure, description). Never trust body identity."""
     if draft:
         return 'pending', 'draft'
@@ -46,7 +46,7 @@ def evaluate(head, draft, since, comments, threads, now, minutes=20, attesters=(
             elif review.get('has_unresolved_findings') is False:
                 verdicts.append((c.get('updated_at', ''), 'success', 'Codex clean for exact head'))
         receipt = re.search(r'\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,40})`', body)
-        if '<!-- codex-review-receipt:v1 -->' in body and "Codex Review: Didn't find any major issues" in body and receipt and head.startswith(receipt[1]):
+        if '<!-- codex-review-receipt:v1 -->' in body and "Codex Review: Didn't find any major issues" in body and receipt and (receipt[1] == head or (resolved_receipts or {}).get(receipt[1]) == head):
             verdicts.append((c.get('updated_at', ''), 'success', 'Codex clean receipt for exact head'))
     if verdicts:
         # Fail closed if any completed evidence still reports unresolved findings.
@@ -124,11 +124,20 @@ class GitHub:
         # Refuse truncated thread evidence rather than silently ignore it.
         if any(t['comments']['pageInfo']['hasNextPage'] for t in threads):
             raise RuntimeError('Review thread exceeds 100 comments; maintainer inspection required')
+        comments = self.pages(f'{root}/issues/{number}/comments')
+        resolved_receipts = {}
+        for comment in comments:
+            if comment['user']['login'] != BOT:
+                continue
+            match = re.search(r'\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,39})`', comment['body'])
+            if match and match[1] not in resolved_receipts:
+                # GitHub rejects ambiguous abbreviations; API errors leave the gate pending.
+                resolved_receipts[match[1]] = self.api(f'{root}/commits/{match[1]}')['sha']
         status, description = evaluate(head, pr['draft'], since,
-            self.pages(f'{root}/issues/{number}/comments'), threads,
+            comments, threads,
             dt.datetime.now(dt.timezone.utc),
             int(os.environ.get('REVIEW_GATE_FALLBACK_MINUTES') or '20'),
-            tuple(x.strip() for x in (os.environ.get('REVIEW_GATE_ATTESTERS') or self.repo.split('/')[0]).split(',')))
+            tuple(x.strip() for x in (os.environ.get('REVIEW_GATE_ATTESTERS') or self.repo.split('/')[0]).split(',')), resolved_receipts)
         payload = {'name': 'Review gate', 'head_sha': head, 'status': 'in_progress' if status == 'pending' else 'completed',
             'output': {'title': description[:255], 'summary': f'PR #{number}, head `{head}`. {description}'}}
         if status != 'pending':

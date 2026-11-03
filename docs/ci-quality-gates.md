@@ -302,7 +302,7 @@ independent review (the implementer's own review is not sufficient):
 Helper (uses your authenticated `gh` identity):
 
 ```sh
-python3 scripts/attest-local-review.py <PR> --reviewer <session-or-reviewer-id> --verdict clean
+python3 scripts/attest-local-review.py <PR> --commit-sha <reviewed-full-SHA> --reviewer <session-or-reviewer-id> --verdict clean
 ```
 
 A non-clean attestation fails; stale or untrusted attestations are ignored. A
@@ -328,3 +328,9 @@ add `Review gate`, GitHub Actions app ID **15368**, to main's required status
 checks, preserving strict up-to-date checks. Verify both live paths (Codex clean
 and independent fallback) and the required-context binding before closing #225.
 Publishing this workflow does not itself change branch protection.
+
+Security limit: GitHub Actions app/name bindings do not distinguish workflows. A
+PR-controlled workflow may be able to spoof the same check name. Required-workflow
+provenance rules or a separate trusted GitHub App must be qualified by the
+maintainer before treating this as an adversarial-contributor security boundary.
+The requested Actions app binding alone does not establish that guarantee.

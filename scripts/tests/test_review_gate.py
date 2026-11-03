@@ -20,7 +20,7 @@ class ReviewGateTests(unittest.TestCase):
     def evaluate(self, comments=None, **kwargs):
         values = dict(head=self.head, draft=False, since=self.now - dt.timedelta(minutes=21),
                       comments=self.comments if comments is None else comments,
-                      threads=[], now=self.now)
+                      threads=[], now=self.now, resolved_receipts={'16132a90b8': self.head})
         values.update(kwargs)
         return gate.evaluate(**values)[0]
 
@@ -32,6 +32,10 @@ class ReviewGateTests(unittest.TestCase):
         self.assertEqual(self.evaluate([self.comments[0]]), 'success')
         self.assertEqual(self.evaluate([self.comments[2]]), 'success')
         self.assertEqual(self.evaluate([self.comments[1]]), 'pending')
+
+    def test_receipt_requires_unambiguous_resolution(self):
+        self.assertEqual(self.evaluate([self.comments[2]], resolved_receipts={}), 'pending')
+        self.assertEqual(self.evaluate([self.comments[2]], head='16132a90b8' + 'a' * 30), 'pending')
 
     def test_draft_and_new_head(self):
         self.assertEqual(self.evaluate(draft=True), 'pending')
