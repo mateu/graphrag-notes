@@ -5,6 +5,8 @@
 // at their owning domain rather than introducing a second data-access layer.
 mod chats;
 #[cfg(test)]
+mod edge_frontier_plan_tests;
+#[cfg(test)]
 mod exact_vector_diagnostic_tests;
 #[cfg(test)]
 mod exact_vector_native_float_qualification;

@@ -39,7 +39,7 @@ parser. Plan output includes actual execution metrics.
 | Ranked graph seeds: direct-ranked mentions SELECT | Same fixture | `idx_mentions_entity_note`; no TableScan |
 | Ranked graph seeds: non-ranked fallback mentions SELECT | Same fixture | `idx_mentions_entity_note`; no TableScan |
 | Unranked/empty-query graph seed batch SELECT | Existing behavior fixtures | **INCOMPLETE:** not yet added to plan gate |
-| Accepted edge expansion: supports/contradicts/related_to/derived_from, inbound/outbound/both | Gap diagnostic, actual `graph_edge_batch_sql` statements | **BLOCKED:** schema has dedupe indexes but no endpoint access index; measured plans recorded separately |
+| Accepted edge expansion: supports/contradicts/related_to/derived_from, inbound/outbound/both | `edge_frontier_plan_tests::accepted_edge_frontiers_use_indexes_in_every_direction`, actual `graph_edge_batch_sql` statements | Guarded by v27 endpoint indexes in all twelve variants; [separate migration, behavior and hydration qualification](193-edge-frontier-indexes.md) |
 | Provenance: note_from_conversation membership SELECT | Gap diagnostic | **BLOCKED:** TableScan, no `in` index |
 | Provenance: note_from_message membership SELECT | Gap diagnostic | **BLOCKED:** TableScan, no `in` index |
 
