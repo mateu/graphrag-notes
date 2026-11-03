@@ -173,6 +173,7 @@ async fn detached_reviewed_endpoint(
             to_quote: other.content.clone(),
             edge_type: EdgeType::Supports,
             rationale,
+            assessment: None,
         })
         .await
         .unwrap();

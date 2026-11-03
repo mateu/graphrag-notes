@@ -138,6 +138,7 @@ async fn propose_reviewed_endpoint(
             to_quote: to.content.clone(),
             edge_type: EdgeType::Supports,
             rationale: "Fictional directly reviewed evidence".into(),
+            assessment: None,
         })
         .await
         .unwrap();

@@ -23,6 +23,8 @@ pub struct EmbeddedApplication {
     /// Operator-owned precision policy for relationship candidate scans.
     pub(crate) candidate_policy: graphrag_agents::gardener::CandidatePolicy,
     pub(crate) provider_observations: std::sync::Mutex<crate::remote_status::ProviderObservations>,
+    /// `None` (the default) keeps Alchemist synthesis disabled.
+    pub(crate) alchemist: Option<crate::AlchemistRuntime>,
 }
 
 impl EmbeddedApplication {
@@ -44,6 +46,7 @@ impl EmbeddedApplication {
             provider_observations: std::sync::Mutex::new(
                 crate::remote_status::ProviderObservations::default(),
             ),
+            alchemist: None,
         }
     }
 
@@ -176,16 +179,23 @@ pub async fn proposal_card(
         .ok_or_else(|| ApplicationError::Internal("Stored proposal has no ID".into()))?;
     let from = endpoint(repo, record_id_to_string(&proposal.from_id)).await?;
     let to = endpoint(repo, record_id_to_string(&proposal.to_id)).await?;
+    let evidence = proposal.evidence_summary();
     let blocked = if proposal.status != ProposedEdgeStatus::Pending {
         Some(format!("Proposal is {}, not pending.", proposal.status))
     } else if !from.available || !to.available {
         Some("Both notes must be visible before this proposal can be accepted.".into())
+    } else if let Err(error) = graphrag_db::repository::ensure_acceptable_evidence(&proposal) {
+        Some(match error {
+            DbError::InvalidMutationRequest(message) => message,
+            other => other.to_string(),
+        })
     } else if !repo.reviewed_endpoint_proposal_current(&proposal).await? {
         Some("The immutable endpoint evidence is stale; create a fresh reviewed proposal.".into())
     } else {
         None
     };
     let revision = proposal_revision(&proposal, from.revision.as_deref(), to.revision.as_deref())?;
+    let evidence_assessment = proposal.evidence_assessment.clone();
     Ok(ProposalCard {
         id: record_id_to_string(id),
         status: proposal.status,
@@ -207,6 +217,8 @@ pub async fn proposal_card(
         accept_allowed: blocked.is_none(),
         accept_blocked_reason: blocked,
         revision,
+        evidence,
+        evidence_assessment,
     })
 }
 pub fn validate_record_id(id: &str) -> ApplicationResult<()> {

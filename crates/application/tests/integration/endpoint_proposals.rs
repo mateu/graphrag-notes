@@ -64,7 +64,7 @@ async fn request(
 ) -> RemoteEndpointProposalRequest {
     let a = repo.inspect_record(from, 0).await.unwrap();
     let b = repo.inspect_record(to, 0).await.unwrap();
-    RemoteEndpointProposalRequest {request_id:id.into(),from:EndpointProposalEvidence{id:a.id,revision:a.revision,quote:a.content},to:EndpointProposalEvidence{id:b.id,revision:b.revision,quote:b.content},relationship:EndpointRelationship::Supports,rationale:"The second record supplies the verified evidence needed by the first claim; review is explicit, not similarity-derived.".into(),confirmed:true}
+    RemoteEndpointProposalRequest {request_id:id.into(),from:EndpointProposalEvidence{id:a.id,revision:a.revision,quote:a.content},to:EndpointProposalEvidence{id:b.id,revision:b.revision,quote:b.content},relationship:EndpointRelationship::Supports,rationale:"The second record supplies the verified evidence needed by the first claim; review is explicit, not similarity-derived.".into(),assessment:None,confirmed:true}
 }
 async fn rows(repo: &Repository, table: &str) -> Vec<serde_json::Value> {
     repo.portable_records_page(table, 0, 1000).await.unwrap()
@@ -419,4 +419,422 @@ async fn accepted_evidence_edge_reaches_missed_fact_off_on_on_off_and_undo_remov
         .await
         .unwrap();
     assert!(!undone.chunks.iter().any(|c| c.id == b));
+}
+
+// Typed evidence assessments (#205). Fictional notes only.
+fn typed(mode: EvidenceMode, direction: RelationDirection) -> EvidenceAssessmentRequest {
+    EvidenceAssessmentRequest {
+        evidence_mode: mode,
+        direction,
+        lineage: DeclaredLineage::Unknown,
+        from_support: vec![],
+        to_support: vec![],
+        link: None,
+        candidate: None,
+        proposer: None,
+        alternative_explanation: None,
+        scope: None,
+    }
+}
+fn decision(card: &ProposalCard, id: &str, action: ProposalAction) -> RemoteDecisionRequest {
+    RemoteDecisionRequest {
+        request_id: id.into(),
+        id: card.id.clone(),
+        revision: card.revision.clone(),
+        action,
+        reason: None,
+        confirmed: true,
+    }
+}
+#[tokio::test]
+async fn typed_assessment_keeps_fields_separate_replays_exactly_and_survives_decisions() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let a = note(
+        &repo,
+        "note:a",
+        "Release requires a passing canary. The canary passed on build 7.",
+    )
+    .await;
+    let b = note(&repo, "note:b", "Canary build 7 passed all checks.").await;
+    let app = app(&repo);
+    let mut r = request(&repo, &a, &b, "typed-review").await;
+    let mut assessment = typed(EvidenceMode::ExplicitStatement, RelationDirection::FromTo);
+    assessment.from_support = vec!["The canary passed on build 7.".into()];
+    assessment.candidate = Some(CandidateScore {
+        generator: "gardener-similarity".into(),
+        generator_version: Some("1".into()),
+        similarity: Some(0.66),
+    });
+    assessment.proposer = Some(ProposerDeclaration {
+        generator: "typing-worker".into(),
+        generator_version: Some("0".into()),
+        model: Some("fixture-model".into()),
+    });
+    assessment.alternative_explanation = Some("Build 7 may differ from the release build".into());
+    assessment.scope = Some("Build 7 only".into());
+    r.assessment = Some(assessment);
+    let result = app
+        .propose_endpoint_remote(caller(), r.clone())
+        .await
+        .unwrap();
+    assert_eq!(result.outcome.status, "pending");
+    let card = app.proposal(&result.outcome.id).await.unwrap();
+    assert!(card.accept_allowed);
+    // The legacy weight keeps its reviewed convention; nothing else reads it.
+    assert_eq!(card.confidence, 1.0);
+    assert_eq!(card.evidence.status, EvidenceStatus::Assessed);
+    assert_eq!(
+        card.evidence.evidence_mode,
+        Some(EvidenceMode::ExplicitStatement)
+    );
+    assert_eq!(card.evidence.candidate_similarity, Some(0.66));
+    assert_eq!(card.evidence.same_origin, Some(false));
+    assert_eq!(
+        card.evidence.legacy_weight_meaning,
+        LegacyWeightMeaning::ReviewConvention
+    );
+    let stored = card.evidence_assessment.clone().unwrap();
+    assert_eq!(stored["version"], 1);
+    assert_eq!(stored["calibration"], "none");
+    assert_eq!(stored["relation"], "supports");
+    assert_eq!(stored["proposer"]["actor"], "mcp:fixture-reviewer");
+    assert_eq!(stored["proposer"]["model"], "fixture-model");
+    assert_eq!(stored["endpoints"][0]["note"], a);
+    assert_eq!(
+        stored["endpoints"][0]["support"][1]["quote"],
+        "The canary passed on build 7."
+    );
+    assert_eq!(stored["endpoints"][0]["support"][1]["byte_start"], 35);
+    assert_eq!(stored["scope"], "Build 7 only");
+    let after = inventory(&repo).await;
+    let replay = app
+        .propose_endpoint_remote(caller(), r.clone())
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.outcome, result.outcome);
+    assert_eq!(inventory(&repo).await, after);
+    // The same request identity with different claims is a conflict.
+    for change in 0..3 {
+        let mut changed = r.clone();
+        match change {
+            0 => changed.assessment.as_mut().unwrap().scope = Some("All builds".into()),
+            1 => changed.assessment.as_mut().unwrap().evidence_mode = EvidenceMode::Derivation,
+            _ => changed.assessment = None,
+        }
+        assert!(app
+            .propose_endpoint_remote(caller(), changed)
+            .await
+            .is_err());
+        assert_eq!(inventory(&repo).await, after);
+    }
+    app.decide_remote(
+        caller(),
+        decision(&card, "accept-typed", ProposalAction::Accept),
+    )
+    .await
+    .unwrap();
+    let edges = rows(&repo, "supports").await;
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["evidence_assessment"], stored);
+    assert_eq!(edges[0]["confidence"], 1.0);
+    let card = app.proposal(&result.outcome.id).await.unwrap();
+    assert_eq!(card.status, graphrag_core::ProposedEdgeStatus::Accepted);
+    app.decide_remote(
+        caller(),
+        decision(&card, "undo-typed", ProposalAction::Undo),
+    )
+    .await
+    .unwrap();
+    assert!(rows(&repo, "supports").await.is_empty());
+    let card = app.proposal(&result.outcome.id).await.unwrap();
+    assert_eq!(card.status, graphrag_core::ProposedEdgeStatus::Superseded);
+    assert_eq!(card.evidence_assessment, Some(stored));
+    assert!(
+        app.propose_endpoint_remote(caller(), r)
+            .await
+            .unwrap()
+            .replayed
+    );
+}
+#[tokio::test]
+async fn speculative_unlinked_and_same_origin_typed_proposals_fail_closed() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let a = note(
+        &repo,
+        "note:a",
+        "Queue latency rose after the cache change.",
+    )
+    .await;
+    let b = note(&repo, "note:b", "Cache churn rose the same week.").await;
+    let app = app(&repo);
+    let base = request(&repo, &a, &b, "typed").await;
+    let before = inventory(&repo).await;
+    let mut unverbatim = typed(EvidenceMode::Derivation, RelationDirection::FromTo);
+    unverbatim.to_support = vec!["Cache churn fell".into()];
+    let mut crowded = typed(EvidenceMode::Derivation, RelationDirection::FromTo);
+    crowded.from_support = vec![
+        "Queue".into(),
+        "latency".into(),
+        "rose".into(),
+        "cache".into(),
+    ];
+    let mut scored = typed(EvidenceMode::Derivation, RelationDirection::FromTo);
+    scored.candidate = Some(CandidateScore {
+        generator: "gardener-similarity".into(),
+        generator_version: None,
+        similarity: Some(1.5),
+    });
+    for (relationship, assessment, expected) in [
+        (
+            EndpointRelationship::RelatedTo,
+            typed(
+                EvidenceMode::ExplicitStatement,
+                RelationDirection::Symmetric,
+            ),
+            "related_to requires explicit link evidence",
+        ),
+        (
+            EndpointRelationship::Supports,
+            typed(
+                EvidenceMode::ExplicitStatement,
+                RelationDirection::Symmetric,
+            ),
+            "direction symmetric does not match supports",
+        ),
+        (EndpointRelationship::Supports, unverbatim, "not verbatim"),
+        (
+            EndpointRelationship::Supports,
+            crowded,
+            "at most 3 additional support spans",
+        ),
+        (
+            EndpointRelationship::Contradicts,
+            scored,
+            "candidate similarity",
+        ),
+    ] {
+        let mut r = base.clone();
+        r.relationship = relationship;
+        r.assessment = Some(assessment);
+        let error = app.propose_endpoint_remote(caller(), r).await.unwrap_err();
+        assert!(
+            matches!(&error, ApplicationError::Validation(message) if message.contains(expected)),
+            "{error:?} should mention {expected}"
+        );
+        assert_eq!(inventory(&repo).await, before);
+    }
+    let mut speculative = base.clone();
+    speculative.request_id = "speculative".into();
+    speculative.relationship = EndpointRelationship::RelatedTo;
+    speculative.assessment = Some(typed(
+        EvidenceMode::Hypothesis,
+        RelationDirection::Symmetric,
+    ));
+    let result = app
+        .propose_endpoint_remote(caller(), speculative)
+        .await
+        .unwrap();
+    let card = app.proposal(&result.outcome.id).await.unwrap();
+    assert_eq!(card.status, graphrag_core::ProposedEdgeStatus::Pending);
+    assert!(!card.accept_allowed);
+    assert_eq!(
+        card.accept_blocked_reason.as_deref(),
+        Some(graphrag_db::repository::PENDING_ONLY_EVIDENCE)
+    );
+    assert_eq!(card.evidence.evidence_mode, Some(EvidenceMode::Hypothesis));
+    let refused = app
+        .decide_remote(
+            caller(),
+            decision(&card, "accept-speculative", ProposalAction::Accept),
+        )
+        .await;
+    assert!(
+        matches!(&refused, Err(ApplicationError::Validation(message)) if message.contains("stay pending")),
+        "{refused:?}"
+    );
+    assert!(rows(&repo, "related_to").await.is_empty());
+    // The reviewer decision is recorded separately from the assessment.
+    app.decide_remote(
+        caller(),
+        decision(&card, "reject-speculative", ProposalAction::Reject),
+    )
+    .await
+    .unwrap();
+    let card = app.proposal(&result.outcome.id).await.unwrap();
+    assert_eq!(card.status, graphrag_core::ProposedEdgeStatus::Rejected);
+    assert_eq!(card.evidence.status, EvidenceStatus::Assessed);
+    // Two notes of one source are not independent corroboration.
+    let source = repo
+        .create_source(graphrag_core::Source::manual())
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    let mut copies = Vec::new();
+    for (id, body) in [
+        ("note:detail", "Rollback took four minutes."),
+        ("note:summary", "Rollback was quick."),
+    ] {
+        let mut copy = Note::new(body).with_source(source.clone());
+        copy.id = Some(parse_record_id(id, Some("note")).unwrap());
+        copies.push(record_id_to_string(
+            repo.create_note(copy).await.unwrap().id.as_ref().unwrap(),
+        ));
+    }
+    let mut same_origin = request(&repo, &copies[0], &copies[1], "same-origin").await;
+    same_origin.assessment = Some(typed(
+        EvidenceMode::ExplicitStatement,
+        RelationDirection::FromTo,
+    ));
+    let error = app
+        .propose_endpoint_remote(caller(), same_origin.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("propose derived_from instead"),
+        "{error}"
+    );
+    same_origin.relationship = EndpointRelationship::DerivedFrom;
+    same_origin.assessment = Some(typed(EvidenceMode::Derivation, RelationDirection::FromTo));
+    let derived = app
+        .propose_endpoint_remote(caller(), same_origin)
+        .await
+        .unwrap();
+    let card = app.proposal(&derived.outcome.id).await.unwrap();
+    assert!(card.accept_allowed);
+    assert_eq!(card.evidence.same_origin, Some(true));
+    assert_eq!(
+        card.evidence_assessment.unwrap()["lineage"]["basis"],
+        "same_source"
+    );
+}
+/// Context for the missed-fact fixture plus its note IDs (claim, evidence,
+/// distractor); note IDs are generated, so callers compare by role.
+async fn missed_fact_context(
+    assessment: Option<EvidenceAssessmentRequest>,
+) -> (ContextResponse, Vec<String>) {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let query = "Nacre scheduled marker protection";
+    repo.record_embedding_metadata(
+        &graphrag_db::compatibility::EmbeddingIdentity::new("deterministic-test", "fixture", 1024),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut ids = Vec::new();
+    for (id, body, embedding) in [
+        ("note:a", "Nacre scheduled marker protection is not execution proof; a separate verified execution record supplies the missing protection evidence.", vector(1.0, 0.0)),
+        ("note:b", "Verified execution removed the blocking runtime residue and recovered 37 fictional storage units. Held-out verification code: amber-heron-37.", vector(0.0, 1.0)),
+        ("note:d", "An unrelated calendar records fictional reminder settings, not the preregistered execution evidence.", vector(0.95, 0.2)),
+    ] {
+        let mut note = Note::new(body);
+        note.id = Some(parse_record_id(id, Some("note")).unwrap());
+        note.embedding = embedding;
+        ids.push(repo.create_note(note).await.unwrap().id.unwrap());
+    }
+    let mut entity = Entity::new("Nacre", EntityType::Project);
+    entity.metadata = serde_json::json!({});
+    let entity = repo.upsert_entity(entity).await.unwrap();
+    repo.link_note_to_entity(&ids[0], entity.id.as_ref().unwrap())
+        .await
+        .unwrap();
+    let embedding =
+        Arc::new(DeterministicEmbedder::default().with_embedding(query, true, vector(1.0, 0.0)));
+    let app = EmbeddedApplication::new(
+        repo.clone(),
+        SearchAgent::new(repo.clone(), embedding.clone()).with_graph_config(
+            graphrag_agents::GraphRetrievalConfig {
+                per_hop_decay: 1.0,
+                ..Default::default()
+            },
+        ),
+        embedding,
+        Arc::new(FixtureEntityExtractor::default()),
+        LibrarianRuntimeConfig::default(),
+    );
+    let mut r = request(
+        &repo,
+        &record_id_to_string(&ids[0]),
+        &record_id_to_string(&ids[1]),
+        "review",
+    )
+    .await;
+    r.assessment = assessment;
+    let proposal = app.propose_endpoint_remote(caller(), r).await.unwrap();
+    let card = app.proposal(&proposal.outcome.id).await.unwrap();
+    app.decide_remote(caller(), decision(&card, "accept", ProposalAction::Accept))
+        .await
+        .unwrap();
+    let context = app
+        .build_context(
+            BuildContextRequest {
+                query: query.into(),
+                scope: Scope::Notes,
+                graph: GraphPolicy::On,
+                since_days: None,
+                source_uri: None,
+                entity_filter: None,
+                max_chunks: Some(2),
+                max_chunks_per_source: None,
+                max_total_tokens: Some(1000),
+                max_chunk_tokens: Some(400),
+            },
+            ActionCancellation::new(),
+        )
+        .await
+        .unwrap();
+    (context, ids.iter().map(record_id_to_string).collect())
+}
+#[tokio::test]
+async fn typed_evidence_is_reported_on_graph_paths_without_changing_context_selection() {
+    let (legacy, legacy_ids) = missed_fact_context(None).await;
+    let mut assessment = typed(EvidenceMode::ExplicitStatement, RelationDirection::FromTo);
+    assessment.candidate = Some(CandidateScore {
+        generator: "gardener-similarity".into(),
+        generator_version: None,
+        similarity: Some(0.12),
+    });
+    let (typed, typed_ids) = missed_fact_context(Some(assessment)).await;
+    let selection = |response: &ContextResponse, ids: &[String]| {
+        response
+            .chunks
+            .iter()
+            .map(|chunk| {
+                let role = ids.iter().position(|id| *id == chunk.id).unwrap();
+                (
+                    role,
+                    chunk.score,
+                    chunk.rendered_tokens,
+                    chunk.graph.is_some(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let selected = selection(&legacy, &legacy_ids);
+    assert_eq!(selected, selection(&typed, &typed_ids));
+    assert!(selected.iter().any(|(role, ..)| *role == 1));
+    assert_eq!(legacy.total_tokens, typed.total_tokens);
+    assert_eq!(legacy.rendered_context, typed.rendered_context);
+    let step = |response: &ContextResponse, ids: &[String]| {
+        response
+            .chunks
+            .iter()
+            .find(|chunk| chunk.id == ids[1])
+            .and_then(|chunk| chunk.graph.as_ref())
+            .expect("accepted edge reaches the missed fact")["path"][0]
+            .clone()
+    };
+    let (legacy_step, typed_step) = (step(&legacy, &legacy_ids), step(&typed, &typed_ids));
+    assert_eq!(legacy_step["confidence"], typed_step["confidence"]);
+    assert_eq!(legacy_step["evidence"]["status"], "unassessed");
+    assert_eq!(legacy_step["evidence"]["legacy_weight"], 1.0);
+    assert_eq!(typed_step["evidence"]["status"], "assessed");
+    assert_eq!(
+        typed_step["evidence"]["evidence_mode"],
+        "explicit_statement"
+    );
+    assert_eq!(typed_step["evidence"]["calibration"], "none");
+    // A low generator score is reported, never fed back into traversal.
+    assert_eq!(typed_step["evidence"]["candidate_similarity"], 0.12);
 }

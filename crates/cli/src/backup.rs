@@ -950,6 +950,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_relation_evidence_survives_archives_replay_and_undo() {
+        use graphrag_agents::{
+            DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
+        };
+        use graphrag_application::*;
+        use std::sync::Arc;
+        fn app(repo: &Repository) -> EmbeddedApplication {
+            let embedder = Arc::new(DeterministicEmbedder::default());
+            EmbeddedApplication::new(
+                repo.clone(),
+                SearchAgent::new(repo.clone(), embedder.clone()),
+                embedder,
+                Arc::new(FixtureEntityExtractor::default()),
+                LibrarianRuntimeConfig::default(),
+            )
+        }
+        async fn typed_request(
+            repo: &Repository,
+            request_id: &str,
+            endpoints: [&str; 2],
+            relationship: EndpointRelationship,
+            evidence_mode: EvidenceMode,
+            direction: RelationDirection,
+        ) -> RemoteEndpointProposalRequest {
+            let from = repo.inspect_record(endpoints[0], 0).await.unwrap();
+            let to = repo.inspect_record(endpoints[1], 0).await.unwrap();
+            RemoteEndpointProposalRequest {
+                request_id: request_id.into(),
+                from: EndpointProposalEvidence {
+                    id: from.id,
+                    revision: from.revision,
+                    quote: from.content,
+                },
+                to: EndpointProposalEvidence {
+                    id: to.id,
+                    revision: to.revision,
+                    quote: to.content,
+                },
+                relationship,
+                rationale: "Fictional typed review".into(),
+                assessment: Some(EvidenceAssessmentRequest {
+                    evidence_mode,
+                    direction,
+                    lineage: DeclaredLineage::Unknown,
+                    from_support: vec![],
+                    to_support: vec![],
+                    link: None,
+                    candidate: None,
+                    proposer: None,
+                    alternative_explanation: Some("Fictional alternative".into()),
+                    scope: Some("Fictional scope".into()),
+                }),
+                confirmed: true,
+            }
+        }
+        fn decision(card: ProposalCard, id: &str, action: ProposalAction) -> RemoteDecisionRequest {
+            RemoteDecisionRequest {
+                request_id: id.into(),
+                id: card.id,
+                revision: card.revision,
+                action,
+                reason: None,
+                confirmed: true,
+            }
+        }
+        let temp = tempdir().unwrap();
+        let repo = Repository::new(init_memory().await.unwrap());
+        let caller = CallerIdentity {
+            instance_id: "typed-backup".into(),
+        };
+        let mut ids = Vec::new();
+        for body in [
+            "Fictional claim: the canary gates release.",
+            "Fictional evidence: canary 7 passed.",
+            "Fictional hunch about cache churn.",
+        ] {
+            let note = repo.create_note(Note::new(body)).await.unwrap();
+            ids.push(record_id_to_string(note.id.as_ref().unwrap()));
+        }
+        let application = app(&repo);
+        let supports = typed_request(
+            &repo,
+            "typed-supports",
+            [&ids[0], &ids[1]],
+            EndpointRelationship::Supports,
+            EvidenceMode::ExplicitStatement,
+            RelationDirection::FromTo,
+        )
+        .await;
+        let accepted = application
+            .propose_endpoint_remote(caller.clone(), supports.clone())
+            .await
+            .unwrap();
+        let card = application.proposal(&accepted.outcome.id).await.unwrap();
+        application
+            .decide_remote(
+                caller.clone(),
+                decision(card, "typed-accept", ProposalAction::Accept),
+            )
+            .await
+            .unwrap();
+        let speculative = typed_request(
+            &repo,
+            "typed-hypothesis",
+            [&ids[1], &ids[2]],
+            EndpointRelationship::RelatedTo,
+            EvidenceMode::Hypothesis,
+            RelationDirection::Symmetric,
+        )
+        .await;
+        let pending = application
+            .propose_endpoint_remote(caller.clone(), speculative)
+            .await
+            .unwrap();
+        let tables = [
+            "proposed_edge",
+            "supports",
+            "related_to",
+            "remote_mutation_receipt",
+        ];
+        let mut before = Vec::new();
+        for table in tables {
+            before.push(repo.portable_records_page(table, 0, 100).await.unwrap());
+        }
+        assert_eq!(before[0].len(), 2);
+        assert!(before[1][0]["evidence_assessment"].is_object());
+        assert!(before[2].is_empty());
+        for (name, jsonl) in [("typed-archive", false), ("typed-jsonl", true)] {
+            let archive = temp.path().join(name);
+            let target = temp.path().join(format!("restored-{name}"));
+            if jsonl {
+                export_jsonl(&repo, &archive).await.unwrap();
+                verify_jsonl(&archive).unwrap();
+                import_jsonl(&archive, &target, false).await.unwrap();
+            } else {
+                create_backup(&repo, &archive, false).await.unwrap();
+                verify_backup(&archive).unwrap();
+                restore_backup(&archive, &target, false).await.unwrap();
+            }
+            let restored = Repository::new(init_persistent(&target).await.unwrap());
+            for (table, rows) in tables.iter().zip(&before) {
+                assert_eq!(
+                    &restored.portable_records_page(table, 0, 100).await.unwrap(),
+                    rows,
+                    "{table} changed in {name}"
+                );
+            }
+            let restored_app = app(&restored);
+            let replay = restored_app
+                .propose_endpoint_remote(caller.clone(), supports.clone())
+                .await
+                .unwrap();
+            assert!(replay.replayed);
+            assert_eq!(replay.outcome, accepted.outcome);
+            let card = restored_app.proposal(&pending.outcome.id).await.unwrap();
+            assert!(!card.accept_allowed);
+            assert_eq!(card.evidence.evidence_mode, Some(EvidenceMode::Hypothesis));
+            let card = restored_app.proposal(&accepted.outcome.id).await.unwrap();
+            assert_eq!(card.evidence.status, EvidenceStatus::Assessed);
+            restored_app
+                .decide_remote(
+                    caller.clone(),
+                    decision(card, "typed-undo", ProposalAction::Undo),
+                )
+                .await
+                .unwrap();
+            assert!(restored
+                .portable_records_page("supports", 0, 10)
+                .await
+                .unwrap()
+                .is_empty());
+        }
+        // A tampered archive cannot place speculative evidence in the graph.
+        let original = before[1][0].clone();
+        let mut tampered = original.clone();
+        tampered["evidence_assessment"]["evidence_mode"] = "analogy".into();
+        for (record, accepted) in [(original, true), (tampered, false)] {
+            let fresh = Repository::new(init_memory().await.unwrap());
+            assert_eq!(
+                fresh
+                    .restore_portable_record("supports", record)
+                    .await
+                    .is_ok(),
+                accepted
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn uploaded_path_like_titles_survive_archives_without_changing_refresh_identity() {
         use graphrag_agents::{
             DeterministicEmbedder, FixtureEntityExtractor, LibrarianRuntimeConfig, SearchAgent,
@@ -3043,6 +3232,7 @@ mod tests {
                     },
                     relationship: EndpointRelationship::Supports,
                     rationale: "Fictional explicit evidence".into(),
+                    assessment: None,
                     confirmed: true,
                 },
             )

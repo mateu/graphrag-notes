@@ -64,6 +64,7 @@ RELEASE_PAYLOADS = (
     "clients/openclaw-fast-notes/notesave.test.mjs",
     "clients/openclaw-fast-notes/pool.test.mjs",
     "clients/openclaw-fast-notes/profile.test.mjs",
+    "docs/alchemist.md",
     "docs/application-boundary.md",
     "docs/capture-context.md",
     "docs/capture-journal.md",

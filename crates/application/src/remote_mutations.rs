@@ -460,6 +460,16 @@ impl EmbeddedApplication {
             .ok_or_else(|| ApplicationError::Internal("Proposal has no ID.".into()))?;
         let card = proposal_card(&self.repo, proposal.clone()).await?;
         revision(&card.revision, &request.revision)?;
+        if matches!(request.action, ProposalAction::Accept)
+            && proposal.status == ProposedEdgeStatus::Pending
+        {
+            // Name the evidence rule instead of a generic lifecycle refusal.
+            if let Err(graphrag_db::DbError::InvalidMutationRequest(message)) =
+                graphrag_db::repository::ensure_acceptable_evidence(&proposal)
+            {
+                return Err(ApplicationError::Validation(message));
+            }
+        }
         let status = match request.action {
             ProposalAction::Accept
                 if proposal.status == ProposedEdgeStatus::Pending && card.accept_allowed =>

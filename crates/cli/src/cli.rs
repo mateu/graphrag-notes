@@ -392,6 +392,55 @@ pub(crate) enum Commands {
         format: output::OutputFormat,
     },
 
+    /// Read-only, citation-verified synthesis of what the notes say over
+    /// accepted relations. Opt-in: requires [alchemist] enabled = true (or a
+    /// --server granting the alchemist and read capabilities). Never writes.
+    Synthesize {
+        /// Question answered from build_context retrieval
+        #[arg(required_unless_present = "seed", conflicts_with = "seed")]
+        query: Option<String>,
+
+        /// Explain the accepted-edge neighbourhood of this canonical note:ID
+        #[arg(long, value_name = "NOTE_ID")]
+        seed: Option<String>,
+
+        /// Query mode: search scope
+        #[arg(long, value_enum, default_value_t = SearchScopeArg::Notes)]
+        scope: SearchScopeArg,
+
+        /// Query mode: accepted-edge graph retrieval policy
+        #[arg(long, value_enum, default_value_t = GraphModeArg::Auto)]
+        graph: GraphModeArg,
+
+        /// Evidence chunks (1 to the configured ceiling)
+        #[arg(long)]
+        max_chunks: Option<usize>,
+
+        /// Evidence tokens shown to the model (1 to the configured ceiling)
+        #[arg(long)]
+        max_tokens: Option<usize>,
+
+        /// Generated tokens (1 to the configured ceiling)
+        #[arg(long)]
+        max_output_tokens: Option<usize>,
+
+        /// Whole-request deadline in milliseconds (1 to the configured ceiling)
+        #[arg(long)]
+        deadline_ms: Option<u64>,
+
+        /// Seed mode: accepted-edge hops (1 or 2)
+        #[arg(long)]
+        hops: Option<usize>,
+
+        /// Drop unverifiable claims (default) or fail on any (strict)
+        #[arg(long, value_enum)]
+        policy: Option<crate::alchemist::CitationPolicyArg>,
+
+        /// Render results for people, JSON consumers, or JSONL pipelines.
+        #[arg(long, value_enum, default_value_t = output::OutputFormat::Human)]
+        format: output::OutputFormat,
+    },
+
     /// Evaluate augmentation retrieval quality from a JSON/JSONL test set
     EvalAugment {
         /// Path to eval cases (.json array or .jsonl object-per-line)
@@ -766,6 +815,16 @@ pub(crate) enum GardenCommand {
     Proposals {
         #[command(subcommand)]
         command: ProposalCommand,
+    },
+    /// Send one pending, reviewed relationship proposal to a service granting
+    /// the propose capability (requires --server). INPUT is the JSON request of
+    /// the MCP `propose_endpoint_relationship` tool, including the optional
+    /// typed `assessment`; use - for stdin. Proposing never accepts.
+    Propose {
+        /// JSON request file, or - for stdin
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = crate::output::OutputFormat::Human)]
+        format: crate::output::OutputFormat,
     },
 }
 

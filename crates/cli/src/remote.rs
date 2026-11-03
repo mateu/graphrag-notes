@@ -244,7 +244,7 @@ async fn invocation(cli: &Cli, server: &str) -> Result<Invocation> {
             let (request, format) = crate::garden_candidates::request(command).context("remote garden scan runs the bounded candidate scan; pass --max-candidates N (1–50) and check the echoed receipt")?;
             (crate::garden_candidates::TOOL, serde_json::to_value(request)?, format, false)
         }
-        _ => anyhow::bail!("remote mode supports search, inspect, augment, capture, notes edit/delete, connection review, garden scan --max-candidates, upload, uploaded sources show and owned jobs; use host-side commands for database maintenance"),
+        _ => anyhow::bail!("remote mode supports search, inspect, augment, capture, notes edit/delete, connection review, reviewed proposals, garden scan --max-candidates, upload, uploaded sources show and owned jobs; use host-side commands for database maintenance"),
     };
     Ok(Invocation {
         tool,
@@ -279,6 +279,9 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
             refresh_status_file.as_deref(),
         )
         .await;
+    }
+    if matches!(cli.command, Commands::Synthesize { .. }) {
+        return crate::alchemist::run_remote(cli, url.as_str()).await;
     }
     let mut invocation = invocation(cli, url.as_str()).await?;
     let value = call_tool(
@@ -432,6 +435,10 @@ fn validate_read_result(tool: &str, value: &Value) -> Result<()> {
         "capture_note" | "edit_note" | "delete_note" | "decide_proposal" => true,
         "scan_relationship_candidates" => serde_json::from_value::<
             graphrag_application::RelationshipCandidateScanResponse,
+        >(value["data"].clone())
+        .is_ok(),
+        "propose_endpoint_relationship" => serde_json::from_value::<
+            graphrag_application::RemoteEndpointProposalResponse,
         >(value["data"].clone())
         .is_ok(),
         "upload_source" | "get_source" | "get_job" | "list_jobs" | "cancel_job" | "resume_job" => {

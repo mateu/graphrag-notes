@@ -99,6 +99,7 @@ pub struct ProposalCard {
     pub id: String,
     pub status: graphrag_core::ProposedEdgeStatus,
     pub edge_type: String,
+    /// Legacy stored weight, kept readable. Not a probability: see `evidence`.
     pub confidence: f32,
     pub reason: String,
     pub generator: String,
@@ -116,6 +117,14 @@ pub struct ProposalCard {
     pub accept_allowed: bool,
     pub accept_blocked_reason: Option<String>,
     pub revision: String,
+    /// Report-only evidence summary (#205). Absent from older servers, which
+    /// therefore read as unassessed.
+    #[serde(default)]
+    pub evidence: graphrag_core::EvidenceSummary,
+    /// Full stored assessment for typed proposals: spans, lineage, link,
+    /// alternative explanation and scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_assessment: Option<serde_json::Value>,
 }
 
 /// Client interaction chooses an explicit decision before invoking the policy.

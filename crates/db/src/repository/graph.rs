@@ -61,7 +61,7 @@ pub(super) fn graph_edge_batch_sql(
                 (false, false) => "false".into(),
             };
             sql.push_str(&format!(
-                "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence \
+                "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, evidence_assessment, IF confidence = NONE THEN 1.0 ELSE confidence END AS graph_confidence \
                  FROM {table} WHERE {direction} AND (confidence = NONE OR confidence >= $min_confidence) \
                  ORDER BY graph_confidence DESC, id ASC LIMIT $limit;"
             ));
@@ -480,6 +480,9 @@ impl Repository {
                 )));
             }
         }
+        // Assessments belong to reviewed proposals only; refuse any other
+        // one, and any speculative or invalid one, before claiming it.
+        super::remote_endpoint_proposals::ensure_acceptable_evidence(&proposal)?;
         if !self.reviewed_endpoint_proposal_current(&proposal).await? {
             return Err(DbError::MutationRevisionConflict(
                 "Reviewed endpoint evidence is stale; a fresh proposal is required".into(),
@@ -2679,7 +2682,7 @@ impl Repository {
 
 fn proposal_select_sql(where_clause: &str) -> String {
     format!(
-        "SELECT id, dedupe_key, in AS from_id, out AS to_id, edge_type, confidence, reason, generator, generator_version, model, status, created_at, updated_at, reviewed_at, reviewer, action_reason, acceptance_is_manual, resulting_edge_id, superseded_at, supersession_reason FROM proposed_edge {where_clause}"
+        "SELECT id, dedupe_key, in AS from_id, out AS to_id, edge_type, confidence, reason, generator, generator_version, model, status, created_at, updated_at, reviewed_at, reviewer, action_reason, acceptance_is_manual, resulting_edge_id, superseded_at, supersession_reason, evidence_assessment FROM proposed_edge {where_clause}"
     )
 }
 
@@ -2752,7 +2755,7 @@ pub(crate) fn edge_dedupe_key(
 impl Repository {
     async fn query_edges_table(&self, table: &str, limit: usize) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
-            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
+            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, evidence_assessment \
              FROM {table} WHERE {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION} LIMIT $limit"
         );
         let edges: Vec<NoteEdgeRow> = self
@@ -2770,7 +2773,7 @@ impl Repository {
         note_id: &RecordId,
     ) -> Result<Vec<NoteEdgeRow>> {
         let query = format!(
-            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at \
+            "SELECT id, '{table}' AS edge_type, in AS in_id, out AS out_id, proposal_id, confidence, reason, provenance, is_manual, created_at, evidence_assessment \
              FROM {table} WHERE (in = $note_id OR out = $note_id) \
              AND {VISIBLE_NOTE_EDGE_ENDPOINTS_CONDITION}"
         );

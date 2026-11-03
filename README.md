@@ -488,6 +488,7 @@ capture, source status, proposal review, history, and keyboard completion.
 | `migrate-chats <file>` | Migrate chats into conversation/message tables |
 | `search <query>` | Search notes, messages, or all |
 | `augment <query>` | Build prompt-ready retrieval context with citations |
+| `synthesize <query>` / `synthesize --seed note:ID` | Opt-in, read-only, citation-verified synthesis over accepted relations ([Alchemist](docs/alchemist.md)) |
 | `eval-augment <file>` | Evaluate augmentation retrieval quality |
 | `list` | List recent notes |
 | `garden scan` / `garden proposals` | Persist, inspect, and review auditable Gardener proposals |
@@ -596,10 +597,12 @@ graphrag-notes/
 | Librarian | New content | Ingest, embed, extract entities |
 | Search | User query | Fast hybrid retrieval |
 | Gardener | Scheduled/manual | Find orphans, suggest links |
+| Alchemist | Manual, opt-in | Read-only, citation-verified synthesis over accepted relations; never writes |
 
 ## Future Plans
 
-- [ ] Alchemist Agent (synthesis / state-of-knowledge docs)
+- [x] Alchemist Agent v1: read-only, citation-verified synthesis ([docs/alchemist.md](docs/alchemist.md))
+- [ ] Alchemist: persisted state-of-knowledge docs and reviewed hypothesis proposals
 - [ ] Critic Agent (find contradictions, gaps)
 - [ ] PDF/voice ingestion
 - [ ] Web UI

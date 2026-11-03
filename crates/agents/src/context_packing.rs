@@ -163,6 +163,15 @@ pub struct AugmentDiagnostics {
     pub graph_candidates_considered: usize,
     pub graph_candidates_selected: usize,
     pub graph_candidates_dropped: usize,
+    /// Selected chunks that only the graph channel placed in the retrieval
+    /// window: accepted-edge evidence the direct channels did not supply.
+    pub graph_candidates_added: usize,
+    /// Selected direct hits whose graph path is an annotation only.
+    /// `graph_candidates_selected` is the sum of added and annotating.
+    pub graph_candidates_annotating: usize,
+    /// Graph candidates cut by the retrieval over-fetch window, so they never
+    /// reached packing. These are a subset of `graph_candidates_dropped`.
+    pub graph_candidates_rank_limited: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -433,6 +442,11 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         .iter()
         .map(|chunk| chunk.approx_tokens)
         .sum::<usize>();
+    let graph_selected = chunks.iter().filter(|chunk| chunk.graph.is_some()).count();
+    let graph_added = chunks
+        .iter()
+        .filter(|chunk| chunk.graph.is_some() && graph_only(&chunk.fusion))
+        .count();
     let diagnostics = AugmentDiagnostics {
         graph_status: Default::default(),
         token_count_mode: counter.mode(),
@@ -444,10 +458,13 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         dropped_for_source_cap,
         dropped_for_entity_filter,
         graph_candidates_considered: graph_summary.candidates_considered,
-        graph_candidates_selected: chunks.iter().filter(|chunk| chunk.graph.is_some()).count(),
+        graph_candidates_selected: graph_selected,
         graph_candidates_dropped: graph_summary
             .candidates_considered
-            .saturating_sub(chunks.iter().filter(|chunk| chunk.graph.is_some()).count()),
+            .saturating_sub(graph_selected),
+        graph_candidates_added: graph_added,
+        graph_candidates_annotating: graph_selected - graph_added,
+        graph_candidates_rank_limited: graph_summary.candidates_rank_limited,
     };
     AugmentContext {
         query,
@@ -489,6 +506,9 @@ pub(crate) fn empty_context(
         // the pre-packing retrieval selection.
         graph_candidates_selected: 0,
         graph_candidates_dropped: graph_summary.candidates_considered,
+        graph_candidates_added: 0,
+        graph_candidates_annotating: 0,
+        graph_candidates_rank_limited: graph_summary.candidates_rank_limited,
     };
     AugmentContext {
         query,
@@ -503,6 +523,13 @@ pub(crate) fn empty_context(
         dropped_for_entity_filter,
         diagnostics,
     }
+}
+
+/// True when no direct (vector or full-text) channel retrieved this hit within
+/// the ranked window, so any graph evidence it carries is the only reason it
+/// is present. Merged direct hits retain their channel ranks.
+fn graph_only(fusion: &FusionEvidence) -> bool {
+    fusion.vector_rank.is_none() && fusion.fulltext_rank.is_none()
 }
 
 fn source_is_capped(
@@ -1800,6 +1827,7 @@ mod tests {
                 candidates_considered: 3,
                 candidates_selected: 2,
                 candidates_dropped: 1,
+                candidates_rank_limited: 1,
             },
         );
 
@@ -1807,6 +1835,9 @@ mod tests {
         assert_eq!(context.diagnostics.graph_candidates_considered, 3);
         assert_eq!(context.diagnostics.graph_candidates_selected, 0);
         assert_eq!(context.diagnostics.graph_candidates_dropped, 3);
+        assert_eq!(context.diagnostics.graph_candidates_added, 0);
+        assert_eq!(context.diagnostics.graph_candidates_annotating, 0);
+        assert_eq!(context.diagnostics.graph_candidates_rank_limited, 1);
     }
 
     #[test]

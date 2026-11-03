@@ -282,6 +282,9 @@ mod tests {
             graph_candidates_considered: 5,
             graph_candidates_selected: 1,
             graph_candidates_dropped: 4,
+            graph_candidates_added: 0,
+            graph_candidates_annotating: 1,
+            graph_candidates_rank_limited: 4,
         };
         let filters = serde_json::json!({"scope": "Notes", "entity": "Atlas"});
         let options = AugmentOptions {
@@ -305,6 +308,7 @@ mod tests {
             candidates_considered: 5,
             candidates_selected: 3,
             candidates_dropped: 2,
+            candidates_rank_limited: 2,
         };
         let related = HashMap::from([("note:atlas".to_owned(), RelatedNotes::default())]);
         let search = search_pipeline(&graph, filters.clone(), &related);

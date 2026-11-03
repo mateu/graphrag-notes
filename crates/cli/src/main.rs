@@ -1,5 +1,6 @@
 //! GraphRAG Notes command-line entry point.
 
+mod alchemist;
 mod app;
 mod backup;
 mod cli;

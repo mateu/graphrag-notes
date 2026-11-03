@@ -1,6 +1,7 @@
 //! Authenticated, bounded Streamable HTTP MCP access to shared application operations.
 //! Transport identity and request authorization are resolved for each HTTP request.
 
+mod alchemist;
 mod candidate_scan;
 pub mod credentials;
 mod endpoint_proposals;

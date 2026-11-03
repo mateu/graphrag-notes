@@ -624,6 +624,7 @@ async fn enriched_source_replacement_stages_failed_extraction_and_requires_fresh
                 },
                 relationship: EndpointRelationship::Supports,
                 rationale: "Narrow explicit quoted support claim".into(),
+                assessment: None,
                 confirmed: true,
             },
         )
@@ -1175,6 +1176,7 @@ async fn reviewed_transport_running_cancellation_keeps_private_stage_and_shared_
                 },
                 relationship: EndpointRelationship::Supports,
                 rationale: "Fictional manual review".into(),
+                assessment: None,
                 confirmed: true
             }
         )

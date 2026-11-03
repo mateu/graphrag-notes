@@ -324,6 +324,9 @@ pub(crate) fn zero_budget_augment_context(
         graph_candidates_considered: 0,
         graph_candidates_selected: 0,
         graph_candidates_dropped: 0,
+        graph_candidates_added: 0,
+        graph_candidates_annotating: 0,
+        graph_candidates_rank_limited: 0,
     };
     graphrag_agents::AugmentContext {
         query,
@@ -346,7 +349,7 @@ pub(crate) fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> Stri
         TokenCountMode::Estimated => "estimated",
     };
     format!(
-        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_source_cap={}; dropped_for_entity_filter={}; graph_considered={}; graph_selected={}; graph_dropped={}",
+        "token_mode={token_count_mode}; header_tokens={}; dropped_duplicates={}; dropped_near_duplicates={}; dropped_for_relevance={}; dropped_for_budget={}; dropped_for_source_cap={}; dropped_for_entity_filter={}; graph_considered={}; graph_selected={}; graph_dropped={}; graph_added={}; graph_annotating={}; graph_rank_limited={}",
         diagnostics.header_tokens,
         diagnostics.dropped_duplicates,
         diagnostics.dropped_near_duplicates,
@@ -357,6 +360,9 @@ pub(crate) fn packing_diagnostics_text(diagnostics: &AugmentDiagnostics) -> Stri
         diagnostics.graph_candidates_considered,
         diagnostics.graph_candidates_selected,
         diagnostics.graph_candidates_dropped,
+        diagnostics.graph_candidates_added,
+        diagnostics.graph_candidates_annotating,
+        diagnostics.graph_candidates_rank_limited,
     )
 }
 
@@ -942,6 +948,11 @@ pub(crate) async fn run() -> Result<()> {
         .with_candidate_policy(crate::garden_candidates::policy(
             &config.gardener.candidates,
         ));
+        // Opt-in: without an enabled [alchemist] section synthesis stays off.
+        let application = match crate::alchemist::runtime(&config) {
+            Some(runtime) => application.with_alchemist(runtime),
+            None => application,
+        };
         let options = graphrag_service::ServiceOptions {
             listen: *listen,
             credentials_file: credentials_file.clone(),
@@ -1290,10 +1301,13 @@ mod tests {
             graph_candidates_considered: 6,
             graph_candidates_selected: 2,
             graph_candidates_dropped: 4,
+            graph_candidates_added: 1,
+            graph_candidates_annotating: 1,
+            graph_candidates_rank_limited: 3,
         };
         assert_eq!(
             packing_diagnostics_text(&diagnostics),
-            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_source_cap=0; dropped_for_entity_filter=5; graph_considered=6; graph_selected=2; graph_dropped=4"
+            "token_mode=estimated; header_tokens=12; dropped_duplicates=1; dropped_near_duplicates=2; dropped_for_relevance=3; dropped_for_budget=4; dropped_for_source_cap=0; dropped_for_entity_filter=5; graph_considered=6; graph_selected=2; graph_dropped=4; graph_added=1; graph_annotating=1; graph_rank_limited=3"
         );
     }
 
@@ -1731,6 +1745,7 @@ mod tests {
                 confidence: 0.9,
                 from_id: "note:seed".into(),
                 to_id: "note:middle".into(),
+                evidence: graphrag_core::EvidenceSummary::describe(None, Some("manual"), Some(0.9)),
             },
             GraphPathStep {
                 edge_id: "note_edge:two".into(),
@@ -1739,12 +1754,17 @@ mod tests {
                 confidence: 0.75,
                 from_id: "note:target".into(),
                 to_id: "note:middle".into(),
+                evidence: graphrag_core::EvidenceSummary {
+                    status: graphrag_core::EvidenceStatus::Assessed,
+                    evidence_mode: Some(graphrag_core::EvidenceMode::Derivation),
+                    ..Default::default()
+                },
             },
         ];
 
         assert_eq!(
             render_graph_path(&path, " -> "),
-            "outbound:supports edge=note_edge:one endpoints=note:seed→note:middle confidence=0.90 -> inbound:contradicts edge=note_edge:two endpoints=note:target→note:middle confidence=0.75"
+            "outbound:supports edge=note_edge:one endpoints=note:seed→note:middle confidence=0.90 evidence=unassessed -> inbound:contradicts edge=note_edge:two endpoints=note:target→note:middle confidence=0.75 evidence=derivation"
         );
     }
 
@@ -1760,6 +1780,7 @@ mod tests {
                 confidence: 0.9,
                 from_id: "note:seed".into(),
                 to_id: "note:target".into(),
+                evidence: Default::default(),
             }],
             hops: 1,
             decay: 0.8,
@@ -1770,15 +1791,15 @@ mod tests {
 
         assert_eq!(
             render_graph_citation(&graph, " | "),
-            "graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+            "graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90 evidence=unassessed, graph_provenance=message:provenance"
         );
         assert_eq!(
             render_search_graph_evidence(&graph),
-            "entities=[Atlas] graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+            "entities=[Atlas] graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90 evidence=unassessed, graph_provenance=message:provenance"
         );
         assert_eq!(
             render_augment_graph_evidence(&graph),
-            ", graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+            ", graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90 evidence=unassessed, graph_provenance=message:provenance"
         );
     }
 

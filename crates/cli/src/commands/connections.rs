@@ -3,7 +3,9 @@
 use super::navigation::{readable_title, shell_quote};
 use crate::output::{self, OutputFormat};
 use anyhow::{Context, Result};
-use graphrag_core::{record_id_to_string, ProposedEdge, ProposedEdgeStatus};
+use graphrag_core::{
+    record_id_to_string, EvidenceAssessment, EvidenceSummary, ProposedEdge, ProposedEdgeStatus,
+};
 use graphrag_db::{
     repository::{parse_record_id, InspectionProvenance},
     DbError, Repository,
@@ -38,7 +40,11 @@ struct ReviewCard {
     id: String,
     status: ProposedEdgeStatus,
     edge_type: String,
+    /// Legacy stored weight, kept readable; `evidence` explains its meaning.
     confidence: f32,
+    evidence: EvidenceSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence_assessment: Option<serde_json::Value>,
     reason: String,
     generator: String,
     generator_version: Option<String>,
@@ -134,6 +140,10 @@ async fn card(repo: &Repository, proposal: ProposedEdge, base: Option<&str>) -> 
         Some(format!("Proposal is {}, not pending.", proposal.status))
     } else if !from.available || !to.available {
         Some("Both notes must be visible before this proposal can be accepted.".into())
+    } else if let Err(DbError::InvalidMutationRequest(message)) =
+        graphrag_db::repository::ensure_acceptable_evidence(&proposal)
+    {
+        Some(message)
     } else {
         None
     };
@@ -147,11 +157,14 @@ async fn card(repo: &Repository, proposal: ProposedEdge, base: Option<&str>) -> 
         from.revision.as_deref(),
         to.revision.as_deref(),
     )?;
+    let evidence = proposal.evidence_summary();
     Ok(ReviewCard {
         id: record_id_to_string(id),
         status: proposal.status,
         edge_type: proposal.edge_type.to_string(),
         confidence: proposal.confidence,
+        evidence,
+        evidence_assessment: proposal.evidence_assessment,
         reason: proposal.reason,
         generator: proposal.generator,
         generator_version: proposal.generator_version,
@@ -247,14 +260,103 @@ fn render_endpoint(writer: &mut dyn Write, label: &str, note: &ReviewEndpoint) -
     Ok(())
 }
 
+/// Typed evidence details; legacy proposals print only their summary label.
+/// Every stored string is escaped: quotes and labels come from note content
+/// or from a remote caller.
+pub(crate) fn render_evidence_assessment(
+    writer: &mut dyn Write,
+    assessment: Option<&serde_json::Value>,
+) -> io::Result<()> {
+    let Some(Ok(assessment)) = assessment.map(EvidenceAssessment::from_stored) else {
+        return Ok(());
+    };
+    let text = |value: &str| output::safe_text(value, false);
+    writeln!(
+        writer,
+        "Evidence mode: {} | direction {} | proposer {}{}",
+        assessment.evidence_mode.as_str(),
+        assessment.direction.as_str(),
+        text(&assessment.proposer.actor),
+        assessment
+            .proposer
+            .generator
+            .as_deref()
+            .map(|generator| format!(" via {}", text(generator)))
+            .unwrap_or_default()
+    )?;
+    for endpoint in &assessment.endpoints {
+        writeln!(
+            writer,
+            "  {} {} (origin {}):",
+            endpoint.role.as_str(),
+            text(&endpoint.note),
+            text(&endpoint.origin)
+        )?;
+        for span in &endpoint.support {
+            writeln!(
+                writer,
+                "    \"{}\" [bytes {}..{}{}]",
+                text(&span.quote),
+                span.byte_start,
+                span.byte_end,
+                if span.occurrences > 1 {
+                    format!(", {} occurrences", span.occurrences)
+                } else {
+                    String::new()
+                }
+            )?;
+        }
+    }
+    if let Some(link) = &assessment.link {
+        writeln!(
+            writer,
+            "Link: {} names {} as \"{}\" ({})",
+            text(&link.note),
+            text(&link.target),
+            text(&link.reference),
+            link.matched.as_str()
+        )?;
+    }
+    writeln!(
+        writer,
+        "Lineage: {} ({}; declared {})",
+        if assessment.lineage.same_origin {
+            "same origin, not independent corroboration"
+        } else {
+            "independent origins"
+        },
+        assessment.lineage.basis.as_str(),
+        assessment.lineage.declared.as_str()
+    )?;
+    if let Some(candidate) = &assessment.candidate {
+        writeln!(
+            writer,
+            "Candidate: {}{} (generator score, not confidence)",
+            text(&candidate.generator),
+            candidate
+                .similarity
+                .map(|value| format!(" similarity {value:.2}"))
+                .unwrap_or_default()
+        )?;
+    }
+    if let Some(value) = &assessment.alternative_explanation {
+        writeln!(writer, "Alternative explanation: {}", text(value))?;
+    }
+    if let Some(value) = &assessment.scope {
+        writeln!(writer, "Scope: {}", text(value))?;
+    }
+    writeln!(writer, "Calibration: none")
+}
+
 fn render_card(writer: &mut dyn Write, card: &ReviewCard) -> io::Result<()> {
     writeln!(writer, "Proposal: {} [{}]", card.id, card.status)?;
     writeln!(
         writer,
-        "Relationship: {} | confidence {:.1}%",
+        "Relationship: {} | evidence {}",
         card.edge_type,
-        card.confidence * 100.0
+        card.evidence.label()
     )?;
+    render_evidence_assessment(writer, card.evidence_assessment.as_ref())?;
     writeln!(writer, "Reason: {}", card.reason)?;
     writeln!(
         writer,
@@ -604,6 +706,19 @@ mod tests {
             let mut rendered = Vec::new();
             render_card(&mut rendered, &shown).unwrap();
             let rendered = String::from_utf8(rendered).unwrap();
+            // A Gardener weight is a generator score, never a percentage.
+            assert!(rendered.contains(
+                "evidence unassessed; candidate similarity 0.90 (generator score, not a probability)"
+            ));
+            assert!(!rendered.contains('%'));
+            assert_eq!(
+                shown.evidence.status,
+                graphrag_core::EvidenceStatus::Unassessed
+            );
+            assert_eq!(
+                shown.evidence.legacy_weight_meaning,
+                graphrag_core::relation_evidence::LegacyWeightMeaning::CandidateSimilarity
+            );
             assert!(rendered.contains("Pilot evidence before review"));
             assert!(rendered.contains("Related context before review"));
             assert!(rendered.contains("non-UTF-8"));
@@ -637,6 +752,70 @@ mod tests {
             assert_eq!(undone.status, ProposedEdgeStatus::Superseded);
             assert_eq!(undone.reviewed_at, accepted.reviewed_at);
             assert!(!repo.note_edge_exists(&edge).await.unwrap());
+        }
+    }
+
+    #[test]
+    fn typed_evidence_renders_spans_lineage_and_escapes_stored_text() {
+        use graphrag_core::relation_evidence::{
+            assess, CandidateScore, DeclaredLineage, EndpointSnapshot, EvidenceAssessmentRequest,
+            EvidenceMode, RelationDirection,
+        };
+        let request = EvidenceAssessmentRequest {
+            evidence_mode: EvidenceMode::Derivation,
+            direction: RelationDirection::FromTo,
+            lineage: DeclaredLineage::Unknown,
+            from_support: vec![],
+            to_support: vec![],
+            link: None,
+            candidate: Some(CandidateScore {
+                generator: "gardener-similarity".into(),
+                generator_version: None,
+                similarity: Some(0.8),
+            }),
+            proposer: None,
+            alternative_explanation: Some("Timing\u{1b}[2J coincidence".into()),
+            scope: Some("Fictional release 2".into()),
+        };
+        let endpoint = |note_id, content| EndpointSnapshot {
+            note_id,
+            content,
+            primary_quote: content,
+            title: None,
+            source: None,
+        };
+        let assessment = assess(
+            &graphrag_core::EdgeType::DerivedFrom,
+            &request,
+            "mcp:fixture",
+            &endpoint("note:a", "Summary\nof the incident"),
+            &endpoint("note:b", "Incident timeline"),
+        )
+        .unwrap();
+        let mut rendered = Vec::new();
+        render_evidence_assessment(
+            &mut rendered,
+            Some(&serde_json::to_value(assessment).unwrap()),
+        )
+        .unwrap();
+        let rendered = String::from_utf8(rendered).unwrap();
+        assert!(rendered
+            .contains("Evidence mode: derivation | direction from_to | proposer mcp:fixture"));
+        assert!(rendered.contains("\"Summary of the incident\" [bytes 0..23]"));
+        assert!(
+            rendered.contains("Lineage: independent origins (distinct_origins; declared unknown)")
+        );
+        assert!(rendered.contains(
+            "Candidate: gardener-similarity similarity 0.80 (generator score, not confidence)"
+        ));
+        assert!(rendered.contains("Scope: Fictional release 2"));
+        assert!(rendered.contains("Calibration: none"));
+        assert!(!rendered.contains('\u{1b}'), "{rendered}");
+        // Legacy and malformed assessments print nothing beyond their label.
+        for absent in [None, Some(serde_json::json!({"version": 1}))] {
+            let mut empty = Vec::new();
+            render_evidence_assessment(&mut empty, absent.as_ref()).unwrap();
+            assert!(empty.is_empty());
         }
     }
 

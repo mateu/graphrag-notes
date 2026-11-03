@@ -1,6 +1,7 @@
 //! Shared local operations for CLI, terminal, and future service adapters.
 //! Storage ownership and client interaction remain outside this boundary.
 
+mod alchemist;
 mod contracts;
 mod embedded;
 mod error;
@@ -19,6 +20,11 @@ mod remote_mutations;
 mod remote_operations;
 mod remote_status;
 
+pub use alchemist::{
+    resolve_synthesis, synthesize_notes, AlchemistRuntime, SynthesisContext, SynthesisError,
+    SynthesisPolicy, SynthesisPreflight, SynthesisReceipt, SynthesisRequest, SynthesisResponse,
+    MAX_SYNTHESIS_SEED_CHARS,
+};
 pub use contracts::*;
 pub use embedded::{
     decide_proposal, proposal_card, proposal_revision, validate_neighbors, validate_record_id,
@@ -296,5 +302,15 @@ pub trait RemoteApplicationOperations: ApplicationOperations {
         _error_code: String,
     ) -> ApplicationResult<()> {
         self.interrupt_remote_job(execution).await
+    }
+    /// Opt-in, read-only Alchemist synthesis. It never writes, its output is
+    /// never stored or reused as evidence, and adapters without it report
+    /// the feature as disabled.
+    async fn synthesize_notes(
+        &self,
+        _request: SynthesisRequest,
+        _cancellation: ActionCancellation,
+    ) -> Result<SynthesisResponse, SynthesisError> {
+        Err(SynthesisError::Disabled)
     }
 }

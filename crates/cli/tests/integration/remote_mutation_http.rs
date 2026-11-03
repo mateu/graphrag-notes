@@ -41,6 +41,7 @@ impl Fixture {
                     Capability::Capture,
                     Capability::Upload,
                     Capability::Jobs,
+                    Capability::Propose,
                 ],
             }],
         };
@@ -791,4 +792,76 @@ async fn fresh_upload_acknowledgment_preserves_draft_changes_after_durable_admis
     assert_eq!(std::fs::read_dir(&drafts).unwrap().count(), 1);
     assert_eq!(std::fs::read_to_string(&input).unwrap(), submitted);
     assert!(!String::from_utf8_lossy(&output.stderr).contains("Recover:"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_propose_sends_typed_requests_exactly_and_replays_them() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let mut ids = Vec::new();
+    for body in [
+        "Fictional summary: rollback was quick.",
+        "Fictional log: rollback took four minutes.",
+    ] {
+        let note = repo.create_note(Note::new(body)).await.unwrap();
+        ids.push(record_id_to_string(note.id.as_ref().unwrap()));
+    }
+    let from = repo.inspect_record(&ids[0], 0).await.unwrap();
+    let to = repo.inspect_record(&ids[1], 0).await.unwrap();
+    let fixture = Fixture::new(&repo).await;
+    let request = json!({"request_id":"cli-typed-proposal","from":{"id":from.id,"revision":from.revision,"quote":from.content},"to":{"id":to.id,"revision":to.revision,"quote":to.content},"relationship":"derived_from","rationale":"The summary restates the log.","assessment":{"evidence_mode":"derivation","direction":"from_to","lineage":"same_origin","alternative_explanation":"The summary may cite another incident","scope":"Fictional incident"},"confirmed":true});
+    let path = fixture.temp.path().join("proposal.json");
+    std::fs::write(&path, serde_json::to_vec(&request).unwrap()).unwrap();
+    let path = path.to_str().unwrap();
+    let created = fixture
+        .success(&["garden", "propose", path, "--format", "json"])
+        .await;
+    assert_eq!(created["replayed"], false);
+    assert_eq!(created["outcome"]["status"], "pending");
+    assert_eq!(created["outcome"]["actor"], "mcp:cli-synthetic");
+    let replay = fixture
+        .success(&["garden", "propose", path, "--format", "json"])
+        .await;
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["outcome"], created["outcome"]);
+    let id = created["outcome"]["id"].as_str().unwrap();
+    let card = fixture
+        .success(&["garden", "review", "--id", id, "--format", "json"])
+        .await;
+    assert_eq!(card["status"], "pending");
+    assert_eq!(card["evidence"]["status"], "assessed");
+    assert_eq!(card["evidence"]["evidence_mode"], "derivation");
+    assert_eq!(card["evidence"]["same_origin"], true);
+    assert_eq!(
+        card["evidence_assessment"]["lineage"]["basis"],
+        "declared_same_origin"
+    );
+    // Unknown fields and request flags fail locally without a network write.
+    let mut unknown = request.clone();
+    unknown["assessment"]["confidence"] = json!(0.9);
+    let unknown_path = fixture.temp.path().join("unknown.json");
+    std::fs::write(&unknown_path, serde_json::to_vec(&unknown).unwrap()).unwrap();
+    let refused = fixture
+        .cli(&["garden", "propose", unknown_path.to_str().unwrap()])
+        .await;
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("propose_endpoint_relationship contract")
+    );
+    let flagged = fixture
+        .cli(&["--request-id", "other", "garden", "propose", path])
+        .await;
+    assert!(!flagged.status.success());
+    assert_eq!(
+        repo.portable_records_page("proposed_edge", 0, 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(repo
+        .portable_records_page("derived_from", 0, 10)
+        .await
+        .unwrap()
+        .is_empty());
+    fixture.task.abort();
 }

@@ -768,11 +768,11 @@ fn render_snapshot(snapshot: &Snapshot) {
         Snapshot::Proposals(proposals) => {
             for (index, card) in proposals.iter().enumerate() {
                 println!(
-                    "{}. [{}] {} ({:.2})",
+                    "{}. [{}] {} ({})",
                     index + 1,
                     card.status,
                     safe_text(&card.edge_type, false),
-                    card.confidence
+                    card_evidence(card).label()
                 );
                 println!("   ID: {}", safe_text(&card.id, false));
                 println!("   From: {}", safe_text(&card.from.id, false));
@@ -837,14 +837,33 @@ fn render_inspection(record: &RecordInspection) {
     }
 }
 
+/// Recomputed locally so cards from older servers, which lack `evidence`,
+/// still label their legacy weight correctly instead of as unassessed/absent.
+fn card_evidence(card: &ProposalCard) -> graphrag_core::EvidenceSummary {
+    graphrag_core::EvidenceSummary::describe(
+        card.evidence_assessment.as_ref(),
+        Some(&card.generator),
+        Some(card.confidence),
+    )
+}
+
 fn render_proposal(card: &ProposalCard) {
     println!("Proposal: {} [{}]", safe_text(&card.id, false), card.status);
     println!("Revision: {}", card.revision);
     println!(
-        "Relationship: {} ({:.2})",
+        "Relationship: {} | evidence {}",
         safe_text(&card.edge_type, false),
-        card.confidence
+        card_evidence(card).label()
     );
+    let mut details = Vec::new();
+    if crate::commands::connections::render_evidence_assessment(
+        &mut details,
+        card.evidence_assessment.as_ref(),
+    )
+    .is_ok()
+    {
+        print!("{}", String::from_utf8_lossy(&details));
+    }
     println!("Reason: {}", safe_text(&card.reason, true));
     println!("Updated at: {}", safe_text(&card.updated_at, false));
     for (label, endpoint) in [("From", &card.from), ("To", &card.to)] {
