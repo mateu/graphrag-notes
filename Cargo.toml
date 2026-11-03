@@ -81,6 +81,16 @@ incremental = true
 # CARGO_PROFILE_DEV_STRIP=debuginfo when one is needed.
 strip = "symbols"
 
+# Optimize third-party dependencies (SurrealDB, RocksDB's C++ via cc, vector
+# math) while workspace crates stay at opt-level 0 for fast rebuilds. At -O0 the
+# SurrealDB-heavy tests are CPU-bound in unoptimized dependency code: locally the
+# graphrag-db suite (4 threads) dropped from 116s to 24s and the slowest fixture
+# from 65s to 11s. opt-level 2 measured no faster than 1 but costs ~50% more
+# dependency compile time, so 1 is the sweet spot. Applies to dev and test
+# (test inherits dev); release is unaffected. See docs/ci-quality-gates.md.
+[profile.dev.package."*"]
+opt-level = 1
+
 [profile.test]
 # Test-specific profile inherits from dev but can be modified
 inherits = "dev"

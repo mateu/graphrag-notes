@@ -20,8 +20,12 @@ after merge; the five focused checks do not provide equivalent coverage.
 | `retrieval-regression` | `python3 scripts/run-exact-rust-test.py --package graphrag-cli --bin graphrag --test-name eval::tests::committed_retrieval_fixture_matches_versioned_baseline --nocapture` | Committed retrieval fixture baseline |
 | `dependency-audit` (weekly/manual) | `scripts/check-audit-exemptions.sh && cargo audit` | Weekly RustSec scan plus reachability checks for scoped exemptions |
 
-Each build job uses the same `quality-gates-v1` Cargo cache key. Compilation is
-not merged into one opaque job: focused failures remain independently visible.
+Each build lane has its own Cargo cache key (`check-v1` shared by clippy and
+MSRV, then `nextest-v1`, `persistent-round-trip-v1`, `retrieval-regression-v1`,
+`migration-regression-v1` and `audit-v1`), saved only from `main`; see
+[cache keys and dependency optimization](#cache-keys-and-dependency-optimization).
+Compilation is not merged into one opaque job: focused failures remain
+independently visible.
 The workflow cancels superseded PR commits while preserving main-branch runs.
 Scheduled runs execute only the job belonging to their schedule: full coverage
 daily at 03:23 UTC, dependency audit Monday at 04:23 UTC. Manual dispatch runs all
@@ -101,6 +105,49 @@ No fixture, replay count, timing threshold, compiler cache, or concurrency behav
 changes in this delivery. No execution speedup or total runner-minute reduction
 is claimed. Safe fixture/cache optimization remains measurement-gated follow-up
 work; the historical baseline does not justify a new runtime budget.
+
+## Cache keys and dependency optimization
+
+Measured on nightly/manual run
+[41564843224](https://github.com/mateu/graphrag-notes/actions/runs/41564843224)
+(attempt 2, `84d7d72`): the unit/offline job spent 3m26s compiling 407 crates
+after a "full match" restore, then 810s in nextest with all four slots busy for
+the whole run (3,237 test-seconds). The top nine tests were 41% of that time;
+`graphrag-db` alone was 1,576 test-seconds.
+
+**Cache ownership (follow-up 3 above).** A GitHub cache key cannot be overwritten.
+With one `quality-gates-v1` key, the first job to finish on a new key saved it.
+In the main push run that created the restored entry
+([41559406617](https://github.com/mateu/graphrag-notes/actions/runs/41559406617)),
+that was `msrv`, so the cache held `cargo check` metadata only. Clippy and MSRV
+reused it, but every lane that runs tests rebuilt every dependency with codegen:
+the unit job, plus roughly 2.5–3 minutes in each focused test lane. Each lane
+now has its own key; clippy and MSRV share `check-v1` because they need the same
+check-only dependency artifacts. Focused `-p` lanes do not share with
+`--workspace` because feature unification differs. Only `main` saves
+(`save-if`), so PR caches cannot evict main's within the 10 GB repository limit,
+and PRs still restore main's entries. The audit lane caches only the registry
+and installs the prebuilt `cargo-audit` release via `taiki-e/install-action`
+instead of compiling it for about 2.5 minutes.
+
+**Dependency opt-level.** `[profile.dev.package."*"] opt-level = 1` optimizes
+third-party crates only (SurrealDB, RocksDB's C++ through `cc`, vector math);
+workspace crates stay at opt-level 0. Local measurement (Apple Silicon, 18 cores,
+`cargo test -p graphrag-db --lib`, `RUSTC_WRAPPER=""`):
+
+| Measurement | deps opt 0 | deps opt 1 | deps opt 2 |
+| --- | ---: | ---: | ---: |
+| `native_float_all_scopes_preserve_exact_payload_keys_and_distance_bits` | 65.3s | 11.2s | 12.7s |
+| `lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exact_indexes` | 40.5s | 8.1s | 7.2s |
+| `graph_alias_fast_path_preserves_high_degree_pages_tiers_and_alias_caps` | 23.0s | 3.2s | 2.8s |
+| Whole `graphrag-db` lib suite, `--test-threads=4` | 116s | 24s | — |
+| Cold `--no-run` build (wall / CPU) | 88s / 10 min | 160s / 23 min | 197s / 34 min |
+
+Opt-level 2 was no faster than 1 and costs about 50% more dependency compile
+CPU, so 1 is used. A cold CI build therefore gets slower; with per-lane caches
+that cost is paid only when `Cargo.lock`, manifests or the toolchain change.
+No fixture, replay count, assertion or concurrency setting changed. The CI
+before/after comparison is the first nightly or manual run after merge.
 
 ## Audit exemption policy
 
