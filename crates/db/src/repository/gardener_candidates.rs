@@ -100,6 +100,16 @@ pub struct CandidateExistingProposal {
     pub generator: String,
 }
 
+/// What recording one scan candidate did.
+#[derive(Debug)]
+pub enum CandidateProposalOutcome {
+    /// Recorded as a new pending proposal.
+    Created(Box<ProposedEdge>),
+    /// Something already joins the pair, as read under the proposal
+    /// lifecycle lock; nothing was written or refreshed.
+    Existing(CandidateExistingLinks),
+}
+
 /// Accepted relations and proposals among a set of candidate notes.
 #[derive(Debug, Clone, Default)]
 pub struct CandidateExistingLinks {
@@ -293,5 +303,42 @@ impl Repository {
         }
         links.proposals = response.take(ACCEPTED_NOTE_EDGE_TABLES.len())?;
         Ok(links)
+    }
+
+    /// Record a scan candidate as a new pending proposal unless an accepted
+    /// relation of any type or a proposal of any kind already joins the pair.
+    /// The pair-wide check and the insert run in one hold of the proposal
+    /// lifecycle lock, so no lifecycle writer can slip in between them, and
+    /// an existing proposal is never refreshed: losing the unique dedupe-key
+    /// race to any other writer is reported as `Existing` too. `Ok(None)`
+    /// means the lock was not acquired by `deadline`; nothing was read or
+    /// written. Once the lock is held, the check and write run to completion.
+    pub async fn record_candidate_proposal_before(
+        &self,
+        mut draft: EdgeProposalDraft,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<CandidateProposalOutcome>> {
+        let Ok(_lifecycle_guard) =
+            tokio::time::timeout_at(deadline, self.proposal_acceptance_lock.lock()).await
+        else {
+            return Ok(None);
+        };
+        let dedupe_key = super::graph::prepare_edge_proposal(&mut draft)?;
+        let pair = [draft.from_id.clone(), draft.to_id.clone()];
+        let existing = self.candidate_existing_links(&pair).await?;
+        if !existing.accepted.is_empty() || !existing.proposals.is_empty() {
+            return Ok(Some(CandidateProposalOutcome::Existing(existing)));
+        }
+        Ok(Some(
+            match self
+                .insert_pending_edge_proposal(draft, &dedupe_key)
+                .await?
+            {
+                Some(created) => CandidateProposalOutcome::Created(Box::new(created)),
+                None => {
+                    CandidateProposalOutcome::Existing(self.candidate_existing_links(&pair).await?)
+                }
+            },
+        ))
     }
 }

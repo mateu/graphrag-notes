@@ -172,8 +172,10 @@ would return the same candidates forever: when it cuts candidates at
 cursor. Narrow the scope, raise `--max-candidates` (at most 50), or run without
 `--dry-run` so the recorded pending proposals let later scans progress. A dry
 run that cuts nothing advances the cursor normally. Pairs held back by the per-endpoint cap are reached by a later scan of
-the same scope. The deadline also bounds waiting for the proposal lifecycle
-lock; a write that has started completes. Zero candidates is a valid
+the same scope. Each pair is re-checked under the proposal lifecycle lock, in
+the same critical section as its insert, so a relation or proposal recorded
+concurrently is skipped and counted, never refreshed. The deadline also bounds
+waiting for that lock; a write that has started completes. Zero candidates is a valid
 abstention. The CLI refuses a receipt that does not echo its request.
 
 Without `--dry-run`, each candidate becomes a **pending** proposal through the

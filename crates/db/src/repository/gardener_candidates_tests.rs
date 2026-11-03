@@ -307,7 +307,7 @@ async fn existing_links_report_accepted_relations_and_proposals_between_candidat
 }
 
 #[tokio::test]
-async fn deadline_bounded_upsert_writes_nothing_while_the_lifecycle_lock_is_busy() {
+async fn deadline_bounded_candidate_recording_writes_nothing_while_the_lifecycle_lock_is_busy() {
     let repo = Repository::new(init_memory().await.unwrap());
     let from = note(&repo, "Fictional heron survey").await;
     let to = note(&repo, "Fictional heron follow-up").await;
@@ -326,18 +326,110 @@ async fn deadline_bounded_upsert_writes_nothing_while_the_lifecycle_lock_is_busy
         .await;
     let soon = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
     assert!(repo
-        .upsert_edge_proposal_before(draft(), soon)
+        .record_candidate_proposal_before(draft(), soon)
         .await
         .unwrap()
         .is_none());
     assert!(repo.list_edge_proposals(None, 10).await.unwrap().is_empty());
     drop(held);
     let later = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    let created = repo
-        .upsert_edge_proposal_before(draft(), later)
+    let outcome = repo
+        .record_candidate_proposal_before(draft(), later)
         .await
         .unwrap()
         .expect("an available lock admits the write");
+    let CandidateProposalOutcome::Created(created) = outcome else {
+        panic!("nothing joins the pair yet");
+    };
     assert_eq!(created.status, ProposedEdgeStatus::Pending);
+    assert_eq!(repo.list_edge_proposals(None, 10).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn candidate_recording_rechecks_the_pair_under_the_lifecycle_lock_and_never_refreshes() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let from = note(&repo, "Fictional plover survey").await;
+    let to = note(&repo, "Fictional plover follow-up").await;
+    let draft = |generator: &str, reason: &str| EdgeProposalDraft {
+        from_id: from.clone(),
+        to_id: to.clone(),
+        edge_type: EdgeType::RelatedTo,
+        confidence: 0.9,
+        reason: reason.into(),
+        generator: generator.into(),
+        generator_version: Some("1".into()),
+        model: None,
+    };
+    let later = || tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+
+    // The scan waits for the lifecycle lock while another lifecycle writer
+    // records a reviewed proposal for the same pair inside its own hold.
+    let held = Arc::clone(&repo.proposal_acceptance_lock)
+        .lock_owned()
+        .await;
+    let scan = tokio::spawn({
+        let repo = repo.clone();
+        let draft = draft("gardener-candidate", "candidate fixture");
+        let deadline = later();
+        async move { repo.record_candidate_proposal_before(draft, deadline).await }
+    });
+    let mut reviewed = draft("remote-reviewed-endpoint", "reviewed fixture");
+    let key = super::graph::prepare_edge_proposal(&mut reviewed).unwrap();
+    let recorded = repo
+        .insert_pending_edge_proposal(reviewed, &key)
+        .await
+        .unwrap()
+        .expect("the first writer records the pair");
+    drop(held);
+    let outcome = scan
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("the lock frees before the deadline");
+    let CandidateProposalOutcome::Existing(links) = outcome else {
+        panic!("the scan must skip the pair, not write it");
+    };
+    assert_eq!(links.proposals.len(), 1);
+    assert_eq!(links.proposals[0].generator, "remote-reviewed-endpoint");
+    let stored = repo.list_edge_proposals(None, 10).await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].generator, "remote-reviewed-endpoint");
+    assert_eq!(stored[0].reason, "reviewed fixture");
+    assert_eq!(stored[0].updated_at, recorded.updated_at);
+
+    // The insert is create-only: the same key never refreshes a proposal.
+    let mut again = draft("gardener-candidate", "refresh attempt");
+    let key = super::graph::prepare_edge_proposal(&mut again).unwrap();
+    assert!(repo
+        .insert_pending_edge_proposal(again, &key)
+        .await
+        .unwrap()
+        .is_none());
+    let stored = repo.list_edge_proposals(None, 10).await.unwrap();
+    assert_eq!(stored[0].reason, "reviewed fixture");
+
+    // An accepted relation of any type excludes the pair as well.
+    let left = note(&repo, "Fictional tern survey").await;
+    let right = note(&repo, "Fictional tern follow-up").await;
+    repo.create_edge(&left, &right, EdgeType::Supports, None)
+        .await
+        .unwrap();
+    let outcome = repo
+        .record_candidate_proposal_before(
+            EdgeProposalDraft {
+                from_id: left.clone(),
+                to_id: right.clone(),
+                ..draft("gardener-candidate", "candidate fixture")
+            },
+            later(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        CandidateProposalOutcome::Existing(ref links)
+            if links.accepted.len() == 1 && links.proposals.is_empty()
+    ));
     assert_eq!(repo.list_edge_proposals(None, 10).await.unwrap().len(), 1);
 }

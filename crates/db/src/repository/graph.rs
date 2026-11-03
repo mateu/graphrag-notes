@@ -283,41 +283,9 @@ impl Repository {
     /// Terminal proposals are returned unchanged: a repeated scan must not
     /// silently resurrect a user decision or create an equivalent duplicate.
     #[instrument(skip(self, draft))]
-    pub async fn upsert_edge_proposal(&self, draft: EdgeProposalDraft) -> Result<ProposedEdge> {
-        let lifecycle_guard = self.proposal_acceptance_lock.lock().await;
-        self.upsert_edge_proposal_locked(draft, lifecycle_guard)
-            .await
-    }
-
-    /// [`Self::upsert_edge_proposal`] that gives up *before writing* when the
-    /// proposal lifecycle lock is not acquired by `deadline` (`Ok(None)`).
-    /// Once the lock is held the write runs to completion, so a started write
-    /// always has an authoritative outcome.
-    #[instrument(skip(self, draft))]
-    pub async fn upsert_edge_proposal_before(
-        &self,
-        draft: EdgeProposalDraft,
-        deadline: tokio::time::Instant,
-    ) -> Result<Option<ProposedEdge>> {
-        let Ok(lifecycle_guard) =
-            tokio::time::timeout_at(deadline, self.proposal_acceptance_lock.lock()).await
-        else {
-            return Ok(None);
-        };
-        self.upsert_edge_proposal_locked(draft, lifecycle_guard)
-            .await
-            .map(Some)
-    }
-
-    async fn upsert_edge_proposal_locked(
-        &self,
-        mut draft: EdgeProposalDraft,
-        _lifecycle_guard: tokio::sync::MutexGuard<'_, ()>,
-    ) -> Result<ProposedEdge> {
-        validate_note_edge(&draft.from_id, &draft.to_id, &draft.edge_type)?;
-        canonicalize_note_edge(&mut draft.from_id, &mut draft.to_id, &draft.edge_type);
-        draft.confidence = draft.confidence.clamp(0.0, 1.0);
-        let dedupe_key = edge_dedupe_key(&draft.from_id, &draft.to_id, &draft.edge_type);
+    pub async fn upsert_edge_proposal(&self, mut draft: EdgeProposalDraft) -> Result<ProposedEdge> {
+        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
+        let dedupe_key = prepare_edge_proposal(&mut draft)?;
 
         if let Some(existing) = self.find_proposal_by_dedupe_key(&dedupe_key).await? {
             if existing.status == ProposedEdgeStatus::Pending {
@@ -347,6 +315,30 @@ impl Repository {
             return Ok(existing);
         }
 
+        // A concurrent scan can pass the lookup above at the same time. The
+        // unique dedupe index elects one winner; reload it instead of
+        // surfacing a spurious duplicate-key failure.
+        match self
+            .insert_pending_edge_proposal(draft, &dedupe_key)
+            .await?
+        {
+            Some(created) => Ok(created),
+            None => self
+                .find_proposal_by_dedupe_key(&dedupe_key)
+                .await?
+                .ok_or_else(|| DbError::QueryFailed("create proposed_edge".into())),
+        }
+    }
+
+    /// Insert a new pending proposal for a draft prepared by
+    /// [`prepare_edge_proposal`]. When another writer already recorded the
+    /// dedupe key (the unique index elects one winner) this is `Ok(None)`:
+    /// it never refreshes an existing proposal.
+    pub(super) async fn insert_pending_edge_proposal(
+        &self,
+        draft: EdgeProposalDraft,
+        dedupe_key: &str,
+    ) -> Result<Option<ProposedEdge>> {
         #[derive(Deserialize, SurrealValue)]
         struct IdRow {
             id: RecordId,
@@ -356,7 +348,7 @@ impl Repository {
             .query(
                 "INSERT INTO proposed_edge (dedupe_key, in, out, edge_type, confidence, reason, generator, generator_version, model, status, created_at, updated_at) VALUES ($dedupe_key, $from, $to, $edge_type, $confidence, $reason, $generator, $generator_version, $model, 'pending', time::now(), time::now()) RETURN id",
             )
-            .bind(("dedupe_key", dedupe_key.clone()))
+            .bind(("dedupe_key", dedupe_key.to_owned()))
             .bind(("from", draft.from_id))
             .bind(("to", draft.to_id))
             .bind(("edge_type", draft.edge_type.to_string()))
@@ -373,11 +365,12 @@ impl Repository {
         let created = match created_result {
             Ok(created) => created,
             Err(error) => {
-                // A concurrent scan can pass the lookup above at the same
-                // time. The unique dedupe index elects one winner; reload it
-                // instead of surfacing a spurious duplicate-key failure.
-                if let Some(existing) = self.find_proposal_by_dedupe_key(&dedupe_key).await? {
-                    return Ok(existing);
+                if self
+                    .find_proposal_by_dedupe_key(dedupe_key)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(None);
                 }
                 return Err(error);
             }
@@ -390,6 +383,7 @@ impl Repository {
         self.get_edge_proposal(&id)
             .await?
             .ok_or_else(|| DbError::QueryFailed("created proposal disappeared".into()))
+            .map(Some)
     }
 
     /// Fetch a proposal by record id.
@@ -2727,6 +2721,18 @@ fn validate_note_edge(from_id: &RecordId, to_id: &RecordId, edge_type: &EdgeType
         return Err(DbError::QueryFailed("self-edges are not allowed".into()));
     }
     Ok(())
+}
+
+/// Validate and canonicalize a proposal draft; returns its dedupe key.
+pub(super) fn prepare_edge_proposal(draft: &mut EdgeProposalDraft) -> Result<String> {
+    validate_note_edge(&draft.from_id, &draft.to_id, &draft.edge_type)?;
+    canonicalize_note_edge(&mut draft.from_id, &mut draft.to_id, &draft.edge_type);
+    draft.confidence = draft.confidence.clamp(0.0, 1.0);
+    Ok(edge_dedupe_key(
+        &draft.from_id,
+        &draft.to_id,
+        &draft.edge_type,
+    ))
 }
 
 pub(crate) fn canonicalize_note_edge(

@@ -11,7 +11,8 @@
 use crate::Result;
 use graphrag_core::{record_id_to_string, EdgeType, ProposedEdge};
 use graphrag_db::repository::{
-    CandidateAnchorScope, CandidateExistingLinks, CandidateNote, EdgeProposalDraft,
+    CandidateAnchorScope, CandidateExistingLinks, CandidateNote, CandidateProposalOutcome,
+    EdgeProposalDraft,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
@@ -457,49 +458,17 @@ impl super::GardenerAgent {
         };
 
         // 7. Pending-only persistence through the existing lifecycle. Each
-        // pair is re-checked immediately before its upsert so a relation or
-        // proposal written concurrently since the gate read is skipped and
-        // counted, never refreshed. The deadline bounds the re-check and the
-        // wait for the proposal lifecycle lock; a write that has started runs
-        // to completion. Candidates the deadline cuts off stay in the report
-        // without a proposal.
+        // pair is re-checked under the proposal lifecycle lock, in the same
+        // critical section as its insert, so a relation or proposal written
+        // concurrently since the gate read is skipped and counted, never
+        // refreshed. The deadline bounds the wait for that lock; once it is
+        // held the check and write run to completion. Candidates the deadline
+        // cuts off stay in the report without a proposal.
         let mut persistence_cut = false;
         if !request.dry_run {
             let selected = std::mem::take(&mut report.candidates);
             let mut remaining = selected.into_iter();
             while let Some(mut candidate) = remaining.next() {
-                let fresh = if Instant::now() < deadline {
-                    before(
-                        deadline,
-                        repo.candidate_existing_links(&[
-                            candidate.from.clone(),
-                            candidate.to.clone(),
-                        ]),
-                    )
-                    .await?
-                } else {
-                    None
-                };
-                let Some(fresh) = fresh else {
-                    persistence_cut = true;
-                    report.candidates.push(candidate);
-                    report.candidates.extend(remaining);
-                    break;
-                };
-                let links = ExistingLinks::from(fresh);
-                let pair = unordered(&candidate.from, &candidate.to);
-                if links.accepted.contains(&pair) {
-                    report.rejections.already_connected += 1;
-                    continue;
-                }
-                if links.open.contains(&pair) {
-                    report.rejections.already_proposed += 1;
-                    continue;
-                }
-                if links.decided.contains(&pair) {
-                    report.rejections.prior_decision += 1;
-                    continue;
-                }
                 let draft = EdgeProposalDraft {
                     from_id: candidate.from.clone(),
                     to_id: candidate.to.clone(),
@@ -510,17 +479,39 @@ impl super::GardenerAgent {
                     generator_version: Some(CANDIDATE_CONTRACT.to_string()),
                     model: report.embedding_model.clone(),
                 };
-                let Some(proposal) = repo
-                    .upsert_edge_proposal_before(draft, tokio::time::Instant::from_std(deadline))
+                let outcome = if Instant::now() < deadline {
+                    repo.record_candidate_proposal_before(
+                        draft,
+                        tokio::time::Instant::from_std(deadline),
+                    )
                     .await?
-                else {
+                } else {
+                    None
+                };
+                let Some(outcome) = outcome else {
                     persistence_cut = true;
                     report.candidates.push(candidate);
                     report.candidates.extend(remaining);
                     break;
                 };
-                candidate.proposal = Some(proposal);
-                report.candidates.push(candidate);
+                match outcome {
+                    CandidateProposalOutcome::Created(proposal) => {
+                        candidate.proposal = Some(*proposal);
+                        report.candidates.push(candidate);
+                    }
+                    CandidateProposalOutcome::Existing(links) => {
+                        let links = ExistingLinks::from(links);
+                        let pair = unordered(&candidate.from, &candidate.to);
+                        let rejected = &mut report.rejections;
+                        if links.accepted.contains(&pair) {
+                            rejected.already_connected += 1;
+                        } else if links.decided.contains(&pair) && !links.open.contains(&pair) {
+                            rejected.prior_decision += 1;
+                        } else {
+                            rejected.already_proposed += 1;
+                        }
+                    }
+                }
             }
         }
         if persistence_cut {
