@@ -10,7 +10,8 @@ class BotTests(unittest.TestCase):
     def setUp(self):
         self.recorded = json.loads((ROOT / 'tests/fixtures/review-gate/dependabot224.json').read_text())
         self.data = copy.deepcopy(self.recorded)
-        # Real Dependabot uses web-flow as committer: NOT exempt. Synthetic
+        # Synthetic bot-committed variants retain coverage of the bot path.
+        # Real Dependabot uses verified web-flow; synthetic
         # bot-only variants below deliberately replace that attributed identity.
         for c in self.data['commits']:
             c['committer'] = c['author']
@@ -20,15 +21,16 @@ class BotTests(unittest.TestCase):
     def exemption(self, config=None):
         return gate.bot_exemption(self.head, self.data['pr'], self.data['commits'], self.data['files'], config)[0]
 
-    def test_recorded_web_flow_is_not_bot_only(self):
+    def test_recorded_web_flow_is_exempt(self):
         d = self.recorded
-        self.assertFalse(gate.bot_exemption(self.head, d['pr'], d['commits'], d['files'])[0])
+        self.assertTrue(gate.bot_exemption(self.head, d['pr'], d['commits'], d['files'])[0])
 
     def test_synthetic_dependabot_and_renovate(self):
         self.data['files'].append({'filename': 'package.json', 'patch': '-  "qs": "6.16.0"\n+  "qs": "6.17.1"'})
         self.data['pr']['changed_files'] += 1
         self.assertTrue(self.exemption())
         self.data['pr']['user']['login'] = 'renovate[bot]'
+        self.data['pr']['head']['ref'] = 'renovate/qs'
         for c in self.data['commits']:
             for role in ('author', 'committer'):
                 c[role]['login'] = 'renovate[bot]'

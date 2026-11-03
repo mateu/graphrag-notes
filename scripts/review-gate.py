@@ -12,7 +12,7 @@ import urllib.error
 BOT = 'chatgpt-codex-connector[bot]'
 
 
-BOT_CONFIG = {'bots': {'renovate[bot]': ['29139614+renovate[bot]@users.noreply.github.com', 'bot@renovateapp.com'], 'dependabot[bot]': ['49699333+dependabot[bot]@users.noreply.github.com']}, 'paths': ['Cargo.lock', 'Cargo.toml', '*/Cargo.toml', 'package.json', '*/package.json', 'package-lock.json', '*/package-lock.json', 'pnpm-lock.yaml', '*/pnpm-lock.yaml', 'yarn.lock', '*/yarn.lock', 'requirements*.txt', '*/requirements*.txt', 'uv.lock', '*/uv.lock', 'poetry.lock', '*/poetry.lock']}
+BOT_CONFIG = {'bots': {'renovate[bot]': ['29139614+renovate[bot]@users.noreply.github.com', 'bot@renovateapp.com'], 'dependabot[bot]': ['49699333+dependabot[bot]@users.noreply.github.com']}, 'branch_prefixes': {'dependabot[bot]': 'dependabot/', 'renovate[bot]': 'renovate/'}, 'paths': ['Cargo.lock', 'Cargo.toml', '*/Cargo.toml', 'package.json', '*/package.json', 'package-lock.json', '*/package-lock.json', 'pnpm-lock.yaml', '*/pnpm-lock.yaml', 'yarn.lock', '*/yarn.lock', 'requirements*.txt', '*/requirements*.txt', 'uv.lock', '*/uv.lock', 'poetry.lock', '*/poetry.lock']}
 
 
 def bot_exemption(head, pr, commits, files, config=None):
@@ -25,12 +25,27 @@ def bot_exemption(head, pr, commits, files, config=None):
             len(commits) != pr.get('commits') or len(commits) >= 250 or
             commits[-1].get('sha') != head):
         return False, 'incomplete or stale commits'
+    pr_bot = pr['user']['login']
+    prefix = config.get('branch_prefixes', {}).get(pr_bot)
+    if not prefix or not pr.get('head', {}).get('ref', '').startswith(prefix):
+        return False, 'head branch prefix not allowlisted'
+    committer_paths = set()
     for commit in commits:
-        for role in ('author', 'committer'):
-            login = (commit.get(role) or {}).get('login')
-            email = commit.get('commit', {}).get(role, {}).get('email')
-            if login not in bots or email not in bots[login]:
-                return False, 'commit author/committer not allowlisted'
+        author = (commit.get('author') or {}).get('login')
+        details = commit.get('commit', {})
+        if author not in bots or details.get('author', {}).get('email') not in bots[author]:
+            return False, 'commit author not allowlisted'
+        login = (commit.get('committer') or {}).get('login')
+        email = details.get('committer', {}).get('email')
+        if login == author and email in bots[author]:
+            committer_paths.add('bot')
+        elif login == 'web-flow' and email == 'noreply@github.com':
+            verification = details.get('verification') or {}
+            if verification.get('verified') is not True or verification.get('reason') != 'valid':
+                return False, 'web-flow signature not verified valid'
+            committer_paths.add('github-signed web-flow')
+        else:
+            return False, 'commit committer not allowlisted'
     if not files or len(files) != pr.get('changed_files') or len(files) >= 3000:
         return False, 'incomplete changed files'
     for file in files:
@@ -64,7 +79,7 @@ def bot_exemption(head, pr, commits, files, config=None):
                 versions[line[0]].extend(found)
         if not versions['-'] or not versions['+'] or sorted(versions['-']) != sorted(versions['+']):
             return False, 'diff major versions changed or undetermined'
-    return True, 'bot dependency update (author, commits, paths, non-major verified)'
+    return True, 'bot dependency update (author, commits, paths, non-major verified; committer: ' + ', '.join(sorted(committer_paths)) + ')'
 
 
 def evaluate_pr(head, pr, commits, files, *args, config=None, **kwargs):

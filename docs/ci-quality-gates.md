@@ -419,18 +419,22 @@ and unavailable here (the maintainer verified a 422 response).
 
 Before requiring review evidence, the evaluator checks GitHub REST PR, commits,
 and files data for the **current head**. Exempt success reads
-`Exempt: bot dependency update (author, commits, paths, non-major verified)`.
+`Exempt: bot dependency update (...; committer: bot)` or
+`committer: github-signed web-flow` (both listed for mixed valid paths).
 Drafts stay pending; exact-head unresolved Codex findings/threads still fail.
 Otherwise the normal review path runs with the first `Not exempt` reason.
 
 `BOT_CONFIG` in `scripts/review-gate.py` is the reviewed configuration (embedded
 because the trusted workflow sparse-checks out only this script): `bots` maps exact
-GitHub logins to accepted commit emails, and `paths` lists manifest/lockfile
-shell globs (case-sensitive; `*` may cross directory separators). Extend it only
-through independent review, with identity/path regression fixtures. Both author
-and committer must have allowlisted GitHub-attributed logins AND matching emails;
-missing attribution, mixed human commits, incomplete API lists and stale heads
-fail closed. In particular GitHub's `web-flow` committer is **not** allowlisted.
+GitHub logins to accepted commit emails, `branch_prefixes` maps those logins to
+`dependabot/` or `renovate/`, and `paths` lists manifest/lockfile shell globs
+(case-sensitive; `*` may cross directory separators). Extend only through review.
+The head branch must start with the PR bot's prefix. Each commit author must have
+an allowlisted GitHub login and exact email. The committer must be that same bot
+with an allowed email, or `web-flow` with exactly `noreply@github.com` and
+`commit.verification.verified == true` plus `reason == "valid"`. Missing/unknown
+verification fails closed for web-flow. Missing attribution, human commits,
+incomplete API lists and stale heads fail closed.
 There is no workflow-input change or new repository-variable wiring in this PR.
 
 Hidden paths, `scripts` and `src` components are always excluded; Dockerfiles,
@@ -443,10 +447,16 @@ patches and ambiguous additions/removals receive normal review. This deliberatel
 conservative rule may decline harmless lockfile churn. Labels/body cannot grant
 exemption. Security updates use exactly the same rules, including major rejection.
 
-Recorded REST fixture `dependabot224.json` captures real PR #224: Dependabot
-attributed author, **web-flow committer**, therefore non-exempt. No Renovate PR
-was returned by the repository's app-author history query. Positive Dependabot
-and Renovate fixtures are explicitly synthetic mutations, not live bot proof.
+Recorded REST fixtures `dependabot222.json`, `dependabot223.json` and
+`dependabot224.json` contain real PR, commit (including verification) and file
+patch data; all qualify via GitHub-signed web-flow. Renovate remains allowlisted
+but its real commit identity is unverified in this repo (no Renovate PRs).
+Re-evaluate the three merged PRs live, read-only, with authenticated `gh`:
+
+```sh
+python3 scripts/dry-run-bot-exemption.py
+```
+
 Pre-merge tests exercise clean manifest/lockfile updates, human/committer identity,
 workflow/rename exclusions, major/unknown versions, spoofing, new heads, config,
 and unresolved findings. No bot credentials are available to create a genuinely
@@ -457,6 +467,10 @@ and exact-head unresolved findings still fail. Close/delete only proof PRs and
 branches created for that verification. Requiring `Review gate` remains a
 **maintainer follow-up after merge and real-bot verification**, not this change.
 
-Residual risk: a compromised allowed bot or malicious dependency version can
+Residual risk: `web-flow` commits any GitHub web/API-made commit, and the Git
+Data API permits caller-chosen authors. A write collaborator could craft a
+verified commit claiming a bot author on a `dependabot/*` branch. Content remains
+limited to non-major version bumps in allowlisted manifests/lockfiles. This is
+an accident guard, not an insider defence. A compromised allowed bot or malicious dependency version can
 still qualify; other CI, audits and CodeQL—not this exemption—must catch it.
 The evaluator continues to run default-branch code, never PR-head code.
