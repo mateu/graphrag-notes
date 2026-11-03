@@ -801,6 +801,37 @@ fn contains_token(haystack: &str, needle: &str) -> bool {
     false
 }
 
+/// `uri` occurs in `text` as a complete URI: not glued to a preceding
+/// identifier character and not continued by more of a URL. A longer path
+/// (`/child`), a query, an extension or an escape names a different
+/// resource; only a `#fragment`, or one trailing `/` or punctuation mark
+/// that ends the URI, may follow it.
+fn contains_uri(text: &str, uri: &str) -> bool {
+    if uri.is_empty() {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let ends_here = |byte: Option<&u8>| {
+        byte.is_none_or(|byte| byte.is_ascii_whitespace() || b")]}>\"'`|<".contains(byte))
+    };
+    let mut offset = 0;
+    while let Some(found) = text[offset..].find(uri) {
+        let start = offset + found;
+        let end = start + uri.len();
+        let before_ok = start == 0 || !word_byte(bytes[start - 1]);
+        let after_ok = match bytes.get(end) {
+            Some(b'#') => true,
+            Some(byte) if b".,;:!?/".contains(byte) => ends_here(bytes.get(end + 1)),
+            next => ends_here(next),
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+        offset = start + text[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
 /// Lowercased directories of a `file://` source URI's path, outermost first.
 fn file_directories(uri: &str) -> Vec<String> {
     let path = uri
@@ -889,7 +920,7 @@ fn reference_kind(
         return Some(CrossReferenceKind::RecordId);
     }
     let uri = target.source_uri.as_deref()?;
-    if uri.len() >= 12 && contains_token(text, uri) {
+    if uri.len() >= 12 && contains_uri(text, uri) {
         return Some(CrossReferenceKind::SourceUri);
     }
     let (name, stem) = file_name(uri)?;
@@ -1040,6 +1071,41 @@ mod tests {
         // Short stems/names never count.
         let short = note("short", Some("file:///vault/ab.md"), "x");
         assert_eq!(reference_kind("[[ab]] and ab.md", &short, None), None);
+    }
+
+    #[test]
+    fn source_uris_must_match_completely() {
+        let target = note("target", Some("https://example.test/docs"), "x");
+        for (text, expected) in [
+            ("Background: https://example.test/docs", true),
+            ("See https://example.test/docs.", true),
+            ("Is it https://example.test/docs?", true),
+            ("See (https://example.test/docs), then", true),
+            ("[docs](https://example.test/docs)", true),
+            ("<https://example.test/docs>", true),
+            ("https://example.test/docs#install covers it", true),
+            ("The page https://example.test/docs/ again", true),
+            // Longer URLs name different resources.
+            ("https://example.test/docs/unrelated", false),
+            ("https://example.test/docs/unrelated/", false),
+            ("https://example.test/docs?page=2", false),
+            ("https://example.test/docs.html", false),
+            ("https://example.test/docs-v2", false),
+            ("https://example.test/docs%20old", false),
+            ("https://example.test/docs:8080", false),
+            ("xhttps://example.test/docs", false),
+        ] {
+            assert_eq!(
+                reference_kind(text, &target, None),
+                expected.then_some(CrossReferenceKind::SourceUri),
+                "{text}"
+            );
+        }
+        let file = note("file", Some("file:///vault/daily/2026-08-04.md"), "x");
+        assert_eq!(
+            reference_kind("file:///vault/daily/2026-08-04.md.bak", &file, None),
+            None
+        );
     }
 
     #[test]
