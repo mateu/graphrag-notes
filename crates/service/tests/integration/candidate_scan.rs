@@ -426,6 +426,7 @@ async fn receipts_echo_resolved_limits_and_policy_and_dry_runs_change_nothing() 
     assert_eq!(receipt["endpoints_examined"], 1);
     assert_eq!(receipt["scope_exhausted"], true);
     assert_eq!(receipt["next_after_note_id"], Value::Null);
+    assert_eq!(receipt["dry_run_cut"], Value::Null);
     assert_eq!(receipt["nominations"], 3);
     assert_eq!(receipt["rejections"]["endpoint_cap"], 1);
     assert_eq!(receipt["proposals_created"], 0);
@@ -440,9 +441,29 @@ async fn receipts_echo_resolved_limits_and_policy_and_dry_runs_change_nothing() 
     assert!(proposals(&repo).await.is_empty());
     assert_eq!(accepted_edges(&repo).await, 0);
 
+    // A dry run that cuts candidates has no continuation: no cursor, and the
+    // cut count with guidance instead.
+    let mut budgeted = scan(&hub, true);
+    budgeted["max_candidates"] = json!(1);
+    let cut = fixture.tool("gardener", TOOL, budgeted).await;
+    let receipt = data(&cut);
+    assert_eq!(receipt["stop_reason"], "candidate_budget");
+    assert_eq!(receipt["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(receipt["rejections"]["over_budget"], 2);
+    assert_eq!(receipt["next_after_note_id"], Value::Null);
+    assert_eq!(receipt["scope_exhausted"], false);
+    assert_eq!(receipt["dry_run_cut"]["candidates_cut"], 2);
+    let note = receipt["dry_run_cut"]["note"].as_str().unwrap();
+    assert!(
+        note.contains("raise max_candidates (at most 50)") && note.contains("dry_run=false"),
+        "{note}"
+    );
+    assert!(proposals(&repo).await.is_empty());
+
     let persisted = fixture.tool("gardener", TOOL, scan(&hub, false)).await;
     let receipt = data(&persisted);
     assert_eq!(receipt["dry_run"], false);
+    assert_eq!(receipt["dry_run_cut"], Value::Null);
     assert_eq!(receipt["proposals_created"], 3);
     for candidate in receipt["candidates"].as_array().unwrap() {
         assert_eq!(candidate["proposal"]["status"], "pending");

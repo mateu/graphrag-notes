@@ -995,6 +995,9 @@ pub enum LegacyWeightMeaning {
 /// meaning.
 pub const REVIEWED_ENDPOINT_GENERATOR: &str = "remote-reviewed-endpoint";
 pub const GARDENER_SIMILARITY_GENERATOR: &str = "gardener-similarity";
+/// Gardener's bounded candidate scan. Its proposals carry no assessment
+/// (legacy, unassessed); the stored weight is the pair's cosine similarity.
+pub const GARDENER_CANDIDATE_GENERATOR: &str = "gardener-candidate";
 
 /// Widen a stored `f32` through its shortest decimal form, so every encoder
 /// reports `0.9` rather than `0.8999999761581421`.
@@ -1034,7 +1037,7 @@ impl EvidenceSummary {
         let legacy_weight_meaning = match (weight, recorded_by) {
             (None, _) => LegacyWeightMeaning::Absent,
             (Some(_), Some(REVIEWED_ENDPOINT_GENERATOR)) => LegacyWeightMeaning::ReviewConvention,
-            (Some(_), Some(GARDENER_SIMILARITY_GENERATOR)) => {
+            (Some(_), Some(GARDENER_SIMILARITY_GENERATOR | GARDENER_CANDIDATE_GENERATOR)) => {
                 LegacyWeightMeaning::CandidateSimilarity
             }
             (Some(_), _) => LegacyWeightMeaning::Unspecified,

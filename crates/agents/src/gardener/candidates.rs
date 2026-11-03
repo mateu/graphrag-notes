@@ -20,8 +20,11 @@ use surrealdb::types::RecordId;
 
 /// Generator recorded on candidate proposals. Distinct from the legacy
 /// `gardener-similarity` family, so the configured auto-apply policy and
-/// batch acceptance never select these review-only proposals.
-pub const CANDIDATE_GENERATOR: &str = "gardener-candidate";
+/// batch acceptance never select these review-only proposals. They carry no
+/// evidence assessment; review surfaces report them as unassessed with the
+/// stored weight read as candidate similarity.
+pub const CANDIDATE_GENERATOR: &str =
+    graphrag_core::relation_evidence::GARDENER_CANDIDATE_GENERATOR;
 /// Version of the candidate reason/feature contract.
 pub const CANDIDATE_CONTRACT: u32 = 1;
 /// Most distinct shared names whose frequency one scan evaluates. Names past
@@ -214,7 +217,8 @@ pub struct CandidateScanReport {
     pub endpoints_examined: usize,
     /// True when every anchor in scope after the cursor was examined.
     pub scope_exhausted: bool,
-    /// Resume cursor when anchors remain.
+    /// Resume cursor when anchors remain. Never set for a dry run that cut
+    /// candidates; see [`CandidateScanReport::dry_run_cut`].
     pub next_after: Option<RecordId>,
     /// Distinct cross-source pairs at or above the similarity floor.
     pub nominations: usize,
@@ -225,6 +229,18 @@ pub struct CandidateScanReport {
     pub elapsed: Duration,
     pub dry_run: bool,
     pub embedding_model: Option<String>,
+}
+
+impl CandidateScanReport {
+    /// Candidates a dry run cut at `max_candidates`. A dry run records
+    /// nothing for a later scan to skip, so repeating it from any cursor
+    /// would return the same page forever: such a report carries no resume
+    /// cursor. Narrowing the scope, raising the budget, or a persisting run
+    /// (whose pending proposals later scans skip) reaches the cut candidates.
+    pub fn dry_run_cut(&self) -> Option<usize> {
+        let cut = self.rejections.over_budget;
+        (self.dry_run && cut > 0).then_some(cut)
+    }
 }
 
 impl CandidatePolicy {
@@ -515,6 +531,7 @@ impl super::GardenerAgent {
             examined.checked_sub(1).map(|index| &anchors[index].id),
             report.scope_exhausted,
             persistence_cut || report.rejections.over_budget > 0,
+            request.dry_run,
         );
         report.next_after = next_after;
         report.scope_exhausted = scope_exhausted;
@@ -690,16 +707,21 @@ impl super::GardenerAgent {
 
 /// Where the next page starts, and whether the scope is exhausted. The cursor
 /// never advances past anchors whose candidates were not all reported: when
-/// the candidate budget or the deadline cut candidates (`unresolved`), the
-/// caller repeats from the incoming cursor, and pairs already recorded are
-/// then skipped as already proposed.
+/// the candidate budget or the deadline cut candidates (`unresolved`), a
+/// persisting scan repeats from the incoming cursor, and pairs already
+/// recorded are then skipped as already proposed. A dry run records nothing,
+/// so a repeat would return the same page forever: when it cut candidates
+/// there is no cursor at all and paging stops.
 fn resume_cursor(
     incoming: Option<&RecordId>,
     last_examined: Option<&RecordId>,
     scope_exhausted: bool,
     unresolved: bool,
+    dry_run: bool,
 ) -> (Option<RecordId>, bool) {
-    if unresolved {
+    if unresolved && dry_run {
+        (None, false)
+    } else if unresolved {
         (incoming.cloned(), false)
     } else if scope_exhausted {
         (None, true)
@@ -1123,25 +1145,40 @@ mod tests {
     fn the_cursor_never_skips_unresolved_candidates() {
         let incoming = RecordId::new("note", "alpha");
         let last = RecordId::new("note", "mike");
+        for dry_run in [false, true] {
+            // Nothing cut: dry and persisting runs advance alike.
+            assert_eq!(
+                resume_cursor(Some(&incoming), Some(&last), false, false, dry_run),
+                (Some(last.clone()), false)
+            );
+            assert_eq!(
+                resume_cursor(Some(&incoming), Some(&last), true, false, dry_run),
+                (None, true)
+            );
+            assert_eq!(
+                resume_cursor(Some(&incoming), None, false, false, dry_run),
+                (Some(incoming.clone()), false)
+            );
+        }
+        // Budget- or deadline-cut candidates in a persisting run: repeat from
+        // the incoming cursor, even when every anchor was examined.
         assert_eq!(
-            resume_cursor(Some(&incoming), Some(&last), false, false),
-            (Some(last.clone()), false)
-        );
-        assert_eq!(
-            resume_cursor(Some(&incoming), Some(&last), true, false),
-            (None, true)
-        );
-        assert_eq!(
-            resume_cursor(Some(&incoming), None, false, false),
+            resume_cursor(Some(&incoming), Some(&last), true, true, false),
             (Some(incoming.clone()), false)
         );
-        // Budget- or deadline-cut candidates: repeat from the incoming cursor,
-        // even when every anchor was examined.
         assert_eq!(
-            resume_cursor(Some(&incoming), Some(&last), true, true),
-            (Some(incoming.clone()), false)
+            resume_cursor(None, Some(&last), false, true, false),
+            (None, false)
         );
-        assert_eq!(resume_cursor(None, Some(&last), false, true), (None, false));
+        // A dry run that cut candidates has no continuation at all.
+        assert_eq!(
+            resume_cursor(Some(&incoming), Some(&last), true, true, true),
+            (None, false)
+        );
+        assert_eq!(
+            resume_cursor(Some(&incoming), Some(&last), false, true, true),
+            (None, false)
+        );
     }
 
     #[test]

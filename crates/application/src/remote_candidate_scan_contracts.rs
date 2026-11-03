@@ -176,6 +176,16 @@ pub struct RelationshipCandidateOutput {
     pub proposal: Option<RelationshipCandidateProposal>,
 }
 
+/// Why a dry run returned no continuation cursor.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RelationshipCandidateDryRunCut {
+    /// Candidates that passed every gate but were cut by `max_candidates`
+    /// (equal to `rejections.over_budget`).
+    pub candidates_cut: usize,
+    /// How to reach them instead of paging.
+    pub note: String,
+}
+
 /// Receipt for one scan: what was requested, what actually ran and why it
 /// stopped. Zero candidates is a valid abstention.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -194,10 +204,20 @@ pub struct RelationshipCandidateScanResponse {
     /// candidate found was reported.
     pub scope_exhausted: bool,
     /// Pass as `after_note_id` to continue unless `scope_exhausted`. It never
-    /// advances past candidates cut by `max_candidates` or the deadline, so
-    /// repeating the scan revisits them (recorded pairs are then skipped);
-    /// `null` with `scope_exhausted = false` means repeat from the start.
+    /// advances past candidates cut by `max_candidates` or the deadline: a
+    /// persisting scan then returns its incoming cursor, so repeating it
+    /// revisits them (recorded pairs are then skipped), and `null` with
+    /// `scope_exhausted = false` means repeat from the start. A dry run
+    /// records nothing, so when it cut candidates this is `null` and
+    /// `dry_run_cut` is set: there is no continuation.
     pub next_after_note_id: Option<String>,
+    /// Set only when a dry run cut candidates at `max_candidates`. Paging
+    /// stops here: a repeated dry run returns the same candidates. Narrow the
+    /// scope, raise `max_candidates` (at most 50), or run with
+    /// `dry_run = false` so the recorded pending proposals let later scans
+    /// progress.
+    #[serde(default)]
+    pub dry_run_cut: Option<RelationshipCandidateDryRunCut>,
     /// Distinct cross-source pairs at or above the similarity floor.
     pub nominations: usize,
     pub rejections: RelationshipCandidateRejections,

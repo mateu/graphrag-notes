@@ -151,6 +151,12 @@ fn receipt(
     report: CandidateScanReport,
 ) -> RelationshipCandidateScanResponse {
     let rejections = report.rejections;
+    let dry_run_cut = report
+        .dry_run_cut()
+        .map(|cut| RelationshipCandidateDryRunCut {
+            candidates_cut: cut,
+            note: dry_run_cut_note(cut),
+        });
     let candidates = report
         .candidates
         .into_iter()
@@ -215,6 +221,7 @@ fn receipt(
         endpoints_examined: report.endpoints_examined,
         scope_exhausted: report.scope_exhausted,
         next_after_note_id: report.next_after.as_ref().map(record_id_to_string),
+        dry_run_cut,
         nominations: report.nominations,
         rejections: RelationshipCandidateRejections {
             same_origin: rejections.same_origin,
@@ -241,6 +248,13 @@ fn receipt(
             .count(),
         candidates,
     }
+}
+
+/// Guidance for a dry run that cut candidates: it has no continuation.
+pub(crate) fn dry_run_cut_note(cut: usize) -> String {
+    format!(
+        "This dry run cut {cut} candidate(s) at max_candidates and recorded nothing, so there is no continuation cursor: repeating it returns the same candidates. Narrow the scope, raise max_candidates (at most {MAX_SCAN_CANDIDATES}), or run with dry_run=false so the recorded pending proposals let later scans progress."
+    )
 }
 
 /// Run one bounded candidate scan against an owned repository. Shared by

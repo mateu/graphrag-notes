@@ -707,3 +707,156 @@ async fn the_candidate_budget_holds_the_cursor_until_the_window_is_drained() {
     }
     assert_eq!(corpus.proposal_count().await, spokes.len());
 }
+
+/// Unit vector with `cosine` on the `main` axis and the rest on `private`.
+fn topic(main: usize, cosine: f32, private: usize) -> Vec<f32> {
+    let mut vector = vec![0.0; 1024];
+    vector[main] = cosine;
+    vector[private] = (1.0 - cosine * cosine).max(0.0).sqrt();
+    vector
+}
+
+/// Two anchors on orthogonal topics, in record-ID order: the first has one
+/// cross-source counterpart sharing a rare name, the second has two.
+async fn two_windows(corpus: &Corpus) -> (RecordId, RecordId) {
+    let mut anchors = Vec::new();
+    for (axis, name) in [(100, "Quill relay"), (200, "Harbor beacon")] {
+        let source = corpus.source(&format!("anchor-{axis}.md")).await;
+        let content = format!("Fictional anchor about the {name}");
+        let id = corpus
+            .note(Some(&source), &content, topic(axis, 1.0, axis + 1), &[name])
+            .await;
+        anchors.push((id, axis, name));
+    }
+    anchors.sort_by_key(|(id, _, _)| record_id_to_string(id));
+    for (rank, (_, axis, name)) in anchors.iter().enumerate() {
+        for (offset, cosine) in [0.95_f32, 0.92].into_iter().take(rank + 1).enumerate() {
+            let source = corpus
+                .source(&format!("counterpart-{axis}-{offset}.md"))
+                .await;
+            let content = format!("Fictional counterpart {offset} on the {name}");
+            corpus
+                .note(
+                    Some(&source),
+                    &content,
+                    topic(*axis, cosine, axis + 2 + offset),
+                    &[name],
+                )
+                .await;
+        }
+    }
+    (anchors[0].0.clone(), anchors[1].0.clone())
+}
+
+/// One anchor and one candidate per page.
+fn paged(
+    first: &RecordId,
+    second: &RecordId,
+    dry_run: bool,
+    after: Option<RecordId>,
+) -> CandidateScanRequest {
+    let mut paged = request(
+        CandidateScope::Notes(vec![first.clone(), second.clone()]),
+        dry_run,
+    );
+    paged.max_candidates = 1;
+    paged.max_endpoints = 1;
+    paged.after = after;
+    paged
+}
+
+#[tokio::test]
+async fn a_dry_run_that_cuts_candidates_returns_no_cursor_and_counts_the_cut() {
+    let corpus = Corpus::new().await;
+    let (first, second) = two_windows(&corpus).await;
+
+    // Nothing cut: a dry run advances the cursor like a persisting run.
+    let page = corpus.scan(paged(&first, &second, true, None)).await;
+    assert_eq!(page.candidates.len(), 1);
+    assert_eq!(page.rejections.over_budget, 0);
+    assert_eq!(page.dry_run_cut(), None);
+    assert_eq!(page.stop_reason, CandidateStopReason::EndpointBudget);
+    assert_eq!(page.next_after.as_ref(), Some(&first));
+    assert!(!page.scope_exhausted);
+
+    // The next window holds two candidates for a budget of one. A dry run
+    // records nothing, so any cursor would return this page forever: there
+    // is none, and the cut is counted instead.
+    let page = corpus
+        .scan(paged(&first, &second, true, page.next_after))
+        .await;
+    assert_eq!(page.candidates.len(), 1);
+    assert_eq!(page.stop_reason, CandidateStopReason::CandidateBudget);
+    assert_eq!(page.rejections.over_budget, 1);
+    assert_eq!(page.dry_run_cut(), Some(1));
+    assert_eq!(page.next_after, None);
+    assert!(!page.scope_exhausted);
+
+    // A budget that fits the window cuts nothing and exhausts the scope.
+    let mut wider = paged(&first, &second, true, Some(first.clone()));
+    wider.max_candidates = 2;
+    let page = corpus.scan(wider).await;
+    assert_eq!(page.candidates.len(), 2);
+    assert_eq!(page.dry_run_cut(), None);
+    assert!(page.scope_exhausted);
+    assert_eq!(page.next_after, None);
+    assert_eq!(corpus.proposal_count().await, 0);
+}
+
+#[tokio::test]
+async fn persisting_runs_page_as_before_and_record_unassessed_proposals() {
+    let corpus = Corpus::new().await;
+    let (first, second) = two_windows(&corpus).await;
+
+    let page = corpus.scan(paged(&first, &second, false, None)).await;
+    assert_eq!(page.candidates.len(), 1);
+    assert_eq!(page.next_after.as_ref(), Some(&first));
+    // A persisting run that cut candidates repeats from its incoming cursor;
+    // the recorded pending proposal lets the repeat progress.
+    let page = corpus
+        .scan(paged(&first, &second, false, page.next_after))
+        .await;
+    assert_eq!(page.rejections.over_budget, 1);
+    assert_eq!(page.dry_run_cut(), None);
+    assert_eq!(page.next_after.as_ref(), Some(&first));
+    assert!(!page.scope_exhausted);
+    let page = corpus
+        .scan(paged(&first, &second, false, page.next_after))
+        .await;
+    assert_eq!(page.rejections.already_proposed, 1);
+    assert_eq!(page.candidates.len(), 1);
+    assert!(page.scope_exhausted);
+    assert_eq!(page.next_after, None);
+
+    // Candidate proposals carry no evidence assessment: they read as
+    // unassessed candidate similarity and stay acceptable through review.
+    let proposals = corpus.repo.list_edge_proposals(None, 200).await.unwrap();
+    assert_eq!(proposals.len(), 3);
+    for proposal in &proposals {
+        assert_eq!(proposal.status, ProposedEdgeStatus::Pending);
+        assert!(proposal.evidence_assessment.is_none());
+        graphrag_db::repository::ensure_acceptable_evidence(proposal).unwrap();
+        let summary = proposal.evidence_summary();
+        assert_eq!(
+            summary.status,
+            graphrag_core::relation_evidence::EvidenceStatus::Unassessed
+        );
+        assert_eq!(
+            summary.legacy_weight_meaning,
+            graphrag_core::relation_evidence::LegacyWeightMeaning::CandidateSimilarity
+        );
+        assert!(summary.candidate_similarity.is_some());
+    }
+    let accepted = corpus
+        .repo
+        .accept_edge_proposal(
+            proposals[0].id.as_ref().unwrap(),
+            Some("fixture reviewer".into()),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.status, ProposedEdgeStatus::Accepted);
+    assert_eq!(corpus.accepted_edge_count().await, 1);
+}

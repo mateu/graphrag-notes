@@ -97,6 +97,18 @@ pub(crate) fn verify_receipt(
         && request
             .max_per_endpoint
             .is_none_or(|cap| policy.max_per_endpoint <= cap)
+        // A dry run that cut candidates has no continuation; nothing else
+        // may claim one was cut.
+        && match &receipt.dry_run_cut {
+            Some(cut) => {
+                request.dry_run
+                    && cut.candidates_cut > 0
+                    && cut.candidates_cut == receipt.rejections.over_budget
+                    && receipt.next_after_note_id.is_none()
+                    && !receipt.scope_exhausted
+            }
+            None => !request.dry_run || receipt.rejections.over_budget == 0,
+        }
         && receipt.candidates.iter().all(|candidate| {
             let proposal_consistent = if request.dry_run {
                 candidate.proposal.is_none()
@@ -196,7 +208,14 @@ pub(crate) fn render(
             .and_then(|value| value.as_str().map(str::to_owned))
             .unwrap_or_default()
     )?;
-    if let Some(next) = &receipt.next_after_note_id {
+    if let Some(cut) = &receipt.dry_run_cut {
+        writeln!(
+            writer,
+            "  Dry run cut {} candidate(s) at --max-candidates; there is no resume cursor because a dry run records nothing, so repeating it returns the same candidates. Narrow the scope (--note, --source, --counterpart-source), raise --max-candidates (at most {}), or run without --dry-run so the recorded pending proposals let later scans progress.",
+            cut.candidates_cut,
+            graphrag_application::MAX_SCAN_CANDIDATES
+        )?;
+    } else if let Some(next) = &receipt.next_after_note_id {
         writeln!(writer, "  Resume with: --after {}", text(next))?;
     } else if !receipt.scope_exhausted {
         writeln!(
@@ -446,5 +465,66 @@ mod tests {
             mutate(&mut changed);
             assert!(verify_receipt(&sent, &changed).is_err(), "mutation {index}");
         }
+    }
+
+    #[test]
+    fn a_dry_run_that_cut_candidates_renders_no_resume_cursor() {
+        let command = scan(
+            parse(&[
+                "graphrag",
+                "garden",
+                "scan",
+                "--max-candidates",
+                "1",
+                "--after",
+                "note:alpha",
+                "--dry-run",
+            ])
+            .unwrap(),
+        );
+        let (sent, _) = request(&command).unwrap();
+        let mut cut = receipt(&sent);
+        cut.stop_reason = graphrag_application::RelationshipCandidateStopReason::CandidateBudget;
+        cut.scope_exhausted = false;
+        cut.rejections.over_budget = 2;
+        cut.dry_run_cut = Some(graphrag_application::RelationshipCandidateDryRunCut {
+            candidates_cut: 2,
+            note: "fixture".into(),
+        });
+        verify_receipt(&sent, &cut).unwrap();
+        let mut rendered = Vec::new();
+        render(&mut rendered, &cut).unwrap();
+        let rendered = String::from_utf8(rendered).unwrap();
+        assert!(
+            rendered.contains("Dry run cut 2 candidate(s) at --max-candidates"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("raise --max-candidates (at most 50)"));
+        assert!(rendered.contains("run without --dry-run"));
+        assert!(!rendered.contains("Resume with"), "{rendered}");
+        assert!(!rendered.contains("repeat the same scan"), "{rendered}");
+
+        // A cut is reported only by a dry run, with no cursor and the
+        // matching count; a dry run may not cut silently.
+        let mutations: [fn(&mut RelationshipCandidateScanResponse); 4] = [
+            |r| r.next_after_note_id = Some("note:alpha".into()),
+            |r| r.dry_run_cut.as_mut().unwrap().candidates_cut = 1,
+            |r| r.scope_exhausted = true,
+            |r| r.dry_run_cut = None,
+        ];
+        for (index, mutate) in mutations.into_iter().enumerate() {
+            let mut changed = cut.clone();
+            mutate(&mut changed);
+            assert!(verify_receipt(&sent, &changed).is_err(), "mutation {index}");
+        }
+        let persisting =
+            scan(parse(&["graphrag", "garden", "scan", "--max-candidates", "1"]).unwrap());
+        let (sent, _) = request(&persisting).unwrap();
+        let mut held = receipt(&sent);
+        held.scope_exhausted = false;
+        held.rejections.over_budget = 2;
+        verify_receipt(&sent, &held).unwrap();
+        held.dry_run_cut = cut.dry_run_cut.clone();
+        assert!(verify_receipt(&sent, &held).is_err());
     }
 }

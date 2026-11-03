@@ -164,9 +164,14 @@ max_entity_note_frequency = 10
 The receipt echoes every resolved limit and policy value, counts why nominated
 pairs were rejected, and reports `stop_reason` (`completed`, `endpoint_budget`,
 `candidate_budget` or `deadline`) plus a `--after` cursor while anchors remain.
-The cursor never advances past candidates cut by `--max-candidates` or the
-deadline: repeat the same scan to reach them (pairs already recorded are then
-skipped). Pairs held back by the per-endpoint cap are reached by a later scan of
+Without `--dry-run`, the cursor never advances past candidates cut by
+`--max-candidates` or the deadline: repeat the same scan to reach them (pairs
+already recorded are then skipped). A dry run records nothing, so a repeat
+would return the same candidates forever: when it cuts candidates at
+`--max-candidates` it reports how many (`dry_run_cut`) and returns **no**
+cursor. Narrow the scope, raise `--max-candidates` (at most 50), or run without
+`--dry-run` so the recorded pending proposals let later scans progress. A dry
+run that cuts nothing advances the cursor normally. Pairs held back by the per-endpoint cap are reached by a later scan of
 the same scope. The deadline also bounds waiting for the proposal lifecycle
 lock; a write that has started completes. Zero candidates is a valid
 abstention. The CLI refuses a receipt that does not echo its request.
@@ -174,7 +179,10 @@ abstention. The CLI refuses a receipt that does not echo its request.
 Without `--dry-run`, each candidate becomes a **pending** proposal through the
 normal lifecycle, with generator `gardener-candidate` and its features
 (similarity, signals, shared entities with note frequencies, cross-reference,
-policy and requester) stored as versioned JSON in `reason`. Existing proposals
+policy and requester) stored as versioned JSON in `reason`. Candidate proposals
+carry no evidence assessment: review surfaces report them as unassessed and read
+the stored weight as candidate similarity (a generator score, not a
+probability). Existing proposals
 are never refreshed and decided ones are never resurrected. The scan never
 accepts anything. `garden apply` and `garden proposals accept --all` select only
 legacy `gardener-similarity` proposals, so candidates are accepted only through
