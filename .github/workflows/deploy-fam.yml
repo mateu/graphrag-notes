@@ -46,10 +46,9 @@ jobs:
     if: github.repository == 'mateu/graphrag-notes' && github.ref == 'refs/heads/main'
     environment:
       name: fam-production
-    # Register ONLY after owner approval and workflow-level runner restrictions.
-    runs-on:
-      group: fam-production
-      labels: [self-hosted, macOS, fam-graphrag-deploy]
+    # Register only with owner approval and repo scope; labels route jobs.
+    # Main-only dispatch and fam-production Environment approval gate deploys.
+    runs-on: [self-hosted, macOS, fam-graphrag-deploy]
     timeout-minutes: 180
     steps:
       # Use the approved main workflow commit, never the input as executable code.
