@@ -6,6 +6,7 @@ import json
 import os
 import re
 import urllib.request
+import urllib.error
 
 BOT = 'chatgpt-codex-connector[bot]'
 
@@ -132,7 +133,12 @@ class GitHub:
             match = re.search(r'\*\*Reviewed commit:\*\*\s*`([0-9a-f]{7,39})`', comment['body'])
             if match and match[1] not in resolved_receipts:
                 # GitHub rejects ambiguous abbreviations; API errors leave the gate pending.
-                resolved_receipts[match[1]] = self.api(f'{root}/commits/{match[1]}')['sha']
+                try:
+                    resolved_receipts[match[1]] = self.api(f'{root}/commits/{match[1]}')['sha']
+                except urllib.error.HTTPError as error:
+                    if error.code not in (404, 422):
+                        raise
+                    resolved_receipts[match[1]] = None
         status, description = evaluate(head, pr['draft'], since,
             comments, threads,
             dt.datetime.now(dt.timezone.utc),
@@ -160,8 +166,14 @@ def main():
     if number:
         gh.run(number)
     elif os.environ['GITHUB_EVENT_NAME'] in ('schedule', 'workflow_dispatch'):
+        errors = []
         for pr in gh.pages(f'repos/{gh.repo}/pulls?state=open'):
-            gh.run(pr['number'])
+            try:
+                gh.run(pr['number'])
+            except Exception as error:
+                errors.append(f'PR #{pr["number"]}: {error}')
+        if errors:
+            raise RuntimeError('; '.join(errors))
 
 
 if __name__ == '__main__':
