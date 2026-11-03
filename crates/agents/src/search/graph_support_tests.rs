@@ -100,6 +100,46 @@ async fn accept(repo: &Repository, from: &Note, to: &Note, edge_type: EdgeType) 
     .unwrap();
 }
 
+/// An accepted edge that no person reviewed: Gardener's automatic policy
+/// accepts a `related_to` similarity proposal (`is_manual = false`).
+async fn accept_unreviewed(repo: &Repository, from: &Note, to: &Note) {
+    repo.upsert_gardener_proposal(
+        from.id.as_ref().unwrap(),
+        to.id.as_ref().unwrap(),
+        1.0,
+        "fixture similarity".into(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let accepted = repo
+        .accept_gardener_proposals_above(0.5, Some("fixture automatic policy".into()))
+        .await
+        .unwrap();
+    assert_eq!(accepted, 1);
+}
+
+/// A direct match in both channels (vector rank 2, full-text rank 1) that is
+/// slightly weaker than the anchor (vector rank 1, full-text rank 3).
+async fn direct_competitor(repo: &Repository) -> Note {
+    repo.create_note(
+        Note::new("Kestrel boundary canary rollout evidence report")
+            .with_embedding(near_query(0.01, 900)),
+    )
+    .await
+    .unwrap()
+}
+
+fn excluded(context: &AugmentContext, note: &Note) -> crate::RetrievalExplanation {
+    context
+        .exclusions
+        .iter()
+        .find(|explanation| explanation.result_id == id(note))
+        .cloned()
+        .expect("the candidate reached packing")
+}
+
 async fn link_entity(repo: &Repository, note: &Note, name: &str) {
     let mut entity = Entity::new(name, EntityType::Project);
     entity.metadata = serde_json::json!({});
@@ -256,19 +296,14 @@ async fn lexically_corroborated_neighbor_of_a_retrieved_anchor_enters_the_fixed_
 }
 
 #[tokio::test]
-async fn anchored_support_competes_but_does_not_displace_a_stronger_direct_match() {
-    // A second direct match in both channels outranks the decayed neighbor:
-    // at two chunks it keeps its slot (no graph quota); at three chunks the
-    // support outranks the vector-only fillers and is added.
+async fn reviewed_support_competes_at_its_anchor_strength() {
+    // #216: a reviewed edge passes the retrieved anchor's strength on without
+    // hop decay, so the corroborated support competes with the anchor's
+    // weaker direct competitors at the same strength as the anchor. Nothing
+    // is reserved: the competitor still reaches packing and loses slot two on
+    // MMR, and at three chunks both are packed.
     let corpus = corpus(12).await;
-    let competitor = corpus
-        .repo
-        .create_note(
-            Note::new("Kestrel boundary canary rollout evidence report")
-                .with_embedding(near_query(0.01, 900)),
-        )
-        .await
-        .unwrap();
+    let competitor = direct_competitor(&corpus.repo).await;
     let support = lexical_note(
         &corpus.repo,
         "Kestrel canary detail with the exact evidence",
@@ -283,17 +318,120 @@ async fn anchored_support_competes_but_does_not_displace_a_stronger_direct_match
     .await;
     let search = agent(&corpus.repo, GraphRetrievalConfig::default());
 
+    let off = context(&search, fixed_budget(2), GraphMode::Off).await;
+    assert_eq!(chunk_ids(&off), vec![id(&corpus.anchor), id(&competitor)]);
+    let two = context(&search, fixed_budget(2), GraphMode::On).await;
+    assert_eq!(chunk_ids(&two), vec![id(&corpus.anchor), id(&support)]);
+    assert_eq!(two.chunks.len(), off.chunks.len());
+    assert!(two.total_tokens <= 1000);
+    assert_eq!(two.diagnostics.graph_candidates_added, 1);
+    assert_eq!(two.diagnostics.graph_candidates_rank_limited, 0);
+    let (anchor_chunk, support_chunk) = (&two.chunks[0], &two.chunks[1]);
+    let graph = support_chunk.graph.as_ref().unwrap();
+    assert_contiguous_path(
+        graph,
+        &id(&support),
+        &id(&corpus.anchor),
+        "derived_from",
+        "outbound",
+    );
+    // The anchor's strength, not a decayed fraction of it, and an explained
+    // decay that matches the score.
+    assert_eq!(graph.decay, 1.0);
+    assert!((support_chunk.score - anchor_chunk.score).abs() <= anchor_chunk.score * 1e-5);
+    assert_eq!(
+        excluded(&two, &competitor).inclusion,
+        crate::InclusionReason::DiagnosticLimit
+    );
+
+    let three = context(&search, fixed_budget(3), GraphMode::On).await;
+    assert_eq!(
+        chunk_ids(&three),
+        vec![id(&corpus.anchor), id(&support), id(&competitor)]
+    );
+    assert_eq!(three.diagnostics.graph_candidates_added, 1);
+}
+
+#[tokio::test]
+async fn direct_match_stronger_than_the_anchor_keeps_its_slot() {
+    // Lexical-only notes covering more query terms push the anchor down the
+    // full-text channel, so the competitor now outranks the anchor itself.
+    // The undecayed support can reach its anchor's strength but never takes
+    // a slot from a direct match stronger than that anchor.
+    let corpus = corpus(12).await;
+    let competitor = direct_competitor(&corpus.repo).await;
+    for index in 0..2 {
+        lexical_note(
+            &corpus.repo,
+            &format!("Kestrel boundary canary evidence ledger {index}"),
+        )
+        .await;
+    }
+    let support = lexical_note(
+        &corpus.repo,
+        "Kestrel canary detail with the exact evidence",
+    )
+    .await;
+    accept(
+        &corpus.repo,
+        &corpus.anchor,
+        &support,
+        EdgeType::DerivedFrom,
+    )
+    .await;
+    let search = agent(&corpus.repo, GraphRetrievalConfig::default());
+
+    let window = search
+        .search_with_scope_graph(QUERY, 8, SearchScope::Notes, None, None, GraphMode::On)
+        .await
+        .unwrap();
+    let position = |note: &Note| {
+        window
+            .hits
+            .iter()
+            .position(|hit| hit.id == id(note))
+            .unwrap()
+    };
+    assert_eq!(position(&competitor), 0);
+    assert_eq!(position(&corpus.anchor), 1);
+    assert!(window.hits[position(&support)].score <= window.hits[0].score);
+
+    let two = context(&search, fixed_budget(2), GraphMode::On).await;
+    assert_eq!(chunk_ids(&two)[0], id(&competitor));
+    assert_eq!(chunk_ids(&two), vec![id(&competitor), id(&corpus.anchor)]);
+    assert_eq!(two.diagnostics.graph_candidates_added, 0);
+    assert_eq!(
+        excluded(&two, &support).inclusion,
+        crate::InclusionReason::DiagnosticLimit
+    );
+}
+
+#[tokio::test]
+async fn unreviewed_neighbor_keeps_the_hop_decay() {
+    // The #186 contract still holds for an edge no person reviewed: the
+    // decayed neighbor ranks below its anchor and a direct match keeps its
+    // slot at two chunks; at three chunks the neighbor is added.
+    let corpus = corpus(12).await;
+    let competitor = direct_competitor(&corpus.repo).await;
+    let support = lexical_note(
+        &corpus.repo,
+        "Kestrel canary detail with the exact evidence",
+    )
+    .await;
+    accept_unreviewed(&corpus.repo, &corpus.anchor, &support).await;
+    let search = agent(&corpus.repo, GraphRetrievalConfig::default());
+
     let two = context(&search, fixed_budget(2), GraphMode::On).await;
     assert_eq!(chunk_ids(&two), vec![id(&corpus.anchor), id(&competitor)]);
     assert_eq!(two.diagnostics.graph_candidates_added, 0);
-    // It reached packing rather than being cut by the over-fetch window.
-    assert!(two
-        .exclusions
-        .iter()
-        .any(|explanation| explanation.result_id == id(&support)
-            && explanation.inclusion == crate::InclusionReason::DiagnosticLimit
-            && explanation.graph.is_some()));
-    assert_eq!(two.diagnostics.graph_candidates_rank_limited, 0);
+    let explanation = excluded(&two, &support);
+    assert_eq!(
+        explanation.inclusion,
+        crate::InclusionReason::DiagnosticLimit
+    );
+    let graph = explanation.graph.expect("graph-reached support");
+    assert_eq!(graph.path[0].edge_type, "related_to");
+    assert_eq!(graph.decay, 0.8);
 
     let three = context(&search, fixed_budget(3), GraphMode::On).await;
     assert_eq!(
@@ -301,6 +439,78 @@ async fn anchored_support_competes_but_does_not_displace_a_stronger_direct_match
         vec![id(&corpus.anchor), id(&competitor), id(&support)]
     );
     assert_eq!(three.diagnostics.graph_candidates_added, 1);
+}
+
+#[tokio::test]
+async fn derivative_of_a_retrieved_source_keeps_the_hop_decay() {
+    // Duplicate-aware: a note derived from the retrieved anchor restates it.
+    // Reaching it is an inbound derived_from step, which keeps the decay even
+    // over a reviewed edge, so it does not displace the direct match.
+    let corpus = corpus(12).await;
+    let competitor = direct_competitor(&corpus.repo).await;
+    let derivative = lexical_note(
+        &corpus.repo,
+        "Kestrel canary detail with the exact evidence",
+    )
+    .await;
+    accept(
+        &corpus.repo,
+        &derivative,
+        &corpus.anchor,
+        EdgeType::DerivedFrom,
+    )
+    .await;
+    let search = agent(&corpus.repo, GraphRetrievalConfig::default());
+
+    let two = context(&search, fixed_budget(2), GraphMode::On).await;
+    assert_eq!(chunk_ids(&two), vec![id(&corpus.anchor), id(&competitor)]);
+    assert_eq!(two.diagnostics.graph_candidates_added, 0);
+    let graph = excluded(&two, &derivative)
+        .graph
+        .expect("graph-reached derivative");
+    assert_contiguous_path(
+        &graph,
+        &id(&derivative),
+        &id(&corpus.anchor),
+        "derived_from",
+        "inbound",
+    );
+    assert_eq!(graph.decay, 0.8);
+}
+
+#[tokio::test]
+async fn reviewed_lift_is_one_hop_from_a_retrieved_note() {
+    // The undecayed hop starts only at a retrieved seed. The bridge competes
+    // at the anchor's strength; the next reviewed hop decays as before.
+    let corpus = corpus(8).await;
+    let bridge = lexical_note(&corpus.repo, "Kestrel canary bridge ledger").await;
+    let far = lexical_note(&corpus.repo, "Kestrel rollout far evidence").await;
+    accept(&corpus.repo, &corpus.anchor, &bridge, EdgeType::Supports).await;
+    accept(&corpus.repo, &bridge, &far, EdgeType::Supports).await;
+    let graph = GraphRetrievalConfig {
+        max_hops: 2,
+        ..Default::default()
+    };
+    let search = agent(&corpus.repo, graph);
+
+    let window = search
+        .search_with_scope_graph(QUERY, 8, SearchScope::Notes, None, None, GraphMode::On)
+        .await
+        .unwrap();
+    let hit = |note: &Note| {
+        window
+            .hits
+            .iter()
+            .find(|hit| hit.id == id(note))
+            .expect("graph-reached note in the window")
+    };
+    let (anchor, bridge, far) = (hit(&corpus.anchor), hit(&bridge), hit(&far));
+    let bridge_graph = bridge.graph.as_ref().unwrap();
+    assert_eq!((bridge_graph.hops, bridge_graph.decay), (1, 1.0));
+    assert!((bridge.score - anchor.score).abs() <= anchor.score * 1e-5);
+    let far_graph = far.graph.as_ref().unwrap();
+    assert_eq!((far_graph.hops, far_graph.decay), (2, 0.8));
+    assert!((far.score - 0.8 * bridge.score).abs() <= bridge.score * 1e-5);
 }
 
 #[tokio::test]
@@ -525,19 +735,102 @@ async fn uncorroborated_bridge_does_not_carry_anchor_strength_to_a_second_hop() 
 fn anchored_strength_reaches_only_corroborated_neighbors() {
     let (decay, confidence) = (0.8, 0.5);
     let lexical = 0.4 * decay * confidence;
+    let strengths = |anchor: f32, reviewed: Option<f32>, corroborated: bool| {
+        let strength =
+            graph_transition_strengths(0.4, anchor, reviewed, decay, confidence, corroborated);
+        (strength.lexical, strength.score, strength.chain)
+    };
     // An uncorroborated neighbor keeps the lexical chain even from a strong
-    // retrieved anchor.
+    // retrieved anchor, reviewed edge or not.
     assert_eq!(
-        graph_transition_strengths(0.4, 1.4, decay, confidence, false),
-        (lexical, lexical)
+        strengths(1.4, None, false),
+        (lexical, lexical, PathChain::Lexical)
+    );
+    assert_eq!(
+        strengths(1.4, Some(1.4), false),
+        (lexical, lexical, PathChain::Lexical)
     );
     // A corroborated neighbor inherits the stronger of the two chains.
     assert_eq!(
-        graph_transition_strengths(0.4, 1.4, decay, confidence, true),
-        (lexical, 1.4 * decay * confidence)
+        strengths(1.4, None, true),
+        (lexical, 1.4 * decay * confidence, PathChain::Anchored)
     );
+    let strong = graph_transition_strengths(0.9, 0.2, None, decay, confidence, true);
     assert_eq!(
-        graph_transition_strengths(0.9, 0.2, decay, confidence, true),
-        (0.9 * decay * confidence, 0.9 * decay * confidence)
+        (strong.lexical, strong.score, strong.chain),
+        (
+            0.9 * decay * confidence,
+            0.9 * decay * confidence,
+            PathChain::Lexical
+        )
     );
+    // Over a reviewed first hop the anchor's own strength passes undecayed
+    // (#216), still times confidence; the lexical chain always decays.
+    assert_eq!(
+        strengths(1.4, Some(1.4), true),
+        (lexical, 1.4 * confidence, PathChain::Reviewed)
+    );
+}
+
+#[test]
+fn reviewed_hops_exclude_unreviewed_edges_and_steps_toward_a_derivative() {
+    let edge = |edge_type: &str, is_manual: bool| NoteEdgeRow {
+        id: RecordId::new(edge_type, "fixture"),
+        edge_type: edge_type.into(),
+        in_id: RecordId::new("note", "derived"),
+        out_id: RecordId::new("note", "source"),
+        proposal_id: None,
+        confidence: Some(1.0),
+        reason: None,
+        provenance: Some("manual".into()),
+        is_manual,
+        created_at: chrono::Utc::now(),
+        evidence_assessment: None,
+    };
+    for edge_type in ["supports", "contradicts", "related_to", "derived_from"] {
+        assert!(
+            reviewed_anchor_hop(&edge(edge_type, true), "outbound"),
+            "{edge_type}"
+        );
+        assert!(
+            !reviewed_anchor_hop(&edge(edge_type, false), "outbound"),
+            "{edge_type}"
+        );
+        assert!(
+            !reviewed_anchor_hop(&edge(edge_type, false), "inbound"),
+            "{edge_type}"
+        );
+    }
+    for edge_type in ["supports", "contradicts", "related_to"] {
+        assert!(
+            reviewed_anchor_hop(&edge(edge_type, true), "inbound"),
+            "{edge_type}"
+        );
+    }
+    // Toward a note derived from the retrieved one: a duplicate path.
+    assert!(!reviewed_anchor_hop(&edge("derived_from", true), "inbound"));
+}
+
+#[test]
+fn reviewed_strength_never_calibrates_above_its_anchor() {
+    let fusions = [
+        FusionConfig::default(),
+        FusionConfig {
+            strategy: fusion::FusionStrategy::Weighted,
+            ..FusionConfig::default()
+        },
+    ];
+    for fusion in &fusions {
+        for rank in 1..=200_u16 {
+            let score = 0.7 / (60.0 + f32::from(rank)) + 0.3 / (61.0 + f32::from(rank % 7));
+            let strength = graph_strength_at_most(score, fusion);
+            let calibrated = calibrated_graph_score(strength, fusion);
+            // At most the anchor's score, and only rounding steps below it.
+            assert!(calibrated <= score, "{score} {calibrated}");
+            assert!(
+                score - calibrated <= score * 4.0 * f32::EPSILON,
+                "{score} {calibrated}"
+            );
+        }
+    }
 }

@@ -1162,6 +1162,21 @@ impl SearchAgent {
                 (strength.is_finite() && strength > 0.0).then(|| (hit.id.clone(), strength))
             })
             .collect::<HashMap<_, _>>();
+        // #216: over a reviewed first hop a neighbor may compete at its
+        // anchor's own calibrated score, never a rounding step above it.
+        let reviewed_anchor_strengths = baseline
+            .iter()
+            .filter(|hit| retrieval_anchors.contains_key(&hit.id))
+            .map(|hit| {
+                (
+                    hit.id.clone(),
+                    graph_strength_at_most(
+                        self.graph.seed_score * hit.fusion.fused_score,
+                        &self.fusion,
+                    ),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         // Only a neighbor with its own bounded evidence for this query (a
         // direct or lexical candidate, or a query-entity mention seed) may
         // inherit an anchor's strength.
@@ -1336,14 +1351,29 @@ impl SearchAgent {
                     } else {
                         from.score
                     };
-                    let (lexical, score) = graph_transition_strengths(
+                    // A reviewed first hop from a retrieved note may also pass
+                    // that note's own strength on, undecayed (#216).
+                    let reviewed_anchor =
+                        if from.path.is_empty() && reviewed_anchor_hop(&edge, direction) {
+                            reviewed_anchor_strengths.get(&from.id).copied()
+                        } else {
+                            None
+                        };
+                    let transition = graph_transition_strengths(
                         from.lexical,
                         anchor,
+                        reviewed_anchor,
                         self.graph.per_hop_decay,
                         confidence,
                         corroborated.contains(&neighbor_id),
                     );
-                    let decay = from.decay * self.graph.per_hop_decay;
+                    // Report the hop decay of the chain that produced the score.
+                    let lexical_decay = from.lexical_decay * self.graph.per_hop_decay;
+                    let decay = match transition.chain {
+                        PathChain::Lexical => lexical_decay,
+                        PathChain::Anchored => from.decay * self.graph.per_hop_decay,
+                        PathChain::Reviewed => from.decay,
+                    };
                     let mut path = from.path.clone();
                     path.push(GraphPathStep {
                         edge_id: record_id_to_string(&edge.id),
@@ -1367,9 +1397,10 @@ impl SearchAgent {
                         seed_note_id: from.seed_note_id.clone(),
                         path,
                         visited,
-                        score,
-                        lexical,
+                        score: transition.score,
+                        lexical: transition.lexical,
                         decay,
+                        lexical_decay,
                         initial_entity_rank: from.initial_entity_rank,
                     };
                     eligible.entry(from.id.clone()).or_default().push(state);
@@ -1583,7 +1614,10 @@ struct GraphFrontier {
     /// confidence), never lifted by a retrieval anchor. Neighbors without
     /// their own query evidence continue from this chain.
     lexical: f32,
+    /// Hop decay applied to the path that produced `score`; see `lexical`
+    /// for the always-decayed chain and `lexical_decay` for its factor.
     decay: f32,
+    lexical_decay: f32,
     /// A lower value is a more specific/ranked local entity match. Hybrid
     /// seeds have no entity match and sort after every entity-derived seed at
     /// initial candidate admission.
@@ -1604,6 +1638,7 @@ impl GraphFrontier {
             score,
             lexical: score,
             decay: 1.0,
+            lexical_decay: 1.0,
             initial_entity_rank: usize::MAX,
         }
     }
@@ -1852,28 +1887,88 @@ fn select_graph_seed_note_ids(
     selected
 }
 
-/// Path strengths for one accepted-edge transition, as `(lexical, score)`.
+/// Which strength chain produced a transition's path score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathChain {
+    /// Seed query coverage times hop decay and confidence (pre-#186).
+    Lexical,
+    /// The seed's retrieval strength times hop decay and confidence (#186).
+    Anchored,
+    /// A retrieved seed's own strength over a reviewed edge, undecayed (#216).
+    Reviewed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TransitionStrength {
+    lexical: f32,
+    score: f32,
+    chain: PathChain,
+}
+
+/// Path strengths for one accepted-edge transition.
 ///
 /// `lexical` is the pre-#186 chain: seed query coverage times hop decay and
 /// edge confidence. A neighbor with its own bounded query evidence
 /// (`corroborated`) may instead inherit `from_anchor`, which for a seed that
-/// the direct channels retrieved is its calibrated retrieval strength. A
-/// neighbor without query evidence never inherits an anchor, so a hub cannot
-/// lift unrelated neighbors and an unrelated bridge cannot pass an anchor on.
+/// the direct channels retrieved is its calibrated retrieval strength, times
+/// the same decay and confidence. Over a reviewed first hop it may also
+/// inherit `reviewed_anchor`, that seed's own strength, times confidence
+/// only. The score is the strongest available chain. A neighbor without
+/// query evidence never inherits an anchor, so a hub cannot lift unrelated
+/// neighbors and an unrelated bridge cannot pass an anchor on.
 fn graph_transition_strengths(
     from_lexical: f32,
     from_anchor: f32,
+    reviewed_anchor: Option<f32>,
     per_hop_decay: f32,
     confidence: f32,
     corroborated: bool,
-) -> (f32, f32) {
+) -> TransitionStrength {
     let lexical = from_lexical * per_hop_decay * confidence;
-    let score = if corroborated {
-        lexical.max(from_anchor * per_hop_decay * confidence)
-    } else {
-        lexical
+    let mut strength = TransitionStrength {
+        lexical,
+        score: lexical,
+        chain: PathChain::Lexical,
     };
-    (lexical, score)
+    if corroborated {
+        let anchored = from_anchor * per_hop_decay * confidence;
+        if anchored > strength.score {
+            strength.score = anchored;
+            strength.chain = PathChain::Anchored;
+        }
+        if let Some(reviewed) = reviewed_anchor.map(|anchor| anchor * confidence) {
+            if reviewed > strength.score {
+                strength.score = reviewed;
+                strength.chain = PathChain::Reviewed;
+            }
+        }
+    }
+    strength
+}
+
+/// Whether a reviewed first hop may pass its retrieved seed's strength on
+/// undecayed (#216). A reviewed edge is one that a person created or accepted
+/// (`is_manual`); automatic Gardener acceptance is not review. A
+/// `derived_from` edge followed inbound reaches a note derived from the
+/// retrieved one: it restates that note, so it is a duplicate path rather
+/// than independent support and keeps the decayed chains.
+fn reviewed_anchor_hop(edge: &NoteEdgeRow, direction: &str) -> bool {
+    edge.is_manual && !(edge.edge_type == "derived_from" && direction == "inbound")
+}
+
+/// The largest graph strength whose calibrated score does not exceed
+/// `score`; `score` divided by the unit strength can round one step above it.
+fn graph_strength_at_most(score: f32, fusion: &FusionConfig) -> f32 {
+    let mut strength = score / calibrated_graph_score(1.0, fusion);
+    // Division and calibration each round once, so a few steps suffice.
+    for _ in 0..8 {
+        if strength.is_nan() || strength <= 0.0 || calibrated_graph_score(strength, fusion) <= score
+        {
+            break;
+        }
+        strength = strength.next_down();
+    }
+    strength
 }
 
 fn graph_transition_priority(left: &GraphFrontier, right: &GraphFrontier) -> std::cmp::Ordering {

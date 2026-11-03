@@ -69,6 +69,25 @@ path through such a bridge keep the coverage chain unchanged. With the default
 times decay and confidence, so it ranks below its anchor and competes with the
 anchor's weaker direct competitors on the same final scale.
 
+### Reviewed edges
+
+The hop from a retrieved seed over a reviewed edge, one that a person created
+or accepted, is not decayed (#216). Such a neighbor, still only with its own
+query evidence, competes at its anchor's strength times edge confidence. With
+the default `graph_seed_score` it scores at most its anchor's own score, never
+a rounding step above it, and ties fall to the shared deterministic ranker,
+which places a direct anchor before a graph-only neighbor. It can therefore
+take a context slot from a direct match weaker than its anchor, but not from
+one stronger than the anchor.
+
+Hop decay still applies to unreviewed edges such as Gardener's automatic policy
+acceptance, to seeds that the direct channels did not retrieve, to every later
+hop, and to a reviewed `derived_from` edge followed from a note to a note
+derived from it. Such a derivative restates its source, so it is a duplicate
+path rather than independent support. Explain output reports the hop decay of
+the chain that produced a path's score, so an undecayed reviewed hop shows
+`decay` 1.0. See the [validation note](validation/graph-support-216.md).
+
 No context slot is reserved for graph evidence. An anchored neighbor still
 passes packing relevance, novelty, near-duplicate suppression, the optional
 per-source cap and every token budget; a stronger direct match keeps its slot.
