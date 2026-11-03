@@ -336,6 +336,9 @@ impl Repository {
                 }
                 target = expected.id.clone().ok_or_else(conflict)?;
                 let mut sql = proposal_guard();
+                if action == "accept" {
+                    super::remote_endpoint_proposals::ensure_acceptable_evidence(&expected)?;
+                }
                 if action == "accept" && expected.generator == "remote-reviewed-endpoint" {
                     endpoint_sources = self.endpoint_source_snapshots(&endpoints).await?;
                     if !self.reviewed_endpoint_proposal_current(&expected).await? {
@@ -357,7 +360,7 @@ impl Repository {
                         if expected.from_id == expected.to_id { return Err(DbError::InvalidMutationRequest("proposal cannot connect a note to itself".into())); }
                         let id = RecordId::new(table, format!("remote_{}", Sha256::digest(serde_json::to_vec(&target).map_err(|e|DbError::QueryFailed(e.to_string()))?).iter().map(|b|format!("{b:02x}")).collect::<String>()));
                         edge_id = Some(id);
-                        sql.push_str(&format!("IF array::len((SELECT VALUE id FROM {table} WHERE dedupe_key=$dedupe_key LIMIT 1)) != 0 {{ THROW 'remote-mutation-revision-conflict'; }}; CREATE $edge SET in=$expected_proposal.from_id,out=$expected_proposal.to_id,confidence=$expected_proposal.confidence,reason=$expected_proposal.reason,provenance='manual',proposal_id=$target,is_manual=true,dedupe_key=$dedupe_key,created_at=time::now(); UPDATE $target SET status='accepted',reviewed_at=time::now(),reviewer=$actor,action_reason=$reason,acceptance_is_manual=true,resulting_edge_id=$edge,updated_at=time::now(); "));
+                        sql.push_str(&format!("IF array::len((SELECT VALUE id FROM {table} WHERE dedupe_key=$dedupe_key LIMIT 1)) != 0 {{ THROW 'remote-mutation-revision-conflict'; }}; CREATE $edge SET in=$expected_proposal.from_id,out=$expected_proposal.to_id,confidence=$expected_proposal.confidence,reason=$expected_proposal.reason,provenance='manual',proposal_id=$target,is_manual=true,dedupe_key=$dedupe_key,evidence_assessment=$expected_proposal.evidence_assessment,created_at=time::now(); UPDATE $target SET status='accepted',reviewed_at=time::now(),reviewer=$actor,action_reason=$reason,acceptance_is_manual=true,resulting_edge_id=$edge,updated_at=time::now(); "));
                     }
                     "reject" if expected.status == ProposedEdgeStatus::Pending => sql.push_str("UPDATE $target SET status='rejected',reviewed_at=time::now(),reviewer=$actor,action_reason=$reason,updated_at=time::now(); "),
                     "undo" if expected.status == ProposedEdgeStatus::Accepted => {
@@ -511,6 +514,7 @@ fn proposal_guard() -> String {
         "resulting_edge_id",
         "superseded_at",
         "supersession_reason",
+        "evidence_assessment",
     ];
     let comparison = fields
         .iter()

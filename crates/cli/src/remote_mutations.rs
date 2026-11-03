@@ -8,9 +8,48 @@ use crate::commands::{
 use crate::output::{self, OutputFormat};
 use crate::remote::{call_tool, Invocation};
 use anyhow::{Context, Result};
-use graphrag_application::{ApplicationError, RemoteMutationResponse, RemoteNoteSnapshot};
+use graphrag_application::{
+    ApplicationError, RemoteEndpointProposalRequest, RemoteEndpointProposalResponse,
+    RemoteMutationResponse, RemoteNoteSnapshot,
+};
 use serde_json::{json, Value};
 use std::io::Read;
+use std::path::Path;
+
+/// Bound for a reviewed proposal request read from a file or stdin.
+const MAX_PROPOSAL_REQUEST_BYTES: u64 = 256 * 1024;
+
+/// A reviewed proposal carries its own request identity and pinned endpoint
+/// revisions. Parse it against the contract before any network call, so an
+/// unknown field fails locally, then send the canonical encoding: replaying
+/// the same file sends the same payload.
+fn proposal_request(input: &Path) -> Result<Value> {
+    let mut bytes = Vec::new();
+    if input == Path::new("-") {
+        std::io::stdin()
+            .lock()
+            .take(MAX_PROPOSAL_REQUEST_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+    } else {
+        std::fs::File::open(input)
+            .with_context(|| format!("cannot read proposal request {}", input.display()))?
+            .take(MAX_PROPOSAL_REQUEST_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+    }
+    if bytes.len() as u64 > MAX_PROPOSAL_REQUEST_BYTES {
+        anyhow::bail!("proposal request exceeds 256 KiB");
+    }
+    let request: RemoteEndpointProposalRequest = serde_json::from_slice(&bytes)
+        .context("proposal request does not match the propose_endpoint_relationship contract")?;
+    if !request.confirmed {
+        anyhow::bail!("set confirmed=true after reviewing both exact note revisions and quotes");
+    }
+    eprintln!(
+        "Proposal request ID: {}",
+        output::safe_text(&request.request_id, false)
+    );
+    Ok(serde_json::to_value(request)?)
+}
 
 fn revision(cli: &Cli) -> Result<&str> {
     let revision = cli
@@ -149,6 +188,18 @@ pub(super) async fn prepare(cli: &Cli, server: &str) -> Result<Option<Invocation
             }
             ProposalCommand::Undo { id, reason, yes } => decision(cli, id, "undo", reason, *yes)?,
         },
+        Commands::Garden {
+            command: GardenCommand::Propose { input, format },
+        } => {
+            if cli.request_id.is_some() || cli.expected_revision.is_some() {
+                anyhow::bail!("garden propose takes its request_id and endpoint revisions from the JSON request");
+            }
+            read(
+                "propose_endpoint_relationship",
+                proposal_request(input)?,
+                *format,
+            )
+        }
         _ => return Ok(None),
     };
     if cli.recover_draft && invocation.tool != "edit_note" {
@@ -312,6 +363,20 @@ async fn prepare_edit(cli: &Cli, server: &str, command: &NotesCommand) -> Result
 }
 
 pub(super) fn validate_result(invocation: &Invocation, value: &Value) -> Result<()> {
+    if invocation.tool == "propose_endpoint_relationship" {
+        // Replays return the original receipt, whose outcome stays pending.
+        let response: RemoteEndpointProposalResponse = serde_json::from_value(value["data"].clone()).map_err(|_| ApplicationError::Compatibility("incompatible proposal result; retain the original request file for an exact replay".into()))?;
+        if Some(response.request_id.as_str()) != invocation.arguments["request_id"].as_str()
+            || response.outcome.operation != "propose_endpoint"
+            || response.outcome.status != "pending"
+            || !response.outcome.id.starts_with("proposed_edge:")
+            || !response.outcome.actor.starts_with("mcp:")
+            || response.outcome.actor.len() <= 4
+        {
+            return Err(ApplicationError::Compatibility("proposal response does not match its request; retain the original request file for an exact replay".into()).into());
+        }
+        return Ok(());
+    }
     let (operation, status) = match invocation.tool {
         "edit_note" => ("edit", "edited"),
         "delete_note" => ("delete", "deleted"),
@@ -360,6 +425,65 @@ mod tests {
         ] {
             let mut incompatible = valid.clone();
             *incompatible.pointer_mut(pointer).unwrap() = json!("different");
+            assert!(
+                validate_result(&invocation, &incompatible).is_err(),
+                "{pointer}"
+            );
+        }
+    }
+
+    fn request_file(dir: &Path, name: &str, value: &Value) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn proposal_requests_parse_locally_and_keep_their_canonical_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = json!({"request_id":"typed-1","from":{"id":"note:a","revision":"a".repeat(64),"quote":"first"},"to":{"id":"note:b","revision":"b".repeat(64),"quote":"second"},"relationship":"supports","rationale":"Fictional review","assessment":null,"confirmed":true});
+        // An explicit null assessment sends the legacy payload unchanged.
+        let sent = proposal_request(&request_file(dir.path(), "legacy.json", &legacy)).unwrap();
+        assert!(sent.get("assessment").is_none());
+        let mut typed = legacy.clone();
+        typed["assessment"] =
+            json!({"evidence_mode":"derivation","direction":"from_to","scope":"Fictional scope"});
+        let sent = proposal_request(&request_file(dir.path(), "typed.json", &typed)).unwrap();
+        assert_eq!(sent["assessment"]["evidence_mode"], "derivation");
+        assert_eq!(sent["assessment"]["lineage"], "unknown");
+        let mut unknown = typed.clone();
+        unknown["assessment"]["confidence"] = json!(0.9);
+        let mut unconfirmed = typed.clone();
+        unconfirmed["confirmed"] = json!(false);
+        for (name, value) in [("unknown.json", unknown), ("unconfirmed.json", unconfirmed)] {
+            assert!(proposal_request(&request_file(dir.path(), name, &value)).is_err());
+        }
+        let oversized = dir.path().join("oversized.json");
+        std::fs::write(&oversized, vec![b' '; 256 * 1024 + 1]).unwrap();
+        assert!(proposal_request(&oversized)
+            .unwrap_err()
+            .to_string()
+            .contains("256 KiB"));
+    }
+
+    #[test]
+    fn proposal_acknowledgements_must_match_the_original_request() {
+        let invocation = read(
+            "propose_endpoint_relationship",
+            json!({"request_id":"typed-1"}),
+            OutputFormat::Json,
+        );
+        let valid = json!({"schema_version":1,"data":{"request_id":"typed-1","replayed":true,"outcome":{"id":"proposed_edge:synthetic","operation":"propose_endpoint","actor":"mcp:synthetic","status":"pending"}},"error":null});
+        assert!(validate_result(&invocation, &valid).is_ok());
+        for (pointer, value) in [
+            ("/data/request_id", "typed-2"),
+            ("/data/outcome/operation", "accept"),
+            ("/data/outcome/status", "accepted"),
+            ("/data/outcome/id", "supports:synthetic"),
+            ("/data/outcome/actor", "local"),
+        ] {
+            let mut incompatible = valid.clone();
+            *incompatible.pointer_mut(pointer).unwrap() = json!(value);
             assert!(
                 validate_result(&invocation, &incompatible).is_err(),
                 "{pointer}"

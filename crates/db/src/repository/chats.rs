@@ -364,6 +364,10 @@ pub struct NoteEdgeRow {
     #[serde(default)]
     pub is_manual: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Typed evidence copied from an assessed proposal at acceptance (#205).
+    /// Report-only: traversal and ranking never read it.
+    #[serde(default)]
+    pub evidence_assessment: Option<serde_json::Value>,
 }
 
 /// Local lexical entity match used as a graph-retrieval seed. `metadata` is
@@ -436,6 +440,8 @@ pub(crate) struct ProposedEdgeRow {
     superseded_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     supersession_reason: Option<String>,
+    #[serde(default)]
+    evidence_assessment: Option<serde_json::Value>,
 }
 
 impl ProposedEdgeRow {
@@ -484,6 +490,7 @@ impl ProposedEdgeRow {
             resulting_edge_id: self.resulting_edge_id,
             superseded_at: self.superseded_at,
             supersession_reason: self.supersession_reason,
+            evidence_assessment: self.evidence_assessment,
         })
     }
 }

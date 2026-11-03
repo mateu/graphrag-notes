@@ -243,7 +243,9 @@ fixture, and these CLI backup schema fixtures:
 
 - `schema_fifteen_v1_backup_remains_restorable_without_capture_table`;
 - `empty_backup_round_trip_is_valid_and_restores_a_fresh_schema`;
-- `schema23_reviewed_enrichment_backup_reopens_and_recovers_exact_leased_checkpoint`.
+- `schema23_reviewed_enrichment_backup_reopens_and_recovers_exact_leased_checkpoint`;
+- `typed_relation_evidence_survives_archives_replay_and_undo` (schema 28 typed
+  evidence through native and JSONL archives, receipt replay and undo).
 
 Discovery and execution fail closed on missing, failed, ignored or zero-test
 fixtures. The ignored schema23 subprocess worker is launched only by its parent

@@ -31,6 +31,7 @@ mod v024_entity_lexeme_index;
 mod v025_mention_lexeme_evidence;
 mod v026_provenance_endpoint_indexes;
 mod v027_accepted_edge_frontier;
+mod v028_relation_evidence_assessment;
 
 use crate::{DbConnection, DbError, Result};
 use graphrag_core::record_id_to_string;
@@ -43,7 +44,7 @@ use surrealdb_types::SurrealValue;
 use tokio::sync::Mutex;
 use tracing::info;
 
-pub const LATEST_SCHEMA_VERSION: u32 = 27;
+pub const LATEST_SCHEMA_VERSION: u32 = 28;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedMigration {
@@ -86,6 +87,7 @@ const MIGRATIONS: &[Migration] = &[
     v025_mention_lexeme_evidence::MIGRATION,
     v026_provenance_endpoint_indexes::MIGRATION,
     v027_accepted_edge_frontier::MIGRATION,
+    v028_relation_evidence_assessment::MIGRATION,
 ];
 
 // This table must exist before the first migration can be inspected. It is
@@ -640,6 +642,124 @@ mod tests {
             test_support::init_memory_at_version(latest_version() + 1).await,
             Err(DbError::UnsupportedSchemaVersion { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn v028_adds_optional_relation_evidence_without_rewriting_legacy_graph_rows() {
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..27]).await.unwrap();
+        assert_eq!(current_version(&db).await.unwrap(), 27);
+        db.query(
+            "CREATE note:a SET content = 'fictional claim'; CREATE note:b SET content = 'fictional evidence'; \
+             CREATE proposed_edge:legacy SET dedupe_key = 'reviewed-v1:supports:note:a:note:b:legacy', in = note:a, out = note:b, edge_type = 'supports', confidence = 1.0, reason = '{\"contract\":1}', generator = 'remote-reviewed-endpoint', generator_version = '1', status = 'accepted', resulting_edge_id = supports:legacy; \
+             CREATE supports:legacy SET in = note:a, out = note:b, confidence = 1.0, reason = '{\"contract\":1}', provenance = 'manual', proposal_id = proposed_edge:legacy, is_manual = true, dedupe_key = 'supports:note:a:note:b'; \
+             CREATE proposed_edge:gardener SET dedupe_key = 'related_to:note:a:note:b', in = note:a, out = note:b, edge_type = 'related_to', confidence = 0.91, reason = 'similar', generator = 'gardener-similarity', status = 'pending';",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let snapshot = |db: DbConnection| async move {
+            let mut rows: Vec<serde_json::Value> = db
+                .query("SELECT * FROM proposed_edge ORDER BY id")
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            let edges: Vec<serde_json::Value> = db
+                .query("SELECT * FROM supports ORDER BY id")
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            rows.extend(edges);
+            rows
+        };
+        let before = snapshot(db.clone()).await;
+        for _ in 0..2 {
+            apply_all(&db).await.unwrap();
+        }
+        assert_eq!(current_version(&db).await.unwrap(), 28);
+        let after = snapshot(db.clone()).await;
+        assert_eq!(after, before, "the migration must not rewrite legacy rows");
+        assert!(after.iter().all(|row| row
+            .get("evidence_assessment")
+            .is_none_or(serde_json::Value::is_null)));
+
+        let assessment = |relation: &str, mode: &str, same_origin: bool| serde_json::json!({"version": 1, "calibration": "none", "relation": relation, "evidence_mode": mode, "lineage": {"same_origin": same_origin, "declared": "unknown", "basis": "distinct_origins"}});
+        let create = |table: &'static str, key: &'static str, value: serde_json::Value| {
+            let db = db.clone();
+            async move {
+                db.query(format!("CREATE {table}:{key} SET in = note:a, out = note:b, evidence_assessment = $value"))
+                    .bind(("value", value))
+                    .await
+                    .unwrap()
+                    .check()
+            }
+        };
+        create(
+            "derived_from",
+            "derivation",
+            assessment("derived_from", "derivation", true),
+        )
+        .await
+        .unwrap();
+        let mut linked = assessment("related_to", "explicit_statement", false);
+        linked["link"] = serde_json::json!({"note": "note:a", "target": "note:b"});
+        create("related_to", "linked", linked.clone())
+            .await
+            .unwrap();
+        let mut unlinked = linked;
+        unlinked.as_object_mut().unwrap().remove("link");
+        let mut future = assessment("contradicts", "explicit_statement", false);
+        future["version"] = 2.into();
+        let mut probability = assessment("derived_from", "derivation", false);
+        probability["calibration"] = "platt".into();
+        for (table, value) in [
+            (
+                "supports",
+                assessment("supports", "explicit_statement", true),
+            ),
+            ("supports", assessment("supports", "analogy", false)),
+            (
+                "contradicts",
+                assessment("contradicts", "hypothesis", false),
+            ),
+            ("related_to", unlinked),
+            ("contradicts", future),
+            ("derived_from", probability),
+            ("derived_from", assessment("supports", "derivation", false)),
+        ] {
+            assert!(
+                create(table, "rejected", value.clone()).await.is_err(),
+                "{table} must refuse {value}"
+            );
+        }
+        for table in ["supports", "contradicts", "related_to"] {
+            let rejected: Vec<RecordId> = db
+                .query(format!(
+                    "SELECT VALUE id FROM {table} WHERE record::id(id) = 'rejected'"
+                ))
+                .await
+                .unwrap()
+                .take(0)
+                .unwrap();
+            assert!(rejected.is_empty());
+        }
+        // Proposals may carry pending-only evidence, but not unknown modes.
+        db.query("UPDATE proposed_edge:gardener SET evidence_assessment = $value")
+            .bind(("value", assessment("related_to", "hypothesis", false)))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(db
+            .query("UPDATE proposed_edge:gardener SET evidence_assessment = $value")
+            .bind(("value", assessment("related_to", "certain", false)))
+            .await
+            .unwrap()
+            .check()
+            .is_err());
     }
 
     #[tokio::test]

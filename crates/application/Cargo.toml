@@ -9,7 +9,7 @@ default = ["rocksdb"]
 rocksdb = ["graphrag-db/rocksdb", "graphrag-agents/rocksdb"]
 
 [dependencies]
-graphrag-core = { path = "../core" }
+graphrag-core = { path = "../core", features = ["json-schema"] }
 graphrag-db = { path = "../db", default-features = false }
 graphrag-agents = { path = "../agents", default-features = false }
 async-trait.workspace = true

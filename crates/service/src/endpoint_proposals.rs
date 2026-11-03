@@ -4,7 +4,7 @@ use crate::{
     Capability, Principal,
 };
 use graphrag_application::{
-    CallerIdentity, EndpointRelationship, RemoteEndpointProposalRequest,
+    CallerIdentity, EndpointRelationship, EvidenceAssessmentRequest, RemoteEndpointProposalRequest,
     RemoteEndpointProposalResponse,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool, ToolAnnotations};
@@ -33,6 +33,10 @@ struct ProposalInput {
     relationship: EndpointRelationship,
     #[schemars(length(min = 1, max = 2048))]
     rationale: String,
+    /// Optional typed evidence assessment (evidence mode, direction, spans,
+    /// link, lineage, candidate score, alternative explanation, scope).
+    #[serde(default)]
+    assessment: Option<EvidenceAssessmentRequest>,
     confirmed: bool,
 }
 
@@ -52,13 +56,14 @@ impl From<ProposalInput> for RemoteEndpointProposalRequest {
             },
             relationship: value.relationship,
             rationale: value.rationale,
+            assessment: value.assessment,
             confirmed: value.confirmed,
         }
     }
 }
 
 pub(crate) fn catalog() -> (Capability, Tool) {
-    (Capability::Propose, definition::<ProposalInput, RemoteEndpointProposalResponse>("propose_endpoint_relationship", "Create exactly one pending, explicitly reviewed relationship proposal for two current canonical note snapshots. Supply each 64-character revision and a bounded exact quote found in that current note, select the relationship deliberately (similarity never supplies causality), explain the linkage, and set confirmed=true. Preserve an identical request_id and payload for safe replay; this capability cannot accept, reject, or scan.", false).with_annotations(ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false)))
+    (Capability::Propose, definition::<ProposalInput, RemoteEndpointProposalResponse>("propose_endpoint_relationship", "Create exactly one pending, explicitly reviewed relationship proposal for two current canonical note snapshots. Supply each 64-character revision and a bounded exact quote found in that current note, select the relationship deliberately (similarity never supplies causality), explain the linkage, and set confirmed=true. Optionally add a typed `assessment`: evidence_mode (explicit_statement, derivation, or analogy/hypothesis which stay pending and can never be accepted), direction (from_to, or symmetric for related_to), extra verbatim support spans, a link quote naming the other note (required for related_to), declared lineage (same-origin pairs cannot be supports; use derived_from), the nominating candidate score, alternative explanation and scope. The server computes offsets and origins; nothing is a calibrated probability. Preserve an identical request_id and payload for safe replay; this capability cannot accept, reject, or scan.", false).with_annotations(ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false)))
 }
 
 pub(crate) async fn call(

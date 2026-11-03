@@ -192,7 +192,9 @@ command on stderr. The CLI does not silently change retrieval mode.
 `garden review` is a provider-free inbox for persisted proposals. The default
 filter is pending; `--id proposed_edge:ID`, `--status`, and `--all-statuses`
 select an exact proposal or lifecycle states. `--limit` is bounded to 1–200.
-Human cards show both notes, bounded excerpts, provenance, confidence, reason,
+Human cards show both notes, bounded excerpts, provenance, an evidence label
+(typed assessment details, or `unassessed` with the legacy weight labelled as a
+review convention or generator score, never a percentage), reason,
 proposal state, audit timestamps/manual flags, and available undo. Printed
 follow-up commands preserve the selected config and database. A non-UTF-8
 replay path makes `review_command`, `inspect_command`, and `undo_command` null
@@ -235,7 +237,12 @@ and `notes delete --yes` require global `--expected-revision`; editor/file/stdin
 edits keep a private recovery draft until a matching authoritative outcome.
 Remote `garden review` and `garden proposals list/show` return proposal cards.
 `garden proposals accept/reject/undo --yes` select one proposal and require its
-reviewed revision. Global `--request-id` is valid for these writes, capture, and upload;
+reviewed revision. `garden propose FILE|-` sends one pending reviewed proposal
+(the `propose_endpoint_relationship` JSON request, including an optional typed
+`assessment`) to a credential with the `propose` capability; it is parsed
+against the contract before any network call, carries its own `request_id` and
+endpoint revisions, and is replayed by resending the same file. It is remote-only
+and never accepts. Global `--request-id` is valid for decisions, edits, capture, and upload;
 it is rejected on read commands. Global `--recover-draft` explicitly adopts a
 private `--content-file` recovery file for verified-success cleanup; ordinary
 input files remain caller-owned. These global mutation flags require remote mode.

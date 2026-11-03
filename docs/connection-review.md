@@ -1,7 +1,10 @@
 # Review proposed connections
 
 `garden review` puts both notes, their excerpts and provenance, and the
-proposal's confidence, reason, generator, and lifecycle state in one place.
+proposal's evidence, reason, generator, and lifecycle state in one place. A
+typed proposal shows its evidence mode, verbatim spans, lineage, link,
+candidate score, alternative explanation and scope; a legacy proposal reads as
+`unassessed` and its stored weight is labelled, never shown as a percentage.
 Once proposals exist, review and decisions work without inference providers.
 These commands are in current source and the published Apple Silicon
 `0.1.0-rc.2` prerelease; the published
@@ -87,7 +90,8 @@ revision guards and work offline. Reviewing does not open an editor or a file.
 
 For automation, JSON returns a versioned `garden.review` envelope whose
 `data.proposals` array contains cards. Each card has stable proposal `id`,
-status/confidence/reason/generator/audit fields, `from` and `to` endpoints,
+status/confidence/reason/generator/audit fields, a report-only `evidence`
+summary plus the full `evidence_assessment` when typed, `from` and `to` endpoints,
 `accept_allowed`, `accept_blocked_reason`, replay commands, and card `warnings`.
 `review_command`, endpoint `inspect_command`, and `undo_command` can be null
 when the selected replay paths are not valid UTF-8; card warnings explain why.

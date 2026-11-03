@@ -60,6 +60,13 @@ pub(crate) fn validate_endpoint_proposal(
             return Err(ApplicationError::Validation("Each endpoint needs a current 64-character revision and a trimmed nonempty quote of at most 1024 characters/2048 UTF-8 bytes.".into()));
         }
     }
+    if let Some(assessment) = &request.assessment {
+        graphrag_core::relation_evidence::validate_request(
+            &request.relationship.into(),
+            assessment,
+        )
+        .map_err(|error| ApplicationError::Validation(error.to_string()))?;
+    }
     Ok(())
 }
 
@@ -100,6 +107,7 @@ impl EmbeddedApplication {
                 to_quote: request.to.quote,
                 edge_type: request.relationship.into(),
                 rationale: request.rationale,
+                assessment: request.assessment,
             })
             .await?;
         let outcome = serde_json::from_value(receipt.result).map_err(|error| {
@@ -132,6 +140,7 @@ mod tests {
             },
             relationship: EndpointRelationship::RelatedTo,
             rationale: "The quoted passages identify the same project constraint.".into(),
+            assessment: None,
             confirmed: true,
         }
     }
@@ -159,6 +168,83 @@ mod tests {
         input.confirmed = true;
         input.to.id = input.from.id.clone();
         assert!(validate_endpoint_proposal(&caller, &input).is_err());
+    }
+
+    fn assessment(value: serde_json::Value) -> Option<EvidenceAssessmentRequest> {
+        Some(serde_json::from_value(value).unwrap())
+    }
+
+    #[test]
+    fn legacy_requests_keep_their_payload_and_fingerprint() {
+        // Pinned from the pre-#205 layout: omitting the optional assessment
+        // must not change any stored payload or replay identity.
+        assert_eq!(
+            remote_endpoint_proposal_fingerprint(&request()).unwrap(),
+            "1afff2f501cf2317e7ab3d754af1d31648ef81a7be51b0ff0bee954f5cbb5aa5"
+        );
+        assert!(serde_json::to_value(request())
+            .unwrap()
+            .get("assessment")
+            .is_none());
+        let mut typed = request();
+        typed.assessment =
+            assessment(serde_json::json!({"evidence_mode": "analogy", "direction": "symmetric"}));
+        assert_ne!(
+            remote_endpoint_proposal_fingerprint(&typed).unwrap(),
+            remote_endpoint_proposal_fingerprint(&request()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&typed).unwrap()["assessment"]["lineage"],
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn typed_assessments_are_checked_before_storage() {
+        let caller = CallerIdentity {
+            instance_id: "reviewer".into(),
+        };
+        let mut input = request();
+        for (value, expected) in [
+            (
+                serde_json::json!({"evidence_mode": "explicit_statement", "direction": "symmetric"}),
+                Some("related_to requires explicit link evidence"),
+            ),
+            (
+                serde_json::json!({"evidence_mode": "derivation", "direction": "symmetric"}),
+                Some("related_to cannot be accepted on derivation evidence"),
+            ),
+            (
+                serde_json::json!({"evidence_mode": "analogy", "direction": "from_to"}),
+                Some("direction from_to does not match related_to"),
+            ),
+            (
+                serde_json::json!({"evidence_mode": "hypothesis", "direction": "symmetric", "candidate": {"generator": "gardener-similarity", "similarity": 1.5}}),
+                Some("candidate similarity"),
+            ),
+            (
+                serde_json::json!({"evidence_mode": "hypothesis", "direction": "symmetric", "scope": " padded "}),
+                Some("scope must be trimmed"),
+            ),
+            // Speculative claims are proposable; they simply stay pending.
+            (
+                serde_json::json!({"evidence_mode": "hypothesis", "direction": "symmetric"}),
+                None,
+            ),
+        ] {
+            input.assessment = assessment(value);
+            match (validate_endpoint_proposal(&caller, &input), expected) {
+                (Ok(()), None) => {}
+                (Err(ApplicationError::Validation(message)), Some(expected)) => {
+                    assert!(message.contains(expected), "{message}")
+                }
+                (result, expected) => panic!("{result:?} for {expected:?}"),
+            }
+        }
+        // A confidence-style field is not part of the contract.
+        let mut payload = serde_json::to_value(request()).unwrap();
+        payload["assessment"] = serde_json::json!({"evidence_mode": "derivation", "direction": "symmetric", "confidence": 0.9});
+        assert!(serde_json::from_value::<RemoteEndpointProposalRequest>(payload).is_err());
     }
 
     #[test]
