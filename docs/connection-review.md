@@ -158,8 +158,12 @@ max_entity_note_frequency = 10
 The receipt echoes every resolved limit and policy value, counts why nominated
 pairs were rejected, and reports `stop_reason` (`completed`, `endpoint_budget`,
 `candidate_budget` or `deadline`) plus a `--after` cursor while anchors remain.
-Zero candidates is a valid abstention. The CLI refuses a receipt that does not
-echo its request.
+The cursor never advances past candidates cut by `--max-candidates` or the
+deadline: repeat the same scan to reach them (pairs already recorded are then
+skipped). Pairs held back by the per-endpoint cap are reached by a later scan of
+the same scope. The deadline also bounds waiting for the proposal lifecycle
+lock; a write that has started completes. Zero candidates is a valid
+abstention. The CLI refuses a receipt that does not echo its request.
 
 Without `--dry-run`, each candidate becomes a **pending** proposal through the
 normal lifecycle, with generator `gardener-candidate` and its features

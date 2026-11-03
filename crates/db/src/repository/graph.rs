@@ -283,8 +283,37 @@ impl Repository {
     /// Terminal proposals are returned unchanged: a repeated scan must not
     /// silently resurrect a user decision or create an equivalent duplicate.
     #[instrument(skip(self, draft))]
-    pub async fn upsert_edge_proposal(&self, mut draft: EdgeProposalDraft) -> Result<ProposedEdge> {
-        let _lifecycle_guard = self.proposal_acceptance_lock.lock().await;
+    pub async fn upsert_edge_proposal(&self, draft: EdgeProposalDraft) -> Result<ProposedEdge> {
+        let lifecycle_guard = self.proposal_acceptance_lock.lock().await;
+        self.upsert_edge_proposal_locked(draft, lifecycle_guard)
+            .await
+    }
+
+    /// [`Self::upsert_edge_proposal`] that gives up *before writing* when the
+    /// proposal lifecycle lock is not acquired by `deadline` (`Ok(None)`).
+    /// Once the lock is held the write runs to completion, so a started write
+    /// always has an authoritative outcome.
+    #[instrument(skip(self, draft))]
+    pub async fn upsert_edge_proposal_before(
+        &self,
+        draft: EdgeProposalDraft,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<ProposedEdge>> {
+        let Ok(lifecycle_guard) =
+            tokio::time::timeout_at(deadline, self.proposal_acceptance_lock.lock()).await
+        else {
+            return Ok(None);
+        };
+        self.upsert_edge_proposal_locked(draft, lifecycle_guard)
+            .await
+            .map(Some)
+    }
+
+    async fn upsert_edge_proposal_locked(
+        &self,
+        mut draft: EdgeProposalDraft,
+        _lifecycle_guard: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<ProposedEdge> {
         validate_note_edge(&draft.from_id, &draft.to_id, &draft.edge_type)?;
         canonicalize_note_edge(&mut draft.from_id, &mut draft.to_id, &draft.edge_type);
         draft.confidence = draft.confidence.clamp(0.0, 1.0);

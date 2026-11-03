@@ -305,3 +305,39 @@ async fn existing_links_report_accepted_relations_and_proposals_between_candidat
         (&pending.from_id, &pending.to_id)
     );
 }
+
+#[tokio::test]
+async fn deadline_bounded_upsert_writes_nothing_while_the_lifecycle_lock_is_busy() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let from = note(&repo, "Fictional heron survey").await;
+    let to = note(&repo, "Fictional heron follow-up").await;
+    let draft = || EdgeProposalDraft {
+        from_id: from.clone(),
+        to_id: to.clone(),
+        edge_type: EdgeType::RelatedTo,
+        confidence: 0.9,
+        reason: "fixture".into(),
+        generator: "gardener-candidate".into(),
+        generator_version: Some("1".into()),
+        model: None,
+    };
+    let held = Arc::clone(&repo.proposal_acceptance_lock)
+        .lock_owned()
+        .await;
+    let soon = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
+    assert!(repo
+        .upsert_edge_proposal_before(draft(), soon)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo.list_edge_proposals(None, 10).await.unwrap().is_empty());
+    drop(held);
+    let later = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let created = repo
+        .upsert_edge_proposal_before(draft(), later)
+        .await
+        .unwrap()
+        .expect("an available lock admits the write");
+    assert_eq!(created.status, ProposedEdgeStatus::Pending);
+    assert_eq!(repo.list_edge_proposals(None, 10).await.unwrap().len(), 1);
+}

@@ -198,6 +198,11 @@ pub(crate) fn render(
     )?;
     if let Some(next) = &receipt.next_after_note_id {
         writeln!(writer, "  Resume with: --after {}", text(next))?;
+    } else if !receipt.scope_exhausted {
+        writeln!(
+            writer,
+            "  Candidates remain in this window: repeat the same scan to continue."
+        )?;
     }
     let rejected = &receipt.rejections;
     writeln!(

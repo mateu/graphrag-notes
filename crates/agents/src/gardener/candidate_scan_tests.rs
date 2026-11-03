@@ -680,3 +680,30 @@ async fn shared_dates_are_never_a_second_signal() {
     assert_eq!(report.rejections.no_second_signal, 1);
     assert_eq!(corpus.proposal_count().await, 0);
 }
+
+#[tokio::test]
+async fn the_candidate_budget_holds_the_cursor_until_the_window_is_drained() {
+    let corpus = Corpus::new().await;
+    let (hub, spokes) = hub(&corpus).await;
+    let mut single = request(CandidateScope::Notes(vec![hub.clone()]), false);
+    single.max_candidates = 1;
+    for (run, spoke) in spokes.iter().enumerate() {
+        let report = corpus.scan(single.clone()).await;
+        // Repeating drains the window in rank order, one new proposal per run.
+        assert_eq!(pairs(&report), vec![unordered(&hub, spoke)], "run {run}");
+        let remaining = spokes.len() - run - 1;
+        assert_eq!(report.rejections.over_budget, remaining, "run {run}");
+        assert_eq!(report.rejections.already_proposed, run, "run {run}");
+        if remaining > 0 {
+            // Budget-cut candidates stay reachable: neither the cursor nor
+            // `scope_exhausted` claims the examined anchor is finished.
+            assert_eq!(report.stop_reason, CandidateStopReason::CandidateBudget);
+            assert_eq!(report.next_after, None);
+            assert!(!report.scope_exhausted, "run {run}");
+        } else {
+            assert_eq!(report.stop_reason, CandidateStopReason::Completed);
+            assert!(report.scope_exhausted);
+        }
+    }
+    assert_eq!(corpus.proposal_count().await, spokes.len());
+}

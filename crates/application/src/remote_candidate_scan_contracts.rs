@@ -190,9 +190,13 @@ pub struct RelationshipCandidateScanResponse {
     pub after_note_id: Option<String>,
     pub stop_reason: RelationshipCandidateStopReason,
     pub endpoints_examined: usize,
-    /// Every anchor in scope after the cursor was examined.
+    /// Every anchor in scope after the cursor was examined and every
+    /// candidate found was reported.
     pub scope_exhausted: bool,
-    /// Pass as `after_note_id` to continue; `null` once the scope is exhausted.
+    /// Pass as `after_note_id` to continue unless `scope_exhausted`. It never
+    /// advances past candidates cut by `max_candidates` or the deadline, so
+    /// repeating the scan revisits them (recorded pairs are then skipped);
+    /// `null` with `scope_exhausted = false` means repeat from the start.
     pub next_after_note_id: Option<String>,
     /// Distinct cross-source pairs at or above the similarity floor.
     pub nominations: usize,

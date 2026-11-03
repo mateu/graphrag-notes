@@ -390,13 +390,6 @@ impl super::GardenerAgent {
             report.scope_exhausted = false;
             return finish(report);
         };
-        report.next_after = if report.scope_exhausted {
-            None
-        } else if examined > 0 {
-            Some(anchors[examined - 1].id.clone())
-        } else {
-            request.after.clone()
-        };
 
         // 6. Rank, then apply per-endpoint and global budgets.
         gated.sort_by(|left, right| {
@@ -450,8 +443,11 @@ impl super::GardenerAgent {
         // 7. Pending-only persistence through the existing lifecycle. Each
         // pair is re-checked immediately before its upsert so a relation or
         // proposal written concurrently since the gate read is skipped and
-        // counted, never refreshed. Candidates the deadline cuts off stay in
-        // the report without a proposal.
+        // counted, never refreshed. The deadline bounds the re-check and the
+        // wait for the proposal lifecycle lock; a write that has started runs
+        // to completion. Candidates the deadline cuts off stay in the report
+        // without a proposal.
+        let mut persistence_cut = false;
         if !request.dry_run {
             let selected = std::mem::take(&mut report.candidates);
             let mut remaining = selected.into_iter();
@@ -469,7 +465,7 @@ impl super::GardenerAgent {
                     None
                 };
                 let Some(fresh) = fresh else {
-                    report.stop_reason = CandidateStopReason::Deadline;
+                    persistence_cut = true;
                     report.candidates.push(candidate);
                     report.candidates.extend(remaining);
                     break;
@@ -498,10 +494,30 @@ impl super::GardenerAgent {
                     generator_version: Some(CANDIDATE_CONTRACT.to_string()),
                     model: report.embedding_model.clone(),
                 };
-                candidate.proposal = Some(repo.upsert_edge_proposal(draft).await?);
+                let Some(proposal) = repo
+                    .upsert_edge_proposal_before(draft, tokio::time::Instant::from_std(deadline))
+                    .await?
+                else {
+                    persistence_cut = true;
+                    report.candidates.push(candidate);
+                    report.candidates.extend(remaining);
+                    break;
+                };
+                candidate.proposal = Some(proposal);
                 report.candidates.push(candidate);
             }
         }
+        if persistence_cut {
+            report.stop_reason = CandidateStopReason::Deadline;
+        }
+        let (next_after, scope_exhausted) = resume_cursor(
+            request.after.as_ref(),
+            examined.checked_sub(1).map(|index| &anchors[index].id),
+            report.scope_exhausted,
+            persistence_cut || report.rejections.over_budget > 0,
+        );
+        report.next_after = next_after;
+        report.scope_exhausted = scope_exhausted;
         finish(report)
     }
 
@@ -669,6 +685,26 @@ impl super::GardenerAgent {
             }
         }
         Ok(Some(gated))
+    }
+}
+
+/// Where the next page starts, and whether the scope is exhausted. The cursor
+/// never advances past anchors whose candidates were not all reported: when
+/// the candidate budget or the deadline cut candidates (`unresolved`), the
+/// caller repeats from the incoming cursor, and pairs already recorded are
+/// then skipped as already proposed.
+fn resume_cursor(
+    incoming: Option<&RecordId>,
+    last_examined: Option<&RecordId>,
+    scope_exhausted: bool,
+    unresolved: bool,
+) -> (Option<RecordId>, bool) {
+    if unresolved {
+        (incoming.cloned(), false)
+    } else if scope_exhausted {
+        (None, true)
+    } else {
+        (last_examined.or(incoming).cloned(), false)
     }
 }
 
@@ -977,6 +1013,31 @@ mod tests {
         assert!(!eligible_name("august 4", Some("date")));
         assert!(!eligible_name("2026", Some("other")));
         assert!(!eligible_name("10.5%", None));
+    }
+
+    #[test]
+    fn the_cursor_never_skips_unresolved_candidates() {
+        let incoming = RecordId::new("note", "alpha");
+        let last = RecordId::new("note", "mike");
+        assert_eq!(
+            resume_cursor(Some(&incoming), Some(&last), false, false),
+            (Some(last.clone()), false)
+        );
+        assert_eq!(
+            resume_cursor(Some(&incoming), Some(&last), true, false),
+            (None, true)
+        );
+        assert_eq!(
+            resume_cursor(Some(&incoming), None, false, false),
+            (Some(incoming.clone()), false)
+        );
+        // Budget- or deadline-cut candidates: repeat from the incoming cursor,
+        // even when every anchor was examined.
+        assert_eq!(
+            resume_cursor(Some(&incoming), Some(&last), true, true),
+            (Some(incoming.clone()), false)
+        );
+        assert_eq!(resume_cursor(None, Some(&last), false, true), (None, false));
     }
 
     #[test]
