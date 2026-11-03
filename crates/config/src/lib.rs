@@ -253,6 +253,8 @@ pub struct GardenerConfig {
     /// Explicit opt-in; a threshold alone never enables mutation.
     pub auto_apply: bool,
     pub max_suggestions: usize,
+    /// High-precision policy for the bounded, review-only candidate scan.
+    pub candidates: GardenerCandidateConfig,
 }
 impl Default for GardenerConfig {
     fn default() -> Self {
@@ -261,6 +263,35 @@ impl Default for GardenerConfig {
             auto_apply_threshold: 0.85,
             auto_apply: false,
             max_suggestions: 50,
+            candidates: GardenerCandidateConfig::default(),
+        }
+    }
+}
+
+/// Upper bound for `[gardener.candidates].neighbors_per_endpoint`.
+pub const MAX_GARDENER_CANDIDATE_NEIGHBORS: usize = 20;
+
+/// Operator-owned precision policy for `scan_relationship_candidates`.
+/// Requests may only tighten these values; every scan echoes them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct GardenerCandidateConfig {
+    /// Minimum cosine similarity that nominates a cross-source pair.
+    pub similarity_floor: f32,
+    /// Cross-source neighbours examined per endpoint (1–20).
+    pub neighbors_per_endpoint: usize,
+    /// Most candidates one note may appear in per scan.
+    pub max_per_endpoint: usize,
+    /// Shared entity names mentioned by more notes are generic, not evidence.
+    pub max_entity_note_frequency: usize,
+}
+impl Default for GardenerCandidateConfig {
+    fn default() -> Self {
+        Self {
+            similarity_floor: 0.80,
+            neighbors_per_endpoint: 8,
+            max_per_endpoint: 2,
+            max_entity_note_frequency: 10,
         }
     }
 }
@@ -1039,6 +1070,16 @@ impl RuntimeConfig {
         {
             return Err(ConfigError::Validation("Gardener thresholds must be in [0, 1] and auto_apply_threshold must be at least similarity_threshold".into()));
         }
+        let candidates = &self.gardener.candidates;
+        if !(0.0..=1.0).contains(&candidates.similarity_floor)
+            || !(1..=MAX_GARDENER_CANDIDATE_NEIGHBORS).contains(&candidates.neighbors_per_endpoint)
+            || !(1..=50).contains(&candidates.max_per_endpoint)
+            || !(2..=10_000).contains(&candidates.max_entity_note_frequency)
+        {
+            return Err(ConfigError::Validation(format!(
+                "gardener.candidates requires similarity_floor in [0, 1], neighbors_per_endpoint in 1..={MAX_GARDENER_CANDIDATE_NEIGHBORS}, max_per_endpoint in 1..=50 and max_entity_note_frequency in 2..=10000"
+            )));
+        }
         if !matches!(
             self.logging.level.trim().to_ascii_lowercase().as_str(),
             "trace" | "debug" | "info" | "warn" | "error" | "off"
@@ -1707,6 +1748,50 @@ mod tests {
         assert_eq!(config.librarian.import_progress_every, 12);
         assert_eq!(config.librarian.import_progress_every_secs, 7);
         assert!(config.gardener.auto_apply);
+    }
+
+    #[test]
+    fn gardener_candidate_policy_is_typed_bounded_and_defaults_safe() {
+        let defaults = RuntimeConfig::default().gardener.candidates;
+        assert_eq!(defaults.similarity_floor, 0.80);
+        assert_eq!(defaults.neighbors_per_endpoint, 8);
+        assert_eq!(defaults.max_per_endpoint, 2);
+        assert_eq!(defaults.max_entity_note_frequency, 10);
+
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("graphrag.toml");
+        let load = |body: &str| {
+            fs::write(&config_path, body).unwrap();
+            RuntimeConfig::load_with_env_and_default_path(
+                Some(&config_path),
+                &CliOverrides::default(),
+                &env(&[]),
+                None,
+            )
+        };
+        let config = load(
+            "[gardener]\nmax_suggestions = 5\n[gardener.candidates]\nsimilarity_floor = 0.86\nmax_per_endpoint = 1\n",
+        )
+        .unwrap();
+        assert_eq!(config.gardener.max_suggestions, 5);
+        assert_eq!(config.gardener.candidates.similarity_floor, 0.86);
+        assert_eq!(config.gardener.candidates.max_per_endpoint, 1);
+        assert_eq!(config.gardener.candidates.neighbors_per_endpoint, 8);
+
+        for invalid in [
+            "similarity_floor = 1.5",
+            "neighbors_per_endpoint = 0",
+            "neighbors_per_endpoint = 21",
+            "max_per_endpoint = 0",
+            "max_entity_note_frequency = 1",
+        ] {
+            let error = load(&format!("[gardener.candidates]\n{invalid}\n")).unwrap_err();
+            assert!(
+                error.to_string().contains("gardener.candidates"),
+                "{invalid}"
+            );
+        }
+        assert!(load("[gardener.candidates]\nunknown = 1\n").is_err());
     }
 
     #[test]

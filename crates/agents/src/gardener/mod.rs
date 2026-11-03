@@ -2,7 +2,11 @@
 //!
 //! `service` owns repository-backed maintenance orchestration. Proposal and
 //! policy surfaces are kept explicit for future private implementation moves.
+//! `candidates` owns the bounded, high-precision candidate scan.
 
+#[cfg(test)]
+mod candidate_scan_tests;
+pub mod candidates;
 pub mod service;
 
 /// Proposal and scan report compatibility surface.
@@ -15,4 +19,10 @@ pub mod policy {
     pub use super::service::MaintenanceReport;
 }
 
+pub use candidates::{
+    CandidatePolicy, CandidateRejections, CandidateScanReport, CandidateScanRequest,
+    CandidateScope, CandidateSignal, CandidateStopReason, CrossReferenceDirection,
+    CrossReferenceEvidence, CrossReferenceKind, RelationshipCandidate, SharedEntityEvidence,
+    CANDIDATE_CONTRACT, CANDIDATE_GENERATOR,
+};
 pub use service::*;

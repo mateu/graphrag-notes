@@ -1062,26 +1062,19 @@ impl Repository {
             .ok_or_else(|| DbError::NotFound("note".into(), record_id_to_string(note_id)))
     }
 
-    /// Find orphan notes (no connections)
+    /// Find visible notes without an accepted relation to another visible
+    /// note. Every accepted note-edge table counts, in either direction.
     #[instrument(skip(self))]
     pub async fn find_orphan_notes(&self) -> Result<Vec<Note>> {
         let notes: Vec<Note> = self
             .db
             .query(format!(
-                r#"
-                SELECT * FROM note 
-                WHERE 
-                    {VISIBLE_NOTE_CONDITION} AND
-                    array::len((SELECT * FROM ->supports->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM <-supports<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM ->contradicts->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM <-contradicts<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM ->related_to->note WHERE {VISIBLE_NOTE_CONDITION})) = 0 AND
-                    array::len((SELECT * FROM <-related_to<-note WHERE {VISIBLE_NOTE_CONDITION})) = 0
-            "#
+                "LET $connected = {}; SELECT * FROM note WHERE {VISIBLE_NOTE_CONDITION} AND id NOT IN $connected ORDER BY id ASC;",
+                super::gardener_candidates::connected_note_ids_sql()
             ))
             .await?
-            .take(0)?;
+            .check()?
+            .take(1)?;
 
         Ok(notes)
     }
