@@ -14,8 +14,8 @@ titles, snippets, source paths or credentials.
   frozen 8-question suite in both cap modes and the 12-edge probe with the cap
   off. Policies were off, on, on, off, at `max_chunks=2`,
   `max_total_tokens=1000` and `max_chunk_tokens=400`.
-- **Held-out set:** the owner-approved suite v2 (21 items, excluding one
-  marked `needs_reword`), with the same policies and budgets and the cap off.
+- **Held-out set:** the owner-approved suite v2 (22 items), with the same
+  policies and budgets and the cap off.
 - **Controls:**
   - The deployed `5619a92` binary on the restore reproduced the live
     post-deploy rerun in 112/112 rounds, byte for byte.
@@ -115,15 +115,65 @@ columns show graph entity matching and graph-on total p95, in ms.
   - The clean release build measured p95 227 ms and p50 81 ms.
 - **Graph-on total:** p95 fell from 1,550 to 1,284–1,327 ms, never worse.
   Graph-off totals are unchanged within noise.
-- **Suite v2 (control vs this change):**
-  - Graph-off: 42/42 off rounds byte-identical.
-  - Graph-on: 42/42 on rounds byte-identical. Every per-item status is
-    unchanged, and the token totals are equal.
-  - The single control edge gain (1 of 7 edge items) is kept.
-  - On the 4 guards, the candidate adds exactly what the control adds, and
-    `graph_candidates_added` is 0 on both.
-  - Entity matching p95 fell from 506 to 203 ms; total p95 fell from 1,548
-    to 1,283 ms.
+- **Suite v2:** see the next section.
+
+## Held-out suite v2
+
+Live `5619a92` baseline, the deployed binary on the restore, and this change
+all ran the 22-item approved suite with the cap off.
+
+- **Byte identity:**
+  - The restore control matched the live baseline in 44/44 off and 44/44 on
+    rounds.
+  - This change matched both in 44/44 off and 44/44 on rounds.
+- **Statuses:** every per-item status is unchanged. This change neither adds
+  nor fixes a guard violation.
+- **Latency:** graph entity matching p95 fell from 489 to 185 ms, and
+  graph-on total p95 from 1,543 to 1,254 ms.
+
+| Item | Category | Graph-off support | Graph-on gain | Status (control = this change) |
+| --- | --- | --- | --- | --- |
+| E02, E04, E06, E07, E09, E11 | edge | miss | no | fail |
+| Q4c | edge (corrected) | miss | **yes** (`derived_from` outbound, 1 hop) | needs_judgement |
+| E05 | base search | present | — | fail |
+| E08 | base search | present | swap (support kept) | fail |
+| N1 | derived-duplicate guard | present | **violated**: swap | fail |
+| N2 | seed-only guard | present | **violated**: swap | fail |
+| N5, N6 | derived-duplicate guard | present | nothing added | fail |
+| N3, N4, B5 | base search, known miss | miss | — | fail |
+| B1–B4, Q5r, Q7r | base search | present | — | fail |
+
+### The N1, N2 and E08 swaps
+
+In every graph-on round of all three items, one chunk changes. A direct hit
+that graph-off ranks below the second slot reaches it over a reviewed
+`derived_from` outbound first hop from the support seed, which stays in
+context. #221 lifts that neighbor to its anchor's strength, and it displaces
+a chunk that is not a support chunk. `graph_candidates_added` is 0 because
+the neighbor is also a direct hit, so it is counted as annotating.
+
+| Item | vs seed: 5-shingle Jaccard / containment | Token Jaccard | Longest shared span (tokens) | Same source as seed |
+| --- | --- | --- | --- | --- |
+| N1 | 0.000 / 0.000 | 0.110 | 2 | no |
+| N2 | 0.000 / 0.000 | 0.104 | 1 | no |
+| E08 | 0.011 / 0.022 | 0.265 | 5 | no |
+
+These measures cover the returned snippets (about 40–70 tokens). By them,
+**none of the three neighbors is a near-duplicate of its seed**. They are
+derived notes that restate the same content in different words, so a
+lexical duplicate filter would not catch them. Suppressing these swaps means
+deciding whether a `derived_from` step from a derived note to its origin
+should lift at all. That is a ranking change, separate from this
+latency-only change.
+
+### Counter proposal
+
+`graph_candidates_added` counts only chunks that are not direct hits, so a
+lift-induced swap shows as `annotating`. Proposal: add
+`graph_candidates_promoted`, which counts packed chunks whose graph-on score
+exceeds their own direct score and that would not be packed graph-off. It
+would read 1 per on-round for N1, N2 and E08 and 0 elsewhere on v2. The
+existing counters stay as they are.
 
 ## Tests
 
@@ -153,6 +203,8 @@ columns show graph entity matching and graph-on total p95, in ms.
 - **Latency only:** this change makes matching faster. It does not discount
   hub or duplicate mention seeds. On this data, none of H1–H4 changed a
   returned chunk at the fixed budget.
+- **Guard violations:** the N1/N2 swaps remain. They are not lexical
+  near-duplicates, so they need a separate ranking decision.
 - **Open hub path:** a query entity with many mentions can still fill the
   `max_seed_notes` frontier before hybrid anchors are added. The hub negative
   documents this rather than changing it.
