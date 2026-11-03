@@ -60,13 +60,24 @@ fn snapshot(result: &GraphSearchResults) -> Value {
         .collect::<Vec<_>>())
 }
 
+/// Graph budget when the hook sits after entity matching. The pending hook
+/// still decides where expiry happens; this only lets the earlier real phases
+/// finish first on slow runners, well inside the 3 s concurrency timeout.
+const SLOW_RUNNER_BUDGET_MS: u64 = 1_000;
+
 fn slow(agent: &mut SearchAgent, phase: Phase) -> (Arc<Notify>, Arc<AtomicUsize>) {
     let entered = Arc::new(Notify::new());
     let active = Arc::new(AtomicUsize::new(0));
     agent.graph_delay = Some((phase, entered.clone(), active.clone()));
     // The hook remains pending, so expiry is deterministic without relying on
-    // database size, CPU speed or a real provider.
-    agent.graph.phase_budget_ms = 30;
+    // database size, CPU speed or a real provider. The budget covers the whole
+    // graph future, so a later hook needs room for the real phases before it:
+    // on slow CI runners 30 ms expired before hydration was ever reached.
+    agent.graph.phase_budget_ms = if phase == Phase::GraphEntityMatching {
+        30
+    } else {
+        SLOW_RUNNER_BUDGET_MS
+    };
     (entered, active)
 }
 

@@ -100,6 +100,8 @@ pub(crate) fn allows_catalog(principal: &Principal, capability: Capability, name
         [Capability::Accept, Capability::Reject, Capability::Undo]
             .into_iter()
             .any(|c| principal.allows(c))
+    } else if name == crate::alchemist::TOOL {
+        crate::alchemist::allows(principal)
     } else {
         principal.allows(capability)
     }

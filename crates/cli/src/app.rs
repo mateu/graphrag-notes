@@ -945,6 +945,11 @@ pub(crate) async fn run() -> Result<()> {
             config.augment.max_chunk_tokens,
             &config.augment,
         ));
+        // Opt-in: without an enabled [alchemist] section synthesis stays off.
+        let application = match crate::alchemist::runtime(&config) {
+            Some(runtime) => application.with_alchemist(runtime),
+            None => application,
+        };
         let options = graphrag_service::ServiceOptions {
             listen: *listen,
             credentials_file: credentials_file.clone(),
