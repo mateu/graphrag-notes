@@ -197,7 +197,7 @@ async fn entity_lexeme_and_bound_mention_statements_reject_historical_scans() {
             // RETURN does not expose either child plan: explain each actual
             // nested SELECT independently with its original native bindings.
             for table in ["mention_lexeme", "entity_lexeme"] {
-                let needle = format!("SELECT VALUE entity FROM {table}");
+                let needle = format!("SELECT entity, lexeme FROM {table}");
                 let start = sql.find(&needle).unwrap();
                 let end = start + sql[start..].find(')').unwrap();
                 let plan = explain(&repo, &sql[start..end], variables.clone()).await;
@@ -205,7 +205,7 @@ async fn entity_lexeme_and_bound_mention_statements_reject_historical_scans() {
                 assert!(indexed(&plan, table, &[&index]), "{plan}");
                 checked_lexeme += 1;
             }
-        } else if sql.starts_with("SELECT VALUE entity FROM entity_lexeme") {
+        } else if sql.starts_with("SELECT entity, lexeme FROM entity_lexeme") {
             let plan = explain(&repo, &sql, variables).await;
             assert!(
                 indexed(&plan, "entity_lexeme", &["idx_entity_lexeme_lookup"]),
