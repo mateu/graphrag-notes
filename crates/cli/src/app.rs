@@ -268,7 +268,6 @@ fn provider_requirements(
     );
     let embedder = hybrid_search
         || augment_needs_embeddings
-        || crate::alchemist::needs_embeddings(command, config)
         || notes_edit_reprocesses
         || matches!(
             command,

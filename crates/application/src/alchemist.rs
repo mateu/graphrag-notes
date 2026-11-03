@@ -200,6 +200,10 @@ pub struct AlchemistRuntime {
     pub generator: SharedSynthesisGenerator,
 }
 
+/// Provider readiness checked inside the request's deadline.
+pub type SynthesisPreflight<'a> =
+    Pin<Box<dyn Future<Output = Result<(), ApplicationError>> + Send + 'a>>;
+
 /// Borrowed read-side dependencies of one synthesis.
 pub struct SynthesisContext<'a> {
     pub repo: &'a Repository,
@@ -207,6 +211,9 @@ pub struct SynthesisContext<'a> {
     pub augment: &'a AugmentOptions,
     /// `None` means the Alchemist is disabled (the default).
     pub runtime: Option<&'a AlchemistRuntime>,
+    /// Query-mode provider readiness. It runs inside the same deadline as
+    /// retrieval, generation and verification, and only after validation.
+    pub preflight: Option<SynthesisPreflight<'a>>,
 }
 
 fn pick<T: Copy + PartialOrd + From<u8> + std::fmt::Display>(
@@ -300,9 +307,6 @@ pub fn resolve_synthesis(
     })
 }
 
-/// Provider readiness checked inside the request's deadline.
-type Preflight<'a> = Pin<Box<dyn Future<Output = Result<(), ApplicationError>> + Send + 'a>>;
-
 /// Run one read-only synthesis under its whole-request deadline. Shared by
 /// the CLI (local) and the service (`synthesize_notes`).
 pub async fn synthesize_notes(
@@ -310,16 +314,14 @@ pub async fn synthesize_notes(
     request: SynthesisRequest,
     cancellation: ActionCancellation,
 ) -> Result<SynthesisResponse, SynthesisError> {
-    run_synthesis(context, request, cancellation, None).await
-}
-
-async fn run_synthesis<'a>(
-    context: SynthesisContext<'a>,
-    request: SynthesisRequest,
-    cancellation: ActionCancellation,
-    preflight: Option<Preflight<'a>>,
-) -> Result<SynthesisResponse, SynthesisError> {
-    let runtime = context.runtime.ok_or(SynthesisError::Disabled)?;
+    let SynthesisContext {
+        repo,
+        search,
+        augment,
+        runtime,
+        preflight,
+    } = context;
+    let runtime = runtime.ok_or(SynthesisError::Disabled)?;
     let plan = resolve_synthesis(runtime, &request)?;
     if cancellation.is_cancelled() {
         return Err(ApplicationError::Cancelled.into());
@@ -331,15 +333,9 @@ async fn run_synthesis<'a>(
         if let Some(preflight) = preflight {
             preflight.await?;
         }
-        alchemist::synthesize(
-            context.repo,
-            context.search,
-            runtime.generator.as_ref(),
-            context.augment,
-            &plan,
-        )
-        .await
-        .map_err(SynthesisError::from)
+        alchemist::synthesize(repo, search, runtime.generator.as_ref(), augment, &plan)
+            .await
+            .map_err(SynthesisError::from)
     };
     // Dropping the future on expiry or cancellation is safe: nothing is
     // written, so there is no partial state to roll back.
@@ -395,19 +391,20 @@ impl EmbeddedApplication {
         // Query mode embeds the question; check that provider within the
         // deadline. Seed mode needs no provider before generation.
         let probe = cancellation.clone();
-        let preflight: Option<Preflight<'_>> = request.query.is_some().then(|| {
-            Box::pin(async move { self.require_providers(false, &probe).await }) as Preflight<'_>
+        let preflight = request.query.is_some().then(|| {
+            Box::pin(async move { self.require_providers(false, &probe).await })
+                as SynthesisPreflight<'_>
         });
-        run_synthesis(
+        synthesize_notes(
             SynthesisContext {
                 repo: &self.repo,
                 search: &self.search,
                 augment: &self.augment_options,
                 runtime: Some(runtime),
+                preflight,
             },
             request,
             cancellation,
-            preflight,
         )
         .await
     }

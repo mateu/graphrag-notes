@@ -11,7 +11,7 @@ use graphrag_agents::alchemist::{
 use graphrag_agents::SharedEmbedder;
 use graphrag_application::{
     ActionCancellation, AlchemistRuntime, ApplicationError, GraphPolicy, Scope, SynthesisContext,
-    SynthesisError, SynthesisRequest, SynthesisResponse,
+    SynthesisError, SynthesisPreflight, SynthesisRequest, SynthesisResponse,
 };
 use graphrag_config::{AlchemistCitationPolicy, RuntimeConfig};
 use graphrag_db::Repository;
@@ -93,12 +93,6 @@ pub(crate) fn request(command: &Commands) -> Option<(SynthesisRequest, OutputFor
     Some((request, *format))
 }
 
-/// Whether local query-mode synthesis needs the embeddings provider. A
-/// disabled Alchemist must refuse before any provider is contacted.
-pub(crate) fn needs_embeddings(command: &Commands, config: &RuntimeConfig) -> bool {
-    config.alchemist.enabled && matches!(command, Commands::Synthesize { query: Some(_), .. })
-}
-
 fn into_error(error: SynthesisError) -> anyhow::Error {
     let message = error.to_string();
     match error {
@@ -119,7 +113,22 @@ pub(crate) async fn run_local(
 ) -> Result<()> {
     let (request, format) = request(command).context("not a synthesize command")?;
     let runtime = runtime(config);
-    let search = crate::app::configured_search_agent(repo.clone(), embedder, &config.search);
+    let search =
+        crate::app::configured_search_agent(repo.clone(), embedder.clone(), &config.search);
+    // Query mode embeds the question. Its readiness check runs inside the
+    // synthesis deadline, never during bootstrap, and only once enabled.
+    let preflight = request.query.is_some().then(|| {
+        Box::pin(async move {
+            if embedder.health().await.unwrap_or(false) {
+                Ok(())
+            } else {
+                Err(ApplicationError::ProviderUnavailable(
+                    "Embeddings service unavailable; seed mode (--seed) needs no embeddings."
+                        .into(),
+                ))
+            }
+        }) as SynthesisPreflight<'static>
+    });
     let augment = crate::app::augment_options(
         config.augment.default_limit,
         config.augment.max_tokens,
@@ -132,6 +141,7 @@ pub(crate) async fn run_local(
             search: &search,
             augment: &augment,
             runtime: runtime.as_ref(),
+            preflight,
         },
         request,
         ActionCancellation::new(),
@@ -382,7 +392,6 @@ mod tests {
         let config = RuntimeConfig::default();
         assert!(runtime(&config).is_none());
         let command = parse(&["graphrag", "synthesize", "orchard pressure"]);
-        assert!(!needs_embeddings(&command, &config));
         let repo = Repository::new(graphrag_db::init_memory().await.unwrap());
         let error = run_local(
             repo,
@@ -399,8 +408,56 @@ mod tests {
         );
         let mut enabled = RuntimeConfig::default();
         enabled.alchemist.enabled = true;
-        assert!(needs_embeddings(&command, &enabled));
         assert!(runtime(&enabled).is_some());
+    }
+
+    /// An embeddings provider whose readiness probe never answers in time.
+    struct SlowHealth;
+
+    #[async_trait::async_trait]
+    impl graphrag_agents::Embedder for SlowHealth {
+        async fn embed(&self, _: &str, _: bool) -> graphrag_agents::Result<Vec<f32>> {
+            unreachable!("readiness must time out first")
+        }
+        async fn embed_batch(
+            &self,
+            _: &[String],
+            _: bool,
+        ) -> graphrag_agents::Result<Vec<Vec<f32>>> {
+            unreachable!("readiness must time out first")
+        }
+        async fn health(&self) -> graphrag_agents::Result<bool> {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Ok(true)
+        }
+        fn capabilities(&self) -> graphrag_agents::InferenceCapabilities {
+            DeterministicEmbedder::default().capabilities()
+        }
+    }
+
+    #[tokio::test]
+    async fn local_query_readiness_runs_inside_the_deadline() {
+        let mut config = RuntimeConfig::default();
+        config.alchemist.enabled = true;
+        let repo = Repository::new(graphrag_db::init_memory().await.unwrap());
+        let command = parse(&["graphrag", "synthesize", "orchard?", "--deadline-ms", "60"]);
+        let started = std::time::Instant::now();
+        let error = run_local(repo.clone(), Arc::new(SlowHealth), &config, &command)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("60 ms deadline"), "{error:#}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let unhealthy = run_local(
+            repo,
+            Arc::new(DeterministicEmbedder::default().unhealthy()),
+            &config,
+            &command,
+        )
+        .await
+        .unwrap_err();
+        assert!(unhealthy
+            .to_string()
+            .contains("Embeddings service unavailable"));
     }
 
     #[tokio::test]
@@ -434,6 +491,7 @@ mod tests {
                 search: &search,
                 augment: &augment,
                 runtime: Some(&runtime),
+                preflight: None,
             },
             SynthesisRequest::for_seed(id.clone()),
             ActionCancellation::new(),

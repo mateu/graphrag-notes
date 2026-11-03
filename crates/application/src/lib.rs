@@ -20,7 +20,7 @@ mod remote_status;
 
 pub use alchemist::{
     resolve_synthesis, synthesize_notes, AlchemistRuntime, SynthesisContext, SynthesisError,
-    SynthesisPolicy, SynthesisReceipt, SynthesisRequest, SynthesisResponse,
+    SynthesisPolicy, SynthesisPreflight, SynthesisReceipt, SynthesisRequest, SynthesisResponse,
     MAX_SYNTHESIS_SEED_CHARS,
 };
 pub use contracts::*;
