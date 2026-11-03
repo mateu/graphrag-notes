@@ -19,11 +19,11 @@ parser. Plan output includes actual execution metrics.
 | Notes lexical all-term inner candidate SELECT | Same fixture, extracted actual inner SQL, original bindings | Independently explained; same three indexes |
 | Notes lexical any-term outer hydration SELECT | Same fixture; deliberately missing query term forces backfill | Same three indexes; no TableScan |
 | Notes lexical any-term inner candidate SELECT | Same fixture, independently explained | Same three indexes; no TableScan |
-| Notes exact vector SELECT | `existing_scan_gap_diagnostic` | **BLOCKED:** KnnTopK over note TableScan; HNSW is not used by exact `<|k,COSINE|>` |
+| Notes exact vector SELECT | `exact_vector_plan_policy_tests` | **EXPLICIT EXCEPTION:** exact KnnTopK over note TableScan; [policy/qualification](exact-vector-plan-policy.md) |
 | Messages lexical SELECT | Indexed hot fixture | `idx_message_content` FullTextScan; no TableScan |
-| Messages exact vector SELECT | Gap diagnostic | **BLOCKED:** KnnTopK over message TableScan |
+| Messages exact vector SELECT | `exact_vector_plan_policy_tests` | **EXPLICIT EXCEPTION:** exact KnnTopK over message TableScan; [policy](exact-vector-plan-policy.md) |
 | Conversations lexical SELECT | Indexed hot fixture | `idx_conversation_summary` and `idx_conversation_title` FullTextScans; no TableScan |
-| Conversations exact vector SELECT | Gap diagnostic | **BLOCKED:** KnnTopK over conversation TableScan |
+| Conversations exact vector SELECT | `exact_vector_plan_policy_tests` | **EXPLICIT EXCEPTION:** exact KnnTopK over conversation TableScan; [policy](exact-vector-plan-policy.md) |
 | `graph_notes_by_ids` bound record-array SELECT | Indexed hot fixture | SourceExpr with one returned record, no TableScan; primary-key dereference has no named secondary index |
 | Entity exact lexical candidates: mention_lexeme equality SELECT | `entity_lexeme_and_bound_mention_statements_reject_historical_scans` | Child of RETURN explained independently; `idx_mention_lexeme_lookup` |
 | Entity exact lexical candidates: entity_lexeme equality SELECT | Same fixture | Child of RETURN explained independently; `idx_entity_lexeme_lookup` |
@@ -70,15 +70,16 @@ cargo test --locked -p graphrag-db --lib \
 ```
 
 This deliberately ignored diagnostic emits plans; it does **not** satisfy AC-1.
-The decision whether to allow existing-scan baseline exceptions or hold #179
-until separate fixes land is pending. Do not relabel current scans as an engine
-visibility exception: EXPLAIN exposes these TableScans directly.
+The three exact-vector statements now have a narrow [explicit policy exception](exact-vector-plan-policy.md)
+and a non-ignored drift/exactness guard. Other existing scan paths remain tracked
+separately. Do not relabel scans as an engine visibility exception: EXPLAIN
+exposes these TableScans directly.
 
 ## Recorded evidence and follow-ups
 
 [Full generated plans](evidence/179-hot-plans.json) include 51 plans from the
 indexed-path guards, historical negative controls, and existing-scan diagnostic.
-The confirmed scan fixes are tracked separately:
+The confirmed scan paths and policy decisions are tracked separately:
 
 - [#191: exact-vector policy/access paths](https://github.com/mateu/graphrag-notes/issues/191);
 - [#192: provenance endpoint membership](https://github.com/mateu/graphrag-notes/issues/192);
