@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -33,6 +35,33 @@ class MigrationGateTests(unittest.TestCase):
         self.assertTrue(any("lexical_migration" in call.args[1] for call in execute.call_args_list))
         self.assertTrue(any("schema23_reviewed" in call.args[1] for call in execute.call_args_list))
         self.assertFalse(any("subprocess_worker" in call.args[1] for call in execute.call_args_list))
+
+    def test_rename_out_of_schema_path_cannot_bypass_gate(self):
+        with tempfile.TemporaryDirectory() as root:
+            def git(*args):
+                return subprocess.check_output(["git", "-C", root, *args], text=True).strip()
+            git("init", "-q")
+            schema = Path(root) / "crates/db/src/schema.rs"
+            schema.parent.mkdir(parents=True)
+            schema.write_text("// historical schema\n" * 20)
+            git("add", ".")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            destination = schema.with_suffix("") / "mod.rs"
+            destination.parent.mkdir()
+            schema.rename(destination)
+            git("add", "-A")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "rename")
+            head = git("rev-parse", "HEAD")
+            self.assertEqual(git("diff", "--find-renames", "--name-only", base, head), "crates/db/src/schema/mod.rs")
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(root)
+                with mock.patch("sys.argv", ["run-migration-gate.py", "--base", base, "--head", head]), mock.patch("builtins.print") as output:
+                    self.assertEqual(gate.main(), 0)
+                output.assert_called_once_with("selected=true")
+            finally:
+                os.chdir(original_cwd)
 
     def test_initial_push_does_not_diff_zero_sha(self):
         with mock.patch("sys.argv", ["run-migration-gate.py", "--base", "0" * 40]), mock.patch.object(subprocess, "check_output") as diff, mock.patch("builtins.print") as output:

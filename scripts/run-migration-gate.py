@@ -53,7 +53,7 @@ def main():
         # Manual dispatch, an absent push base, or initial branch creation runs all.
         unbounded = not args.base or set(args.base) == {"0"}
         paths = [] if unbounded else subprocess.check_output(
-            ["git", "diff", "--name-only", "-z", args.base, args.head], text=True).split("\0")
+            ["git", "diff", "--no-renames", "--name-only", "-z", args.base, args.head], text=True).split("\0")
         selected = unbounded or touches_migrations(paths)
         print("selected=" + str(selected).lower())
     return 0
