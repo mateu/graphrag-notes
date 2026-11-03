@@ -231,9 +231,9 @@ client used a nonempty result.
 ## Owner-approved fam deployment workflow
 
 `.github/workflows/deploy-fam.yml` is a manual entry point for the versioned
-`scripts/deploy-fam.sh <full-sha> [--dry-run]` interface delivered by #200.
-**Merge after #200.** Adding this workflow does not authorize a deployment or
-provision production access. There is no push, pull-request, or merge trigger.
+[`scripts/deploy-fam.sh`](../scripts/deploy-fam.sh) `<full-sha> [--dry-run]`
+interface merged in #203 (implementing #200). Adding this workflow does not
+authorize a deployment or provision production access. There is no push, pull-request, or merge trigger.
 The existing fam service is launchd `com.hunter.graphrag.shared`, with state
 `~/.graphrag/shared` under its owning account.
 
@@ -294,7 +294,7 @@ The owner must separately approve and perform these steps **before use**:
 
 ### Dispatch and evidence
 
-After activation and the dependent script have landed on main:
+After owner-approved activation and this workflow have landed on main:
 
 ```bash
 # Use a full commit SHA, not a branch/tag/abbreviation. Default is dry-run.
@@ -309,7 +309,7 @@ The hosted validator and approved runner independently fetch main and require
 commit ancestry. Inputs are shell environment values, not interpolated shell
 code. The runner executes the deploy script from the approved main workflow
 revision, not arbitrary input-commit code. The workflow passes
-`--repo "$GITHUB_WORKSPACE"` (the #200 script option) so
+`--repo "$GITHUB_WORKSPACE"` (the merged script option) so
 even read-only dry-run ancestry uses this freshly fetched repository; the
 script controls its own detached build checkout and repeats preflight.
 Both dry runs and real deploys share the
