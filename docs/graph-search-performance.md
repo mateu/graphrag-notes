@@ -42,7 +42,11 @@ vectors, and graph off/auto/on. Its six cases cover no/sparse/dense mentions,
 empty/nonempty accepted edge tables, narrow/broad entity queries, and source/age
 filters. It checks result uniqueness, visibility, candidate bounds, accepted-only
 paths, and stable ranked evidence. Timings are reported without flaky pass/fail
-thresholds.
+thresholds. The fixture disables the per-request graph-phase budget, so every
+graph `auto`/`on` request measures and compares a completed graph phase on any
+host. A request that reports any other `graph_status` fails the fixture instead
+of silently timing the graph-off fallback. Deterministic deadline tests cover
+budget expiry.
 
 ```sh
 GRAPHRAG_GRAPH_LATENCY_ROUNDS=10 \
