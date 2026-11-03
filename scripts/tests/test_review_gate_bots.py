@@ -25,6 +25,8 @@ class BotTests(unittest.TestCase):
         self.assertFalse(gate.bot_exemption(self.head, d['pr'], d['commits'], d['files'])[0])
 
     def test_synthetic_dependabot_and_renovate(self):
+        self.data['files'].append({'filename': 'package.json', 'patch': '-  "qs": "6.16.0"\n+  "qs": "6.17.1"'})
+        self.data['pr']['changed_files'] += 1
         self.assertTrue(self.exemption())
         self.data['pr']['user']['login'] = 'renovate[bot]'
         for c in self.data['commits']:
@@ -70,15 +72,15 @@ class BotTests(unittest.TestCase):
         self.assertFalse(self.exemption())
 
     def test_config_override(self):
-        config = json.loads(gate.CONFIG.read_text())
+        config = copy.deepcopy(gate.BOT_CONFIG)
         config['bots'] = {}
         self.assertFalse(self.exemption(config))
-        config = json.loads(gate.CONFIG.read_text())
+        config = copy.deepcopy(gate.BOT_CONFIG)
         config['paths'] = []
         self.assertFalse(self.exemption(config))
 
     def test_diff_major_and_missing(self):
-        for patch in (None, '-version = "1.0.0"\n+version = "2.0.0"'):
+        for patch in (None, '-foo = "1"\n+foo = "2"', '-name = "foo"\n+name = "bar"', '-version = "1.0.0"\n+version = "2.0.0"'):
             self.setUp()
             self.data['files'][0]['patch'] = patch
             self.assertFalse(self.exemption())

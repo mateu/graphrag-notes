@@ -2,7 +2,6 @@
 """Trusted, stdlib-only exact-head review policy and GitHub check publisher."""
 import argparse
 import fnmatch
-from pathlib import Path
 import datetime as dt
 import json
 import os
@@ -13,12 +12,12 @@ import urllib.error
 BOT = 'chatgpt-codex-connector[bot]'
 
 
-CONFIG = Path(__file__).with_name('review-gate-bots.json')
+BOT_CONFIG = {'bots': {'renovate[bot]': ['29139614+renovate[bot]@users.noreply.github.com', 'bot@renovateapp.com'], 'dependabot[bot]': ['49699333+dependabot[bot]@users.noreply.github.com']}, 'paths': ['Cargo.lock', 'Cargo.toml', '*/Cargo.toml', 'package.json', '*/package.json', 'package-lock.json', '*/package-lock.json', 'pnpm-lock.yaml', '*/pnpm-lock.yaml', 'yarn.lock', '*/yarn.lock', 'requirements*.txt', '*/requirements*.txt', 'uv.lock', '*/uv.lock', 'poetry.lock', '*/poetry.lock']}
 
 
 def bot_exemption(head, pr, commits, files, config=None):
     """GitHub API evidence only; missing/truncated/ambiguous evidence fails closed."""
-    config = config if config is not None else json.loads(CONFIG.read_text())
+    config = config if config is not None else BOT_CONFIG
     bots = config['bots']
     if pr.get('user', {}).get('login') not in bots:
         return False, 'author not allowlisted'
@@ -56,10 +55,14 @@ def bot_exemption(head, pr, commits, files, config=None):
         if not patch:
             return False, 'manifest diff unavailable'
         versions = {'-': [], '+': []}
+        lockfile = file['filename'].split('/')[-1] in ('Cargo.lock', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'uv.lock', 'poetry.lock')
         for line in patch.splitlines():
             if line[:1] in versions and not line.startswith(('---', '+++')):
-                versions[line[0]].extend(re.findall(r'(?<![\w.])(\d+)\.\d+\.\d+(?![\w.])', line[1:]))
-        if sorted(versions['-']) != sorted(versions['+']):
+                found = re.findall(r'(?<![\w.])(\d+)\.\d+\.\d+(?![\w.])', line[1:])
+                if not found and not (lockfile and re.match(r'\s*(?:"integrity"\s*:|checksum\s*=|integrity\s+)', line[1:])):
+                    return False, 'manifest change type undetermined'
+                versions[line[0]].extend(found)
+        if not versions['-'] or not versions['+'] or sorted(versions['-']) != sorted(versions['+']):
             return False, 'diff major versions changed or undetermined'
     return True, 'bot dependency update (author, commits, paths, non-major verified)'
 
@@ -86,7 +89,7 @@ def marker(body, name):
 
 
 def gate_change_warning(files):
-    protected = {'.github/workflows/review-gate.yml', 'scripts/review-gate.py', 'scripts/review-gate-bots.json'}
+    protected = {'.github/workflows/review-gate.yml', 'scripts/review-gate.py'}
     if any(f.get('filename') in protected or f.get('previous_filename') in protected for f in files):
         return ('\n\n**Warning: this PR changes the Review gate itself.** '
                 'Independently inspect its workflow and evaluator before merging; '

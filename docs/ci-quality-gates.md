@@ -423,7 +423,8 @@ and files data for the **current head**. Exempt success reads
 Drafts stay pending; exact-head unresolved Codex findings/threads still fail.
 Otherwise the normal review path runs with the first `Not exempt` reason.
 
-`scripts/review-gate-bots.json` is the reviewed configuration: `bots` maps exact
+`BOT_CONFIG` in `scripts/review-gate.py` is the reviewed configuration (embedded
+because the trusted workflow sparse-checks out only this script): `bots` maps exact
 GitHub logins to accepted commit emails, and `paths` lists manifest/lockfile
 shell globs (case-sensitive; `*` may cross directory separators). Extend it only
 through independent review, with identity/path regression fixtures. Both author
@@ -436,7 +437,8 @@ Hidden paths, `scripts` and `src` components are always excluded; Dockerfiles,
 Renovate config and all other non-allowlisted files are excluded. Renames check
 both names. Numeric `from X.Y.Z to A.B.C` title evidence must show the same major;
 explicit major signals reject. Unknown/grouped/unparseable update types receive
-normal review. Available diff version-major multisets must also agree; missing
+normal review. Available diff version-major multisets must be nonempty and agree;
+manifest changed lines without full numeric versions are rejected; missing
 patches and ambiguous additions/removals receive normal review. This deliberately
 conservative rule may decline harmless lockfile churn. Labels/body cannot grant
 exemption. Security updates use exactly the same rules, including major rejection.
