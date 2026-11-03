@@ -10,6 +10,8 @@
 //!   selection to [`context_packing`] and explanation serialization to
 //!   [`evidence`].
 //! - [`gardener`] owns graph-maintenance orchestration and proposal policy.
+//! - [`alchemist`] owns read-only, citation-verified synthesis over accepted
+//!   relations; it never writes and its output is never evidence.
 //!
 //! The end-to-end ingest path is: caller → `ingestion::librarian` → chunking
 //! → inference traits → repository. The search path is: caller →
@@ -17,6 +19,7 @@
 //! `evidence`. Public root re-exports below preserve the v0.2 API while these
 //! private implementations are mechanically decomposed.
 
+pub mod alchemist;
 pub mod chunking;
 pub mod context_packing;
 pub mod error;

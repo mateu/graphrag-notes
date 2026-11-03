@@ -492,4 +492,11 @@ impl RemoteApplicationOperations for EmbeddedApplication {
     ) -> ApplicationResult<()> {
         crate::remote_jobs::recover(self, execution, &error_code).await
     }
+    async fn synthesize_notes(
+        &self,
+        request: SynthesisRequest,
+        cancellation: ActionCancellation,
+    ) -> Result<SynthesisResponse, SynthesisError> {
+        self.synthesize_notes_impl(request, cancellation).await
+    }
 }

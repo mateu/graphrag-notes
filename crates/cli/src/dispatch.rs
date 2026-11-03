@@ -292,6 +292,9 @@ pub(crate) async fn execute(
             )
             .await?;
         }
+        command @ Commands::Synthesize { .. } => {
+            crate::alchemist::run_local(repo, tei, &config, &command).await?;
+        }
         Commands::List { limit } => {
             eprintln!("Deprecated: use `graphrag notes list` for stable --format output.");
             cmd_list(repo, limit).await?;

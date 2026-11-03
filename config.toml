@@ -100,6 +100,18 @@ auto_apply = false
 # Maximum suggestions to generate per run
 max_suggestions = 50
 
+[alchemist]
+# Read-only, citation-verified synthesis (`graphrag synthesize`, MCP
+# `synthesize_notes`). Opt-in; it uses the [inference] extraction provider and
+# never writes. Budgets are defaults and ceilings; requests may only tighten.
+enabled = false
+max_chunks = 8
+max_context_tokens = 4000
+max_output_tokens = 1024
+deadline_ms = 60000
+max_hops = 2
+citation_policy = "drop"
+
 [librarian]
 # Minimum chunk size (characters) when splitting documents
 min_chunk_size = 50

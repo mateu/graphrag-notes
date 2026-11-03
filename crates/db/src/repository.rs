@@ -3,6 +3,7 @@
 // The public façade remains this module. Implementations are split by table
 // ownership below; transaction-sensitive cross-domain paths stay documented
 // at their owning domain rather than introducing a second data-access layer.
+mod alchemist_reads;
 mod chats;
 #[cfg(test)]
 mod edge_frontier_plan_tests;

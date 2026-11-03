@@ -46,6 +46,43 @@ The default graph strength is now `1.0`. Existing configurations explicitly
 setting the previous `0.03` retain that value and produce more conservative
 graph contributions; set it to `1.0` to use the new default policy.
 
+### Accepted neighbors of retrieved notes
+
+A path's strength starts from its seed's query coverage. For a seed that the
+direct channels did not retrieve, such as an entity-mention seed, that remains
+the whole story. Coverage alone, however, put an accepted neighbor of the top
+hybrid hit at no more than `0.8 × 0.011475 ≈ 0.0092` with defaults: below
+every hit of a full `build_context` over-fetch window, which the vector channel
+alone fills with scores of at least `0.7 / 68 ≈ 0.0103` at two chunks. The
+traversal then only annotated hits that were already retrieved.
+
+A seed that is itself in the ranked hybrid window now also carries its
+calibrated retrieval strength: `graph_seed_score × fused score ÷ the zero-hop
+graph score above`. A neighbor inherits that strength, times hop decay and edge
+confidence, only when it has its own bounded evidence for the same query: it is
+a hybrid or lexical-supplement candidate, or a query-entity mention seed. Its
+path strength is then the larger of its coverage chain and the anchored chain,
+so the accepted path, not a weaker zero-hop mention, becomes its evidence.
+Neighbors without query evidence, such as a hub's unrelated neighbors, and any
+path through such a bridge keep the coverage chain unchanged. With the default
+`graph_seed_score`, an anchored neighbor scores at most its anchor's fused score
+times decay and confidence, so it ranks below its anchor and competes with the
+anchor's weaker direct competitors on the same final scale.
+
+No context slot is reserved for graph evidence. An anchored neighbor still
+passes packing relevance, novelty, near-duplicate suppression, the optional
+per-source cap and every token budget; a stronger direct match keeps its slot.
+`auto` remains entity-seeded, so ordinary hybrid hits are not traversal anchors
+there, and graph-off retrieval and packing are unchanged.
+
+`build_context` diagnostics distinguish an existing path from added support.
+`graph_candidates_added` counts selected chunks that only the graph channel
+placed in the ranked window, `graph_candidates_annotating` counts selected
+direct hits that merely carry a path (the two sum to
+`graph_candidates_selected`), and `graph_candidates_rank_limited` counts graph
+candidates cut by the over-fetch window before packing. Search pipelines report
+the same window cut as `candidates_rank_limited`.
+
 Graph retrieval fetches referenced endpoint documents and hydrates bounded
 candidate IDs directly; its ranking and traversal bounds remain unchanged.
 See [graph performance](graph-search-performance.md) for query plans, phase
