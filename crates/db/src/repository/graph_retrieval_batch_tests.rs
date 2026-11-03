@@ -1372,7 +1372,7 @@ struct NestedGraphEntityPlan {
     plan: serde_json::Value,
 }
 
-fn mention_plan_operators(plan: &serde_json::Value) -> Vec<&serde_json::Value> {
+pub(super) fn mention_plan_operators(plan: &serde_json::Value) -> Vec<&serde_json::Value> {
     fn collect<'a>(node: &'a serde_json::Value, operators: &mut Vec<&'a serde_json::Value>) {
         assert!(node.is_object(), "plan node must remain an object: {node}");
         assert!(node["operator"].is_string(), "missing operator: {node}");

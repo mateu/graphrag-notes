@@ -14,6 +14,8 @@ mod fulltext_projection_tests;
 mod graph;
 #[cfg(test)]
 mod graph_retrieval_batch_tests;
+#[cfg(test)]
+mod hot_retrieval_plan_tests;
 mod ids;
 mod inspection;
 mod jobs;

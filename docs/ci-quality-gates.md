@@ -207,3 +207,62 @@ target). Native Linux and Intel macOS asset/live acceptance remains in
 does not satisfy those checks. `v0.1.0-rc.1` remains historical onboarding
 evidence. Existing feature validation records are retained with their original
 versions, dates, and limitations.
+
+## Hot retrieval plans and conditional migrations (#179)
+
+The `retrieval regression baseline` PR/main lane additionally runs the named,
+non-ignored plan fixtures listed in [the hot-statement inventory](hot-retrieval-plans.md).
+These are provider-free generated databases, not copies of a live database.
+Plan checks guard access paths, not latency or relevance. Existing baseline
+assertions remain unchanged. This is a focused extension of #143, not a return
+of full unit/offline coverage to every PR.
+
+To add a hot statement, identify the SQL actually issued by the search service,
+add it to the inventory with its scan population/index, then add an EXPLAIN FULL
+assertion using the existing operator walker and wire its exact test name into
+`rust-ci.yml` with `scripts/run-exact-rust-test.py`. Explain each nested/correlated
+statement separately with representative bindings: an indexed outer plan does
+not establish that an inner lookup is indexed. Record any engine visibility
+limitation and the concrete alternative guard; never infer an index hidden by
+DynamicScan. Keep the de-indexed negative controls proving the guards reject
+historical scan shapes. Query-behavior fixes belong in separate issues.
+
+`conditional migration and schema fixtures` starts on every PR and main push.
+It selects changed paths between the PR base/head (or the push before/head),
+using a full checkout history. The covered paths are:
+
+- `crates/db/src/migrations/**`, including the registry-derived historical fixture
+  helper in `crates/db/src/migrations/mod.rs` from #182;
+- `crates/db/src/schema.rs`;
+- `.github/workflows/rust-ci.yml` and `scripts/run-migration-gate.py`, so edits to
+  the gate itself are qualified too.
+
+A matching change runs every discovered `migrations::tests::*` fixture, the
+`lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exact_indexes`
+fixture, and these CLI backup schema fixtures:
+
+- `schema_fifteen_v1_backup_remains_restorable_without_capture_table`;
+- `empty_backup_round_trip_is_valid_and_restores_a_fresh_schema`;
+- `schema23_reviewed_enrichment_backup_reopens_and_recovers_exact_leased_checkpoint`.
+
+Discovery and execution fail closed on missing, failed, ignored or zero-test
+fixtures. The ignored schema23 subprocess worker is launched only by its parent
+qualification. A non-matching change produces a successful job without toolchain
+setup, so making this context required cannot leave a path-filtered check pending.
+Manual dispatch and initial pushes without a usable previous SHA select all.
+Nightly routing is unchanged.
+
+Owner proposal (not applied by this PR): retain the five existing required
+contexts and add `conditional migration and schema fixtures`, bound to GitHub
+Actions app ID `15368`, preserving `strict: true`. Plan checks stay in the
+already-required `retrieval regression baseline` context. Repository settings
+remain an owner action; workflow publication does not change branch protection.
+
+### Current qualification limit
+
+The #179 inventory explicitly distinguishes indexed-path gates from existing
+scan gaps and incomplete paths. Exact-vector and provenance statements already
+full-scan at the unchanged base. Therefore the current subset guards do not
+satisfy universal AC-1; this delivery is **not delivery-ready** until that scope
+conflict is resolved. The ignored scan diagnostic is evidence, not a passing
+plan-regression test. See the inventory for each status.
