@@ -7,6 +7,7 @@ pub mod error;
 pub mod fusion;
 pub mod migrations;
 pub mod repository;
+pub mod retrieval_usage;
 pub mod schema;
 
 pub use error::{DbError, Result};

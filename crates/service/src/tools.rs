@@ -206,6 +206,7 @@ struct CaptureInput {
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct SearchOutput {
     records: Vec<RecordOutput>,
+    graph_status: String,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct RecordOutput {
@@ -538,13 +539,21 @@ impl ServerHandler for ToolService {
             .find(|(_, tool)| tool.name == request.name)
             .map_or_else(|| "unknown".to_string(), |(_, tool)| tool.name.to_string());
         let arguments = request.arguments.clone();
-        let result = self.finish_tool_call(id, request, context).await;
+        let (result, retrieval) = graphrag_application::retrieval_usage::capture(
+            self.finish_tool_call(id, request, context),
+        )
+        .await;
+        let mut usage = crate::usage::summarize(&tool, arguments.as_ref(), &result);
+        if matches!(tool.as_str(), "search_notes" | "build_context") {
+            usage.phases = retrieval.phases;
+            usage.graph_status = Some(retrieval.graph_status.as_str());
+        }
         // Record the final response, after the complete-RPC size check.
         crate::usage::record(
             principal_id.as_deref().unwrap_or("unauthenticated"),
             &tool,
             started.elapsed().as_secs_f64() * 1000.0,
-            &crate::usage::summarize(&tool, arguments.as_ref(), &result),
+            &usage,
         );
         result
     }
@@ -656,7 +665,13 @@ impl ToolService {
                 match result {
                     Ok(records) => match bounded_value(records) {
                         Ok(value) => match serde_json::from_value::<Vec<RecordOutput>>(value) {
-                            Ok(records) => success(SearchOutput { records }),
+                            Ok(records) => success(SearchOutput {
+                                records,
+                                graph_status: graphrag_application::retrieval_usage::current()
+                                    .graph_status
+                                    .as_str()
+                                    .into(),
+                            }),
                             Err(_) => encoding_failure(EncodingFailure::Invalid),
                         },
                         Err(error) => encoding_failure(error),

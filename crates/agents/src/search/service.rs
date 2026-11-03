@@ -13,12 +13,15 @@ use graphrag_db::{
     Repository,
 };
 
+use graphrag_db::retrieval_usage::{self, GraphStatus, Phase, PhaseTimer};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::Instant;
 use surrealdb::types::RecordId;
 use tracing::{debug, info, instrument};
 
+#[cfg(test)]
+#[path = "deadline_tests.rs"]
+mod deadline_tests;
 #[cfg(test)]
 #[path = "graph_preparation_tests.rs"]
 mod preparation_tests;
@@ -37,6 +40,7 @@ pub enum GraphMode {
 #[derive(Debug, Clone)]
 pub struct GraphRetrievalConfig {
     pub enabled: bool,
+    pub phase_budget_ms: u64,
     pub max_seed_entities: usize,
     pub max_seed_notes: usize,
     pub max_hops: usize,
@@ -56,6 +60,7 @@ impl Default for GraphRetrievalConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            phase_budget_ms: 2000,
             max_seed_entities: 4,
             max_seed_notes: 12,
             max_hops: 1,
@@ -112,6 +117,7 @@ pub struct GraphRetrievalSummary {
 
 #[derive(Debug, Clone)]
 pub struct GraphSearchResults {
+    pub graph_status: GraphStatus,
     pub hits: Vec<ScopedSearchResult>,
     pub summary: GraphRetrievalSummary,
 }
@@ -286,6 +292,12 @@ pub struct SearchAgent {
     message_weight: f32,
     conversation_summary_weight: f32,
     graph: GraphRetrievalConfig,
+    #[cfg(test)]
+    graph_delay: Option<(
+        Phase,
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    )>,
 }
 
 impl SearchAgent {
@@ -299,6 +311,8 @@ impl SearchAgent {
             message_weight: 1.0,
             conversation_summary_weight: 1.0,
             graph: GraphRetrievalConfig::default(),
+            #[cfg(test)]
+            graph_delay: None,
         }
     }
 
@@ -339,13 +353,14 @@ impl SearchAgent {
     }
 
     async fn embed_query(&self, query: &str) -> Result<Vec<f32>> {
-        let started = Instant::now();
+        let started = PhaseTimer::start(Phase::Embedding);
         let embedding = self.embedder.embed(query, true).await?;
         debug!(
             phase = "query_embedding",
             elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
             "Retrieval phase completed"
         );
+        drop(started);
         validate_embedding_dim(embedding.len())?;
         let capability = self.embedder.capabilities();
         self.repo
@@ -522,6 +537,7 @@ impl SearchAgent {
         rank_scoped_results(&mut hits);
         hits.truncate(limit);
         Ok(GraphSearchResults {
+            graph_status: GraphStatus::Off,
             hits,
             summary: GraphRetrievalSummary::default(),
         })
@@ -649,24 +665,50 @@ impl SearchAgent {
         }
 
         let mut summary = GraphRetrievalSummary::default();
+        let mut graph_status = if matches!(graph_mode, GraphMode::Off) {
+            GraphStatus::Off
+        } else {
+            GraphStatus::Skipped
+        };
+        retrieval_usage::graph_status(graph_status);
         if graph_enabled {
-            let graph = self
-                .graph_candidates_with_lexical(
-                    query,
-                    &scoped_results,
-                    lexical_candidates,
-                    since,
-                    source_uri.clone(),
-                    matches!(graph_mode, GraphMode::Auto),
+            // Own and poll this future in the request, never spawn it. The locked
+            // SurrealDB 3.3.5 buffered local query path also executes inline
+            // (LocalEngine::query -> Datastore::execute); dropping it cancels
+            // execution and its implicit read transaction, not just a receiver.
+            let work = self.graph_candidates_with_lexical(
+                query,
+                &scoped_results,
+                lexical_candidates,
+                since,
+                source_uri.clone(),
+                matches!(graph_mode, GraphMode::Auto),
+            );
+            let graph = if self.graph.phase_budget_ms == 0 {
+                Some(work.await?)
+            } else {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(self.graph.phase_budget_ms),
+                    work,
                 )
-                .await?;
-            summary = graph.summary;
-            // `auto` has no special score path: if there are no useful local
-            // entities/seeds/neighbors, graph.hits is empty and baseline
-            // ranking is bit-for-bit preserved.
-            if !graph.hits.is_empty() || matches!(graph_mode, GraphMode::On) {
-                merge_graph_hits(&mut scoped_results, graph.hits);
+                .await
+                {
+                    Ok(result) => Some(result?),
+                    Err(_) => None,
+                }
+            };
+            if let Some(graph) = graph {
+                graph_status = GraphStatus::Ok;
+                summary = graph.summary;
+                // Do not mutate baseline candidates until the entire graph
+                // phase (including hydration/provenance) completed successfully.
+                if !graph.hits.is_empty() || matches!(graph_mode, GraphMode::On) {
+                    merge_graph_hits(&mut scoped_results, graph.hits);
+                }
+            } else {
+                graph_status = GraphStatus::TimedOut;
             }
+            retrieval_usage::graph_status(graph_status);
         }
 
         let mut entity_filtered = Vec::new();
@@ -703,6 +745,7 @@ impl SearchAgent {
 
         Ok((
             GraphSearchResults {
+                graph_status,
                 hits: scoped_results,
                 summary,
             },
@@ -804,14 +847,22 @@ impl SearchAgent {
             || options.max_total_tokens == 0
             || options.max_chunk_tokens == 0;
         if zero_budget && !sample_zero_budget_candidates {
-            return Ok(crate::context_packing::empty_context(
+            let status = if matches!(graph_mode, GraphMode::Off) {
+                GraphStatus::Off
+            } else {
+                GraphStatus::Skipped
+            };
+            retrieval_usage::graph_status(status);
+            let mut context = crate::context_packing::empty_context(
                 query.to_string(),
                 scope,
                 entity_filter,
                 options.token_counter.mode(),
                 0,
                 &GraphRetrievalSummary::default(),
-            ));
+            );
+            context.diagnostics.graph_status = status;
+            return Ok(context);
         }
         let fetch_limit = options.max_chunks.max(1).saturating_mul(4).clamp(4, 200);
         let (graph_results, entity_filtered) = self
@@ -827,8 +878,8 @@ impl SearchAgent {
             .await?;
         let hits = graph_results.hits;
 
-        let started = Instant::now();
-        let context = crate::context_packing::build_augment_context_from_hits_with_graph(
+        let started = PhaseTimer::start(Phase::ContextPacking);
+        let mut context = crate::context_packing::build_augment_context_from_hits_with_graph(
             query.to_string(),
             scope,
             entity_filter,
@@ -837,12 +888,32 @@ impl SearchAgent {
             entity_filtered,
             graph_results.summary,
         );
+        context.diagnostics.graph_status = graph_results.graph_status;
         debug!(
             phase = "context_packing",
             elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
             "Retrieval phase completed"
         );
+        drop(started);
         Ok(context)
+    }
+
+    #[cfg(test)]
+    async fn pause_graph_phase(&self, phase: Phase) {
+        if let Some((slow, entered, active)) = &self.graph_delay {
+            if *slow == phase {
+                struct Guard<'a>(&'a std::sync::atomic::AtomicUsize);
+                impl Drop for Guard<'_> {
+                    fn drop(&mut self) {
+                        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+                active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _guard = Guard(active);
+                entered.notify_one();
+                std::future::pending::<()>().await;
+            }
+        }
     }
 
     fn graph_lexical_limit(&self) -> usize {
@@ -886,7 +957,7 @@ impl SearchAgent {
         source_uri: Option<String>,
         require_entity_seed: bool,
     ) -> Result<GraphSearchResults> {
-        let candidate_started = Instant::now();
+        let candidate_started = PhaseTimer::start(Phase::GraphQueryCandidates);
         let direct_ranks = baseline
             .iter()
             .enumerate()
@@ -942,8 +1013,11 @@ impl SearchAgent {
             count = ranked_note_ids.len(),
             "Retrieval phase completed"
         );
+        drop(candidate_started);
         let normalized_query = Entity::canonicalize(query);
-        let started = Instant::now();
+        let started = PhaseTimer::start(Phase::GraphEntityMatching);
+        #[cfg(test)]
+        self.pause_graph_phase(Phase::GraphEntityMatching).await;
         let entities = self
             .repo
             .find_graph_entities_for_search(
@@ -960,6 +1034,7 @@ impl SearchAgent {
             count = entities.len(),
             "Retrieval phase completed"
         );
+        drop(started);
         let entity_ids = entities
             .iter()
             .map(|entity| entity.id.clone())
@@ -973,7 +1048,7 @@ impl SearchAgent {
             .enumerate()
             .map(|(rank, entity_id)| (record_id_to_string(entity_id), rank))
             .collect::<HashMap<_, _>>();
-        let started = Instant::now();
+        let started = PhaseTimer::start(Phase::GraphMentions);
         let mut entity_seed_ids = self
             .repo
             .graph_notes_for_entities_ranked_for_query(
@@ -991,6 +1066,7 @@ impl SearchAgent {
             count = entity_seed_ids.len(),
             "Retrieval phase completed"
         );
+        drop(started);
 
         // Inspect only the bounded mention candidates. Query words in the
         // actual note/title and matched entity labels/aliases determine
@@ -999,7 +1075,7 @@ impl SearchAgent {
             .iter()
             .map(|seed| seed.note_id.clone())
             .collect::<Vec<_>>();
-        let seed_evidence_started = Instant::now();
+        let seed_evidence_started = PhaseTimer::start(Phase::GraphSeedEvidence);
         let fallback_ids = candidate_ids
             .iter()
             .filter(|id| !direct_candidates.contains_key(&record_id_to_string(id)))
@@ -1055,6 +1131,7 @@ impl SearchAgent {
             count = seed_strengths.len(),
             "Retrieval phase completed"
         );
+        drop(seed_evidence_started);
         entity_seed_ids.sort_by(|a, b| {
             let a_id = record_id_to_string(&a.note_id);
             let b_id = record_id_to_string(&b.note_id);
@@ -1143,6 +1220,7 @@ impl SearchAgent {
         };
         if frontier.is_empty() || self.graph.candidate_cap == 0 {
             return Ok(GraphSearchResults {
+                graph_status: GraphStatus::Ok,
                 hits: Vec::new(),
                 summary,
             });
@@ -1172,7 +1250,7 @@ impl SearchAgent {
                     )
                 })
                 .collect::<HashMap<_, _>>();
-            let started = Instant::now();
+            let started = PhaseTimer::start(Phase::GraphEdgeExpansion);
             let edges = self
                 .repo
                 .graph_note_edges_excluding_visited(
@@ -1195,6 +1273,7 @@ impl SearchAgent {
                 count = edges.len(),
                 "Retrieval phase completed"
             );
+            drop(started);
             let mut eligible = HashMap::<String, Vec<GraphFrontier>>::new();
             for edge in edges {
                 for (from, neighbor, direction) in
@@ -1259,7 +1338,9 @@ impl SearchAgent {
             .keys()
             .map(|id| RecordId::new("note", id.strip_prefix("note:").unwrap_or(id)))
             .collect::<Vec<_>>();
-        let started = Instant::now();
+        let started = PhaseTimer::start(Phase::GraphNoteHydration);
+        #[cfg(test)]
+        self.pause_graph_phase(Phase::GraphNoteHydration).await;
         let records = self
             .repo
             .graph_notes_by_ids(&ids, since, source_uri)
@@ -1270,7 +1351,8 @@ impl SearchAgent {
             count = records.len(),
             "Retrieval phase completed"
         );
-        let started = Instant::now();
+        drop(started);
+        let started = PhaseTimer::start(Phase::GraphProvenance);
         let provenance = self
             .repo
             .graph_note_provenance_ids(
@@ -1286,6 +1368,7 @@ impl SearchAgent {
             count = provenance.len(),
             "Retrieval phase completed"
         );
+        drop(started);
         let mut hits = records
             .into_iter()
             .filter_map(|record| {
@@ -1298,7 +1381,11 @@ impl SearchAgent {
             })
             .collect::<Vec<_>>();
         hits.sort_by(|left, right| left.id.cmp(&right.id));
-        Ok(GraphSearchResults { hits, summary })
+        Ok(GraphSearchResults {
+            graph_status: GraphStatus::Ok,
+            hits,
+            summary,
+        })
     }
 
     #[allow(clippy::wrong_self_convention)]

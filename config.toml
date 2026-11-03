@@ -62,6 +62,8 @@ conversation_summary_weight = 1.0
 # `augment --graph=auto|on`. Traversal is local-only: it never calls the
 # extraction provider and never reads pending/rejected Gardener proposals.
 graph_enabled = true
+# Graph-only deadline; 0 disables. Remove this key before using an older binary.
+graph_phase_budget_ms = 2000
 graph_max_seed_entities = 4
 graph_max_seed_notes = 12
 # Hard-limited by validation to two hops.

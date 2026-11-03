@@ -104,3 +104,82 @@ hybrid failure and exact keyword recovery, reports cached provider unavailable,
 accepts partial collection evidence, rejects another principal's evidence, and
 distinguishes denied credentials from an unreachable endpoint. It asserts no
 client database was created and no routine status health/inference call occurred.
+
+## Post-deploy read probe
+
+Routine `doctor` remains provider-free. The separate opt-in probe exercises
+search through the existing remote CLI; it never captures, uploads, edits, or
+opens a second database. Use Python 3 and a matching `graphrag` CLI binary.
+Load the intended client's private credential into the invoking environment,
+as in [shared MCP](shared-mcp.md#remote-cli), then run:
+
+```sh
+set -a
+. "$HOME/.graphrag/mcp-private/observer.env"
+set +a
+python3 scripts/post-deploy-probe.py \
+  --server http://127.0.0.1:3300/mcp \
+  --cli /absolute/path/to/graphrag \
+  --credential-env GRAPHRAG_TOKEN \
+  --query 'known existing keyword' --timeout 15
+```
+
+Choose a keyword already present in an accessible note. No synthetic note is
+created. Credentials are accepted only through the inherited environment;
+`--credential-env` names the variable, never its value. Remote CLI mode does not
+load project dotenv files. Use HTTPS or the loopback endpoint of an encrypted
+tunnel; credentials in endpoint URLs, query strings or arguments are not
+supported. Treat the search keyword as private command-line input.
+
+The steps run sequentially and fail closed:
+
+1. `doctor --format json` must exit **0 or 1** (not failed). Remote doctor
+   reports unknown provider/freshness/backup evidence as a warning by design;
+   exit **2**, transport failure, or an invalid response fails this step. The
+   probe prints the doctor status and summary lines; it does not claim that
+   warning evidence is healthy. This AC-6 interpretation may be tightened by
+   the owner without changing routine provider-free doctor.
+2. `search --mode keyword --graph off --scope notes --limit 1 --format json`
+   must return at least one note.
+3. `inspect` of that exact top hit must succeed.
+4. `search --mode hybrid --graph on --scope notes --limit 1 --format json`
+   must succeed before the client timeout and report **`graph_status=ok`**.
+   Missing, unknown, `off`, `skipped`, and `timed_out` statuses fail the probe,
+   even when retrieval otherwise succeeds.
+
+`--timeout` is a positive number of seconds applied separately to **each** CLI
+process (default 15 seconds); an overdue process is killed and reaped. This is
+an overall client limit for each command, distinct from the service's graph-only
+budget. The probe stops at the first failure, exits nonzero, and names
+`setup`, `doctor`, `keyword_graph_off`, `inspect_top_hit`, or `hybrid_graph_on`.
+Success exits 0 with doctor readiness summaries and one static PASS line.
+Other CLI stdout/stderr and JSON errors are captured privately and never
+forwarded, including recovery commands, note text, record IDs, or credentials. No result files are written.
+
+For timing diagnosis, the usage record fields are `embedding_ms`, `lexical_ms`,
+`vector_fusion_ms`, `graph_query_candidates_ms`, `graph_entity_matching_ms`,
+`graph_mentions_ms`, `graph_seed_evidence_ms`, `graph_edge_expansion_ms`,
+`graph_note_hydration_ms`, `graph_provenance_ms`, and `context_packing_ms`.
+They are flat durations at 0.1 ms precision; unexecuted phases are omitted.
+`graph_status` is `off`, `ok`, `timed_out`, or `skipped`; timeout fallback keeps
+the unchanged graph-off result and does not itself change `outcome=ok`.
+See [operations](operations.md#shared-service-usage-records) for definitions.
+The host config key `search.graph_phase_budget_ms` defaults to 2000 ms;
+0 disables the graph bound, not the probe's timeout. **Remove the key before
+running an older binary**, because its `deny_unknown_fields` config parser will
+reject it.
+
+### Probe validation
+
+Run the mocked CLI tests without touching a service:
+
+```sh
+python3 -m unittest discover -s scripts/tests -p test_post_deploy_probe.py -v
+```
+
+Before merge, the service owner should also run the probe against an isolated
+local service with an existing fictional note and read-only credential: retain
+a passing exit-0 run and a deliberately failing run (for example an unmatched
+keyword, which must name `keyword_graph_off`). Doctor warning exit 1 is
+accepted and printed; unavailable evidence (exit 2) fails.
+Run the deployed-host probe only as part of the separately authorized deployment.

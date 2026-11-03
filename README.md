@@ -310,7 +310,18 @@ alias/identity rules, query evidence weighting, and explicit pilot reprocessing.
 Graph traversal defaults to one hop and is validation-capped at two. The
 `[search].graph_*` settings bound entity/note seeds, per-node fanout, edge
 types/directions, minimum confidence, per-hop decay, and the total candidate
-set. Search output reports candidate counts; graph-derived citations carry the
+set. `search.graph_phase_budget_ms` defaults to **2000 ms**, covering only
+accepted-edge graph preparation, matching, hydration and provenance; **0**
+disables the deadline. Expiry succeeds with exactly the graph-off ranking and
+`graph_status=timed_out`. The other statuses are `off` (explicitly disabled),
+`ok` (graph phase completed, including an empty graph), and `skipped` (ineligible
+scope, disabled graph configuration, keyword mode, or zero context budget).
+`GRAPHRAG_SEARCH_GRAPH_PHASE_BUDGET_MS` overrides the TOML value.
+Before rollback to an older binary, **remove `graph_phase_budget_ms` from the
+config**: `SearchConfig` uses `deny_unknown_fields`, so older versions reject it.
+See [operations](docs/operations.md#retrieval-observability-and-graph-deadline)
+for usage timings and the read-only post-deploy probe.
+Search output reports candidate counts; graph-derived citations carry the
 canonical seed note, typed/directed edge IDs, confidence, hop/decay, source URI,
 and original chat provenance IDs when available. This makes every graph result
 reconstructable while preventing cycles, self-edges, and high-degree expansion.

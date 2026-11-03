@@ -13,6 +13,8 @@ pub(crate) const TARGET: &str = "graphrag_usage";
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Usage {
     pub outcome: String,
+    pub graph_status: Option<&'static str>,
+    pub phases: std::collections::BTreeMap<&'static str, f64>,
     pub mode: Option<&'static str>,
     pub graph: Option<&'static str>,
     pub scope: Option<&'static str>,
@@ -92,6 +94,18 @@ pub(crate) fn summarize(
     let Some(data) = structured.and_then(|value| value.get("data")) else {
         return usage;
     };
+    if matches!(tool, "search_notes" | "build_context") {
+        let status = if tool == "build_context" {
+            data.pointer("/diagnostics/graph_status")
+        } else {
+            data.get("graph_status")
+        };
+        usage.graph_status = status.and_then(Value::as_str).and_then(|value| {
+            ["off", "ok", "timed_out", "skipped"]
+                .into_iter()
+                .find(|known| *known == value)
+        });
+    }
     let items = match tool {
         "search_notes" => data.get("records"),
         "build_context" => data.get("chunks"),
@@ -116,6 +130,7 @@ pub(crate) fn summarize(
 }
 
 pub(crate) fn record(principal: &str, tool: &str, elapsed_ms: f64, usage: &Usage) {
+    let phase = |name| usage.phases.get(name).map(|ms| (ms * 10.0).round() / 10.0);
     tracing::info!(
         target: TARGET,
         principal,
@@ -124,6 +139,18 @@ pub(crate) fn record(principal: &str, tool: &str, elapsed_ms: f64, usage: &Usage
         elapsed_ms = (elapsed_ms * 10.0).round() / 10.0,
         mode = usage.mode,
         graph = usage.graph,
+        graph_status = usage.graph_status,
+        embedding_ms = phase("embedding_ms"),
+        lexical_ms = phase("lexical_ms"),
+        vector_fusion_ms = phase("vector_fusion_ms"),
+        graph_query_candidates_ms = phase("graph_query_candidates_ms"),
+        graph_entity_matching_ms = phase("graph_entity_matching_ms"),
+        graph_mentions_ms = phase("graph_mentions_ms"),
+        graph_seed_evidence_ms = phase("graph_seed_evidence_ms"),
+        graph_edge_expansion_ms = phase("graph_edge_expansion_ms"),
+        graph_note_hydration_ms = phase("graph_note_hydration_ms"),
+        graph_provenance_ms = phase("graph_provenance_ms"),
+        context_packing_ms = phase("context_packing_ms"),
         scope = usage.scope,
         limit = usage.limit,
         max_chunks_per_source = usage.max_chunks_per_source,
@@ -268,6 +295,13 @@ mod tests {
         let usage = Usage {
             outcome: "ok".into(),
             mode: Some("hybrid"),
+            graph_status: Some("timed_out"),
+            phases: [
+                ("embedding_ms", 1.234),
+                ("graph_entity_matching_ms", 2000.06),
+                ("secret-query:note:a", 99.0),
+            ]
+            .into(),
             hits: Some(2),
             top_score: Some(0.9),
             ..Usage::default()
@@ -283,8 +317,39 @@ mod tests {
             .trim_end();
         assert_eq!(
             fields,
-            r#"principal="openclaw.clawd" tool="search_notes" outcome="ok" elapsed_ms=12.3 mode="hybrid" hits=2 top_score=0.9"#
+            r#"principal="openclaw.clawd" tool="search_notes" outcome="ok" elapsed_ms=12.3 mode="hybrid" graph_status="timed_out" embedding_ms=1.2 graph_entity_matching_ms=2000.1 hits=2 top_score=0.9"#
         );
+    }
+
+    #[test]
+    fn retrieval_status_is_allowlisted_for_both_tools_and_preserves_errors() {
+        for tool in ["search_notes", "build_context"] {
+            for status in [
+                "off",
+                "ok",
+                "timed_out",
+                "skipped",
+                "secret note:a query text",
+            ] {
+                let data = if tool == "build_context" {
+                    json!({"diagnostics": {"graph_status": status}, "chunks": []})
+                } else {
+                    json!({"graph_status": status, "records": []})
+                };
+                let usage = summarize(tool, None, &ok(json!({"data": data})));
+                assert_eq!(usage.graph_status.is_some(), !status.contains("secret"));
+                let serialized = format!("{usage:?}");
+                for private in ["secret", "note:a", "query text"] {
+                    assert!(!serialized.contains(private));
+                }
+            }
+            let usage = summarize(
+                tool,
+                None,
+                &ok(json!({"error": {"code": "cancelled"}, "data": null})),
+            );
+            assert_eq!(usage.outcome, "cancelled");
+        }
     }
 
     #[test]

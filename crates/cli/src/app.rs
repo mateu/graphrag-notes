@@ -164,6 +164,7 @@ pub(crate) fn configured_search_agent(
         )
         .with_graph_config(GraphRetrievalConfig {
             enabled: search.graph_enabled,
+            phase_budget_ms: search.graph_phase_budget_ms,
             max_seed_entities: search.graph_max_seed_entities,
             max_seed_notes: search.graph_max_seed_notes,
             max_hops: search.graph_max_hops,
@@ -311,6 +312,7 @@ pub(crate) fn zero_budget_augment_context(
     entity_filter: Option<String>,
 ) -> graphrag_agents::AugmentContext {
     let diagnostics = AugmentDiagnostics {
+        graph_status: Default::default(),
         token_count_mode: TokenCountMode::Estimated,
         header_tokens: 0,
         dropped_duplicates: 0,
@@ -1273,6 +1275,7 @@ mod tests {
     #[test]
     fn human_packing_diagnostics_include_all_budget_and_selection_decisions() {
         let diagnostics = AugmentDiagnostics {
+            graph_status: Default::default(),
             token_count_mode: TokenCountMode::Estimated,
             header_tokens: 12,
             dropped_duplicates: 1,

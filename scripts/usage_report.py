@@ -25,7 +25,20 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # the same record reads "INFO graphrag_usage: graphrag_usage principal=...".
 LINE = re.compile(r"^(?P<ts>\S+)\s+INFO\s+(?:\S+: )*graphrag_usage (?P<fields>principal=.*)$")
 FIELD = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*"|\S+)')
-NUMERIC = {
+PHASES = {
+    "embedding_ms",
+    "lexical_ms",
+    "vector_fusion_ms",
+    "graph_query_candidates_ms",
+    "graph_entity_matching_ms",
+    "graph_mentions_ms",
+    "graph_seed_evidence_ms",
+    "graph_edge_expansion_ms",
+    "graph_note_hydration_ms",
+    "graph_provenance_ms",
+    "context_packing_ms",
+}
+NUMERIC = PHASES | {
     "max_chunks_per_source", "elapsed_ms", "limit", "query_chars", "query_terms", "hits", "top_score",
     "graph_considered", "graph_selected", "dropped_for_relevance", "total_tokens",
 }
@@ -72,6 +85,12 @@ def summarize(records):
             "days": dict(sorted(Counter(r["ts"][:10] for r in rows).items())),
             "latency_ms_p50": percentile(latency, 0.5),
             "latency_ms_p95": percentile(latency, 0.95),
+        }
+        entry["graph_status"] = dict(Counter(r["graph_status"] for r in rows if "graph_status" in r))
+        entry["phase_ms"] = {
+            phase: {"p50": percentile(values, 0.5), "p95": percentile(values, 0.95)}
+            for phase in sorted(PHASES)
+            if (values := [r[phase] for r in rows if phase in r])
         }
         hits = [r["hits"] for r in ok if "hits" in r]
         if hits:
