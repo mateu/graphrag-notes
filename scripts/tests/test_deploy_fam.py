@@ -461,6 +461,55 @@ class DeployIntegrationTests(unittest.TestCase):
         self.assert_prior_live()
 
 
+class CommandBoundaryTests(unittest.TestCase):
+    def make_deploy(self, root):
+        return deploy.Deploy(SimpleNamespace(state=root, repo=root, label='fixture',
+                                            sha=NEW, dry_run=False))
+
+    def test_credential_only_reaches_authenticated_probes_and_never_error_or_timings(self):
+        secret = 'sentinel-credential-never-render'
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(deploy.os.environ, {'GRAPHRAG_TOKEN': secret}):
+                instance = self.make_deploy(Path(directory))
+            result = subprocess.CompletedProcess(['fake'], 1, secret.encode(), secret.encode())
+            with patch.object(deploy.subprocess, 'run', return_value=result) as run:
+                for authenticated in (False, True):
+                    with self.assertRaises(deploy.Failure) as error:
+                        instance.run('fixed operation', ['fake'], auth=authenticated)
+                    self.assertNotIn(secret, str(error.exception))
+                    self.assertNotIn(secret, json.dumps(instance.events))
+                    env = run.call_args.kwargs['env']
+                    self.assertEqual(env.get('GRAPHRAG_TOKEN'), secret if authenticated else None)
+                    self.assertNotIn(secret, run.call_args.args[0])
+                    self.assertEqual(run.call_args.kwargs['stdin'], subprocess.DEVNULL)
+
+    def test_actual_probe_parser_checks_all_three_remote_contracts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            instance = self.make_deploy(Path(directory))
+            instance.a.query = 'known keyword'
+            def response(command, data):
+                return json.dumps({'schema_version': 1, 'success': True, 'command': command,
+                                   'errors': [], 'data': {'schema_version': 1,
+                                   'error': None, 'data': data}})
+            search = {'records': [{'id': 'note:fixture', 'hit_type': 'note'}],
+                      'graph_status': 'ok'}
+            context = {'chunks': [{}], 'diagnostics': {'graph_status': 'ok'}}
+            replies = [response('search_notes', search), response('search_notes', search),
+                       response('build_context', context)]
+            with patch.object(instance, 'run', side_effect=replies) as run:
+                instance.probe(Path('fake-binary'), 31200)
+                self.assertEqual(run.call_count, 3)
+                self.assertTrue(all(call.kwargs['auth'] for call in run.call_args_list))
+                self.assertIn('keyword', run.call_args_list[0].args[1])
+                self.assertIn('hybrid', run.call_args_list[1].args[1])
+                self.assertIn('augment', run.call_args_list[2].args[1])
+            context['diagnostics']['graph_status'] = 'timed_out'
+            with patch.object(instance, 'run', side_effect=replies[:2] +
+                              [response('build_context', context)]):
+                with self.assertRaisesRegex(deploy.Failure, 'build_context failed'):
+                    instance.probe(Path('fake-binary'), 31200)
+
+
 class LogGateTests(unittest.TestCase):
     def test_only_new_error_records_fail(self):
         with tempfile.TemporaryDirectory() as directory:
