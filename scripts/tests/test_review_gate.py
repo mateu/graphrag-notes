@@ -79,3 +79,11 @@ class ReviewGateTests(unittest.TestCase):
     def test_malformed_markers_fail_closed(self):
         for body in ['<!-- codex-review-state:v1 nope -->', '<!-- codex-review-state:v1 [] -->']:
             self.assertEqual(self.evaluate([dict(user={'login': gate.BOT}, body=body)]), 'pending')
+
+
+class GateChangeWarningTests(unittest.TestCase):
+    def test_protected_changes_and_renames_warn(self):
+        for name in ('.github/workflows/review-gate.yml', 'scripts/review-gate.py'):
+            for key in ('filename', 'previous_filename'):
+                self.assertIn('Warning:', gate.gate_change_warning([{key: name}]))
+        self.assertEqual('', gate.gate_change_warning([{'filename': 'README.md'}]))

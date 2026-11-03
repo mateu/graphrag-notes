@@ -329,8 +329,29 @@ checks, preserving strict up-to-date checks. Verify both live paths (Codex clean
 and independent fallback) and the required-context binding before closing #225.
 Publishing this workflow does not itself change branch protection.
 
-Security limit: GitHub Actions app/name bindings do not distinguish workflows. A
-PR-controlled workflow may be able to spoof the same check name. Required-workflow
-provenance rules or a separate trusted GitHub App must be qualified by the
-maintainer before treating this as an adversarial-contributor security boundary.
-The requested Actions app binding alone does not establish that guarantee.
+### Accepted trust boundary and soft guard
+
+Required checks bind only to the GitHub Actions app and check name, not the
+publishing workflow. A workflow merged or pushed into a non-fork PR could publish
+a fake `Review gate` success, including on the test-merge commit (whose checks
+can take precedence over head checks). Hunter explicitly accepted this residual
+limit: this gate guards accidental/premature merges, such as auto-merge before
+review; it does **not** protect against a malicious insider.
+
+Fork PR workflows cannot write checks with their `GITHUB_TOKEN`; fork workflow
+approval is configured for all external contributors. The trusted target evaluator
+can publish checks but never runs fork code.
+
+The required `format` job runs `python3 scripts/check-review-gate-name.py` and
+rejects the literal `Review gate` anywhere in other `.yml`/`.yaml` workflow files
+(including job names, check payloads, status contexts and comments). The evaluator
+adds a visible warning to its check summary when the PR changes or renames its
+workflow or `scripts/review-gate.py`. Such changes require explicit independent
+inspection, not a title/label exception. Tests cover both guards. These are soft
+guards: dynamic names, indirect publishers, or changes to the guard can evade
+them. They do not establish workflow provenance or prevent deliberate bypass.
+
+Hard-guarantee upgrades remain future work: publish through a dedicated GitHub
+App with its own required `integration_id`, or move this user-owned repository
+into an organization and use a ruleset `workflows` rule. That rule is org-only
+and unavailable here (the maintainer verified a 422 response).

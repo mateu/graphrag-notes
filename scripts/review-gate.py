@@ -24,6 +24,15 @@ def marker(body, name):
         return None
 
 
+def gate_change_warning(files):
+    protected = {'.github/workflows/review-gate.yml', 'scripts/review-gate.py'}
+    if any(f.get('filename') in protected or f.get('previous_filename') in protected for f in files):
+        return ('\n\n**Warning: this PR changes the Review gate itself.** '
+                'Independently inspect its workflow and evaluator before merging; '
+                'a passing check is not a workflow-provenance guarantee.')
+    return ''
+
+
 def evaluate(head, draft, since, comments, threads, now, minutes=20, attesters=('mateu',), resolved_receipts=None):
     """Return (pending|success|failure, description). Never trust body identity."""
     if draft:
@@ -116,6 +125,7 @@ class GitHub:
             check = self.api(f'{root}/check-runs/{existing["id"]}', pending, 'PATCH')
         else:
             check = self.api(f'{root}/check-runs', dict(pending, head_sha=head))
+        warning = gate_change_warning(self.pages(f'{root}/pulls/{number}/files'))
         commit = self.api(f'{root}/commits/{head}')
         since = timestamp(commit['commit']['committer']['date'])
         for event in self.pages(f'{root}/issues/{number}/timeline'):
@@ -145,7 +155,7 @@ class GitHub:
             int(os.environ.get('REVIEW_GATE_FALLBACK_MINUTES') or '20'),
             tuple(x.strip() for x in (os.environ.get('REVIEW_GATE_ATTESTERS') or self.repo.split('/')[0]).split(',')), resolved_receipts)
         payload = {'name': 'Review gate', 'head_sha': head, 'status': 'in_progress' if status == 'pending' else 'completed',
-            'output': {'title': description[:255], 'summary': f'PR #{number}, head `{head}`. {description}'}}
+            'output': {'title': description[:255], 'summary': f'PR #{number}, head `{head}`. {description}' + warning}}
         if status != 'pending':
             payload['conclusion'] = status
             payload['completed_at'] = dt.datetime.now(dt.timezone.utc).isoformat()

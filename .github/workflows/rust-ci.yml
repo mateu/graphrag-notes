@@ -38,6 +38,8 @@ jobs:
         run: bash scripts/test-install.sh
       - name: Verify release metadata and packaging offline
         run: python3 scripts/test-release.py
+      - name: Reserve the review publisher check name
+        run: python3 scripts/check-review-gate-name.py
       - name: Verify workflow evidence and isolation contracts offline
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Check formatting (cargo fmt --all -- --check)
