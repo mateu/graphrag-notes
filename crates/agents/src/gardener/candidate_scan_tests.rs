@@ -644,9 +644,11 @@ async fn duplicate_content_and_shared_conversations_are_one_origin() {
         .scan(request(CandidateScope::Notes(vec![anchor]), true))
         .await;
     assert!(report.candidates.is_empty());
-    assert_eq!(report.nominations, 2);
+    // The conversation sibling is excluded before nomination, like a
+    // same-source note; only the duplicate is nominated and rejected.
+    assert_eq!(report.nominations, 1);
     assert_eq!(report.rejections.duplicate_content, 1);
-    assert_eq!(report.rejections.same_origin, 1);
+    assert_eq!(report.rejections.same_origin, 0);
 }
 
 #[tokio::test]
@@ -935,8 +937,40 @@ async fn notes_from_messages_of_one_conversation_share_an_origin() {
     let report = corpus
         .scan(request(CandidateScope::Notes(vec![notes[0].clone()]), true))
         .await;
-    assert_eq!(report.nominations, 2);
-    assert_eq!(report.rejections.same_origin, 1);
+    // The sibling shares the anchor's conversation and is never nominated.
+    assert_eq!(report.nominations, 1);
+    assert_eq!(pairs(&report), vec![unordered(&notes[0], &notes[2])]);
+
+    // Conversation siblings closer than the neighbour budget cannot crowd
+    // out an eligible note from another conversation.
+    let mut siblings = Vec::new();
+    for (index, cosine) in [0.99_f32, 0.98, 0.97].into_iter().enumerate() {
+        let source = corpus.source(&format!("sibling-{index}.md")).await;
+        let content = format!("Fictional Osprey relay sibling {index}");
+        let id = corpus
+            .note(Some(&source), &content, vector(cosine, index + 10), &[])
+            .await;
+        siblings.push(id);
+    }
+    for sibling in &siblings {
+        assert!(corpus
+            .repo
+            .link_note_to_message(sibling, &shared[1])
+            .await
+            .unwrap());
+    }
+    let narrow = CandidatePolicy {
+        neighbors_per_endpoint: 2,
+        ..CandidatePolicy::default()
+    };
+    let report = GardenerAgent::new(corpus.repo.clone())
+        .scan_candidates(
+            &narrow,
+            request(CandidateScope::Notes(vec![notes[0].clone()]), true),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.rejections.same_origin, 0);
     assert_eq!(pairs(&report), vec![unordered(&notes[0], &notes[2])]);
 }
 

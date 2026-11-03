@@ -189,17 +189,29 @@ impl Repository {
         if anchor.embedding.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let rows: Vec<CandidateNote> = self
+        // Notes sharing a chat conversation with the anchor, directly or
+        // through any of its messages (the origins `candidate_note_origins`
+        // compares), are excluded before the limit like same-source notes,
+        // so conversation siblings cannot crowd out eligible neighbours.
+        let mut response = self
             .db
             .query(format!(
-                "SELECT {CANDIDATE_NOTE_FIELDS}, vector::similarity::cosine(embedding, $embedding) AS similarity \
+                "LET $origins = array::union(\
+                     (SELECT VALUE out FROM note_from_conversation WHERE in = $anchor), \
+                     (SELECT VALUE (out.conversation_id ?? out) FROM note_from_message WHERE in = $anchor)); \
+                 LET $excluded = IF array::len($origins) = 0 THEN [] ELSE array::union(\
+                     (SELECT VALUE in FROM note_from_conversation WHERE out IN $origins), \
+                     (SELECT VALUE in FROM note_from_message WHERE out IN array::union($origins, \
+                         (SELECT VALUE id FROM message WHERE conversation_id IN $origins)))) END; \
+                 SELECT {CANDIDATE_NOTE_FIELDS}, vector::similarity::cosine(embedding, $embedding) AS similarity \
                  FROM note \
-                 WHERE id != $anchor AND embedding IS NOT NONE AND array::len(embedding) = $dimension \
+                 WHERE id != $anchor AND id NOT IN $excluded \
+                 AND embedding IS NOT NONE AND array::len(embedding) = $dimension \
                  AND ($anchor_source = NONE OR source_id IS NONE OR source_id != $anchor_source) \
                  AND ($counterparts = NONE OR source_id IN $counterparts) \
                  AND {VISIBLE_NOTE_CONDITION} \
                  AND vector::similarity::cosine(embedding, $embedding) >= $floor \
-                 ORDER BY similarity DESC, id ASC LIMIT $limit"
+                 ORDER BY similarity DESC, id ASC LIMIT $limit;"
             ))
             .bind(("anchor", anchor.id.clone()))
             .bind(("embedding", anchor.embedding.clone()))
@@ -209,7 +221,8 @@ impl Repository {
             .bind(("floor", floor))
             .bind(("limit", limit))
             .await?
-            .take(0)?;
+            .check()?;
+        let rows: Vec<CandidateNote> = response.take(2)?;
         Ok(rows)
     }
 

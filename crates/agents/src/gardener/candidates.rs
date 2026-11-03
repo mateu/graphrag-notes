@@ -195,8 +195,9 @@ pub struct RelationshipCandidate {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CandidateRejections {
     /// Both notes come from one chat conversation, directly or through any
-    /// of its messages. (Same-source notes are excluded before nomination
-    /// and are not counted here.)
+    /// of its messages. Same-source and same-conversation neighbours are
+    /// excluded before nomination and are not counted here, so this only
+    /// counts a shared origin recorded after the neighbour read.
     pub same_origin: usize,
     pub duplicate_content: usize,
     pub no_second_signal: usize,
