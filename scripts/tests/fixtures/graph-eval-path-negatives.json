@@ -1,0 +1,389 @@
+{
+  "description": "Fictional build_context responses for the graph-eval pass rules. Every ID, path, hash and question is invented; responses carry no note text. Each case runs off,on,on,off through round_result and summarize.",
+  "question": {"id": "F1", "question": "Which fictional prerequisite explains the rollout order?", "seed": ["memory/fictional-seed.md"], "support": ["memory/fictional-support.md"], "support_chunks": {"memory/fictional-support.md": ["note:fictional-support-answer"]}, "allowed_relations": ["supports"], "answer_differs_materially": "yes"},
+  "source_map": {"f0000001": "memory/fictional-seed.md", "f0000002": "memory/fictional-support.md", "f0000003": "memory/fictional-other.md"},
+  "off":
+    {"chunks": [
+      {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": null},
+      {"id": "note:fictional-other", "source_uri": "mcp://upload/f0000003", "score": 0.4, "graph": null}
+    ], "diagnostics": {"graph_candidates_selected": 0}},
+  "cases": [
+    {
+      "name": "valid_control",
+      "expected_pass": "pass",
+      "expected_reasons": [],
+      "expected_flags": {"on_support_by_round": [true, true], "stable_on": true},
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "valid_control_unknown_materiality",
+      "question_overrides": {"answer_differs_materially": "unknown"},
+      "expected_pass": "needs_judgement",
+      "expected_reasons": [],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "valid_two_hop_inbound_control",
+      "expected_pass": "pass",
+      "expected_reasons": [],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.5, "graph": {"hops": 2, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge-1", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-bridge"}, {"edge_id": "supports:fictional-edge-2", "edge_type": "supports", "direction": "inbound", "confidence": 1.0, "from_id": "note:fictional-bridge", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.5, "graph": {"hops": 2, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge-1", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-bridge"}, {"edge_id": "supports:fictional-edge-2", "edge_type": "supports", "direction": "inbound", "confidence": 1.0, "from_id": "note:fictional-bridge", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "support_missing_in_one_on_round",
+      "expected_pass": "fail",
+      "expected_reasons": ["inconsistent_support", "support_missing"],
+      "expected_flags": {"on_support_by_round": [true, false], "stable_on": false, "on_returns_support_via_allowed_path": false},
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-other", "source_uri": "mcp://upload/f0000003", "score": 0.5, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-unrelated-a", "to_id": "note:fictional-unrelated-b"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "broken_endpoint_chain",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-unrelated-a", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-unrelated-a", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "two_hop_gap",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 2, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge-1", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-bridge"}, {"edge_id": "supports:fictional-edge-2", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-unrelated-a", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 2, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge-1", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-bridge"}, {"edge_id": "supports:fictional-edge-2", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-unrelated-a", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "path_terminates_elsewhere",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-other"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-other"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "unrelated_chunk_same_file",
+      "expected_pass": "fail",
+      "expected_reasons": ["unrelated_chunk"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-unrelated", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-unrelated"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-unrelated", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-unrelated"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "revisits_node",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 2, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge-1", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}, {"edge_id": "supports:fictional-edge-2", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-support-answer", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 2, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge-1", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}, {"edge_id": "supports:fictional-edge-2", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-support-answer", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "hops_disagree_with_path",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 2, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 2, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "disallowed_relation",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "related_to:fictional-edge", "edge_type": "related_to", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "related_to:fictional-edge", "edge_type": "related_to", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "edge_id_disagrees_with_type",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "related_to:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "related_to:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "unknown_direction",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "sideways", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "sideways", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "inbound_not_permitted",
+      "question_overrides": {"allowed_directions": ["outbound"]},
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "inbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "inbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "missing_seed_note_id",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "missing_step_endpoint",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "missing_step_direction",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "missing_edge_id",
+      "expected_pass": "fail",
+      "expected_reasons": ["invalid_path"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "support_source_mismatch",
+      "expected_pass": "fail",
+      "expected_reasons": ["support_source_mismatch"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000003", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000003", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "missing_chunk_id",
+      "expected_pass": "fail",
+      "expected_reasons": ["missing_fields"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "support_chunk_unspecified",
+      "question_overrides": {"support_chunks": {}},
+      "expected_pass": "fail",
+      "expected_reasons": ["support_chunk_unspecified"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "off_returns_support_chunk",
+      "expected_pass": "fail",
+      "expected_reasons": ["off_has_support"],
+      "off":
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": null},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.4, "graph": null}
+        ], "diagnostics": {"graph_candidates_selected": 0}},
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "off_returns_support_chunk_unmapped",
+      "expected_pass": "fail",
+      "expected_reasons": ["off_has_support"],
+      "expected_flags": {"off_finds_support": false, "off_lacks_support": false},
+      "off":
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": null},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000009", "score": 0.4, "graph": null}
+        ], "diagnostics": {"graph_candidates_selected": 0}},
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    },
+    {
+      "name": "human_says_no",
+      "question_overrides": {"answer_differs_materially": "no"},
+      "expected_pass": "fail",
+      "expected_reasons": ["human_rejected"],
+      "on": [
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}},
+        {"chunks": [
+          {"id": "note:fictional-seed", "source_uri": "mcp://upload/f0000001", "score": 0.9, "graph": {"hops": 0, "seed_note_id": "note:fictional-seed", "decay": 1.0, "score": 0.5, "path": []}},
+          {"id": "note:fictional-support-answer", "source_uri": "mcp://upload/f0000002", "score": 0.6, "graph": {"hops": 1, "seed_note_id": "note:fictional-seed", "decay": 0.8, "score": 0.4, "path": [{"edge_id": "supports:fictional-edge", "edge_type": "supports", "direction": "outbound", "confidence": 1.0, "from_id": "note:fictional-seed", "to_id": "note:fictional-support-answer"}]}}
+        ], "diagnostics": {"graph_candidates_selected": 1}}
+      ]
+    }
+  ]
+}
