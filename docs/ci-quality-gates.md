@@ -414,3 +414,47 @@ Hard-guarantee upgrades remain future work: publish through a dedicated GitHub
 App with its own required `integration_id`, or move this user-owned repository
 into an organization and use a ruleset `workflows` rule. That rule is org-only
 and unavailable here (the maintainer verified a 422 response).
+
+### Narrow dependency-bot exemption (#234)
+
+Before requiring review evidence, the evaluator checks GitHub REST PR, commits,
+and files data for the **current head**. Exempt success reads
+`Exempt: bot dependency update (author, commits, paths, non-major verified)`.
+Drafts stay pending; exact-head unresolved Codex findings/threads still fail.
+Otherwise the normal review path runs with the first `Not exempt` reason.
+
+`scripts/review-gate-bots.json` is the reviewed configuration: `bots` maps exact
+GitHub logins to accepted commit emails, and `paths` lists manifest/lockfile
+shell globs (case-sensitive; `*` may cross directory separators). Extend it only
+through independent review, with identity/path regression fixtures. Both author
+and committer must have allowlisted GitHub-attributed logins AND matching emails;
+missing attribution, mixed human commits, incomplete API lists and stale heads
+fail closed. In particular GitHub's `web-flow` committer is **not** allowlisted.
+There is no workflow-input change or new repository-variable wiring in this PR.
+
+Hidden paths, `scripts` and `src` components are always excluded; Dockerfiles,
+Renovate config and all other non-allowlisted files are excluded. Renames check
+both names. Numeric `from X.Y.Z to A.B.C` title evidence must show the same major;
+explicit major signals reject. Unknown/grouped/unparseable update types receive
+normal review. Available diff version-major multisets must also agree; missing
+patches and ambiguous additions/removals receive normal review. This deliberately
+conservative rule may decline harmless lockfile churn. Labels/body cannot grant
+exemption. Security updates use exactly the same rules, including major rejection.
+
+Recorded REST fixture `dependabot224.json` captures real PR #224: Dependabot
+attributed author, **web-flow committer**, therefore non-exempt. No Renovate PR
+was returned by the repository's app-author history query. Positive Dependabot
+and Renovate fixtures are explicitly synthetic mutations, not live bot proof.
+Pre-merge tests exercise clean manifest/lockfile updates, human/committer identity,
+workflow/rename exclusions, major/unknown versions, spoofing, new heads, config,
+and unresolved findings. No bot credentials are available to create a genuinely
+bot-authored/committed throwaway PR, and default-branch evaluator code cannot run
+this exemption live before merge. After merge, inspect the check on a real bot-only
+non-major PR, then verify a human-commit/path-change variant returns to review
+and exact-head unresolved findings still fail. Close/delete only proof PRs and
+branches created for that verification. Requiring `Review gate` remains a
+**maintainer follow-up after merge and real-bot verification**, not this change.
+
+Residual risk: a compromised allowed bot or malicious dependency version can
+still qualify; other CI, audits and CodeQL—not this exemption—must catch it.
+The evaluator continues to run default-branch code, never PR-head code.

@@ -1,0 +1,30 @@
+{
+  "bots": {
+    "renovate[bot]": [
+      "29139614+renovate[bot]@users.noreply.github.com",
+      "bot@renovateapp.com"
+    ],
+    "dependabot[bot]": [
+      "49699333+dependabot[bot]@users.noreply.github.com"
+    ]
+  },
+  "paths": [
+    "Cargo.lock",
+    "Cargo.toml",
+    "*/Cargo.toml",
+    "package.json",
+    "*/package.json",
+    "package-lock.json",
+    "*/package-lock.json",
+    "pnpm-lock.yaml",
+    "*/pnpm-lock.yaml",
+    "yarn.lock",
+    "*/yarn.lock",
+    "requirements*.txt",
+    "*/requirements*.txt",
+    "uv.lock",
+    "*/uv.lock",
+    "poetry.lock",
+    "*/poetry.lock"
+  ]
+}
