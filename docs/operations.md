@@ -228,6 +228,149 @@ the graph contributed a selected `build_context` candidate. An empty result or
 a low top score is a retrieval-quality signal; it does not show whether the
 client used a nonempty result.
 
+## Owner-approved fam deployment workflow
+
+`.github/workflows/deploy-fam.yml` is a manual entry point for the versioned
+[`scripts/deploy-fam.sh`](../scripts/deploy-fam.sh) `<full-sha> [--dry-run]`
+interface merged in #203 (implementing #200). Adding this workflow does not
+authorize a deployment or provision production access. There is no push, pull-request, or merge trigger.
+The existing fam service is launchd `com.hunter.graphrag.shared`, with state
+`~/.graphrag/shared` under its owning account.
+
+### Administrative activation — explicit repository-owner approval required
+
+Do not register a runner, create/change the Environment, alter repository or
+branch protection settings, or modify the live service as part of this PR.
+The owner must separately approve and perform these steps **before use**:
+
+1. Create/protect the `fam-production` GitHub Environment. Require a trusted
+   human reviewer, prevent self-review, disallow protection-rule bypass, and
+   allow deployments from **selected branch `main` only**, not tags. Verify
+   these settings before registering the runner: merely referencing an
+   Environment in YAML does not establish protection. Approval is required
+   for dry runs as well as migrations. Review the SHA, workflow revision,
+   migration/rehearsal plan and rollback readiness before approving.
+2. Create a dedicated runner group `fam-production`, restricted to this
+   repository and the selected workflow
+   `mateu/graphrag-notes/.github/workflows/deploy-fam.yml@refs/heads/main`.
+   No PR, fork, branch, or other workflow may use it. Labels are routing, **not
+   authorization**: repository scoping alone does not block another workflow
+   in this repository. Workflow-level group restrictions require appropriate
+   GitHub organization/enterprise support. If this personal repository or
+   plan cannot enforce them, **leave the runner unregistered and the workflow
+   inactive**; obtain owner approval for an enforceable hosting/isolation
+   design first. Do not substitute a broadly accessible runner or relax this
+   requirement. Audit all existing runner groups/workflows for overlapping
+   access before activation.
+3. On fam, install a checksum-verified GitHub Actions runner from the official
+   runner download instructions into a dedicated directory, never the service
+   checkout/state directory. Use a dedicated, non-admin deployment account,
+   no sudo rights or unrelated SSH/cloud credentials, and only the filesystem
+   and launchd access needed by the deploy script. macOS launchd user domains
+   matter: confirm its approved identity can manage the existing service's
+   domain without changing the service configuration. If that cannot be
+   achieved with least privilege, stop and seek a separately approved design.
+   Provision Rust/build prerequisites and read-only repository fetch access;
+   no repository-write token is needed. Create Environment secret `FAM_GRAPHRAG_TOKEN` for an existing read-capable
+   probe principal; it is inherited as `GRAPHRAG_TOKEN` only by the approved
+   script step, never by builds or the hosted validator. Never inline it in
+   YAML/logs. Rotate it by replacing the Environment secret and revoking the
+   old service credential through the separately approved credential runbook.
+4. With a short-lived registration token supplied interactively (never saved
+   in docs/logs), configure `./config.sh` for this repository, runner group
+   `fam-production`, and custom label `fam-graphrag-deploy`. Retain the default
+   `self-hosted` and `macOS` labels. Install/start its service using the
+   platform runner instructions under the approved account. Do not enable
+   runner access for public forks or PR workflows. Keep the runner's workspace
+   separate from the deploy script's managed checkout. Pin/verify runner
+   upgrades and keep macOS/build tools patched.
+5. Inspect Environment and group policy in GitHub, then approve one explicit
+   dry-run dispatch. Confirm an invalid/non-main SHA fails in the hosted
+   validator without reaching fam, branch dispatches skip both jobs, and a
+   valid main SHA waits for Environment review before the runner starts.
+   Confirm a different workflow cannot select the group. Do not weaken
+   protection to run these checks. A live cutover needs separate owner
+   approval after reviewing the dry-run evidence.
+
+### Dispatch and evidence
+
+After owner-approved activation and this workflow have landed on main:
+
+```bash
+# Use a full commit SHA, not a branch/tag/abbreviation. Default is dry-run.
+gh workflow run deploy-fam.yml --repo mateu/graphrag-notes --ref main \
+  -f sha=FULL_40_CHARACTER_MAIN_SHA -F dry_run=true
+# Only for an explicitly owner-approved production cutover:
+gh workflow run deploy-fam.yml --repo mateu/graphrag-notes --ref main \
+  -f sha=FULL_40_CHARACTER_MAIN_SHA -F dry_run=false
+```
+
+The hosted validator and approved runner independently fetch main and require
+commit ancestry. Inputs are shell environment values, not interpolated shell
+code. The runner executes the deploy script from the approved main workflow
+revision, not arbitrary input-commit code. The workflow passes
+`--repo "$GITHUB_WORKSPACE"` (the merged script option) so
+even read-only dry-run ancestry uses this freshly fetched repository; the
+script controls its own detached build checkout and repeats preflight.
+Both dry runs and real deploys share the
+`fam-production-deploy` concurrency lock, with cancellation disabled. GitHub
+concurrency may replace an older pending run, so inspect the run being approved;
+it is not a FIFO deployment queue. The script's host lock remains authoritative
+for deployments initiated outside GitHub. Do not cancel a running cutover or
+impose a timeout shorter than its build/rehearsal/rollback budget; a runner loss
+or the 180-minute job limit requires incident inspection, not an automatic retry.
+
+The final artifact step runs even after failure and collects only reports and
+the deployment record from `~/.graphrag/shared/bin/graphrag.deployment.json`,
+never databases, portable backups, config, or service logs. Only
+`~/.graphrag/shared/backups/deploy-*/REPORT.md` files newer than this run
+are staged; historical reports are excluded. The JSON is explicitly labelled
+as a current-state snapshot: dry runs, safe no-ops and early preflight failures
+do not write a fresh script report or update that JSON. Use the step conclusion
+as the run outcome, never an older success record. Retention is 14 days;
+reports can contain operational paths and should
+remain accessible only to trusted repository readers. Missing reports warn
+rather than hide the original preflight failure. Retain host backups according
+to the script runbook, independently of GitHub artifact expiration. Dry-run is
+the script's `--dry-run` path: it must not stop, build, migrate, or replace the
+live service. This delivery has not registered a runner, changed Environment
+policy, or executed either path on fam; activation/end-to-end proof is deferred
+to those separately approved administrative steps.
+
+### Runner rotation, removal, and incidents
+
+For planned rotation, disable new workflow runs/runner scheduling and allow an
+active deployment to finish; inspect the script lock and service health first.
+Use GitHub's short-lived removal token with `./config.sh remove`, uninstall the
+old runner service per the macOS instructions, remove its GitHub registration,
+and securely remove its credentials/work directory. Re-register the replacement
+with a fresh token and exactly the same restricted group/labels; recheck policy
+and repeat the approved dry run. Rotate any host probe or read-only Git
+credential it could access. For permanent removal, also disable the deployment
+workflow and retain Environment/group protection until access is revoked.
+
+For suspected compromise, immediately revoke runner access and exposed tokens,
+block new approvals/dispatches, and preserve runner audit logs and run IDs.
+Isolation may interrupt a cutover: inspect launchd, deployment JSON, backups,
+failed databases and lock state using the script's recovery runbook. Never
+blindly delete a lock, rerun a failed deployment, point the old binary at a
+migrated database, or restore from an unverified backup. Preserve evidence and
+obtain owner authorization before recovery changes. Rebuild the runner from
+trusted media, rotate all reachable credentials, audit group/Environment rules
+and workflow revisions, and repeat dry-run qualification before reactivation.
+
+### Workflow lint (no production access)
+
+Run `actionlint` and `zizmor` against the new workflow. Since the custom runner
+label is intentionally not registered, supply actionlint an external config:
+
+```bash
+printf 'self-hosted-runner:\n  labels: [fam-graphrag-deploy]\n' > /tmp/fam-actionlint.yaml
+actionlint -config-file /tmp/fam-actionlint.yaml .github/workflows/deploy-fam.yml
+zizmor --no-progress .github/workflows/deploy-fam.yml
+```
+
+
 ## Doctor and embedding compatibility
 
 Run the read-only local-stack diagnostic before changing providers or
