@@ -212,6 +212,9 @@ pub struct CandidateRejections {
     pub prior_decision: usize,
     pub endpoint_cap: usize,
     pub over_budget: usize,
+    /// An endpoint was deleted or its source generation retired after
+    /// nomination, before the proposal could be recorded.
+    pub vanished: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -503,6 +506,7 @@ impl super::GardenerAgent {
                         candidate.proposal = Some(*proposal);
                         report.candidates.push(candidate);
                     }
+                    CandidateProposalOutcome::Vanished => report.rejections.vanished += 1,
                     CandidateProposalOutcome::Existing(links) => {
                         let links = ExistingLinks::from(links);
                         let pair = unordered(&candidate.from, &candidate.to);

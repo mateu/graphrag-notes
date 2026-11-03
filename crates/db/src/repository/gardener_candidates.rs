@@ -108,6 +108,9 @@ pub enum CandidateProposalOutcome {
     /// Something already joins the pair, as read under the proposal
     /// lifecycle lock; nothing was written or refreshed.
     Existing(CandidateExistingLinks),
+    /// An endpoint is no longer visible (deleted, or its source generation
+    /// retired) under the lifecycle lock; nothing was written.
+    Vanished,
 }
 
 /// Accepted relations and proposals among a set of candidate notes.
@@ -384,10 +387,12 @@ impl Repository {
         Ok(origins)
     }
 
-    /// Record a scan candidate as a new pending proposal unless an accepted
-    /// relation of any type or a proposal of any kind already joins the pair.
-    /// The pair-wide check and the insert run in one hold of the proposal
-    /// lifecycle lock, so no lifecycle writer can slip in between them, and
+    /// Record a scan candidate as a new pending proposal unless an endpoint
+    /// is no longer visible or an accepted relation of any type or a proposal
+    /// of any kind already joins the pair. The visibility and pair-wide
+    /// checks and the insert run in one hold of the proposal lifecycle lock
+    /// (which note deletion and source retirement also hold), so no
+    /// lifecycle writer can slip in between them, and
     /// an existing proposal is never refreshed: losing the unique dedupe-key
     /// race to any other writer is reported as `Existing` too. `Ok(None)`
     /// means the lock was not acquired by `deadline`; nothing was read or
@@ -403,6 +408,11 @@ impl Repository {
             return Ok(None);
         };
         let dedupe_key = super::graph::prepare_edge_proposal(&mut draft)?;
+        if !self.note_is_visible(&draft.from_id).await?
+            || !self.note_is_visible(&draft.to_id).await?
+        {
+            return Ok(Some(CandidateProposalOutcome::Vanished));
+        }
         let pair = [draft.from_id.clone(), draft.to_id.clone()];
         let existing = self.candidate_existing_links(&pair).await?;
         if !existing.accepted.is_empty() || !existing.proposals.is_empty() {

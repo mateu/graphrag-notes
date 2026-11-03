@@ -552,3 +552,33 @@ async fn upserts_refresh_only_their_own_generators_pending_proposals() {
     assert_eq!(refreshed.reason, "second");
     assert_eq!(refreshed.generator, "gardener-similarity");
 }
+
+#[tokio::test]
+async fn candidate_recording_skips_endpoints_that_vanished() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let from = note(&repo, "Fictional egret survey").await;
+    let to = note(&repo, "Fictional egret follow-up").await;
+    // The note is deleted after nomination, before persistence takes the
+    // lifecycle lock: nothing is recorded for the invisible endpoint.
+    repo.delete_note(&record_id_to_string(&to)).await.unwrap();
+    let later = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let outcome = repo
+        .record_candidate_proposal_before(
+            EdgeProposalDraft {
+                from_id: from.clone(),
+                to_id: to.clone(),
+                edge_type: EdgeType::RelatedTo,
+                confidence: 0.9,
+                reason: "candidate evidence".into(),
+                generator: "gardener-candidate".into(),
+                generator_version: Some("1".into()),
+                model: None,
+            },
+            later,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(outcome, CandidateProposalOutcome::Vanished));
+    assert!(repo.list_edge_proposals(None, 10).await.unwrap().is_empty());
+}

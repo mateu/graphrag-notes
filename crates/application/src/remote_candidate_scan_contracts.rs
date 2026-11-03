@@ -134,6 +134,10 @@ pub struct RelationshipCandidateRejections {
     pub prior_decision: usize,
     pub endpoint_cap: usize,
     pub over_budget: usize,
+    /// An endpoint was deleted or its source generation retired before the
+    /// pending proposal could be recorded.
+    #[serde(default)]
+    pub vanished: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

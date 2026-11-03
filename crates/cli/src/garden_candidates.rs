@@ -226,7 +226,7 @@ pub(crate) fn render(
     let rejected = &receipt.rejections;
     writeln!(
         writer,
-        "  Nominated {} pair(s); selected {}. Rejected: same origin {}, duplicate {}, no second signal {}, generic entities only {}, connected {}, already proposed {}, prior decision {}, endpoint cap {}, over budget {}",
+        "  Nominated {} pair(s); selected {}. Rejected: same origin {}, duplicate {}, no second signal {}, generic entities only {}, connected {}, already proposed {}, prior decision {}, endpoint cap {}, over budget {}, vanished {}",
         receipt.nominations,
         receipt.candidates.len(),
         rejected.same_origin,
@@ -238,6 +238,7 @@ pub(crate) fn render(
         rejected.prior_decision,
         rejected.endpoint_cap,
         rejected.over_budget,
+        rejected.vanished,
     )?;
     if receipt.candidates.is_empty() {
         writeln!(writer, "  No candidate met the policy (abstained).")?;

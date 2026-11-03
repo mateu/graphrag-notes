@@ -233,6 +233,7 @@ fn receipt(
             prior_decision: rejections.prior_decision,
             endpoint_cap: rejections.endpoint_cap,
             over_budget: rejections.over_budget,
+            vanished: rejections.vanished,
         },
         unevaluated_names: report.unevaluated_names,
         elapsed_ms: u64::try_from(report.elapsed.as_millis()).unwrap_or(u64::MAX),
