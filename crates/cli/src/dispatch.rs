@@ -2814,20 +2814,80 @@ pub(crate) fn edge_dry_run_message(id: &str, exists: bool) -> String {
 
 pub(crate) async fn cmd_stats(repo: Repository) -> Result<()> {
     let stats = repo.get_stats().await?;
-
-    println!("Database Statistics:");
-    println!("  • Notes: {}", stats.note_count);
-    println!("  • Entities: {}", stats.entity_count);
-    println!("  • Sources: {}", stats.source_count);
-    println!("  • Conversations: {}", stats.conversation_count);
-    println!("  • Messages: {}", stats.message_count);
-    println!("  • Mentions: {}", stats.mention_count);
-    println!(
-        "  • Note→Conversation links: {}",
-        stats.note_conversation_link_count
-    );
-    println!("  • Note→Message links: {}", stats.note_message_link_count);
-    println!("  • Edges: {}", stats.edge_count);
-
+    print!("{}", render_stats(&stats));
     Ok(())
+}
+
+/// Human `stats` report. `Edges` keeps its historical line and total; the
+/// indented per-type lines that follow list every accepted note-edge table.
+pub(crate) fn render_stats(stats: &graphrag_db::repository::DbStats) -> String {
+    let mut out = String::from("Database Statistics:\n");
+    out.push_str(&format!("  • Notes: {}\n", stats.note_count));
+    out.push_str(&format!("  • Entities: {}\n", stats.entity_count));
+    out.push_str(&format!("  • Sources: {}\n", stats.source_count));
+    out.push_str(&format!(
+        "  • Conversations: {}\n",
+        stats.conversation_count
+    ));
+    out.push_str(&format!("  • Messages: {}\n", stats.message_count));
+    out.push_str(&format!("  • Mentions: {}\n", stats.mention_count));
+    out.push_str(&format!(
+        "  • Note→Conversation links: {}\n",
+        stats.note_conversation_link_count
+    ));
+    out.push_str(&format!(
+        "  • Note→Message links: {}\n",
+        stats.note_message_link_count
+    ));
+    out.push_str(&format!("  • Edges: {}\n", stats.edge_count));
+    for (edge_type, count) in &stats.edge_counts {
+        out.push_str(&format!("      {edge_type}: {count}\n"));
+    }
+    out
+}
+
+/// Compact per-type edge breakdown, e.g. `contradicts 0, derived_from 2`.
+pub(crate) fn edge_breakdown(stats: &graphrag_db::repository::DbStats) -> String {
+    stats
+        .edge_counts
+        .iter()
+        .map(|(edge_type, count)| format!("{edge_type} {count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+mod stats_render_tests {
+    use super::*;
+    use graphrag_db::repository::DbStats;
+
+    #[test]
+    fn stats_keep_the_edges_total_line_and_list_every_edge_type() {
+        let stats = DbStats {
+            note_count: 4,
+            edge_count: 3,
+            edge_counts: [
+                ("contradicts", 0),
+                ("derived_from", 2),
+                ("related_to", 0),
+                ("supports", 1),
+            ]
+            .into_iter()
+            .map(|(table, count)| (table.to_owned(), count))
+            .collect(),
+            ..DbStats::default()
+        };
+        let text = render_stats(&stats);
+        assert!(text.contains("  • Edges: 3\n"), "{text}");
+        assert!(
+            text.ends_with(
+                "      contradicts: 0\n      derived_from: 2\n      related_to: 0\n      supports: 1\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(
+            edge_breakdown(&stats),
+            "contradicts 0, derived_from 2, related_to 0, supports 1"
+        );
+    }
 }
