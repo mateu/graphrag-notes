@@ -1838,6 +1838,7 @@ dependencies = [
  "ciborium",
  "deunicode",
  "graphrag-core",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

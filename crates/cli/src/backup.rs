@@ -19,6 +19,9 @@ use std::{
 const MANIFEST_FILE: &str = "manifest.json";
 const RECORDS_FILE: &str = "records.jsonl";
 const EXPORT_PAGE_SIZE: usize = 256;
+/// Upper bound for the staged engine's shutdown before activation. RocksDB's
+/// own post-flush compaction drain is bounded at 30 seconds by default.
+const STAGED_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BackupSummary {
@@ -259,8 +262,20 @@ async fn restore_verified_payload(
             bail!("restored table counts do not match the verified backup manifest");
         }
         drop(repo);
-        // Embedded RocksDB releases its directory lock asynchronously.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Dropping the client only starts the engine's asynchronous shutdown,
+        // which still flushes memtables into the staging directory. Renaming
+        // it before RocksDB has closed lets a same-process reopen of the
+        // target run a second engine on the same files (the path-keyed lock
+        // no longer matches), corrupting SSTs. A fixed 50 ms grace period was
+        // not enough on loaded CI runners.
+        graphrag_db::wait_for_persistent_release(&staging, STAGED_RELEASE_TIMEOUT)
+            .await
+            .with_context(|| {
+                format!(
+                    "wait for staged restore database {} to close",
+                    staging.display()
+                )
+            })?;
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -2622,8 +2637,12 @@ mod tests {
         assert_eq!(restored.record_counts, created.record_counts);
         assert!(target.is_dir());
 
-        // Allow final embedded-session cleanup tasks to release native locks.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // restore_backup returns only after the staged engine has closed: no
+        // descriptor of this process may still refer to the activated store,
+        // otherwise the reopen below would run a second engine on its files.
+        graphrag_db::wait_for_persistent_release(&target, std::time::Duration::ZERO)
+            .await
+            .expect("restore must not activate a store whose engine is still closing");
         let reopened = Repository::new(init_persistent(&target).await.unwrap());
         assert_eq!(
             count_repository_records(&reopened).await.unwrap(),

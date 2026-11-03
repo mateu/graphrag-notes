@@ -25,6 +25,10 @@ sha2.workspace = true
 uuid.workspace = true
 deunicode.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# fcntl(F_GETPATH) for wait_for_persistent_release.
+libc.workspace = true
+
 [dev-dependencies]
 ciborium = "0.2.2"
 tempfile.workspace = true
