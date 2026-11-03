@@ -58,7 +58,7 @@ def bot_exemption(head, pr, commits, files, config=None):
         lockfile = file['filename'].split('/')[-1] in ('Cargo.lock', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'uv.lock', 'poetry.lock')
         for line in patch.splitlines():
             if line[:1] in versions and not line.startswith(('---', '+++')):
-                found = re.findall(r'(?<![\w.])(\d+)\.\d+\.\d+(?![\w.])', line[1:])
+                found = re.findall(r'(?<![\w.])(\d+)\.\d+\.\d+(?!\d)', line[1:])
                 if not found and not (lockfile and re.match(r'\s*(?:"integrity"\s*:|checksum\s*=|integrity\s+)', line[1:])):
                     return False, 'manifest change type undetermined'
                 versions[line[0]].extend(found)
