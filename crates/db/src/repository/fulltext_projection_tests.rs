@@ -413,11 +413,12 @@ async fn runtime_thin_lexical_ranking_preserves_mutations_filters_and_native_tie
 
 #[tokio::test]
 async fn lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exact_indexes() {
-    let db = init_memory().await.unwrap();
     // Exercise the actual migration over an existing v20 corpus, rather than
     // installing a manufactured copy of its schema over an empty database.
-    db.query("REMOVE EVENT materialize_note_search ON note; REMOVE EVENT delete_note_search ON note; REMOVE FUNCTION fn::materialize_note_search; REMOVE TABLE note_search; DELETE schema_migration WHERE version >= 21;")
-        .await.unwrap().check().unwrap();
+    let db = crate::migrations::test_support::init_memory_at_version(20)
+        .await
+        .unwrap();
+    assert_eq!(crate::migrations::current_version(&db).await.unwrap(), 20);
     populate_lexical_fixture(&db, 260).await;
     populate_native_lexical_ties(&db).await;
     crate::schema::initialize_schema(&db).await.unwrap();

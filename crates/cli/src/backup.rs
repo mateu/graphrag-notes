@@ -3186,39 +3186,47 @@ mod tests {
                 .unwrap()
                 .replayed
         );
-        // Construct a physical schema22 archive from the recovered fixture:
+        // Construct a genuine schema22 archive from the recovered fixture:
         // its enrichment input is deliberately gone, while the immutable
         // journal receipt remains the only authority for its job family.
-        let legacy_fixture_archive = temp.path().join("schema23-legacy-fixture");
-        create_backup(&reopened, &legacy_fixture_archive, true)
+        let legacy_fixture_db = migrations::test_support::init_memory_at_version(22)
             .await
             .unwrap();
-        let legacy_fixture_path = temp.path().join("schema22-fixture");
-        restore_backup(&legacy_fixture_archive, &legacy_fixture_path, false)
+        migrations::test_support::copy_fixture_records(&restored_db, &legacy_fixture_db)
             .await
             .unwrap();
-        let legacy_fixture_db = init_persistent(&legacy_fixture_path).await.unwrap();
+        let legacy_fixture = Repository::new(legacy_fixture_db.clone());
+        assert_eq!(
+            migrations::current_version(&legacy_fixture_db)
+                .await
+                .unwrap(),
+            22
+        );
         let original_job =
             graphrag_db::parse_record_id(&admitted.job_id, Some("processing_job")).unwrap();
         legacy_fixture_db
-            .query(
-                "REMOVE FIELD remote_enrichment_job ON processing_job; \
-                 UPDATE processing_job UNSET remote_enrichment_job; \
-                 UPDATE $job UNSET remote_input.enrichment; \
-                 DELETE schema_migration WHERE version >= 23;",
-            )
+            .query("UPDATE $job UNSET remote_input.enrichment;")
             .bind(("job", original_job))
             .await
             .unwrap()
             .check()
             .unwrap();
-        let legacy_fixture = Repository::new(legacy_fixture_db);
+        let legacy_jobs = legacy_fixture
+            .portable_records_page("processing_job", 0, 100)
+            .await
+            .unwrap();
+        assert!(!legacy_jobs.is_empty());
+        assert!(legacy_jobs.iter().all(|job| job
+            .get("remote_enrichment_job")
+            .is_none_or(serde_json::Value::is_null)));
         let legacy_archive = temp.path().join("schema22-archive");
         create_backup(&legacy_fixture, &legacy_archive, true)
             .await
             .unwrap();
         let mut legacy_manifest = read_manifest(&legacy_archive).unwrap();
-        legacy_manifest.schema_version = 22;
+        legacy_manifest.schema_version = migrations::current_version(&legacy_fixture_db)
+            .await
+            .unwrap();
         // Valid archives need not retain exporter table order. Put every
         // markerless job before its receipt, including the damaged conversion.
         let legacy_payload = legacy_archive.join(&legacy_manifest.payload.path);
