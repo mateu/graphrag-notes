@@ -132,6 +132,36 @@ class GraphEvaluationTests(unittest.TestCase):
         self.assertIn('"stable_on": [true, false]', diff)
         self.assertIn('pass=fail -> pass', diff)
 
+    def test_seed_revision_diff_fixtures(self):
+        fixtures = Path(__file__).parent / 'fixtures'
+        old = json.loads((fixtures / 'graph-eval-20261102.json').read_text())
+        new = json.loads((fixtures / 'graph-eval-20261103.json').read_text())
+        lines = eval_graph.compare(new, old).splitlines()
+        expected = {
+            'Q2': (['memory/2026-08-01-0701.md', 'memory/2026-10-07-pr142-review.md'],
+                   ['memory/2026-07-25-1234.md', 'memory/2026-07-31-2051.md']),
+            'Q7': (['memory/2026-10-07-pr142-review.md', 'memory/2026-10-08-codex-cli-version.md'],
+                   ['memory/2026-10-15-graphrag-ingestion-failure.md', 'memory/2026-10-27-write-conflict-retry.md']),
+        }
+        flips = {key: [False, True] for key in
+                 ('off_finds_seed', 'off_finds_support', 'on_finds_seed', 'on_finds_support')}
+        self.assertEqual(len(lines), 8)
+        self.assertEqual(new['protocol'], old['protocol'])
+        for row, line in zip(new['questions'], lines):
+            qid = row['id']
+            gained, lost = expected.get(qid, ([], []))
+            for policy in ('off', 'on'):
+                self.assertIn('%s gained=%s lost=%s' %
+                              (policy, json.dumps(gained), json.dumps(lost)), line)
+            self.assertIn('flags_flipped=' + json.dumps(flips if qid in expected else {}, sort_keys=True), line)
+            self.assertIn('pass=fail -> fail', line)
+            self.assertTrue(all(r['error'] is None for r in row['rounds']))
+            if qid in expected:
+                self.assertEqual(row['seed'], ['memory/2026-10-07-pr142-review.md'])
+                self.assertTrue(row['summary']['off_finds_seed'])
+                # Same-file support already found off cannot establish graph lift.
+                self.assertFalse(row['summary']['off_lacks_support'])
+
     def argv(self, *extra):
         (self.root / 'suite.json').write_text(json.dumps({'questions': [Q]}))
         (self.root / 'map.json').write_text(json.dumps(MAP))

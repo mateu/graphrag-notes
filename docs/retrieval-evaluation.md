@@ -216,3 +216,17 @@ its absent edge paths are classified as fail. Its old support paths also
 predate the dated-support suite revision, so record that coverage difference
 when comparing. Preserve the same corpus, suite and protocol to isolate ranking
 changes; timing drift alone is not evidence of graph usefulness.
+
+
+### Suite revisions
+
+Revise a question or its expected seed only after reading the admitted source and
+recording the exact supporting passage and reason (including why a retired seed
+was not answer evidence). Keep the original suite rows and dated fixtures for
+lineage; write a new dated suite and baseline rather than overwriting them. Diff
+old versus new paths and explain each changed question, coverage target, and any
+concurrent corpus/accepted-edge change separately from retrieval improvements.
+Record whether the new seed is already found graph-off (only support/edge lift
+remains to test) or is a budgeted retrieval miss; do not infer a component-level
+miss class without a trace. A narrowed question is not evidence for its retired,
+broader claim.
