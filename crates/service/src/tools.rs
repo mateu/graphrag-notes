@@ -739,11 +739,21 @@ impl ToolService {
                     max_total_tokens: input.max_total_tokens,
                     max_chunk_tokens: input.max_chunk_tokens,
                 };
+                let encoded_id = serde_json::to_vec(&context.id).map_err(|_| {
+                    ErrorData::internal_error("Cannot encode request identity.", None)
+                })?;
+                let rpc_id_sha256 = format!("{:x}", Sha256::digest(encoded_id));
+                let span = tracing::debug_span!("mcp_context", rpc_id_sha256 = %rpc_id_sha256);
                 let cancellation = ActionCancellation::new();
-                let result = tokio::select! {
-                    result = self.application.build_context(request, cancellation.clone()) => result,
-                    _ = context.ct.cancelled() => { cancellation.cancel(); Err(ApplicationError::Cancelled) }
-                };
+                let result = async {
+                    let started = std::time::Instant::now();
+                    let result = tokio::select! {
+                        result = self.application.build_context(request, cancellation.clone()) => result,
+                        _ = context.ct.cancelled() => { cancellation.cancel(); Err(ApplicationError::Cancelled) }
+                    };
+                    tracing::debug!(phase = "application_context", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, success = result.is_ok(), "Retrieval phase completed");
+                    result
+                }.instrument(span).await;
                 match result {
                     Ok(context) => success(context),
                     Err(error) => application_failure(error),

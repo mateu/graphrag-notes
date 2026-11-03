@@ -1109,6 +1109,7 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
+        let started = std::time::Instant::now();
         let mut all_term_results = self
             .fulltext_search_notes_with_operator(
                 query,
@@ -1119,6 +1120,12 @@ impl Repository {
                 Vec::new(),
             )
             .await?;
+
+        tracing::debug!(
+            phase = "note_fulltext_all",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "Retrieval phase completed"
+        );
 
         // SurrealDB's default match operator requires every analyzed term in a
         // single chunk. Natural-language recall queries often spread their
@@ -1132,9 +1139,15 @@ impl Repository {
             Vec::new()
         };
         if terms.len() >= 2 {
+            let started = std::time::Instant::now();
             let any_term_results = self
                 .fulltext_search_notes_with_operator(query, limit, since, source_uri, true, terms)
                 .await?;
+            tracing::debug!(
+                phase = "note_fulltext_any",
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                "Retrieval phase completed"
+            );
             for result in any_term_results {
                 if all_term_results
                     .iter()
@@ -1178,11 +1191,14 @@ impl Repository {
             coverage_predicate,
             match_tier,
         ) = if any_term {
+            // Count distinct query terms present across the same three fields.
+            // Tokenize each field once per candidate, not once per query term;
+            // intersection preserves the former per-term OR/set semantics.
             (
                     "@0,OR@",
                     "@1,OR@",
                     "@2,OR@",
-                    "AND array::len(array::filter($terms, |$term| array::includes(search::analyze('ascii', search_content ?? ''), $term) OR array::includes(search::analyze('ascii', content), $term) OR array::includes(search::analyze('ascii', title ?? ''), $term))) >= 2",
+                    "AND array::len(array::intersect($terms, array::concat(search::analyze('ascii', search_content ?? ''), search::analyze('ascii', content), search::analyze('ascii', title ?? '')))) >= 2",
                     1,
                 )
         } else {

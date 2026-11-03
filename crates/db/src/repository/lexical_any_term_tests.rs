@@ -152,3 +152,25 @@ async fn hybrid_fusion_keeps_all_term_lexical_hits_ahead_of_higher_bm25_fallback
     assert_eq!(record_id_to_string(&results[0].id), id(&all_terms));
     assert_eq!(results[0].fusion.fulltext_rank, Some(1));
 }
+
+#[tokio::test]
+async fn keyword_fallback_counts_distinct_terms_across_fields_not_repeated_occurrences() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let two_terms = repo
+        .create_note(Note::new("beta beta").with_title("alpha alpha"))
+        .await
+        .unwrap();
+    repo.create_note(Note::new("alpha alpha").with_title("alpha alpha"))
+        .await
+        .unwrap();
+
+    // Repetition within the query, within a field, and across fields must not
+    // turn a one-distinct-term candidate into an eligible partial match.
+    let results = repo
+        .fulltext_search("alpha alpha beta gamma", 10)
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(record_id_to_string(&results[0].id), id(&two_terms));
+}
