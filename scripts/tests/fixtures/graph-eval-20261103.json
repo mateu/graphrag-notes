@@ -1,0 +1,1476 @@
+{
+  "schema_version": 1,
+  "read_only": true,
+  "metadata": {
+    "source_revision": "eabe6e7",
+    "accepted_edge_count": 0,
+    "endpoint_host": "127.0.0.1",
+    "started_at": "2026-11-03T02:17:13.985097+00:00",
+    "completed_at": "2026-11-03T02:17:47.262162+00:00",
+    "source_map_size": 843,
+    "mcp_protocol": "2025-11-25",
+    "suite_sha256": "0c591bbac3e11386a8933e7582ce635926e4e72b4c4f729ce52c6ac08a430140",
+    "runner_sha256": "dfb42b21f6fee32d3a0214dc3ec473e4974807cb2a1d6ac9ba70f131d58bccb5"
+  },
+  "protocol": {
+    "scope": "notes",
+    "max_chunks": 2,
+    "max_total_tokens": 1000,
+    "max_chunk_tokens": 400,
+    "policies": [
+      "off",
+      "on",
+      "on",
+      "off"
+    ]
+  },
+  "questions": [
+    {
+      "id": "Q1",
+      "seed": [
+        "memory/2026-08-08.md"
+      ],
+      "support": [
+        "memory/2026-07-31.md"
+      ],
+      "allowed_relations": [
+        "depends_on",
+        "resolved_by"
+      ],
+      "coverage": {
+        "memory/2026-08-08.md": true,
+        "memory/2026-07-31.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 1027,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-1227.md",
+            "memory/2026-09-19-0701.md"
+          ],
+          "scores": [
+            0.015223214402794838,
+            0.01149425283074379
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 692,
+          "expected_found": {
+            "memory/2026-08-08.md": false,
+            "memory/2026-07-31.md": false
+          },
+          "response_sha256": "75efdbd0c0e684a7676a1694703a64aba8064634d04886ad24b854a931167454"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1084,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-1227.md",
+            "memory/2026-09-19-0701.md"
+          ],
+          "scores": [
+            0.015223214402794838,
+            0.01149425283074379
+          ],
+          "chunk_graph": [
+            {
+              "hops": 0,
+              "seed_note_id": "note:5ec6a9cd84a310725d2232f99ed6322659169b991998a967b3f45dd7e6361ac2",
+              "decay": 1.0,
+              "score": 0.004098360426723957,
+              "path": []
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 5,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 692,
+          "expected_found": {
+            "memory/2026-08-08.md": false,
+            "memory/2026-07-31.md": false
+          },
+          "response_sha256": "2925e8010969e3cbe747bde296bfdc1964f8770dad3a311cfbcdbb327a118735"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1098,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-1227.md",
+            "memory/2026-09-19-0701.md"
+          ],
+          "scores": [
+            0.015223214402794838,
+            0.01149425283074379
+          ],
+          "chunk_graph": [
+            {
+              "hops": 0,
+              "seed_note_id": "note:5ec6a9cd84a310725d2232f99ed6322659169b991998a967b3f45dd7e6361ac2",
+              "decay": 1.0,
+              "score": 0.004098360426723957,
+              "path": []
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 5,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 692,
+          "expected_found": {
+            "memory/2026-08-08.md": false,
+            "memory/2026-07-31.md": false
+          },
+          "response_sha256": "2925e8010969e3cbe747bde296bfdc1964f8770dad3a311cfbcdbb327a118735"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 950,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-31-1227.md",
+            "memory/2026-09-19-0701.md"
+          ],
+          "scores": [
+            0.015223214402794838,
+            0.01149425283074379
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 692,
+          "expected_found": {
+            "memory/2026-08-08.md": false,
+            "memory/2026-07-31.md": false
+          },
+          "response_sha256": "75efdbd0c0e684a7676a1694703a64aba8064634d04886ad24b854a931167454"
+        }
+      ],
+      "summary": {
+        "off_finds_seed": false,
+        "on_finds_seed": false,
+        "off_finds_support": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 2,
+        "stable_off": true,
+        "stable_on": true,
+        "off_lacks_support": true,
+        "on_returns_support_via_allowed_path": false,
+        "answer_differs_materially": "unknown",
+        "pass": "fail"
+      }
+    },
+    {
+      "id": "Q2",
+      "seed": [
+        "memory/2026-10-07-pr142-review.md"
+      ],
+      "support": [
+        "memory/2026-10-07-pr142-review.md"
+      ],
+      "allowed_relations": [
+        "supersedes",
+        "resolved_by"
+      ],
+      "coverage": {
+        "memory/2026-10-07-pr142-review.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 982,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-07-pr142-review.md",
+            "memory/2026-08-01-0701.md"
+          ],
+          "scores": [
+            0.016393441706895828,
+            0.014371980912983418
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 798,
+          "expected_found": {
+            "memory/2026-10-07-pr142-review.md": true
+          },
+          "response_sha256": "5f1635377cbbb3e9b34b2734edc1cf9199f2c3572ef716b0a3f0850437517e7b"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1102,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-07-pr142-review.md",
+            "memory/2026-08-01-0701.md"
+          ],
+          "scores": [
+            0.016393441706895828,
+            0.014371980912983418
+          ],
+          "chunk_graph": [
+            {
+              "hops": 0,
+              "seed_note_id": "note:bbc0cd3b98b56a6a384fbf5a8bb42a9e6a9775d735ff97758db95b1ecb3a7b18",
+              "decay": 1.0,
+              "score": 0.005737704690545797,
+              "path": []
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 3,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 798,
+          "expected_found": {
+            "memory/2026-10-07-pr142-review.md": true
+          },
+          "response_sha256": "56a850ab866985cdc7f8fb10e400d813c16f79d6a3ac19b2292f8a58840fc068"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1102,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-07-pr142-review.md",
+            "memory/2026-08-01-0701.md"
+          ],
+          "scores": [
+            0.016393441706895828,
+            0.014371980912983418
+          ],
+          "chunk_graph": [
+            {
+              "hops": 0,
+              "seed_note_id": "note:bbc0cd3b98b56a6a384fbf5a8bb42a9e6a9775d735ff97758db95b1ecb3a7b18",
+              "decay": 1.0,
+              "score": 0.005737704690545797,
+              "path": []
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 3,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 798,
+          "expected_found": {
+            "memory/2026-10-07-pr142-review.md": true
+          },
+          "response_sha256": "56a850ab866985cdc7f8fb10e400d813c16f79d6a3ac19b2292f8a58840fc068"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 992,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-07-pr142-review.md",
+            "memory/2026-08-01-0701.md"
+          ],
+          "scores": [
+            0.016393441706895828,
+            0.014371980912983418
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 798,
+          "expected_found": {
+            "memory/2026-10-07-pr142-review.md": true
+          },
+          "response_sha256": "5f1635377cbbb3e9b34b2734edc1cf9199f2c3572ef716b0a3f0850437517e7b"
+        }
+      ],
+      "summary": {
+        "off_finds_seed": true,
+        "on_finds_seed": true,
+        "off_finds_support": true,
+        "on_finds_support": true,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 2,
+        "stable_off": true,
+        "stable_on": true,
+        "off_lacks_support": false,
+        "on_returns_support_via_allowed_path": false,
+        "answer_differs_materially": "unknown",
+        "pass": "fail"
+      }
+    },
+    {
+      "id": "Q3",
+      "seed": [
+        "memory/2026-10-02-docker-prune.md"
+      ],
+      "support": [
+        "memory/2026-09-24-docker-prune.md"
+      ],
+      "allowed_relations": [
+        "related_to"
+      ],
+      "coverage": {
+        "memory/2026-10-02-docker-prune.md": true,
+        "memory/2026-09-24-docker-prune.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 879,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-02-docker-prune.md",
+            "memory/2026-10-02-docker-prune.md"
+          ],
+          "scores": [
+            0.015977822244167328,
+            0.015823235735297203
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 828,
+          "expected_found": {
+            "memory/2026-10-02-docker-prune.md": true,
+            "memory/2026-09-24-docker-prune.md": false
+          },
+          "response_sha256": "acb776f1bcb707578bb30d0a58fa01964d98ac713f972f6657664706976645f2"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1009,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-02-docker-prune.md",
+            "memory/2026-10-02-docker-prune.md"
+          ],
+          "scores": [
+            0.015977822244167328,
+            0.015823235735297203
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 828,
+          "expected_found": {
+            "memory/2026-10-02-docker-prune.md": true,
+            "memory/2026-09-24-docker-prune.md": false
+          },
+          "response_sha256": "3b6bc5fdf44029063400bbaf3206f47fcfcd0a4537a37b8884fbfdef9ee3daa8"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 998,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-02-docker-prune.md",
+            "memory/2026-10-02-docker-prune.md"
+          ],
+          "scores": [
+            0.015977822244167328,
+            0.015823235735297203
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 828,
+          "expected_found": {
+            "memory/2026-10-02-docker-prune.md": true,
+            "memory/2026-09-24-docker-prune.md": false
+          },
+          "response_sha256": "3b6bc5fdf44029063400bbaf3206f47fcfcd0a4537a37b8884fbfdef9ee3daa8"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 890,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-02-docker-prune.md",
+            "memory/2026-10-02-docker-prune.md"
+          ],
+          "scores": [
+            0.015977822244167328,
+            0.015823235735297203
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 828,
+          "expected_found": {
+            "memory/2026-10-02-docker-prune.md": true,
+            "memory/2026-09-24-docker-prune.md": false
+          },
+          "response_sha256": "acb776f1bcb707578bb30d0a58fa01964d98ac713f972f6657664706976645f2"
+        }
+      ],
+      "summary": {
+        "off_finds_seed": true,
+        "on_finds_seed": true,
+        "off_finds_support": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true,
+        "off_lacks_support": true,
+        "on_returns_support_via_allowed_path": false,
+        "answer_differs_materially": "unknown",
+        "pass": "fail"
+      }
+    },
+    {
+      "id": "Q4",
+      "seed": [
+        "memory/2026-08-17.md"
+      ],
+      "support": [
+        "memory/2026-08-15.md"
+      ],
+      "allowed_relations": [
+        "supersedes",
+        "related_to"
+      ],
+      "coverage": {
+        "memory/2026-08-17.md": true,
+        "memory/2026-08-15.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 887,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-17.md",
+            "memory/2026-08-13-1111.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014923685230314732
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 841,
+          "expected_found": {
+            "memory/2026-08-17.md": true,
+            "memory/2026-08-15.md": false
+          },
+          "response_sha256": "6afc69b6eaf76f7f107b9b6e635eed77f5b39ea0b5d238af9cd0063309fd54b8"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 989,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-17.md",
+            "memory/2026-08-13-1111.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014923685230314732
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 841,
+          "expected_found": {
+            "memory/2026-08-17.md": true,
+            "memory/2026-08-15.md": false
+          },
+          "response_sha256": "37174acb89c1519f6fcb37a21a3c68d1990619c8e458cfba51820c004dd79f8e"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1005,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-17.md",
+            "memory/2026-08-13-1111.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014923685230314732
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 841,
+          "expected_found": {
+            "memory/2026-08-17.md": true,
+            "memory/2026-08-15.md": false
+          },
+          "response_sha256": "37174acb89c1519f6fcb37a21a3c68d1990619c8e458cfba51820c004dd79f8e"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 925,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-17.md",
+            "memory/2026-08-13-1111.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014923685230314732
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 841,
+          "expected_found": {
+            "memory/2026-08-17.md": true,
+            "memory/2026-08-15.md": false
+          },
+          "response_sha256": "6afc69b6eaf76f7f107b9b6e635eed77f5b39ea0b5d238af9cd0063309fd54b8"
+        }
+      ],
+      "summary": {
+        "off_finds_seed": true,
+        "on_finds_seed": true,
+        "off_finds_support": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true,
+        "off_lacks_support": true,
+        "on_returns_support_via_allowed_path": false,
+        "answer_differs_materially": "unknown",
+        "pass": "fail"
+      }
+    },
+    {
+      "id": "Q5",
+      "seed": [
+        "memory/2026-08-04.md"
+      ],
+      "support": [
+        "memory/2026-08-09.md"
+      ],
+      "allowed_relations": [
+        "supersedes"
+      ],
+      "coverage": {
+        "memory/2026-08-04.md": true,
+        "memory/2026-08-09.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 1060,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-04.md",
+            "memory/2026-08-04.md"
+          ],
+          "scores": [
+            0.01616290956735611,
+            0.01594982109963894
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 684,
+          "expected_found": {
+            "memory/2026-08-04.md": true,
+            "memory/2026-08-09.md": false
+          },
+          "response_sha256": "8de07db74b68b2fca44e15fb78a51b8c56b2646e2c93dc2d7d21acadd536d152"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1137,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-04.md",
+            "memory/2026-08-04.md"
+          ],
+          "scores": [
+            0.01616290956735611,
+            0.01594982109963894
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 6,
+            "graph_candidates_dropped": 6,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 684,
+          "expected_found": {
+            "memory/2026-08-04.md": true,
+            "memory/2026-08-09.md": false
+          },
+          "response_sha256": "d10b2a9b76d6d214f4d5e3fe08097eab5af0b9b2fb67979121bd6d4ae817febb"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1082,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-04.md",
+            "memory/2026-08-04.md"
+          ],
+          "scores": [
+            0.01616290956735611,
+            0.01594982109963894
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 6,
+            "graph_candidates_dropped": 6,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 684,
+          "expected_found": {
+            "memory/2026-08-04.md": true,
+            "memory/2026-08-09.md": false
+          },
+          "response_sha256": "d10b2a9b76d6d214f4d5e3fe08097eab5af0b9b2fb67979121bd6d4ae817febb"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 1009,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-04.md",
+            "memory/2026-08-04.md"
+          ],
+          "scores": [
+            0.01616290956735611,
+            0.01594982109963894
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 684,
+          "expected_found": {
+            "memory/2026-08-04.md": true,
+            "memory/2026-08-09.md": false
+          },
+          "response_sha256": "8de07db74b68b2fca44e15fb78a51b8c56b2646e2c93dc2d7d21acadd536d152"
+        }
+      ],
+      "summary": {
+        "off_finds_seed": true,
+        "on_finds_seed": true,
+        "off_finds_support": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true,
+        "off_lacks_support": true,
+        "on_returns_support_via_allowed_path": false,
+        "answer_differs_materially": "unknown",
+        "pass": "fail"
+      }
+    },
+    {
+      "id": "Q6",
+      "seed": [
+        "memory/2026-08-08.md"
+      ],
+      "support": [
+        "memory/2026-08-17.md"
+      ],
+      "allowed_relations": [
+        "depends_on",
+        "related_to"
+      ],
+      "coverage": {
+        "memory/2026-08-08.md": true,
+        "memory/2026-08-17.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 1081,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-08.md",
+            "memory/2026-08-08.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014377491548657417
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 617,
+          "expected_found": {
+            "memory/2026-08-08.md": true,
+            "memory/2026-08-17.md": false
+          },
+          "response_sha256": "7afdfe66b19fb9d583f3801893ad07f85bda14d99084099ff7955210594e485f"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1665,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-08.md",
+            "memory/2026-08-08.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014377491548657417
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 617,
+          "expected_found": {
+            "memory/2026-08-08.md": true,
+            "memory/2026-08-17.md": false
+          },
+          "response_sha256": "e975a933794a18eb9bd2f57a98603c884ad23a353a67b3091cccad81da58192f"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1623,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-08.md",
+            "memory/2026-08-08.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014377491548657417
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 617,
+          "expected_found": {
+            "memory/2026-08-08.md": true,
+            "memory/2026-08-17.md": false
+          },
+          "response_sha256": "e975a933794a18eb9bd2f57a98603c884ad23a353a67b3091cccad81da58192f"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 1061,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-08-08.md",
+            "memory/2026-08-08.md"
+          ],
+          "scores": [
+            0.016052227467298508,
+            0.014377491548657417
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 617,
+          "expected_found": {
+            "memory/2026-08-08.md": true,
+            "memory/2026-08-17.md": false
+          },
+          "response_sha256": "7afdfe66b19fb9d583f3801893ad07f85bda14d99084099ff7955210594e485f"
+        }
+      ],
+      "summary": {
+        "off_finds_seed": true,
+        "on_finds_seed": true,
+        "off_finds_support": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true,
+        "off_lacks_support": true,
+        "on_returns_support_via_allowed_path": false,
+        "answer_differs_materially": "unknown",
+        "pass": "fail"
+      }
+    },
+    {
+      "id": "Q7",
+      "seed": [
+        "memory/2026-10-07-pr142-review.md"
+      ],
+      "support": [
+        "memory/2026-10-07-pr142-review.md"
+      ],
+      "allowed_relations": [
+        "resolved_by"
+      ],
+      "coverage": {
+        "memory/2026-10-07-pr142-review.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 912,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-07-pr142-review.md",
+            "memory/2026-10-08-codex-cli-version.md"
+          ],
+          "scores": [
+            0.016393441706895828,
+            0.015767933800816536
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 726,
+          "expected_found": {
+            "memory/2026-10-07-pr142-review.md": true
+          },
+          "response_sha256": "58fff12bde6ccab4af1d9ae55f430eb4e2ff5fe3d575ed5e04c7024aa89f3d8c"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 928,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-07-pr142-review.md",
+            "memory/2026-10-08-codex-cli-version.md"
+          ],
+          "scores": [
+            0.016393441706895828,
+            0.015767933800816536
+          ],
+          "chunk_graph": [
+            {
+              "hops": 0,
+              "seed_note_id": "note:bbc0cd3b98b56a6a384fbf5a8bb42a9e6a9775d735ff97758db95b1ecb3a7b18",
+              "decay": 1.0,
+              "score": 0.009180327877402306,
+              "path": []
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 3,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 726,
+          "expected_found": {
+            "memory/2026-10-07-pr142-review.md": true
+          },
+          "response_sha256": "677a1b5b3376b588a93e8ff371e4acd7c1b960baeba9e65b29e286d8f9ea71b8"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 933,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-07-pr142-review.md",
+            "memory/2026-10-08-codex-cli-version.md"
+          ],
+          "scores": [
+            0.016393441706895828,
+            0.015767933800816536
+          ],
+          "chunk_graph": [
+            {
+              "hops": 0,
+              "seed_note_id": "note:bbc0cd3b98b56a6a384fbf5a8bb42a9e6a9775d735ff97758db95b1ecb3a7b18",
+              "decay": 1.0,
+              "score": 0.009180327877402306,
+              "path": []
+            },
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 3,
+            "graph_candidates_selected": 1,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 726,
+          "expected_found": {
+            "memory/2026-10-07-pr142-review.md": true
+          },
+          "response_sha256": "677a1b5b3376b588a93e8ff371e4acd7c1b960baeba9e65b29e286d8f9ea71b8"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 866,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-10-07-pr142-review.md",
+            "memory/2026-10-08-codex-cli-version.md"
+          ],
+          "scores": [
+            0.016393441706895828,
+            0.015767933800816536
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 726,
+          "expected_found": {
+            "memory/2026-10-07-pr142-review.md": true
+          },
+          "response_sha256": "58fff12bde6ccab4af1d9ae55f430eb4e2ff5fe3d575ed5e04c7024aa89f3d8c"
+        }
+      ],
+      "summary": {
+        "off_finds_seed": true,
+        "on_finds_seed": true,
+        "off_finds_support": true,
+        "on_finds_support": true,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 2,
+        "stable_off": true,
+        "stable_on": true,
+        "off_lacks_support": false,
+        "on_returns_support_via_allowed_path": false,
+        "answer_differs_materially": "unknown",
+        "pass": "fail"
+      }
+    },
+    {
+      "id": "Q8",
+      "seed": [
+        "memory/2026-08-04.md"
+      ],
+      "support": [
+        "memory/2026-08-03.md"
+      ],
+      "allowed_relations": [
+        "depends_on",
+        "resolved_by"
+      ],
+      "coverage": {
+        "memory/2026-08-04.md": true,
+        "memory/2026-08-03.md": true
+      },
+      "rounds": [
+        {
+          "policy": "off",
+          "elapsed_ms": 922,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-21.md",
+            "memory/2026-07-16.md"
+          ],
+          "scores": [
+            0.013593203388154507,
+            0.01321052573621273
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 795,
+          "expected_found": {
+            "memory/2026-08-04.md": false,
+            "memory/2026-08-03.md": false
+          },
+          "response_sha256": "532e2b0679697accf11a4d27e6a00bfc5c8ac4c0fc9aa9292a9e0cd60a5d8595"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1054,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-21.md",
+            "memory/2026-07-16.md"
+          ],
+          "scores": [
+            0.013593203388154507,
+            0.01321052573621273
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 795,
+          "expected_found": {
+            "memory/2026-08-04.md": false,
+            "memory/2026-08-03.md": false
+          },
+          "response_sha256": "60c9ba54d97fc41b57ee05273add0d5000b03c042e30ef85ef3f9f874449994b"
+        },
+        {
+          "policy": "on",
+          "elapsed_ms": 1064,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-21.md",
+            "memory/2026-07-16.md"
+          ],
+          "scores": [
+            0.013593203388154507,
+            0.01321052573621273
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 4,
+            "graph_candidates_dropped": 4,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 795,
+          "expected_found": {
+            "memory/2026-08-04.md": false,
+            "memory/2026-08-03.md": false
+          },
+          "response_sha256": "60c9ba54d97fc41b57ee05273add0d5000b03c042e30ef85ef3f9f874449994b"
+        },
+        {
+          "policy": "off",
+          "elapsed_ms": 938,
+          "error": null,
+          "returned_paths": [
+            "memory/2026-07-21.md",
+            "memory/2026-07-16.md"
+          ],
+          "scores": [
+            0.013593203388154507,
+            0.01321052573621273
+          ],
+          "chunk_graph": [
+            null,
+            null
+          ],
+          "diagnostics": {
+            "dropped_duplicates": 0,
+            "dropped_for_budget": 0,
+            "dropped_for_entity_filter": 0,
+            "dropped_for_relevance": 0,
+            "dropped_for_source_cap": 0,
+            "dropped_near_duplicates": 0,
+            "graph_candidates_considered": 0,
+            "graph_candidates_dropped": 0,
+            "graph_candidates_selected": 0,
+            "header_tokens": 70,
+            "token_count_mode": "estimated"
+          },
+          "total_tokens": 795,
+          "expected_found": {
+            "memory/2026-08-04.md": false,
+            "memory/2026-08-03.md": false
+          },
+          "response_sha256": "532e2b0679697accf11a4d27e6a00bfc5c8ac4c0fc9aa9292a9e0cd60a5d8595"
+        }
+      ],
+      "summary": {
+        "off_finds_seed": false,
+        "on_finds_seed": false,
+        "off_finds_support": false,
+        "on_finds_support": false,
+        "on_same_paths_as_off": true,
+        "on_has_edge_path": false,
+        "on_graph_selected": 0,
+        "stable_off": true,
+        "stable_on": true,
+        "off_lacks_support": true,
+        "on_returns_support_via_allowed_path": false,
+        "answer_differs_materially": "unknown",
+        "pass": "fail"
+      }
+    }
+  ]
+}
