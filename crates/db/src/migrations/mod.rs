@@ -458,6 +458,7 @@ fn migration_failed(migration: Migration, error: impl std::fmt::Display) -> DbEr
 }
 
 /// Historical-schema constructors, excluded from normal production builds.
+/// Changes here are covered by the conditional PR migration/schema gate.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use super::{apply_migrations, DbConnection, DbError, Result, MIGRATIONS};

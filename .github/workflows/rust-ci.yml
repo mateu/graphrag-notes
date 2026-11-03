@@ -134,6 +134,33 @@ jobs:
       - name: Compare deterministic fixture with tests/baselines/retrieval-v1.json
         run: python3 scripts/run-exact-rust-test.py -p graphrag-cli --bin graphrag --test-name eval::tests::committed_retrieval_fixture_matches_versioned_baseline --nocapture
 
+  migration-regression:
+    name: conditional migration and schema fixtures
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select migration changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/run-migration-gate.py --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+      - name: No migration changes
+        if: steps.changes.outputs.selected != 'true'
+        run: echo "Migration gate passed without Rust setup; no covered paths changed."
+      - uses: dtolnay/rust-toolchain@1.97.1
+        if: steps.changes.outputs.selected == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.changes.outputs.selected == 'true'
+        with:
+          shared-key: quality-gates-v1
+      - name: Migration, historical schema and portable schema fixtures
+        if: steps.changes.outputs.selected == 'true'
+        run: python3 scripts/run-migration-gate.py --run
+
   dependency-audit:
     name: scheduled dependency and security audit
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '23 4 * * 1')
