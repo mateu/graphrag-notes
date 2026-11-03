@@ -23,6 +23,8 @@ pub use embedded::{
     validate_record_revision, EmbeddedApplication,
 };
 pub use error::{ApplicationError, ApplicationFailure, ApplicationResult};
+/// Request-local retrieval telemetry shared by transports and the embedded engine.
+pub use graphrag_db::retrieval_usage;
 pub use remote_contracts::*;
 pub use remote_endpoint_proposal_contracts::*;
 pub use remote_endpoint_proposals::remote_endpoint_proposal_fingerprint;

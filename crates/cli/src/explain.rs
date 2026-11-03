@@ -270,6 +270,7 @@ mod tests {
     #[test]
     fn jsonl_pipelines_retain_the_same_aggregate_metadata_as_json() {
         let diagnostics = AugmentDiagnostics {
+            graph_status: Default::default(),
             token_count_mode: graphrag_agents::TokenCountMode::Estimated,
             header_tokens: 2,
             dropped_duplicates: 1,

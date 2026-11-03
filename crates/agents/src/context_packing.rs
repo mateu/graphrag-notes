@@ -151,6 +151,7 @@ pub struct AugmentChunk {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AugmentDiagnostics {
+    pub graph_status: graphrag_db::retrieval_usage::GraphStatus,
     pub token_count_mode: TokenCountMode,
     pub header_tokens: usize,
     pub dropped_duplicates: usize,
@@ -433,6 +434,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         .map(|chunk| chunk.approx_tokens)
         .sum::<usize>();
     let diagnostics = AugmentDiagnostics {
+        graph_status: Default::default(),
         token_count_mode: counter.mode(),
         header_tokens: total_tokens.saturating_sub(snippet_tokens),
         dropped_duplicates,
@@ -471,6 +473,7 @@ pub(crate) fn empty_context(
     graph_summary: &GraphRetrievalSummary,
 ) -> AugmentContext {
     let diagnostics = AugmentDiagnostics {
+        graph_status: Default::default(),
         token_count_mode: mode,
         header_tokens: 0,
         dropped_duplicates: 0,

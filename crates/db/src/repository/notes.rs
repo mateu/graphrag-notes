@@ -4,6 +4,7 @@
 //! the façade. Source lifecycle and graph mutations remain in their domains.
 
 use super::*;
+use crate::retrieval_usage::{Phase, PhaseTimer};
 
 #[cfg(test)]
 #[path = "notes_edit_guard_tests.rs"]
@@ -982,7 +983,7 @@ impl Repository {
         let candidate_limit = fusion.candidate_limit(limit);
         let lexical_limit = lexical_limit.min(200);
 
-        let started = std::time::Instant::now();
+        let started = PhaseTimer::start(Phase::VectorFusion);
         let vec_results = self
             .vector_search_notes(
                 embedding.clone(),
@@ -997,6 +998,7 @@ impl Repository {
             count = vec_results.len(),
             "Retrieval phase completed"
         );
+        drop(started);
 
         let started = std::time::Instant::now();
         let mut fts_results = self
@@ -1016,6 +1018,7 @@ impl Repository {
 
         let lexical_candidates = fts_results.iter().take(lexical_limit).cloned().collect();
         fts_results.truncate(candidate_limit);
+        let _fusion = PhaseTimer::start(Phase::VectorFusion);
         let mut results = fusion::fuse(vec_results, fts_results, fusion, |existing, incoming| {
             if existing.title.is_none() {
                 existing.title = incoming.title;
@@ -1109,6 +1112,7 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<SearchResult>> {
+        let _lexical = PhaseTimer::start(Phase::Lexical);
         let started = std::time::Instant::now();
         let mut all_term_results = self
             .fulltext_search_notes_with_operator(
@@ -1312,6 +1316,7 @@ impl Repository {
     ) -> Result<Vec<MessageSearchResult>> {
         let candidate_limit = fusion.candidate_limit(limit);
 
+        let vector = PhaseTimer::start(Phase::VectorFusion);
         let vec_results = self
             .vector_search_messages(
                 embedding.clone(),
@@ -1320,10 +1325,12 @@ impl Repository {
                 source_uri.clone(),
             )
             .await?;
+        drop(vector);
         let fts_results = self
             .fulltext_search_messages(query_text, candidate_limit, since, source_uri)
             .await?;
 
+        let _fusion = PhaseTimer::start(Phase::VectorFusion);
         let mut results = fusion::fuse(vec_results, fts_results, fusion, |existing, incoming| {
             if incoming.fts_score.is_some() {
                 existing.fts_score = incoming.fts_score;
@@ -1386,6 +1393,7 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<MessageSearchResult>> {
+        let _lexical = PhaseTimer::start(Phase::Lexical);
         let since = since.map(|ts| ts.to_rfc3339());
         let results: Vec<MessageSearchResult> = self
             .db
@@ -1473,6 +1481,7 @@ impl Repository {
     ) -> Result<Vec<ConversationSearchResult>> {
         let candidate_limit = fusion.candidate_limit(limit);
 
+        let vector = PhaseTimer::start(Phase::VectorFusion);
         let vec_results = self
             .vector_search_conversation_summaries(
                 embedding.clone(),
@@ -1481,10 +1490,12 @@ impl Repository {
                 source_uri.clone(),
             )
             .await?;
+        drop(vector);
         let fts_results = self
             .fulltext_search_conversation_summaries(query_text, candidate_limit, since, source_uri)
             .await?;
 
+        let _fusion = PhaseTimer::start(Phase::VectorFusion);
         let mut results = fusion::fuse(vec_results, fts_results, fusion, |existing, incoming| {
             if incoming.fts_score.is_some() {
                 existing.fts_score = incoming.fts_score;
@@ -1544,6 +1555,7 @@ impl Repository {
         since: Option<chrono::DateTime<chrono::Utc>>,
         source_uri: Option<String>,
     ) -> Result<Vec<ConversationSearchResult>> {
+        let _lexical = PhaseTimer::start(Phase::Lexical);
         let since = since.map(|ts| ts.to_rfc3339());
         let results: Vec<ConversationSearchResult> = self
             .db

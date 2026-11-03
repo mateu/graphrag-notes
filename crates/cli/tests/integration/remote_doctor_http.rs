@@ -304,3 +304,109 @@ async fn remote_walkthrough_distinguishes_unknown_stopped_auth_transport_and_par
     assert!(!temp.path().join("must-not-exist").exists());
     task.abort();
 }
+
+/// Run the actual Python probe and CLI against a real isolated MCP service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_deploy_probe_passes_warning_doctor_and_names_empty_keyword_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let credentials = temp.path().join("credentials.json");
+    std::fs::write(
+        &credentials,
+        serde_json::to_vec(&CredentialFile {
+            schema_version: 1,
+            credentials: vec![Credential {
+                instance_id: "fictional-probe-reader".into(),
+                token_sha256: format!("{:x}", Sha256::digest(TOKEN.as_bytes())),
+                capabilities: vec![Capability::Read],
+            }],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&credentials, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let repo = Repository::new(init_memory().await.unwrap());
+    let provider = Arc::new(DeterministicEmbedder::default());
+    repo.record_embedding_metadata(
+        &graphrag_db::compatibility::EmbeddingIdentity::new("deterministic-test", "fixture", 1024),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut note = graphrag_core::Note::new("Fictional atlasprobe deployment verification");
+    note.embedding = provider.embed(&note.content, false).await.unwrap();
+    repo.create_note(note).await.unwrap();
+    let application = Arc::new(EmbeddedApplication::new(
+        repo.clone(),
+        SearchAgent::new(repo, provider.clone()),
+        provider,
+        Arc::new(FixtureEntityExtractor::default()),
+        LibrarianRuntimeConfig::default(),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listen = listener.local_addr().unwrap();
+    let endpoint = format!("http://{listen}/mcp");
+    let task = tokio::spawn(serve(
+        listener,
+        application,
+        ServiceOptions {
+            listen,
+            credentials_file: credentials,
+            ..Default::default()
+        },
+        Default::default(),
+    ));
+    let probe =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/post-deploy-probe.py");
+    for (query, success, expected) in [
+        (
+            "atlasprobe",
+            true,
+            "PASS doctor keyword_graph_off inspect_top_hit hybrid_graph_on",
+        ),
+        (
+            "nonexistentfictionalkeyword",
+            false,
+            "FAIL keyword_graph_off: no notes returned",
+        ),
+    ] {
+        let output = tokio::process::Command::new("python3")
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin")
+            .env("HOME", temp.path())
+            .env("GRAPHRAG_TOKEN", TOKEN)
+            .env("GRAPHRAG_CONFIG", temp.path().join("missing.toml"))
+            .env("GRAPHRAG_DB_PATH", temp.path().join("must-not-exist"))
+            .current_dir(temp.path())
+            .arg(&probe)
+            .args([
+                "--server",
+                &endpoint,
+                "--cli",
+                env!("CARGO_BIN_EXE_graphrag"),
+                "--query",
+                query,
+                "--timeout",
+                "15",
+            ])
+            .output()
+            .await
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.success(), success, "{stdout}\n{stderr}");
+        assert!(
+            format!("{stdout}{stderr}").contains(expected),
+            "{stdout}\n{stderr}"
+        );
+        assert!(stdout.contains("doctor: exit 1"));
+        assert!(!stdout.contains(TOKEN));
+        assert!(!stderr.contains(TOKEN));
+        println!("isolated probe success={success}: {stdout}{stderr}");
+    }
+    assert!(!temp.path().join("must-not-exist").exists());
+    task.abort();
+}

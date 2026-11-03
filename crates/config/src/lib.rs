@@ -166,6 +166,8 @@ pub struct SearchConfig {
     pub conversation_summary_weight: f32,
     /// Enable bounded accepted-edge retrieval for `--graph=auto|on`.
     pub graph_enabled: bool,
+    /// Graph-only deadline in milliseconds; zero disables the deadline.
+    pub graph_phase_budget_ms: u64,
     pub graph_max_seed_entities: usize,
     pub graph_max_seed_notes: usize,
     /// v0.2 hard-limits traversal to two accepted edge hops.
@@ -196,6 +198,7 @@ impl Default for SearchConfig {
             message_weight: 1.0,
             conversation_summary_weight: 1.0,
             graph_enabled: true,
+            graph_phase_budget_ms: 2000,
             graph_max_seed_entities: 4,
             graph_max_seed_notes: 12,
             graph_max_hops: 1,
@@ -638,6 +641,11 @@ impl RuntimeConfig {
             env,
             "GRAPHRAG_SEARCH_GRAPH_ENABLED",
             &mut self.search.graph_enabled,
+        )?;
+        set_u64(
+            env,
+            "GRAPHRAG_SEARCH_GRAPH_PHASE_BUDGET_MS",
+            &mut self.search.graph_phase_budget_ms,
         )?;
         set_usize(
             env,
