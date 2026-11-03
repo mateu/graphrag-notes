@@ -571,8 +571,11 @@ mod tests {
             FixtureSynthesisGenerator::fixed(draft.to_string()).with_delay(Duration::from_secs(5));
         let application = application.with_alchemist(runtime(slow.clone(), CitationPolicy::Drop));
         let started = std::time::Instant::now();
+        // Seed retrieval runs inside the same deadline before the provider
+        // call. Leave it room on a slow runner, so the deadline expires
+        // during the 5 s generation that the request count below proves.
         let request = SynthesisRequest {
-            deadline_ms: Some(60),
+            deadline_ms: Some(1_000),
             ..SynthesisRequest::for_seed(seed.clone())
         };
         let result = application
@@ -580,7 +583,7 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(SynthesisError::DeadlineExceeded { deadline_ms: 60 })
+            Err(SynthesisError::DeadlineExceeded { deadline_ms: 1_000 })
         ));
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(slow.requests().len(), 1);

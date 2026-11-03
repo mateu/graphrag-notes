@@ -417,11 +417,14 @@ async fn disabled_by_default_and_deadline_bounded() {
     ))
     .await;
     let started = std::time::Instant::now();
+    // Seed retrieval runs inside the same deadline before the provider call.
+    // Leave it room on a slow runner, so the deadline expires during the 5 s
+    // generation that the request count below proves.
     let result = fixture
         .tool(
             "synthesist",
             "synthesize_notes",
-            json!({"seed": corpus.seed, "deadline_ms": 100}),
+            json!({"seed": corpus.seed, "deadline_ms": 1_000}),
         )
         .await;
     assert_eq!(error(&result), "deadline_exceeded");

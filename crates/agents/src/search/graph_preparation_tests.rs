@@ -143,7 +143,14 @@ async fn retained_lexical_prefix_matches_complete_legacy_graph_at_sparse_and_den
                             1.0,
                             1.0,
                             1.0,
-                        );
+                        )
+                        // `legacy_graph` runs its graph phase without a budget.
+                        // Disable the wall-clock budget here as well, so the
+                        // comparison cannot depend on runner speed.
+                        .with_graph_config(GraphRetrievalConfig {
+                            phase_budget_ms: 0,
+                            ..Default::default()
+                        });
                 for (query, since, uri) in [
                     ("Atlas", None, None),
                     ("Launch Atlas retries", None, None),
@@ -167,11 +174,19 @@ async fn retained_lexical_prefix_matches_complete_legacy_graph_at_sparse_and_den
                             )
                             .await
                             .unwrap();
-                        assert_eq!(
-                            snapshot(&old),
-                            snapshot(&new),
+                        let context = format!(
                             "count={count}, dense={dense}, min_pool={min_pool}, mode={mode:?}"
                         );
+                        assert_eq!(
+                            new.graph_status,
+                            if mode == GraphMode::Off {
+                                GraphStatus::Off
+                            } else {
+                                GraphStatus::Ok
+                            },
+                            "{context}: the graph phase must complete"
+                        );
+                        assert_eq!(snapshot(&old), snapshot(&new), "{context}");
                         assert!(new.hits.len() <= 2);
                         assert!(new.summary.entities_matched <= 4);
                         assert!(new.summary.candidates_considered <= 32);

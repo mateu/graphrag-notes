@@ -9,6 +9,13 @@
 //! `GRAPHRAG_GRAPH_LATENCY_REPORT` writes JSON to a new path, refusing overwrite.
 //! Timings are observations, never pass/fail thresholds. Independently measured
 //! repository stages are probes and must not be summed as an end-to-end trace.
+//!
+//! The production graph-phase budget (`phase_budget_ms`, 2,000 ms by default)
+//! is disabled here. On a slow or contended host it would turn some requests
+//! into the graph-off fallback, so the observations would stop measuring graph
+//! retrieval and the replay comparison would depend on runner speed. Every
+//! graph `auto`/`on` request must therefore report a completed graph phase.
+//! Budget expiry has deterministic coverage in `search::deadline_tests`.
 
 use chrono::{Duration, Utc};
 use graphrag_agents::{
@@ -16,7 +23,10 @@ use graphrag_agents::{
     SearchScope,
 };
 use graphrag_core::{record_id_to_string, Entity, EntityType, Note, Source};
-use graphrag_db::{compatibility::EmbeddingIdentity, init_memory, DbConnection, Repository};
+use graphrag_db::{
+    compatibility::EmbeddingIdentity, init_memory, retrieval_usage::GraphStatus, DbConnection,
+    Repository,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
@@ -233,7 +243,13 @@ impl Fixture {
         let search = SearchAgent::new(
             repo.clone(),
             Arc::new(DeterministicEmbedder::default().with_default_embedding(query_vector())),
-        );
+        )
+        // Only the wall-clock budget changes; every other graph bound keeps
+        // its production default.
+        .with_graph_config(GraphRetrievalConfig {
+            phase_budget_ms: 0,
+            ..GraphRetrievalConfig::default()
+        });
         Self {
             db,
             repo,
@@ -296,7 +312,29 @@ impl Fixture {
         (mentioned, edge_count)
     }
 
-    fn assert_results(&self, case: Case, mode: GraphMode, results: &GraphSearchResults) {
+    fn assert_results(
+        &self,
+        case: Case,
+        mode: GraphMode,
+        request: &str,
+        results: &GraphSearchResults,
+    ) {
+        // A graph request that did not complete its graph phase returned the
+        // graph-off fallback. Timing or comparing that fallback would measure
+        // nothing about graph retrieval, so fail instead of passing quietly.
+        let completed = if matches!(mode, GraphMode::Off) {
+            GraphStatus::Off
+        } else {
+            GraphStatus::Ok
+        };
+        assert_eq!(
+            results.graph_status,
+            completed,
+            "{} graph={mode:?} {request}: graph phase reported {} instead of {}",
+            case.name,
+            results.graph_status.as_str(),
+            completed.as_str()
+        );
         assert!(results.hits.len() <= 5);
         assert!(results.summary.entities_matched <= 4);
         assert!(results.summary.candidates_considered <= 32);
@@ -553,10 +591,10 @@ impl Fixture {
                 .await
                 .unwrap();
             let first_ms = ms(started);
-            self.assert_results(case, mode, &first);
+            self.assert_results(case, mode, "first request", &first);
             let expected = snapshot(&first);
             let mut warmed_ms = Vec::new();
-            for _ in 0..rounds {
+            for round in 0..rounds {
                 let started = Instant::now();
                 let result = self
                     .search
@@ -571,11 +609,14 @@ impl Fixture {
                     .await
                     .unwrap();
                 warmed_ms.push(ms(started));
-                self.assert_results(case, mode, &result);
+                let request = format!("warmed round {round}");
+                self.assert_results(case, mode, &request, &result);
                 assert_eq!(
                     snapshot(&result),
                     expected,
-                    "ranking/evidence changed between identical warmed requests"
+                    "ranking/evidence changed between identical warmed requests: {} graph={mode:?} {request}, graph_status={} on both",
+                    case.name,
+                    result.graph_status.as_str()
                 );
             }
             let mut sorted = warmed_ms.clone();
