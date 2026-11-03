@@ -1191,11 +1191,14 @@ impl Repository {
             coverage_predicate,
             match_tier,
         ) = if any_term {
+            // Count distinct query terms present across the same three fields.
+            // Tokenize each field once per candidate, not once per query term;
+            // intersection preserves the former per-term OR/set semantics.
             (
                     "@0,OR@",
                     "@1,OR@",
                     "@2,OR@",
-                    "AND array::len(array::filter($terms, |$term| array::includes(search::analyze('ascii', search_content ?? ''), $term) OR array::includes(search::analyze('ascii', content), $term) OR array::includes(search::analyze('ascii', title ?? ''), $term))) >= 2",
+                    "AND array::len(array::intersect($terms, array::concat(search::analyze('ascii', search_content ?? ''), search::analyze('ascii', content), search::analyze('ascii', title ?? '')))) >= 2",
                     1,
                 )
         } else {
