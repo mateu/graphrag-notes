@@ -15,6 +15,7 @@ mod remote_capture_http;
 mod remote_commands;
 mod remote_doctor_http;
 mod remote_mutation_http;
+mod remote_synthesis_http;
 mod workspace_commands;
 
 /// Libtest name of `test` in `module` (pass `module_path!()`), for tests that

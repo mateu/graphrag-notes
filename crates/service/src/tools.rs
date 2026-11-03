@@ -314,6 +314,8 @@ fn catalog() -> Vec<(Capability, Tool)> {
             ),
         ),
     ];
+    tools.push(crate::alchemist::catalog());
+
     tools.push(crate::endpoint_proposals::catalog());
     tools.extend(crate::mutations::catalog());
     tools.extend(crate::uploads::catalog());
@@ -607,6 +609,10 @@ impl ToolService {
             .into());
         }
         let result = match request.name.as_ref() {
+            crate::alchemist::TOOL => {
+                crate::alchemist::call(self, request, principal, context.ct.clone()).await
+            }
+
             "propose_endpoint_relationship" => {
                 crate::endpoint_proposals::call(self, request, principal).await
             }

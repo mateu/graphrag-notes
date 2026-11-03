@@ -275,6 +275,9 @@ pub(crate) async fn run(cli: &Cli, server: &str) -> Result<()> {
         )
         .await;
     }
+    if matches!(cli.command, Commands::Synthesize { .. }) {
+        return crate::alchemist::run_remote(cli, url.as_str()).await;
+    }
     let mut invocation = invocation(cli, url.as_str()).await?;
     let value = call_tool(
         cli,
