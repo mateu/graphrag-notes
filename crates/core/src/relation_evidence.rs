@@ -260,15 +260,14 @@ pub fn relation_policy(relation: &EdgeType) -> Option<RelationPolicy> {
     })
 }
 
-fn policy_for_name(relation: &str) -> Option<RelationPolicy> {
-    let edge_type = match relation {
+fn relation_for_name(relation: &str) -> Option<EdgeType> {
+    Some(match relation {
         "supports" => EdgeType::Supports,
         "contradicts" => EdgeType::Contradicts,
         "derived_from" => EdgeType::DerivedFrom,
         "related_to" => EdgeType::RelatedTo,
         _ => return None,
-    };
-    relation_policy(&edge_type)
+    })
 }
 
 /// One verbatim span with offsets computed by the server.
@@ -448,6 +447,8 @@ pub enum AssessmentViolation {
     LinkReferenceNotInQuote,
     #[error("the link reference does not name the other endpoint (its note ID, title, source title, source URI or file name)")]
     LinkReferenceUnmatched,
+    #[error("the link must be quoted from one assessed endpoint and name the other")]
+    LinkEndpoints,
     #[error("declared independent lineage contradicts the deterministic finding ({0})")]
     DeclaredIndependentContradicted(&'static str),
     #[error("same-source or same-lineage endpoints cannot be supports: copies and summaries of one origin are not independent corroboration; propose derived_from instead")]
@@ -456,6 +457,10 @@ pub enum AssessmentViolation {
     Version(u32),
     #[error("malformed evidence assessment: {0}")]
     Malformed(String),
+    #[error(
+        "the stored evidence assessment does not match its endpoints at their pinned revisions"
+    )]
+    Unverified,
 }
 
 fn check_text(value: &str, field: &'static str) -> Result<(), AssessmentViolation> {
@@ -641,12 +646,30 @@ fn locate(content: &str, quote: &str) -> Option<SupportSpan> {
     })
 }
 
-fn span_matches(content: &str, quote: &str, start: u64, end: u64) -> bool {
-    let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
-        return false;
-    };
-    start <= end && content.get(start..end) == Some(quote)
+/// Whether stored offsets span exactly `quote`'s bytes.
+fn located(quote: &str, start: u64, end: u64) -> bool {
+    end.checked_sub(start) == u64::try_from(quote.len()).ok()
 }
+
+/// Whether a stored lineage is one [`assess`] can produce for endpoints whose
+/// recorded origins are (or are not) the same.
+fn lineage_consistent(lineage: LineageAssessment, shared_origin: bool) -> bool {
+    let basis_follows = match lineage.basis {
+        LineageBasis::SameSource => shared_origin,
+        LineageBasis::IdenticalSourceContent => !shared_origin,
+        LineageBasis::DeclaredSameOrigin => {
+            !shared_origin && lineage.declared == DeclaredLineage::SameOrigin
+        }
+        LineageBasis::DistinctOrigins => {
+            !shared_origin && lineage.declared != DeclaredLineage::SameOrigin
+        }
+    };
+    basis_follows
+        && lineage.same_origin == (lineage.basis != LineageBasis::DistinctOrigins)
+        && (lineage.declared != DeclaredLineage::Independent || !lineage.same_origin)
+}
+
+const TWO_ENDPOINTS: &str = "assessment must describe two distinct endpoints with support";
 
 fn normalized(value: &str) -> String {
     value.trim().to_lowercase()
@@ -777,8 +800,12 @@ pub fn assess(
 }
 
 impl EvidenceAssessment {
-    /// Parse a stored object and re-check its internal invariants. Anything
-    /// unparseable, of another version, or inconsistent fails closed.
+    /// Parse a stored object and re-check every invariant that needs no
+    /// endpoint content: the relation's direction, mode and link gates, the
+    /// request bounds, located and distinct spans, a link quoted from one
+    /// endpoint that names the other, and a lineage that follows from the
+    /// recorded origins. Anything unparseable, of another version, or
+    /// inconsistent fails closed. [`Self::verify`] adds the content checks.
     pub fn from_stored(value: &serde_json::Value) -> Result<Self, AssessmentViolation> {
         if let Some(version) = value.get("version").and_then(serde_json::Value::as_u64) {
             if version != u64::from(EVIDENCE_ASSESSMENT_VERSION) {
@@ -792,35 +819,120 @@ impl EvidenceAssessment {
         if assessment.version != EVIDENCE_ASSESSMENT_VERSION {
             return Err(AssessmentViolation::Version(assessment.version));
         }
-        let policy = policy_for_name(&assessment.relation)
+        let relation = relation_for_name(&assessment.relation)
             .ok_or_else(|| AssessmentViolation::UnsupportedRelation(assessment.relation.clone()))?;
-        check_policy(policy, assessment.direction, assessment.evidence_mode)?;
-        let roles = assessment
-            .endpoints
-            .iter()
-            .map(|endpoint| endpoint.role)
-            .collect::<Vec<_>>();
-        if roles != [EndpointRole::From, EndpointRole::To]
-            || assessment.endpoints[0].note == assessment.endpoints[1].note
-            || assessment
-                .endpoints
-                .iter()
-                .any(|endpoint| endpoint.support.is_empty())
+        let [from, to] = assessment.endpoints.as_slice() else {
+            return Err(AssessmentViolation::Malformed(TWO_ENDPOINTS.into()));
+        };
+        if from.role != EndpointRole::From || to.role != EndpointRole::To || from.note == to.note {
+            return Err(AssessmentViolation::Malformed(TWO_ENDPOINTS.into()));
+        }
+        for endpoint in [from, to] {
+            if endpoint.support.is_empty() {
+                return Err(AssessmentViolation::Malformed(TWO_ENDPOINTS.into()));
+            }
+            for (index, span) in endpoint.support.iter().enumerate() {
+                check_text(&span.quote, "support span")?;
+                if endpoint.support[..index]
+                    .iter()
+                    .any(|earlier| earlier.quote == span.quote)
+                {
+                    return Err(AssessmentViolation::DuplicateSpan(endpoint.role.as_str()));
+                }
+                if span.occurrences == 0 || !located(&span.quote, span.byte_start, span.byte_end) {
+                    return Err(AssessmentViolation::Malformed(
+                        "support span offsets do not locate its quote".into(),
+                    ));
+                }
+            }
+        }
+        let policy = validate_request(&relation, &assessment.claims()?)?;
+        if assessment
+            .link
+            .as_ref()
+            .is_some_and(|link| !located(&link.quote, link.byte_start, link.byte_end))
         {
             return Err(AssessmentViolation::Malformed(
-                "assessment must describe two distinct endpoints with support".into(),
+                "link offsets do not locate its quote".into(),
             ));
-        }
-        if policy.requires_link
-            && assessment.evidence_mode.admits_accepted_graph()
-            && assessment.link.is_none()
-        {
-            return Err(AssessmentViolation::LinkRequired);
         }
         if assessment.lineage.same_origin && !policy.same_origin_allowed {
             return Err(AssessmentViolation::SameOriginSupports);
         }
+        if !lineage_consistent(assessment.lineage, from.origin == to.origin) {
+            return Err(AssessmentViolation::Malformed(
+                "lineage does not follow from the endpoint origins".into(),
+            ));
+        }
         Ok(assessment)
+    }
+
+    /// The proposer's claims as a request, so stored evidence can be checked
+    /// again. A link must be quoted from one endpoint and name the other.
+    fn claims(&self) -> Result<EvidenceAssessmentRequest, AssessmentViolation> {
+        let [from, to] = self.endpoints.as_slice() else {
+            return Err(AssessmentViolation::Malformed(TWO_ENDPOINTS.into()));
+        };
+        let link = match &self.link {
+            None => None,
+            Some(link) => {
+                let pair = (link.note.as_str(), link.target.as_str());
+                let endpoint = if pair == (from.note.as_str(), to.note.as_str()) {
+                    EndpointRole::From
+                } else if pair == (to.note.as_str(), from.note.as_str()) {
+                    EndpointRole::To
+                } else {
+                    return Err(AssessmentViolation::LinkEndpoints);
+                };
+                Some(LinkEvidenceRequest {
+                    endpoint,
+                    quote: link.quote.clone(),
+                    reference: link.reference.clone(),
+                })
+            }
+        };
+        let proposer = match &self.proposer {
+            ProposerRecord {
+                generator: Some(generator),
+                generator_version,
+                model,
+                ..
+            } => Some(ProposerDeclaration {
+                generator: generator.clone(),
+                generator_version: generator_version.clone(),
+                model: model.clone(),
+            }),
+            ProposerRecord {
+                generator_version: None,
+                model: None,
+                ..
+            } => None,
+            _ => {
+                return Err(AssessmentViolation::Malformed(
+                    "proposer tooling is recorded without a generator".into(),
+                ))
+            }
+        };
+        let additional = |endpoint: &EndpointEvidence| {
+            endpoint
+                .support
+                .iter()
+                .skip(1)
+                .map(|span| span.quote.clone())
+                .collect()
+        };
+        Ok(EvidenceAssessmentRequest {
+            evidence_mode: self.evidence_mode,
+            direction: self.direction,
+            lineage: self.lineage.declared,
+            from_support: additional(from),
+            to_support: additional(to),
+            link,
+            candidate: self.candidate.clone(),
+            proposer,
+            alternative_explanation: self.alternative_explanation.clone(),
+            scope: self.scope.clone(),
+        })
     }
 
     /// Analogy and hypothesis assessments stay pending.
@@ -828,28 +940,24 @@ impl EvidenceAssessment {
         self.evidence_mode.admits_accepted_graph()
     }
 
-    /// Whether the recorded endpoint notes are exactly this pair (any order).
-    pub fn describes_pair(&self, first: &str, second: &str) -> bool {
-        let notes = [
-            self.endpoints[0].note.as_str(),
-            self.endpoints[1].note.as_str(),
-        ];
-        notes == [first, second] || notes == [second, first]
-    }
-
-    /// Re-check every span recorded for `note` against its current content.
-    /// Used at acceptance; the endpoint revision check already pins content.
-    pub fn spans_match(&self, note: &str, content: &str) -> bool {
-        let spans_ok = self
-            .endpoints
-            .iter()
-            .filter(|endpoint| endpoint.note == note)
-            .flat_map(|endpoint| &endpoint.support)
-            .all(|span| span_matches(content, &span.quote, span.byte_start, span.byte_end));
-        let link_ok = self.link.as_ref().is_none_or(|link| {
-            link.note != note || span_matches(content, &link.quote, link.byte_start, link.byte_end)
-        });
-        spans_ok && link_ok
+    /// Re-run [`assess`] on the stored claims against both endpoints at their
+    /// pinned revisions, in request order, and require exactly the stored
+    /// object: relation, direction and mode gates, every span offset and
+    /// occurrence count, origin groups, the link holder, target, verbatim
+    /// quote and matched identifier, and the lineage finding. Acceptance runs
+    /// this, so restored or tampered evidence fails closed.
+    pub fn verify(
+        &self,
+        relation: &EdgeType,
+        from: &EndpointSnapshot<'_>,
+        to: &EndpointSnapshot<'_>,
+    ) -> Result<(), AssessmentViolation> {
+        let derived = assess(relation, &self.claims()?, &self.proposer.actor, from, to)?;
+        if derived == *self {
+            Ok(())
+        } else {
+            Err(AssessmentViolation::Unverified)
+        }
     }
 }
 
@@ -1098,8 +1206,18 @@ mod tests {
             assessment.candidate.as_ref().unwrap().similarity,
             Some(0.81)
         );
-        assert!(assessment.spans_match("note:a", A));
-        assert!(!assessment.spans_match("note:a", "changed"));
+        assert_eq!(assessment.verify(&EdgeType::Supports, &from, &to), Ok(()));
+        assert_eq!(
+            assessment.verify(
+                &EdgeType::Supports,
+                &from,
+                &EndpointSnapshot {
+                    content: "changed",
+                    ..to
+                }
+            ),
+            Err(AssessmentViolation::SpanNotVerbatim("to"))
+        );
         let stored = serde_json::to_value(&assessment).unwrap();
         assert_eq!(stored["calibration"], "none");
         assert_eq!(
@@ -1230,7 +1348,7 @@ mod tests {
             (link.note.as_str(), link.target.as_str()),
             ("note:a", "note:b")
         );
-        assert!(assessment.spans_match("note:a", A));
+        assert_eq!(assessment.verify(&EdgeType::RelatedTo, &from, &to), Ok(()));
         // A shared topic word is not a reference to the other endpoint.
         typed.link = Some(LinkEvidenceRequest {
             endpoint: EndpointRole::From,
@@ -1473,6 +1591,182 @@ mod tests {
                 "evidence_mode": "certain", "direction": "from_to"
             }))
             .is_err()
+        );
+    }
+
+    fn linked_pair() -> (EndpointSnapshot<'static>, EndpointSnapshot<'static>) {
+        let from = EndpointSnapshot {
+            title: Some("Rollout gate"),
+            ..snapshot("note:a", A, "the canary must pass", None)
+        };
+        let to = snapshot(
+            "note:b",
+            B,
+            "Canary results passed",
+            Some(source("source:b", "file:///notes/plan-b.md", "h2")),
+        );
+        (from, to)
+    }
+
+    fn linked_assessment(
+        from: &EndpointSnapshot<'_>,
+        to: &EndpointSnapshot<'_>,
+    ) -> EvidenceAssessment {
+        let mut typed = request(
+            EvidenceMode::ExplicitStatement,
+            RelationDirection::Symmetric,
+        );
+        typed.link = Some(LinkEvidenceRequest {
+            endpoint: EndpointRole::From,
+            quote: "See plan-b for timing.".into(),
+            reference: "plan-b".into(),
+        });
+        assess(&EdgeType::RelatedTo, &typed, "mcp:r", from, to).unwrap()
+    }
+
+    #[test]
+    fn stored_links_must_be_quoted_from_one_endpoint_and_name_the_other() {
+        let (from, to) = linked_pair();
+        let stored = serde_json::to_value(linked_assessment(&from, &to)).unwrap();
+        assert!(EvidenceAssessment::from_stored(&stored).is_ok());
+        for (field, value) in [
+            ("note", "note:c"),
+            ("target", "note:c"),
+            ("target", "note:a"),
+        ] {
+            let mut tampered = stored.clone();
+            tampered["link"][field] = value.into();
+            assert_eq!(
+                EvidenceAssessment::from_stored(&tampered),
+                Err(AssessmentViolation::LinkEndpoints),
+                "{field} = {value}"
+            );
+        }
+        let mut swapped = stored.clone();
+        swapped["link"]["note"] = "note:b".into();
+        swapped["link"]["target"] = "note:a".into();
+        assert!(EvidenceAssessment::from_stored(&swapped).is_ok());
+        let mut unquoted = stored.clone();
+        unquoted["link"]["reference"] = "plan-c".into();
+        assert_eq!(
+            EvidenceAssessment::from_stored(&unquoted),
+            Err(AssessmentViolation::LinkReferenceNotInQuote)
+        );
+        let mut shifted = stored.clone();
+        shifted["link"]["byte_end"] = 3.into();
+        assert!(matches!(
+            EvidenceAssessment::from_stored(&shifted),
+            Err(AssessmentViolation::Malformed(_))
+        ));
+        let mut unlinked = stored.clone();
+        unlinked["link"] = serde_json::Value::Null;
+        assert_eq!(
+            EvidenceAssessment::from_stored(&unlinked),
+            Err(AssessmentViolation::LinkRequired)
+        );
+    }
+
+    #[test]
+    fn stored_spans_and_lineage_must_be_internally_consistent() {
+        let shared = source("source:doc", "file:///doc.md", "same");
+        let from = snapshot("note:a", A, "the canary must pass", Some(shared));
+        let to = snapshot("note:b", B, "Canary results passed", Some(shared));
+        let derived = assess(
+            &EdgeType::DerivedFrom,
+            &request(EvidenceMode::Derivation, RelationDirection::FromTo),
+            "mcp:r",
+            &from,
+            &to,
+        )
+        .unwrap();
+        let stored = serde_json::to_value(&derived).unwrap();
+        assert!(EvidenceAssessment::from_stored(&stored).is_ok());
+        let mut cases: Vec<(&str, serde_json::Value)> = Vec::new();
+        let mut independent = stored.clone();
+        independent["lineage"] = serde_json::json!({"declared": "unknown", "same_origin": false, "basis": "distinct_origins"});
+        cases.push(("one origin recorded as distinct", independent));
+        let mut declared = stored.clone();
+        declared["lineage"]["declared"] = "independent".into();
+        cases.push(("declared independent but same origin", declared));
+        let mut unlocated = stored.clone();
+        unlocated["endpoints"][0]["support"][0]["byte_end"] = 1.into();
+        cases.push(("span offsets", unlocated));
+        let mut never = stored.clone();
+        never["endpoints"][0]["support"][0]["occurrences"] = 0.into();
+        cases.push(("zero occurrences", never));
+        let mut padded = stored.clone();
+        padded["endpoints"][1]["support"][0]["quote"] = " Canary results passed".into();
+        cases.push(("unbounded quote", padded));
+        let mut anonymous = stored.clone();
+        anonymous["proposer"]["model"] = "fictional-model".into();
+        cases.push(("tooling without a generator", anonymous));
+        for (case, tampered) in cases {
+            assert!(
+                EvidenceAssessment::from_stored(&tampered).is_err(),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn verification_rederives_the_whole_assessment_from_the_pinned_endpoints() {
+        let (from, to) = linked_pair();
+        let assessment = linked_assessment(&from, &to);
+        assert_eq!(assessment.verify(&EdgeType::RelatedTo, &from, &to), Ok(()));
+        // The link quote must still be verbatim in its holder...
+        let edited = EndpointSnapshot {
+            content: "Rollout gate: the canary must pass before release.",
+            ..from
+        };
+        assert_eq!(
+            assessment.verify(&EdgeType::RelatedTo, &edited, &to),
+            Err(AssessmentViolation::LinkQuoteNotVerbatim("from"))
+        );
+        // ...and still name the opposite endpoint.
+        let renamed = EndpointSnapshot {
+            source: Some(source("source:b", "file:///notes/plan-c.md", "h2")),
+            ..to
+        };
+        assert_eq!(
+            assessment.verify(&EdgeType::RelatedTo, &from, &renamed),
+            Err(AssessmentViolation::LinkReferenceUnmatched)
+        );
+        // Request order and the relation are part of the evidence.
+        assert!(assessment.verify(&EdgeType::RelatedTo, &to, &from).is_err());
+        assert!(assessment
+            .verify(&EdgeType::Contradicts, &from, &to)
+            .is_err());
+        // Facts that still parse but are not what the server derives.
+        let mut occurrences = assessment.clone();
+        occurrences.endpoints[0].support[0].occurrences = 2;
+        let mut matched = assessment.clone();
+        matched.link.as_mut().unwrap().matched = LinkReferenceKind::NoteId;
+        let mut origin = assessment.clone();
+        origin.endpoints[1].origin = "source:elsewhere".into();
+        for tampered in [occurrences, matched, origin] {
+            assert_eq!(
+                tampered.verify(&EdgeType::RelatedTo, &from, &to),
+                Err(AssessmentViolation::Unverified)
+            );
+        }
+        // Lineage is recomputed: a pair that shares a source cannot be
+        // accepted as supports, whatever the stored lineage says.
+        let supports = assess(
+            &EdgeType::Supports,
+            &request(EvidenceMode::ExplicitStatement, RelationDirection::FromTo),
+            "mcp:r",
+            &snapshot("note:a", A, "the canary must pass", None),
+            &snapshot("note:b", B, "Canary results passed", None),
+        )
+        .unwrap();
+        let shared = source("source:doc", "file:///doc.md", "same");
+        assert_eq!(
+            supports.verify(
+                &EdgeType::Supports,
+                &snapshot("note:a", A, "the canary must pass", Some(shared)),
+                &snapshot("note:b", B, "Canary results passed", Some(shared)),
+            ),
+            Err(AssessmentViolation::SameOriginSupports)
         );
     }
 }

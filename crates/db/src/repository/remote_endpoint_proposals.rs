@@ -31,7 +31,7 @@ fn endpoint_snapshot<'a>(
     note_id: &'a str,
     note: &'a Note,
     quote: &'a str,
-    source: Option<&'a (String, &'a Source)>,
+    source: Option<(&'a str, &'a Source)>,
 ) -> EndpointSnapshot<'a> {
     EndpointSnapshot {
         note_id,
@@ -51,10 +51,15 @@ fn invalid_evidence(error: relation_evidence::AssessmentViolation) -> DbError {
     DbError::InvalidMutationRequest(error.to_string())
 }
 
-/// Accepted-graph gate for a stored assessment. Legacy proposals pass.
+/// Accepted-graph gate for a stored assessment. Legacy proposals pass. Only
+/// the reviewed-endpoint family pins the revisions an assessment is checked
+/// against, so an assessment on any other proposal fails closed.
 pub fn ensure_acceptable_evidence(proposal: &ProposedEdge) -> Result<()> {
     match proposal.parsed_evidence_assessment() {
         Err(_) => Err(DbError::InvalidMutationRequest(INVALID_EVIDENCE.into())),
+        Ok(Some(_)) if proposal.generator != relation_evidence::REVIEWED_ENDPOINT_GENERATOR => {
+            Err(DbError::InvalidMutationRequest(INVALID_EVIDENCE.into()))
+        }
         Ok(Some(assessment)) if !assessment.admits_accepted_graph() => Err(
             DbError::InvalidMutationRequest(PENDING_ONLY_EVIDENCE.into()),
         ),
@@ -196,7 +201,9 @@ impl Repository {
         self.get_edge_proposal(&id).await?.ok_or_else(conflict)
     }
 
-    /// Fail closed for malformed/missing immutable quote evidence or endpoint revisions.
+    /// Fail closed for malformed/missing immutable quote evidence or endpoint
+    /// revisions. A typed assessment must be exactly what the proposal path
+    /// derives again from both endpoints at their pinned revisions.
     pub async fn reviewed_endpoint_proposal_current(
         &self,
         proposal: &ProposedEdge,
@@ -214,27 +221,16 @@ impl Repository {
             Ok(assessment) => assessment,
             Err(_) => return Ok(false),
         };
-        if assessment.as_ref().is_some_and(|assessment| {
-            assessment.relation != proposal.edge_type.to_string()
-                || !assessment.describes_pair(
-                    &record_id_to_string(&proposal.from_id),
-                    &record_id_to_string(&proposal.to_id),
-                )
-        }) {
-            return Ok(false);
-        }
-        let mut ids = HashSet::new();
+        let mut endpoints = Vec::with_capacity(2);
         for name in ["from", "to"] {
-            let Some(id) = evidence[name]["id"].as_str() else {
+            let (Some(id), Some(revision), Some(quote)) = (
+                evidence[name]["id"].as_str(),
+                evidence[name]["revision"].as_str(),
+                evidence[name]["quote"].as_str(),
+            ) else {
                 return Ok(false);
             };
-            let Some(revision) = evidence[name]["revision"].as_str() else {
-                return Ok(false);
-            };
-            let Some(quote) = evidence[name]["quote"].as_str() else {
-                return Ok(false);
-            };
-            if quote.trim().is_empty() || !ids.insert(id.to_string()) {
+            if quote.trim().is_empty() || endpoints.iter().any(|(seen, _, _)| *seen == id) {
                 return Ok(false);
             }
             let record = match self.inspect_record(id, 0).await {
@@ -242,22 +238,77 @@ impl Repository {
                 Err(DbError::NotFound(..)) => return Ok(false),
                 Err(e) => return Err(e),
             };
-            if record.revision != revision
-                || !record.content.contains(quote)
-                || assessment
-                    .as_ref()
-                    .is_some_and(|assessment| !assessment.spans_match(id, &record.content))
+            if record.revision != revision || !record.content.contains(quote) {
+                return Ok(false);
+            }
+            endpoints.push((id, quote, record));
+        }
+        // Request order is the relation's direction: only symmetric relations
+        // are stored in canonical order.
+        let (from_id, to_id) = (
+            record_id_to_string(&proposal.from_id),
+            record_id_to_string(&proposal.to_id),
+        );
+        let in_order = endpoints[0].0 == from_id && endpoints[1].0 == to_id;
+        let reversed = endpoints[0].0 == to_id && endpoints[1].0 == from_id;
+        if !(in_order || (reversed && proposal.edge_type.is_symmetric())) {
+            return Ok(false);
+        }
+        let Some(assessment) = assessment else {
+            return Ok(true);
+        };
+        let mut pinned = Vec::with_capacity(2);
+        for (id, _, record) in &endpoints {
+            let Some(note) = self.endpoint_note(id).await? else {
+                return Ok(false);
+            };
+            // Only the row the revision-checked inspection read may be assessed.
+            if note.content != record.content
+                || note.title != record.title
+                || note.source_id.as_ref().map(record_id_to_string) != record.provenance.source_id
             {
                 return Ok(false);
             }
+            let source = match &note.source_id {
+                None => None,
+                Some(source_id) => match self.db.select::<Option<Source>>(source_id.clone()).await?
+                {
+                    Some(source) => Some((record_id_to_string(source_id), source)),
+                    // The proposal path refuses an endpoint whose source is missing.
+                    None => return Ok(false),
+                },
+            };
+            pinned.push((note, source));
         }
-        Ok(ids
-            == [
-                record_id_to_string(&proposal.from_id),
-                record_id_to_string(&proposal.to_id),
-            ]
-            .into_iter()
-            .collect::<HashSet<_>>())
+        let snapshot = |index: usize| {
+            let (id, quote, _) = &endpoints[index];
+            let (note, source) = &pinned[index];
+            endpoint_snapshot(
+                id,
+                note,
+                quote,
+                source.as_ref().map(|(id, source)| (id.as_str(), source)),
+            )
+        };
+        Ok(assessment
+            .verify(&proposal.edge_type, &snapshot(0), &snapshot(1))
+            .is_ok())
+    }
+
+    /// The note row behind an endpoint ID, resolved like
+    /// `mutation_note_snapshot` resolved it when the proposal was made.
+    async fn endpoint_note(&self, id: &str) -> Result<Option<Note>> {
+        if let Some(note) = self
+            .db
+            .select::<Option<Note>>(normalize_note_id(id))
+            .await?
+        {
+            return Ok(Some(note));
+        }
+        Ok(self
+            .db
+            .select::<Option<Note>>(parse_record_id(id, Some("note"))?)
+            .await?)
     }
 
     /// Creates an immutable proposal and its idempotency receipt in one
@@ -411,13 +462,17 @@ impl Repository {
                         &request.from_id,
                         &from.note,
                         &request.from_quote,
-                        from_source.as_ref(),
+                        from_source
+                            .as_ref()
+                            .map(|(id, source)| (id.as_str(), *source)),
                     ),
                     &endpoint_snapshot(
                         &request.to_id,
                         &to.note,
                         &request.to_quote,
-                        to_source.as_ref(),
+                        to_source
+                            .as_ref()
+                            .map(|(id, source)| (id.as_str(), *source)),
                     ),
                 )
                 .map_err(invalid_evidence)?;

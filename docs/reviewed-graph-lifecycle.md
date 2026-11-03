@@ -56,7 +56,7 @@ Source provenance publication and enrichment policy-epoch changes apply the same
 
 Validators (all refuse before any write):
 
-- Endpoints are the existing distinct, visible, revision-pinned notes; every span and the link quote must be verbatim in its endpoint at the pinned revision. Acceptance re-checks the recorded offsets.
+- Endpoints are the existing distinct, visible, revision-pinned notes; every span and the link quote must be verbatim in its endpoint at the pinned revision. Acceptance re-derives the whole assessment from both endpoints at their pinned revisions, in request order, and refuses any difference: span offsets and occurrence counts, origins and lineage, the link's holder, target and matched reference, and the relation, direction and mode gates. Only reviewed-endpoint proposals pin those revisions, so an assessment on any other proposal fails closed.
 - The relation must be one of `supports`, `contradicts`, `derived_from`, `related_to`, with its direction. `RelationPolicy` holds one row per relation, so #183's `supersedes`/`depends_on`/`resolved_by` add rows with their own tables and migration.
 - Two notes of one source, or of sources with identical content hashes, share an origin and are not independent corroboration: they cannot be `supports` (use `derived_from`). A declared `independent` that contradicts this finding is rejected; a declared `same_origin` (a summary of another note) is recorded.
 - `related_to` needs explicit link evidence: a verbatim quote in one endpoint whose verbatim `reference` names the other endpoint (canonical note ID, title, source title, source URI or file name). Similarity or a shared topic is not a link.

@@ -1036,3 +1036,238 @@ async fn tampered_assessments_fail_closed_and_edits_retire_assessed_edges() {
     // Endpoint edits retire assessed edges exactly like legacy reviewed ones.
     assert_revision_mutation_retires_reviewed_edge(&repo, restored, vec![a, b], true).await;
 }
+
+async fn restore_proposal(
+    repo: &Repository,
+    id: &RecordId,
+    update: &str,
+    value: serde_json::Value,
+) {
+    repo.db
+        .query(format!("UPDATE $id SET {update}"))
+        .bind(("id", id.clone()))
+        .bind(("value", value))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+}
+
+/// A restored or tampered proposal must not reach the graph: `current` stays
+/// false, acceptance is refused and the edge table stays empty.
+async fn assert_refused(repo: &Repository, id: &RecordId, table: &str, case: &str) {
+    let current = repo.get_edge_proposal(id).await.unwrap().unwrap();
+    assert!(
+        !repo
+            .reviewed_endpoint_proposal_current(&current)
+            .await
+            .unwrap(),
+        "{case}: reported current"
+    );
+    let refused = repo
+        .accept_edge_proposal(id, Some("reviewer".into()), None, true)
+        .await;
+    assert!(refused.is_err(), "{case}: accepted {refused:?}");
+    assert_eq!(count(repo, table).await, 0, "{case}");
+}
+
+#[tokio::test]
+async fn restored_link_evidence_must_be_quoted_from_one_endpoint_and_name_the_other() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let holder = "For rollback steps see Beacon runbook.";
+    let a = repo.create_note(Note::new(holder)).await.unwrap();
+    let mut target = Note::new("Rollback: drain, then restore the last image.");
+    target.title = Some("Beacon runbook".into());
+    let b = repo.create_note(target).await.unwrap();
+    let third = "Cedar log: the Beacon runbook was reviewed.";
+    let c = repo.create_note(Note::new(third)).await.unwrap();
+    let [a_id, b_id, c_id] =
+        [&a, &b, &c].map(|note| record_id_to_string(note.id.as_ref().unwrap()));
+    let mut linked = typed(
+        EvidenceMode::ExplicitStatement,
+        RelationDirection::Symmetric,
+    );
+    linked.link = Some(LinkEvidenceRequest {
+        endpoint: graphrag_core::relation_evidence::EndpointRole::From,
+        quote: "see Beacon runbook".into(),
+        reference: "Beacon runbook".into(),
+    });
+    let proposal = propose_typed(&repo, &a, &b, "linked", EdgeType::RelatedTo, linked)
+        .await
+        .unwrap();
+    let id = proposal.id.clone().unwrap();
+    let original = proposal.evidence_assessment.clone().unwrap();
+    // Offsets are self-consistent, so only a check against the endpoints helps.
+    let link = |note: &str, target: &str, quote: &str, reference: &str| {
+        let mut tampered = original.clone();
+        tampered["link"] = serde_json::json!({
+            "note": note, "target": target, "quote": quote, "reference": reference,
+            "matched": "note_title", "byte_start": 0, "byte_end": quote.len()
+        });
+        tampered
+    };
+    for (case, tampered) in [
+        // Held by a third note: the quote is in neither endpoint.
+        (
+            "third-note holder",
+            link(&c_id, &b_id, third, "Beacon runbook"),
+        ),
+        (
+            "third-note holder",
+            link(&c_id, &a_id, third, "Beacon runbook"),
+        ),
+        // It must name the opposite endpoint, not its holder or a third note.
+        ("self target", link(&a_id, &a_id, holder, "Beacon runbook")),
+        (
+            "third-note target",
+            link(&a_id, &c_id, holder, "Beacon runbook"),
+        ),
+        // Held by an endpoint whose pinned content lacks the quote.
+        (
+            "missing quote",
+            link(&a_id, &b_id, "see Beacon runbook twice", "Beacon runbook"),
+        ),
+        (
+            "quote in the other note",
+            link(&b_id, &a_id, "see Beacon runbook", "Beacon runbook"),
+        ),
+        // Verbatim in its holder, but the reference does not name the target.
+        (
+            "unnamed target",
+            link(&a_id, &b_id, holder, "rollback steps"),
+        ),
+    ] {
+        restore_proposal(&repo, &id, "evidence_assessment = $value", tampered).await;
+        assert_refused(&repo, &id, "related_to", case).await;
+    }
+    restore_proposal(&repo, &id, "evidence_assessment = $value", original.clone()).await;
+    let accepted = repo
+        .accept_edge_proposal(&id, Some("reviewer".into()), None, true)
+        .await
+        .unwrap();
+    assert_eq!(accepted.status, ProposedEdgeStatus::Accepted);
+    assert_eq!(edge_assessments(&repo, "related_to").await, vec![original]);
+}
+
+#[tokio::test]
+async fn acceptance_rederives_restored_assessments_from_the_pinned_endpoints() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = repo.create_source(Source::manual()).await.unwrap();
+    let source_id = source.id.unwrap();
+    let detail = repo
+        .create_note(
+            Note::new("Detail: the rollback took 4 minutes.").with_source(source_id.clone()),
+        )
+        .await
+        .unwrap();
+    let summary = repo
+        .create_note(Note::new("Summary: rollback was quick.").with_source(source_id.clone()))
+        .await
+        .unwrap();
+    // A same-origin derived_from restored as an independent `supports`. The
+    // stored lineage is self-consistent and passes the edge-table ASSERT.
+    let derived = propose_typed(
+        &repo,
+        &summary,
+        &detail,
+        "summary-derived",
+        EdgeType::DerivedFrom,
+        typed(EvidenceMode::Derivation, RelationDirection::FromTo),
+    )
+    .await
+    .unwrap();
+    let id = derived.id.clone().unwrap();
+    let mut independent = derived.evidence_assessment.clone().unwrap();
+    independent["relation"] = "supports".into();
+    independent["lineage"] = serde_json::json!({
+        "declared": "unknown", "same_origin": false, "basis": "distinct_origins"
+    });
+    independent["endpoints"][1]["origin"] = "source:elsewhere".into();
+    restore_proposal(
+        &repo,
+        &id,
+        "edge_type = 'supports', evidence_assessment = $value",
+        independent,
+    )
+    .await;
+    assert!(EvidenceAssessment::from_stored(
+        repo.get_edge_proposal(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .evidence_assessment
+            .as_ref()
+            .unwrap()
+    )
+    .is_ok());
+    assert_refused(&repo, &id, "supports", "same-origin supports").await;
+
+    let a = repo
+        .create_note(Note::new("Canary results passed on the pinned build."))
+        .await
+        .unwrap();
+    let b = repo
+        .create_note(Note::new("Release requires a passing canary."))
+        .await
+        .unwrap();
+    let proposal = propose_typed(
+        &repo,
+        &a,
+        &b,
+        "directed",
+        EdgeType::Supports,
+        typed(EvidenceMode::ExplicitStatement, RelationDirection::FromTo),
+    )
+    .await
+    .unwrap();
+    let id = proposal.id.clone().unwrap();
+    let original = proposal.evidence_assessment.clone().unwrap();
+    // A plausible derived fact that the pinned content does not reproduce.
+    let mut occurrences = original.clone();
+    occurrences["endpoints"][0]["support"][0]["occurrences"] = 2.into();
+    restore_proposal(&repo, &id, "evidence_assessment = $value", occurrences).await;
+    assert_refused(&repo, &id, "supports", "occurrence count").await;
+    restore_proposal(&repo, &id, "evidence_assessment = $value", original.clone()).await;
+    // Reversing a directional edge reverses the assessed claim.
+    for (from, to) in [(&b, &a), (&a, &b)] {
+        repo.db
+            .query("UPDATE $id SET in = $from, out = $to")
+            .bind(("id", id.clone()))
+            .bind(("from", from.id.clone().unwrap()))
+            .bind(("to", to.id.clone().unwrap()))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        if from.id == b.id {
+            assert_refused(&repo, &id, "supports", "reversed direction").await;
+        }
+    }
+    // Only reviewed-endpoint proposals pin the revisions an assessment needs.
+    restore_proposal(
+        &repo,
+        &id,
+        "generator = $value",
+        "gardener-similarity".into(),
+    )
+    .await;
+    let refused = repo
+        .accept_edge_proposal(&id, Some("reviewer".into()), None, true)
+        .await;
+    assert!(
+        matches!(&refused, Err(DbError::InvalidMutationRequest(m)) if m == INVALID_EVIDENCE),
+        "{refused:?}"
+    );
+    assert_eq!(count(&repo, "supports").await, 0);
+    restore_proposal(
+        &repo,
+        &id,
+        "generator = $value",
+        "remote-reviewed-endpoint".into(),
+    )
+    .await;
+    repo.accept_edge_proposal(&id, Some("reviewer".into()), None, true)
+        .await
+        .unwrap();
+    assert_eq!(edge_assessments(&repo, "supports").await, vec![original]);
+}

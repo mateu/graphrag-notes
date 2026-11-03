@@ -451,8 +451,8 @@ impl Repository {
                 )));
             }
         }
-        // Only reviewed proposals carry assessments today; refuse any other
-        // speculative or invalid one before claiming it.
+        // Assessments belong to reviewed proposals only; refuse any other
+        // one, and any speculative or invalid one, before claiming it.
         super::remote_endpoint_proposals::ensure_acceptable_evidence(&proposal)?;
         if !self.reviewed_endpoint_proposal_current(&proposal).await? {
             return Err(DbError::MutationRevisionConflict(
