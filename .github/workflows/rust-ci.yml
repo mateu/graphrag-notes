@@ -24,6 +24,14 @@ env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
 
+# Cargo caches: a GitHub cache key is immutable once saved, so jobs that build
+# different artifacts must not share one. With a single shared key the fastest
+# job (`cargo check`) saved first and every test lane rebuilt all dependencies
+# despite a "full match". clippy/msrv share check-only artifacts; each test lane
+# keeps its own key because `-p` selections unify features differently from
+# `--workspace`. Only main saves, so PR caches cannot evict main's (10 GB repo
+# limit); PRs still restore main's caches. Bump a key's -vN to reset it.
+
 jobs:
   format:
     name: format
@@ -54,7 +62,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: quality-gates-v1
+          shared-key: check-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Lint all workspace targets and features
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
@@ -67,7 +76,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: quality-gates-v1
+          shared-key: check-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Validate exact workspace MSRV declaration
         run: python3 scripts/check-workspace-rust-version.py
       - name: Check declared minimum supported Rust version
@@ -83,7 +93,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: quality-gates-v1
+          shared-key: nextest-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -109,7 +120,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: quality-gates-v1
+          shared-key: persistent-round-trip-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Fresh migration fixture
         run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name migrations::tests::fresh_database_reaches_latest_schema_version
       - name: Upgrade migration fixture
@@ -130,7 +142,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: quality-gates-v1
+          shared-key: retrieval-regression-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Indexed hot retrieval statement plans
         run: python3 scripts/run-exact-rust-test.py -p graphrag-db --lib --test-name repository::hot_retrieval_plan_tests::indexed_hot_retrieval_statements_keep_their_access_paths --nocapture
       - name: Entity and mentions plans with historical negative controls
@@ -170,7 +183,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.changes.outputs.selected == 'true'
         with:
-          shared-key: quality-gates-v1
+          shared-key: migration-regression-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Migration, historical schema and portable schema fixtures
         if: steps.changes.outputs.selected == 'true'
         run: python3 scripts/run-migration-gate.py --run
@@ -184,9 +198,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: quality-gates-v1
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+          shared-key: audit-v1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-targets: false
+      # Prebuilt release binary instead of compiling cargo-audit (~2.5 min).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Verify scoped audit exemptions remain unreachable
         run: scripts/check-audit-exemptions.sh
       - name: Audit Cargo.lock (cargo audit)
