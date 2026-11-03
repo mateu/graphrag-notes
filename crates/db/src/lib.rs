@@ -6,11 +6,15 @@ pub mod compatibility;
 pub mod error;
 pub mod fusion;
 pub mod migrations;
+#[cfg(feature = "rocksdb")]
+mod release;
 pub mod repository;
 pub mod retrieval_usage;
 pub mod schema;
 
 pub use error::{DbError, Result};
+#[cfg(feature = "rocksdb")]
+pub use release::wait_for_persistent_release;
 pub use repository::{
     parse_portable_record_id, parse_record_id, uploaded_processing_compatible,
     uploaded_processing_policy_sha256, uploaded_source_revision, InferenceCacheEntry,
@@ -736,8 +740,11 @@ mod tests {
 
         // SurrealDB releases the embedded-engine lock asynchronously after the
         // final client session is dropped. Its 3.3 index workers can outlive
-        // the client for more than the old 50 ms grace period.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // the client for more than the old 50 ms grace period, so wait for
+        // the actual release instead of a fixed sleep.
+        wait_for_persistent_release(temporary_directory.path(), Duration::from_secs(60))
+            .await
+            .unwrap();
 
         let reopened = init_persistent(temporary_directory.path()).await.unwrap();
         assert_eq!(
