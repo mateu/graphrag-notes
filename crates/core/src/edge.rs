@@ -154,7 +154,7 @@ impl std::fmt::Display for ProposedEdgeStatus {
 ///
 /// Gardener's similarity scan creates only `related_to` proposals. Logical
 /// relationships such as `supports` and `contradicts` must originate from an
-/// explicit manual decision or future evidence-producing workflow.
+/// explicit manual decision or an evidence-assessed reviewed proposal.
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct ProposedEdge {
     pub id: Option<RecordId>,
@@ -162,6 +162,9 @@ pub struct ProposedEdge {
     pub from_id: RecordId,
     pub to_id: RecordId,
     pub edge_type: EdgeType,
+    /// Legacy weight, not a probability: Gardener stores cosine similarity
+    /// here, reviewed endpoints store 1.0 by convention. Typed evidence lives
+    /// in `evidence_assessment`.
     pub confidence: f32,
     pub reason: String,
     pub generator: String,
@@ -186,6 +189,38 @@ pub struct ProposedEdge {
     pub superseded_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub supersession_reason: Option<String>,
+    /// Versioned evidence assessment of a typed proposal (#205). Legacy and
+    /// similarity proposals have none, and omitting it keeps their serialized
+    /// form (and so their proposal revisions) unchanged. Kept as raw JSON so a
+    /// malformed record cannot make the proposal inbox unreadable; parse with
+    /// [`ProposedEdge::parsed_evidence_assessment`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_assessment: Option<serde_json::Value>,
+}
+
+impl ProposedEdge {
+    /// `Ok(None)` for a legacy proposal; an error for a stored assessment
+    /// that does not validate. Callers fail closed on the error.
+    pub fn parsed_evidence_assessment(
+        &self,
+    ) -> std::result::Result<
+        Option<crate::relation_evidence::EvidenceAssessment>,
+        crate::relation_evidence::AssessmentViolation,
+    > {
+        self.evidence_assessment
+            .as_ref()
+            .map(crate::relation_evidence::EvidenceAssessment::from_stored)
+            .transpose()
+    }
+
+    /// Report-only evidence summary for review surfaces.
+    pub fn evidence_summary(&self) -> crate::relation_evidence::EvidenceSummary {
+        crate::relation_evidence::EvidenceSummary::describe(
+            self.evidence_assessment.as_ref(),
+            Some(&self.generator),
+            Some(self.confidence),
+        )
+    }
 }
 
 #[cfg(test)]

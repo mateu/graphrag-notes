@@ -75,6 +75,13 @@ struct ProposalOutput {
     accept_allowed: bool,
     accept_blocked_reason: Option<String>,
     revision: String,
+    /// Report-only evidence summary; legacy proposals are unassessed and
+    /// their stored confidence is a legacy weight, never a probability.
+    #[serde(default)]
+    evidence: graphrag_application::EvidenceSummary,
+    /// Full typed assessment when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence_assessment: Option<serde_json::Value>,
 }
 fn encode<T: serde::Serialize, O: serde::de::DeserializeOwned + serde::Serialize>(
     value: T,

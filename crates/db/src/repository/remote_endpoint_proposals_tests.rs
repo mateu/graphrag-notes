@@ -1,5 +1,9 @@
 use super::*;
 use crate::init_memory;
+use graphrag_core::relation_evidence::{
+    CandidateScore, DeclaredLineage, EvidenceAssessment, EvidenceAssessmentRequest, EvidenceMode,
+    LinkEvidenceRequest, RelationDirection,
+};
 use graphrag_core::MessageRole;
 
 async fn propose(repo: &Repository, a: &Note, b: &Note, request_id: &str) -> ProposedEdge {
@@ -26,6 +30,7 @@ async fn propose(repo: &Repository, a: &Note, b: &Note, request_id: &str) -> Pro
             to_quote: b.content.clone(),
             edge_type: EdgeType::Supports,
             rationale: "Fictional directly reviewed evidence".into(),
+            assessment: None,
         })
         .await
         .unwrap();
@@ -68,6 +73,7 @@ async fn fixture(repo: &Repository) -> (ProposedEdge, Vec<Note>) {
             to_quote: b.content.clone(),
             edge_type: EdgeType::Supports,
             rationale: "Fictional directly reviewed evidence".into(),
+            assessment: None,
         })
         .await
         .unwrap();
@@ -123,6 +129,7 @@ async fn oversized_utf8_rationale_cannot_persist_proposal_or_receipt() {
             to_quote: notes[1].content.clone(),
             edge_type: EdgeType::Supports,
             rationale,
+            assessment: None,
         })
         .await;
     assert!(
@@ -615,4 +622,417 @@ async fn adding_chat_provenance_retires_pending_and_accepted_reviewed_edges() {
             assert_eq!(count(&repo, "supports").await, 0);
         }
     }
+}
+
+// Typed evidence assessments (#205). Fictional notes only.
+
+fn typed(mode: EvidenceMode, direction: RelationDirection) -> EvidenceAssessmentRequest {
+    EvidenceAssessmentRequest {
+        evidence_mode: mode,
+        direction,
+        lineage: DeclaredLineage::Unknown,
+        from_support: vec![],
+        to_support: vec![],
+        link: None,
+        candidate: None,
+        proposer: None,
+        alternative_explanation: None,
+        scope: None,
+    }
+}
+
+async fn propose_typed(
+    repo: &Repository,
+    a: &Note,
+    b: &Note,
+    request_id: &str,
+    edge_type: EdgeType,
+    assessment: EvidenceAssessmentRequest,
+) -> Result<ProposedEdge> {
+    let from = record_id_to_string(a.id.as_ref().unwrap());
+    let to = record_id_to_string(b.id.as_ref().unwrap());
+    let ra = repo.inspect_record(&from, 0).await.unwrap().revision;
+    let rb = repo.inspect_record(&to, 0).await.unwrap().revision;
+    let rationale = "Fictional typed review".to_string();
+    let payload = serde_json::json!({"request_id":request_id,"from":{"id":from,"revision":ra,"quote":a.content},"to":{"id":to,"revision":rb,"quote":b.content},"relationship":edge_type.to_string(),"rationale":rationale,"assessment":assessment,"confirmed":true});
+    let receipt = repo
+        .propose_remote_endpoint(RemoteEndpointProposalInput {
+            mutation: RemoteMutationInput {
+                instance_id: "fixture".into(),
+                request_id: request_id.into(),
+                operation: "propose_endpoint".into(),
+                payload_fingerprint: "c".repeat(64),
+                payload,
+                result: serde_json::json!({}),
+            },
+            from_id: from,
+            from_revision: ra,
+            from_quote: a.content.clone(),
+            to_id: to,
+            to_revision: rb,
+            to_quote: b.content.clone(),
+            edge_type,
+            rationale,
+            assessment: Some(assessment),
+        })
+        .await?;
+    let id = parse_record_id(
+        receipt.result["id"].as_str().unwrap(),
+        Some("proposed_edge"),
+    )
+    .unwrap();
+    Ok(repo.get_edge_proposal(&id).await.unwrap().unwrap())
+}
+
+async fn edge_assessments(repo: &Repository, table: &str) -> Vec<serde_json::Value> {
+    repo.portable_records_page(table, 0, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row["evidence_assessment"].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn typed_assessment_is_validated_persisted_and_copied_onto_the_accepted_edge() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let a = repo
+        .create_note(Note::new(
+            "Canary results passed on the pinned build. Logs attached.",
+        ))
+        .await
+        .unwrap();
+    let b = repo
+        .create_note(Note::new("Release requires a passing canary."))
+        .await
+        .unwrap();
+    let mut assessment = typed(EvidenceMode::ExplicitStatement, RelationDirection::FromTo);
+    assessment.from_support = vec!["Logs attached.".into()];
+    assessment.candidate = Some(CandidateScore {
+        generator: "gardener-similarity".into(),
+        generator_version: Some("1".into()),
+        similarity: Some(0.72),
+    });
+    assessment.scope = Some("Pinned build only".into());
+    assessment.alternative_explanation = Some("The canary could be unrelated to release".into());
+    let proposal = propose_typed(&repo, &a, &b, "typed", EdgeType::Supports, assessment)
+        .await
+        .unwrap();
+    // The legacy weight keeps its reviewed convention; similarity stays separate.
+    assert_eq!(proposal.confidence, 1.0);
+    let stored = proposal.parsed_evidence_assessment().unwrap().unwrap();
+    assert_eq!(stored.evidence_mode, EvidenceMode::ExplicitStatement);
+    assert_eq!(stored.proposer.actor, "mcp:fixture");
+    assert_eq!(stored.candidate.as_ref().unwrap().similarity, Some(0.72));
+    assert_eq!(stored.endpoints[0].support.len(), 2);
+    assert_eq!(stored.endpoints[0].support[1].byte_start, 43);
+    assert!(!stored.lineage.same_origin);
+    assert_eq!(
+        proposal.evidence_summary().status,
+        graphrag_core::EvidenceStatus::Assessed
+    );
+    assert!(repo
+        .reviewed_endpoint_proposal_current(&proposal)
+        .await
+        .unwrap());
+    let accepted = repo
+        .accept_edge_proposal(
+            proposal.id.as_ref().unwrap(),
+            Some("reviewer".into()),
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted.status, ProposedEdgeStatus::Accepted);
+    assert_eq!(
+        edge_assessments(&repo, "supports").await,
+        vec![proposal.evidence_assessment.clone().unwrap()]
+    );
+    let edges = repo
+        .graph_note_edges(
+            std::slice::from_ref(a.id.as_ref().unwrap()),
+            &["supports".into()],
+            10,
+            true,
+            false,
+            0.0,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].confidence, Some(1.0));
+    assert_eq!(edges[0].evidence_assessment, proposal.evidence_assessment);
+    // Undo removes the assessed edge and retains the immutable proposal record.
+    assert!(repo
+        .undo_edge(accepted.resulting_edge_id.as_ref().unwrap(), None)
+        .await
+        .unwrap());
+    assert_eq!(count(&repo, "supports").await, 0);
+    let undone = repo
+        .get_edge_proposal(proposal.id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(undone.status, ProposedEdgeStatus::Superseded);
+    assert_eq!(undone.evidence_assessment, proposal.evidence_assessment);
+}
+
+#[tokio::test]
+async fn analogy_and_hypothesis_proposals_stay_pending_and_out_of_the_accepted_graph() {
+    for mode in [EvidenceMode::Analogy, EvidenceMode::Hypothesis] {
+        let repo = Repository::new(init_memory().await.unwrap());
+        let a = repo
+            .create_note(Note::new("Queue latency rose in March."))
+            .await
+            .unwrap();
+        let b = repo
+            .create_note(Note::new("Cache churn rose in March."))
+            .await
+            .unwrap();
+        let proposal = propose_typed(
+            &repo,
+            &a,
+            &b,
+            "speculative",
+            EdgeType::RelatedTo,
+            typed(mode, RelationDirection::Symmetric),
+        )
+        .await
+        .unwrap();
+        assert_eq!(proposal.status, ProposedEdgeStatus::Pending);
+        let refused = repo
+            .accept_edge_proposal(
+                proposal.id.as_ref().unwrap(),
+                Some("reviewer".into()),
+                None,
+                true,
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(DbError::InvalidMutationRequest(message)) if message == PENDING_ONLY_EVIDENCE),
+            "{refused:?}"
+        );
+        // Even a raw acceptance transaction cannot place it in the graph.
+        let notes = vec![a.clone(), b.clone()];
+        assert!(repo
+            .commit_reviewed_endpoint_acceptance(
+                proposal.clone(),
+                notes,
+                vec![],
+                Some("reviewer".into()),
+                None
+            )
+            .await
+            .is_err());
+        assert_eq!(count(&repo, "related_to").await, 0);
+        let rejected = repo
+            .reject_edge_proposal(proposal.id.as_ref().unwrap(), Some("reviewer".into()), None)
+            .await
+            .unwrap();
+        assert_eq!(rejected.status, ProposedEdgeStatus::Rejected);
+    }
+}
+
+#[tokio::test]
+async fn same_origin_pairs_cannot_be_supports_but_may_be_derived_from() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let source = repo.create_source(Source::manual()).await.unwrap();
+    let source_id = source.id.unwrap();
+    let detail = repo
+        .create_note(
+            Note::new("Detail: the rollback took 4 minutes.").with_source(source_id.clone()),
+        )
+        .await
+        .unwrap();
+    let summary = repo
+        .create_note(Note::new("Summary: rollback was quick.").with_source(source_id.clone()))
+        .await
+        .unwrap();
+    let refused = propose_typed(
+        &repo,
+        &detail,
+        &summary,
+        "same-origin-supports",
+        EdgeType::Supports,
+        typed(EvidenceMode::ExplicitStatement, RelationDirection::FromTo),
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(DbError::InvalidMutationRequest(message)) if message.contains("derived_from")),
+        "{refused:?}"
+    );
+    assert_eq!(count(&repo, "proposed_edge").await, 0);
+    assert_eq!(count(&repo, "remote_mutation_receipt").await, 0);
+    let derived = propose_typed(
+        &repo,
+        &summary,
+        &detail,
+        "summary-derived",
+        EdgeType::DerivedFrom,
+        typed(EvidenceMode::Derivation, RelationDirection::FromTo),
+    )
+    .await
+    .unwrap();
+    let assessment = derived.parsed_evidence_assessment().unwrap().unwrap();
+    assert!(assessment.lineage.same_origin);
+    assert_eq!(
+        assessment.endpoints[0].origin,
+        record_id_to_string(&source_id)
+    );
+    repo.accept_edge_proposal(
+        derived.id.as_ref().unwrap(),
+        Some("reviewer".into()),
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(count(&repo, "derived_from").await, 1);
+}
+
+#[tokio::test]
+async fn related_to_needs_a_verbatim_link_that_names_the_other_note() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let a = repo
+        .create_note(Note::new("For rollback steps see Beacon runbook."))
+        .await
+        .unwrap();
+    let mut target = Note::new("Rollback: drain, then restore the last image.");
+    target.title = Some("Beacon runbook".into());
+    let b = repo.create_note(target).await.unwrap();
+    let missing = propose_typed(
+        &repo,
+        &a,
+        &b,
+        "unlinked",
+        EdgeType::RelatedTo,
+        typed(
+            EvidenceMode::ExplicitStatement,
+            RelationDirection::Symmetric,
+        ),
+    )
+    .await;
+    assert!(matches!(missing, Err(DbError::InvalidMutationRequest(_))));
+    let mut topical = typed(
+        EvidenceMode::ExplicitStatement,
+        RelationDirection::Symmetric,
+    );
+    topical.link = Some(LinkEvidenceRequest {
+        endpoint: graphrag_core::relation_evidence::EndpointRole::From,
+        quote: "For rollback steps".into(),
+        reference: "rollback".into(),
+    });
+    assert!(
+        propose_typed(&repo, &a, &b, "topical", EdgeType::RelatedTo, topical)
+            .await
+            .is_err()
+    );
+    let mut linked = typed(
+        EvidenceMode::ExplicitStatement,
+        RelationDirection::Symmetric,
+    );
+    linked.link = Some(LinkEvidenceRequest {
+        endpoint: graphrag_core::relation_evidence::EndpointRole::From,
+        quote: "see Beacon runbook".into(),
+        reference: "Beacon runbook".into(),
+    });
+    let proposal = propose_typed(&repo, &a, &b, "linked", EdgeType::RelatedTo, linked)
+        .await
+        .unwrap();
+    let assessment = proposal.parsed_evidence_assessment().unwrap().unwrap();
+    let link = assessment.link.unwrap();
+    assert_eq!(link.note, record_id_to_string(a.id.as_ref().unwrap()));
+    assert_eq!(link.target, record_id_to_string(b.id.as_ref().unwrap()));
+    assert_eq!(
+        link.matched,
+        graphrag_core::relation_evidence::LinkReferenceKind::NoteTitle
+    );
+    assert_eq!(count(&repo, "proposed_edge").await, 1);
+    assert_eq!(count(&repo, "remote_mutation_receipt").await, 1);
+    repo.accept_edge_proposal(
+        proposal.id.as_ref().unwrap(),
+        Some("reviewer".into()),
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(edge_assessments(&repo, "related_to").await.len(), 1);
+}
+
+#[tokio::test]
+async fn tampered_assessments_fail_closed_and_edits_retire_assessed_edges() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let a = repo
+        .create_note(Note::new("Fictional claim quote"))
+        .await
+        .unwrap();
+    let b = repo
+        .create_note(Note::new("Fictional evidence quote"))
+        .await
+        .unwrap();
+    let proposal = propose_typed(
+        &repo,
+        &a,
+        &b,
+        "typed",
+        EdgeType::Supports,
+        typed(EvidenceMode::Derivation, RelationDirection::FromTo),
+    )
+    .await
+    .unwrap();
+    let id = proposal.id.clone().unwrap();
+    let original = proposal.evidence_assessment.clone().unwrap();
+    // A shifted span offset passes the storage ASSERT but not the evidence check.
+    let mut shifted = original.clone();
+    shifted["endpoints"][0]["support"][0]["byte_start"] = 1.into();
+    for (tampered, expected) in [
+        (shifted, None),
+        (
+            serde_json::json!({"version": 1, "calibration": "none", "evidence_mode": "derivation"}),
+            Some(INVALID_EVIDENCE),
+        ),
+    ] {
+        repo.db
+            .query("UPDATE $id SET evidence_assessment = $value")
+            .bind(("id", id.clone()))
+            .bind(("value", tampered))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let current = repo.get_edge_proposal(&id).await.unwrap().unwrap();
+        assert!(!repo
+            .reviewed_endpoint_proposal_current(&current)
+            .await
+            .unwrap());
+        let refused = repo
+            .accept_edge_proposal(&id, Some("reviewer".into()), None, true)
+            .await;
+        match expected {
+            Some(message) => assert!(
+                matches!(&refused, Err(DbError::InvalidMutationRequest(m)) if m == message),
+                "{refused:?}"
+            ),
+            None => assert!(refused.is_err()),
+        }
+        assert_eq!(count(&repo, "supports").await, 0);
+    }
+    repo.db
+        .query("UPDATE $id SET evidence_assessment = $value")
+        .bind(("id", id.clone()))
+        .bind(("value", original))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let restored = repo.get_edge_proposal(&id).await.unwrap().unwrap();
+    assert!(
+        EvidenceAssessment::from_stored(restored.evidence_assessment.as_ref().unwrap()).is_ok()
+    );
+    // Endpoint edits retire assessed edges exactly like legacy reviewed ones.
+    assert_revision_mutation_retires_reviewed_edge(&repo, restored, vec![a, b], true).await;
 }

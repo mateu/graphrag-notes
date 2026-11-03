@@ -13,6 +13,11 @@ thiserror.workspace = true
 surrealdb.workspace = true
 surrealdb-types.workspace = true
 sha2.workspace = true
+schemars = { workspace = true, optional = true }
+
+[features]
+# JSON schemas for typed evidence contracts exposed by the application/MCP layer.
+json-schema = ["dep:schemars"]
 
 [dev-dependencies]
 tempfile.workspace = true

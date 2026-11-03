@@ -88,9 +88,14 @@ pub struct GraphPathStep {
     pub edge_id: String,
     pub edge_type: String,
     pub direction: String,
+    /// Traversal weight: the edge's legacy stored confidence, or 1.0 when
+    /// absent. It is not a probability; see `evidence`.
     pub confidence: f32,
     pub from_id: String,
     pub to_id: String,
+    /// Report-only evidence summary of the traversed edge (#205). Legacy
+    /// edges are `unassessed`. Never read by scoring or admission.
+    pub evidence: graphrag_core::EvidenceSummary,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1297,6 +1302,11 @@ impl SearchAgent {
                         confidence,
                         from_id: from.id.clone(),
                         to_id: neighbor_id.clone(),
+                        evidence: graphrag_core::EvidenceSummary::describe(
+                            edge.evidence_assessment.as_ref(),
+                            edge.provenance.as_deref(),
+                            edge.confidence,
+                        ),
                     });
                     let mut visited = from.visited.clone();
                     visited.insert(neighbor_id.clone());

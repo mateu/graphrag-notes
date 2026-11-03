@@ -38,7 +38,37 @@ Endpoint revisions retain the generic full inspection contract: note embeddings,
 
 Source provenance publication and enrichment policy-epoch changes apply the same reviewed-family retirement to every note retaining that source identity, including detached generation-free notes. Exact no-op upload origin rotation preserves endpoint review freshness; changes to pinned supplied provenance require fresh review. The stricter uploaded-source revision still binds the full capture identity for reviewed conversion and rollback authority.
 
+## Typed evidence assessment (#205)
+
+`propose_endpoint_relationship` (and the remote CLI `garden propose FILE|-`, which sends the same JSON request) accepts an optional `assessment`. The model or reviewer states claims; deterministic Rust code checks them against the pinned endpoint snapshots inside the same proposal transaction and adds facts the caller cannot assert. The result is stored as a versioned object (`version: 1`, `calibration: "none"`) on the pending proposal. Acceptance copies it unchanged onto the accepted edge. Nothing is accepted automatically.
+
+| Kept separate | Field | Supplied by |
+| --- | --- | --- |
+| Generator score | `candidate.{generator, generator_version, similarity}` | caller, carried unchanged (Gardener cosine, #206 worker) |
+| Who typed it | `proposer.actor` (authenticated `mcp:<instance>`), `proposer.{generator, generator_version, model}` | server, caller |
+| Asserted relation | `relation`, `direction` (`from_to`; `symmetric` only for `related_to`) | caller, checked |
+| Evidence mode | `evidence_mode`: `explicit_statement`, `derivation`, `analogy`, `hypothesis` | caller, checked |
+| Supporting spans | `endpoints[] = {role, note, origin, support[] = {quote, byte_start, byte_end, occurrences}}`; the primary quote plus up to three extra spans per endpoint | caller quotes; server offsets and origins |
+| Explicit link | `link = {note, target, quote, reference, matched, byte_start, byte_end}` | caller quote/reference; server match |
+| Source lineage | `lineage = {declared, same_origin, basis}` | caller declaration; server finding wins |
+| Alternative explanation, scope | `alternative_explanation`, `scope` | caller |
+| Reviewer decision | proposal `status`, `reviewer`, `action_reason` (unchanged lifecycle) | reviewer |
+
+Validators (all refuse before any write):
+
+- Endpoints are the existing distinct, visible, revision-pinned notes; every span and the link quote must be verbatim in its endpoint at the pinned revision. Acceptance re-checks the recorded offsets.
+- The relation must be one of `supports`, `contradicts`, `derived_from`, `related_to`, with its direction. `RelationPolicy` holds one row per relation, so #183's `supersedes`/`depends_on`/`resolved_by` add rows with their own tables and migration.
+- Two notes of one source, or of sources with identical content hashes, share an origin and are not independent corroboration: they cannot be `supports` (use `derived_from`). A declared `independent` that contradicts this finding is rejected; a declared `same_origin` (a summary of another note) is recorded.
+- `related_to` needs explicit link evidence: a verbatim quote in one endpoint whose verbatim `reference` names the other endpoint (canonical note ID, title, source title, source URI or file name). Similarity or a shared topic is not a link.
+- `analogy` and `hypothesis` may be proposed but stay pending and separate: every acceptance path (remote decision, CLI review, generic owner acceptance) refuses them, and storage `ASSERT`s keep them, same-origin `supports`, unlinked `related_to`, other versions and any calibration claim out of the four edge tables.
+
+The assessment is report-only. Proposal cards (`get_proposal`, `list_proposals`, `garden review`, `proposals show/list`) and graph path steps carry an `evidence` summary (`status`: `assessed`, `unassessed` or `invalid`; `evidence_mode`; `candidate_similarity`; `same_origin`; `legacy_weight` and its `legacy_weight_meaning`; `calibration: none`). No ranking, traversal, admission or packing step reads it. The legacy `confidence` stays readable but is a weight, not a probability: reviewed endpoints store 1.0 by convention, Gardener stores cosine similarity, and traversal uses 1.0 when it is absent. Human surfaces print it as a labelled weight or generator score, never as a percentage; legacy proposals and edges read as `unassessed`.
+
+A stored assessment that no longer parses or validates reads as `invalid`; its proposal stays listable and acceptance fails closed. Edits, reindexing and source changes retire assessed proposals and edges exactly like legacy reviewed ones; undo and supersession keep the immutable assessment on the proposal.
+
 ## Compatibility and limitations
+
+Schema 28 adds optional, flexible `evidence_assessment` objects to `proposed_edge` and the four accepted-edge tables with the guarding `ASSERT`s above. No row is rewritten; legacy rows stay `NONE`. A request without `assessment` keeps its legacy payload, fingerprint, proposal revision and receipt replay byte-identical. Older servers reject the unknown `assessment` field instead of dropping it silently; older clients ignore the additive card fields. Portable archives carry the field verbatim, and restore applies the same `ASSERT`s, so a tampered archive cannot place speculative evidence in the accepted graph. Older binaries refuse schema-28 stores and archives.
 
 Schema 22 adds optional nonnegative `source.metadata.graph_policy_revision`; staging remains inside the existing flexible source metadata. Schema 23 adds immutable admission-time job-family authority, backfilled from saved input and the owner/request-bound mutation journal before enforcing `READONLY`. Existing schema-21/22 stores migrate forward without rewriting the document corpus; historical migration SQL remains unchanged. Older binaries must refuse the newer store. The lexical migration replay fixture removes all subsequent migration history when manufacturing a schema20 corpus.
 

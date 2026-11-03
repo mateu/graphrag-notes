@@ -725,6 +725,16 @@ pub(crate) enum GardenCommand {
         #[command(subcommand)]
         command: ProposalCommand,
     },
+    /// Send one pending, reviewed relationship proposal to a service granting
+    /// the propose capability (requires --server). INPUT is the JSON request of
+    /// the MCP `propose_endpoint_relationship` tool, including the optional
+    /// typed `assessment`; use - for stdin. Proposing never accepts.
+    Propose {
+        /// JSON request file, or - for stdin
+        input: PathBuf,
+        #[arg(long, value_enum, default_value_t = crate::output::OutputFormat::Human)]
+        format: crate::output::OutputFormat,
+    },
 }
 
 #[derive(Subcommand)]

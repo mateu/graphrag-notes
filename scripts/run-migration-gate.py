@@ -36,7 +36,8 @@ def run():
     EXACT.execute("graphrag-db", "repository::fulltext_projection_tests::lexical_migration_backfills_all_rows_and_portable_restore_rebuilds_exact_indexes")
     for name in ["schema_fifteen_v1_backup_remains_restorable_without_capture_table",
                  "empty_backup_round_trip_is_valid_and_restores_a_fresh_schema",
-                 "schema23_reviewed_enrichment_backup_reopens_and_recovers_exact_leased_checkpoint"]:
+                 "schema23_reviewed_enrichment_backup_reopens_and_recovers_exact_leased_checkpoint",
+                 "typed_relation_evidence_survives_archives_replay_and_undo"]:
         # The ignored subprocess worker is invoked by schema23, never directly.
         EXACT.execute("graphrag-cli", "backup::tests::" + name, "graphrag")
 

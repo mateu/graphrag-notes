@@ -64,7 +64,10 @@ pub use models::{
 };
 pub use portable::{parse_portable_record_id, PORTABLE_TABLES};
 pub use remote_capture::{RemoteCaptureInput, RemoteCaptureReceipt};
-pub use remote_endpoint_proposals::RemoteEndpointProposalInput;
+pub use remote_endpoint_proposals::{
+    ensure_acceptable_evidence, RemoteEndpointProposalInput, INVALID_EVIDENCE,
+    PENDING_ONLY_EVIDENCE,
+};
 pub use remote_jobs::{
     uploaded_processing_compatible, uploaded_processing_policy_sha256, uploaded_source_id,
     uploaded_source_revision, RemoteEnrichmentInput, RemoteJobAdmission, RemoteJobLease,

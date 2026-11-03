@@ -1392,6 +1392,17 @@ pub(crate) async fn cmd_show_note(repo: Repository, note_id: String) -> Result<(
     Ok(())
 }
 
+/// Report-only evidence label for an accepted edge: never a percentage, and
+/// a legacy weight is labelled as such.
+fn edge_evidence_label(edge: &graphrag_db::repository::NoteEdgeRow) -> String {
+    graphrag_core::EvidenceSummary::describe(
+        edge.evidence_assessment.as_ref(),
+        edge.provenance.as_deref(),
+        edge.confidence,
+    )
+    .label()
+}
+
 pub(crate) async fn cmd_list_edges(repo: Repository, limit: usize) -> Result<()> {
     let edges = repo.list_note_edges(limit).await?;
     if edges.is_empty() {
@@ -1402,16 +1413,12 @@ pub(crate) async fn cmd_list_edges(repo: Repository, limit: usize) -> Result<()>
     println!("Note edges (up to {} per type):", limit);
     for edge in edges {
         let reason = edge.reason.as_deref().unwrap_or("");
-        let confidence = edge
-            .confidence
-            .map(|c| format!("{:.2}", c))
-            .unwrap_or_else(|| "-".into());
         println!(
-            "  • {}: {} -> {} (confidence: {}){}",
+            "  • {}: {} -> {} ({}){}",
             edge.edge_type,
             record_id_to_string(&edge.in_id),
             record_id_to_string(&edge.out_id),
-            confidence,
+            edge_evidence_label(&edge),
             if reason.is_empty() {
                 "".into()
             } else {
@@ -1432,16 +1439,12 @@ pub(crate) async fn cmd_show_note_edges(repo: Repository, note_id: String) -> Re
     println!("Edges for {}:", note_id);
     for edge in edges {
         let reason = edge.reason.as_deref().unwrap_or("");
-        let confidence = edge
-            .confidence
-            .map(|c| format!("{:.2}", c))
-            .unwrap_or_else(|| "-".into());
         println!(
-            "  • {}: {} -> {} (confidence: {}){}",
+            "  • {}: {} -> {} ({}){}",
             edge.edge_type,
             record_id_to_string(&edge.in_id),
             record_id_to_string(&edge.out_id),
-            confidence,
+            edge_evidence_label(&edge),
             if reason.is_empty() {
                 "".into()
             } else {
@@ -2285,18 +2288,20 @@ fn raw_citation_string(value: &str) -> Result<String> {
 /// Keep terminal graph evidence reconstructable even when multiple edges share
 /// a type or a path has more than one hop. `GraphPathStep` is also serialized
 /// in structured agent output; this compact rendering retains the same record
-/// identities for the human CLI surfaces.
+/// identities for the human CLI surfaces. `confidence` is the traversal
+/// weight; `evidence` reports the edge's assessment (legacy: unassessed).
 pub(crate) fn render_graph_path(path: &[GraphPathStep], separator: &str) -> String {
     path.iter()
         .map(|step| {
             format!(
-                "{}:{} edge={} endpoints={}→{} confidence={:.2}",
+                "{}:{} edge={} endpoints={}→{} confidence={:.2} evidence={}",
                 step.direction,
                 step.edge_type,
                 step.edge_id,
                 step.from_id,
                 step.to_id,
-                step.confidence
+                step.confidence,
+                step.evidence.token()
             )
         })
         .collect::<Vec<_>>()
@@ -2583,6 +2588,9 @@ pub(crate) async fn cmd_garden(
         GardenCommand::Proposals { command } => {
             cmd_proposals(repo, command).await?;
         }
+        GardenCommand::Propose { .. } => {
+            anyhow::bail!("garden propose sends a reviewed proposal to a service with the propose capability; rerun with --server URL");
+        }
     }
 
     Ok(())
@@ -2600,7 +2608,7 @@ pub(crate) async fn cmd_proposals(repo: Repository, command: ProposalCommand) ->
             }
             for proposal in proposals {
                 println!(
-                    "{}  {}  {} → {}  {:.0}%  {}",
+                    "{}  {}  {} → {}  [{}]  {}",
                     proposal
                         .id
                         .as_ref()
@@ -2609,7 +2617,7 @@ pub(crate) async fn cmd_proposals(repo: Repository, command: ProposalCommand) ->
                     proposal.status,
                     record_id_to_string(&proposal.from_id),
                     record_id_to_string(&proposal.to_id),
-                    proposal.confidence * 100.0,
+                    proposal.evidence_summary().label(),
                     proposal.reason,
                 );
             }
@@ -2627,7 +2635,11 @@ pub(crate) async fn cmd_proposals(repo: Repository, command: ProposalCommand) ->
                 record_id_to_string(&proposal.from_id),
                 record_id_to_string(&proposal.to_id)
             );
-            println!("Confidence: {:.1}%", proposal.confidence * 100.0);
+            println!("Evidence: {}", proposal.evidence_summary().label());
+            commands::connections::render_evidence_assessment(
+                &mut io::stdout().lock(),
+                proposal.evidence_assessment.as_ref(),
+            )?;
             println!("Reason: {}", proposal.reason);
             println!(
                 "Generator: {}{}",

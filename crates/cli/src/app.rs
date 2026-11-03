@@ -1728,6 +1728,7 @@ mod tests {
                 confidence: 0.9,
                 from_id: "note:seed".into(),
                 to_id: "note:middle".into(),
+                evidence: graphrag_core::EvidenceSummary::describe(None, Some("manual"), Some(0.9)),
             },
             GraphPathStep {
                 edge_id: "note_edge:two".into(),
@@ -1736,12 +1737,17 @@ mod tests {
                 confidence: 0.75,
                 from_id: "note:target".into(),
                 to_id: "note:middle".into(),
+                evidence: graphrag_core::EvidenceSummary {
+                    status: graphrag_core::EvidenceStatus::Assessed,
+                    evidence_mode: Some(graphrag_core::EvidenceMode::Derivation),
+                    ..Default::default()
+                },
             },
         ];
 
         assert_eq!(
             render_graph_path(&path, " -> "),
-            "outbound:supports edge=note_edge:one endpoints=note:seed→note:middle confidence=0.90 -> inbound:contradicts edge=note_edge:two endpoints=note:target→note:middle confidence=0.75"
+            "outbound:supports edge=note_edge:one endpoints=note:seed→note:middle confidence=0.90 evidence=unassessed -> inbound:contradicts edge=note_edge:two endpoints=note:target→note:middle confidence=0.75 evidence=derivation"
         );
     }
 
@@ -1757,6 +1763,7 @@ mod tests {
                 confidence: 0.9,
                 from_id: "note:seed".into(),
                 to_id: "note:target".into(),
+                evidence: Default::default(),
             }],
             hops: 1,
             decay: 0.8,
@@ -1767,15 +1774,15 @@ mod tests {
 
         assert_eq!(
             render_graph_citation(&graph, " | "),
-            "graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+            "graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90 evidence=unassessed, graph_provenance=message:provenance"
         );
         assert_eq!(
             render_search_graph_evidence(&graph),
-            "entities=[Atlas] graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+            "entities=[Atlas] graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90 evidence=unassessed, graph_provenance=message:provenance"
         );
         assert_eq!(
             render_augment_graph_evidence(&graph),
-            ", graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90, graph_provenance=message:provenance"
+            ", graph_seed=note:seed, graph_hops=1, graph_decay=0.80, graph_source_uri=file:///notes/atlas.md, graph_path=outbound:supports edge=note_edge:one endpoints=note:seed→note:target confidence=0.90 evidence=unassessed, graph_provenance=message:provenance"
         );
     }
 

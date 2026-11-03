@@ -1818,6 +1818,7 @@ name = "graphrag-core"
 version = "0.1.0-rc.5"
 dependencies = [
  "chrono",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",

@@ -9,6 +9,7 @@ pub mod entity;
 pub mod error;
 pub mod note;
 pub mod portable;
+pub mod relation_evidence;
 pub mod source;
 
 pub use chat_export::{ChatConversation, ChatExport, ChatMessage, MessageRole};
@@ -19,6 +20,10 @@ pub use note::{AtomicNote, Note, NoteType};
 pub use portable::{
     PortableBackupManifest, PortableEmbeddingIdentity, PortablePayload, PortableRecord,
     PORTABLE_BACKUP_FORMAT, PORTABLE_BACKUP_FORMAT_VERSION,
+};
+pub use relation_evidence::{
+    AssessmentViolation, EvidenceAssessment, EvidenceAssessmentRequest, EvidenceMode,
+    EvidenceStatus, EvidenceSummary,
 };
 pub use source::{
     normalize_file_uri, normalized_content_hash, Source, SourceIngestionStatus, SourceType,

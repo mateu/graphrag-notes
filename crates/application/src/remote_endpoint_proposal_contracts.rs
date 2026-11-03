@@ -3,6 +3,14 @@ use graphrag_core::EdgeType;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Typed evidence for a proposal (#205). The shape is owned by
+/// `graphrag_core::relation_evidence` so validators and storage share it.
+pub use graphrag_core::relation_evidence::{
+    CandidateScore, DeclaredLineage, EndpointRole, EvidenceAssessment, EvidenceAssessmentRequest,
+    EvidenceMode, EvidenceStatus, EvidenceSummary, LegacyWeightMeaning, LinkEvidenceRequest,
+    ProposerDeclaration, RelationDirection,
+};
+
 /// Versioned with the semantic request payload used for idempotency.
 pub const REMOTE_ENDPOINT_PROPOSAL_PAYLOAD_VERSION: u32 = 1;
 pub const MAX_ENDPOINT_QUOTE_BYTES: usize = 2048;
@@ -55,6 +63,10 @@ pub struct RemoteEndpointProposalRequest {
     /// Caller-written explanation linking the two supplied quotations.
     #[schemars(length(min = 1, max = 2048))]
     pub rationale: String,
+    /// Optional typed evidence assessment. Omitting it keeps the legacy
+    /// contract, payload fingerprint and replay behavior byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assessment: Option<EvidenceAssessmentRequest>,
     /// Required after the caller has reviewed both exact revisions and quotes.
     pub confirmed: bool,
 }

@@ -1,6 +1,15 @@
 //! Atomic, quote-grounded endpoint-proposal persistence.
 use super::*;
+use graphrag_core::relation_evidence::{
+    self, EndpointSnapshot, EvidenceAssessmentRequest, SourceSnapshot,
+};
 use sha2::{Digest, Sha256};
+
+/// Refusal shared by every acceptance path for analogy/hypothesis evidence.
+pub const PENDING_ONLY_EVIDENCE: &str = "Analogy and hypothesis proposals stay pending and separate from the accepted graph; reject this proposal or submit a fresh one grounded in an explicit statement or derivation.";
+/// Refusal for a stored assessment that no longer parses or validates.
+pub const INVALID_EVIDENCE: &str =
+    "The stored evidence assessment is invalid; acceptance fails closed. Create a fresh reviewed proposal.";
 
 #[derive(Debug, Clone)]
 pub struct RemoteEndpointProposalInput {
@@ -13,6 +22,44 @@ pub struct RemoteEndpointProposalInput {
     pub to_quote: String,
     pub edge_type: EdgeType,
     pub rationale: String,
+    /// Optional typed evidence (#205). `None` keeps the legacy contract.
+    pub assessment: Option<EvidenceAssessmentRequest>,
+}
+
+/// Endpoint facts pinned by the proposal transaction's note/source fences.
+fn endpoint_snapshot<'a>(
+    note_id: &'a str,
+    note: &'a Note,
+    quote: &'a str,
+    source: Option<&'a (String, &'a Source)>,
+) -> EndpointSnapshot<'a> {
+    EndpointSnapshot {
+        note_id,
+        content: &note.content,
+        primary_quote: quote,
+        title: note.title.as_deref(),
+        source: source.map(|(id, source)| SourceSnapshot {
+            id,
+            title: source.title.as_deref(),
+            uri: source.uri.as_deref().or(source.normalized_uri.as_deref()),
+            content_hash: source.content_hash.as_deref(),
+        }),
+    }
+}
+
+fn invalid_evidence(error: relation_evidence::AssessmentViolation) -> DbError {
+    DbError::InvalidMutationRequest(error.to_string())
+}
+
+/// Accepted-graph gate for a stored assessment. Legacy proposals pass.
+pub fn ensure_acceptable_evidence(proposal: &ProposedEdge) -> Result<()> {
+    match proposal.parsed_evidence_assessment() {
+        Err(_) => Err(DbError::InvalidMutationRequest(INVALID_EVIDENCE.into())),
+        Ok(Some(assessment)) if !assessment.admits_accepted_graph() => Err(
+            DbError::InvalidMutationRequest(PENDING_ONLY_EVIDENCE.into()),
+        ),
+        Ok(_) => Ok(()),
+    }
 }
 
 #[derive(Debug, Deserialize, SurrealValue)]
@@ -97,6 +144,7 @@ impl Repository {
         if proposal.status != ProposedEdgeStatus::Pending {
             return Err(conflict());
         }
+        ensure_acceptable_evidence(&proposal)?;
         let notes = vec![
             self.get_note(&record_id_to_string(&proposal.from_id))
                 .await?
@@ -140,8 +188,8 @@ impl Repository {
                     .replace("$editor_matches", &format!("$matches_{index}")),
             );
         }
-        let mut response=self.db.query(format!("BEGIN TRANSACTION; {guards} {} LET $pending=(SELECT VALUE id FROM proposed_edge WHERE id=$proposal AND status='pending' AND generator='remote-reviewed-endpoint' AND reason=$evidence AND updated_at=$updated); IF array::len($pending)!=1 OR array::len((SELECT VALUE id FROM {table} WHERE dedupe_key=$dedupe LIMIT 1))!=0 {{ THROW 'reviewed-endpoint-accept-conflict'; }}; CREATE $edge SET in=$from,out=$to,confidence=1.0,reason=$evidence,provenance='manual',proposal_id=$proposal,is_manual=true,dedupe_key=$dedupe,created_at=time::now(); UPDATE $proposal SET status='accepted',reviewed_at=time::now(),reviewer=$reviewer,action_reason=$action_reason,acceptance_is_manual=true,resulting_edge_id=$edge,updated_at=time::now(); COMMIT TRANSACTION;",source_snapshot_guards()))
-            .bind(("endpoints",notes)).bind(("endpoint_sources",sources)).bind(("proposal",id.clone())).bind(("evidence",proposal.reason.clone())).bind(("updated",proposal.updated_at)).bind(("dedupe",dedupe)).bind(("edge",edge)).bind(("from",proposal.from_id)).bind(("to",proposal.to_id)).bind(("reviewer",reviewer)).bind(("action_reason",action_reason)).await?;
+        let mut response=self.db.query(format!("BEGIN TRANSACTION; {guards} {} LET $pending=(SELECT VALUE id FROM proposed_edge WHERE id=$proposal AND status='pending' AND generator='remote-reviewed-endpoint' AND reason=$evidence AND evidence_assessment=$assessment AND updated_at=$updated); IF array::len($pending)!=1 OR array::len((SELECT VALUE id FROM {table} WHERE dedupe_key=$dedupe LIMIT 1))!=0 {{ THROW 'reviewed-endpoint-accept-conflict'; }}; CREATE $edge SET in=$from,out=$to,confidence=1.0,reason=$evidence,provenance='manual',proposal_id=$proposal,is_manual=true,dedupe_key=$dedupe,evidence_assessment=$assessment,created_at=time::now(); UPDATE $proposal SET status='accepted',reviewed_at=time::now(),reviewer=$reviewer,action_reason=$action_reason,acceptance_is_manual=true,resulting_edge_id=$edge,updated_at=time::now(); COMMIT TRANSACTION;",source_snapshot_guards()))
+            .bind(("endpoints",notes)).bind(("endpoint_sources",sources)).bind(("proposal",id.clone())).bind(("evidence",proposal.reason.clone())).bind(("assessment",proposal.evidence_assessment.clone())).bind(("updated",proposal.updated_at)).bind(("dedupe",dedupe)).bind(("edge",edge)).bind(("from",proposal.from_id)).bind(("to",proposal.to_id)).bind(("reviewer",reviewer)).bind(("action_reason",action_reason)).await?;
         if !response.take_errors().is_empty() {
             return Err(conflict());
         }
@@ -160,6 +208,19 @@ impl Repository {
             return Ok(false);
         };
         if evidence["contract"] != 1 {
+            return Ok(false);
+        }
+        let assessment = match proposal.parsed_evidence_assessment() {
+            Ok(assessment) => assessment,
+            Err(_) => return Ok(false),
+        };
+        if assessment.as_ref().is_some_and(|assessment| {
+            assessment.relation != proposal.edge_type.to_string()
+                || !assessment.describes_pair(
+                    &record_id_to_string(&proposal.from_id),
+                    &record_id_to_string(&proposal.to_id),
+                )
+        }) {
             return Ok(false);
         }
         let mut ids = HashSet::new();
@@ -181,7 +242,12 @@ impl Repository {
                 Err(DbError::NotFound(..)) => return Ok(false),
                 Err(e) => return Err(e),
             };
-            if record.revision != revision || !record.content.contains(quote) {
+            if record.revision != revision
+                || !record.content.contains(quote)
+                || assessment
+                    .as_ref()
+                    .is_some_and(|assessment| !assessment.spans_match(id, &record.content))
+            {
                 return Ok(false);
             }
         }
@@ -256,7 +322,18 @@ impl Repository {
             }
         }
         super::graph::note_edge_table(&request.edge_type)?;
+        if let Some(assessment) = &request.assessment {
+            relation_evidence::validate_request(&request.edge_type, assessment)
+                .map_err(invalid_evidence)?;
+        }
         let payload = &request.mutation.payload;
+        let assessment_payload = match &request.assessment {
+            None => payload
+                .get("assessment")
+                .is_none_or(serde_json::Value::is_null),
+            Some(assessment) => serde_json::to_value(assessment)
+                .is_ok_and(|expected| payload.get("assessment") == Some(&expected)),
+        };
         if payload["request_id"] != request.mutation.request_id
             || payload["confirmed"] != true
             || payload["from"]["id"] != request.from_id
@@ -267,6 +344,7 @@ impl Repository {
             || payload["to"]["quote"] != request.to_quote
             || payload["relationship"] != request.edge_type.to_string()
             || payload["rationale"] != request.rationale
+            || !assessment_payload
         {
             return Err(DbError::InvalidMutationRequest(
                 "journal payload must describe the single intended proposal exactly".into(),
@@ -313,6 +391,42 @@ impl Repository {
         {
             return Err(conflict());
         }
+        let assessment = match &request.assessment {
+            None => None,
+            Some(typed) => {
+                let source_snapshot = |note: &Note| {
+                    let source_id = note.source_id.as_ref()?;
+                    let source = endpoint_sources
+                        .iter()
+                        .find(|source| source.id.as_ref() == Some(source_id))?;
+                    Some((record_id_to_string(source_id), source))
+                };
+                let (from_source, to_source) =
+                    (source_snapshot(&from.note), source_snapshot(&to.note));
+                let assessed = relation_evidence::assess(
+                    &request.edge_type,
+                    typed,
+                    &format!("mcp:{}", request.mutation.instance_id),
+                    &endpoint_snapshot(
+                        &request.from_id,
+                        &from.note,
+                        &request.from_quote,
+                        from_source.as_ref(),
+                    ),
+                    &endpoint_snapshot(
+                        &request.to_id,
+                        &to.note,
+                        &request.to_quote,
+                        to_source.as_ref(),
+                    ),
+                )
+                .map_err(invalid_evidence)?;
+                Some(
+                    serde_json::to_value(assessed)
+                        .map_err(|error| DbError::InvalidMutationRequest(error.to_string()))?,
+                )
+            }
+        };
         let reason = serde_json::json!({"contract":1,"rationale":request.rationale,"from":{"id":request.from_id,"revision":request.from_revision,"quote":request.from_quote},"to":{"id":request.to_id,"revision":request.to_revision,"quote":request.to_quote}}).to_string();
         super::graph::canonicalize_note_edge(&mut from_id, &mut to_id, &request.edge_type);
         let base = super::graph::edge_dedupe_key(&from_id, &to_id, &request.edge_type);
@@ -374,7 +488,7 @@ impl Repository {
             .replace("$editor_expected", "$expected_to")
             .replace("$editor_matches", "$to_matches");
         let query = format!(
-            "BEGIN TRANSACTION; {from_guard}{to_guard} {} CREATE $proposal SET dedupe_key=$dedupe,in=$edge_from,out=$edge_to,edge_type=$edge_type,confidence=1.0,reason=$reason,generator='remote-reviewed-endpoint',generator_version='1',model=NONE,status='pending',created_at=time::now(),updated_at=time::now(); CREATE $receipt SET instance_id=$instance,request_id=$request,operation=$operation,target=$proposal,payload_fingerprint=$fingerprint,payload=$payload,result=$result,created_at=time::now(),updated_at=time::now(); COMMIT TRANSACTION;", source_snapshot_guards()
+            "BEGIN TRANSACTION; {from_guard}{to_guard} {} CREATE $proposal SET dedupe_key=$dedupe,in=$edge_from,out=$edge_to,edge_type=$edge_type,confidence=1.0,reason=$reason,generator='remote-reviewed-endpoint',generator_version='1',model=NONE,status='pending',evidence_assessment=$assessment,created_at=time::now(),updated_at=time::now(); CREATE $receipt SET instance_id=$instance,request_id=$request,operation=$operation,target=$proposal,payload_fingerprint=$fingerprint,payload=$payload,result=$result,created_at=time::now(),updated_at=time::now(); COMMIT TRANSACTION;", source_snapshot_guards()
         );
         let mut response = self
             .db
@@ -390,6 +504,7 @@ impl Repository {
             .bind(("dedupe", dedupe))
             .bind(("edge_type", request.edge_type.to_string()))
             .bind(("reason", reason))
+            .bind(("assessment", assessment))
             .bind(("receipt", receipt_id))
             .bind(("instance", request.mutation.instance_id.clone()))
             .bind(("request", request.mutation.request_id.clone()))

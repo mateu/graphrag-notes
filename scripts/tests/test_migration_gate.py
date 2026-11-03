@@ -30,10 +30,11 @@ class MigrationGateTests(unittest.TestCase):
     def test_every_fixture_uses_the_exact_nonignored_runner(self):
         with mock.patch.object(gate, "migration_names", return_value=["migrations::tests::new_schema"]), mock.patch.object(gate.EXACT, "execute") as execute:
             gate.run()
-        self.assertEqual(execute.call_count, 5)
+        self.assertEqual(execute.call_count, 6)
         self.assertEqual(execute.call_args_list[0].args, ("graphrag-db", "migrations::tests::new_schema"))
         self.assertTrue(any("lexical_migration" in call.args[1] for call in execute.call_args_list))
         self.assertTrue(any("schema23_reviewed" in call.args[1] for call in execute.call_args_list))
+        self.assertTrue(any("typed_relation_evidence" in call.args[1] for call in execute.call_args_list))
         self.assertFalse(any("subprocess_worker" in call.args[1] for call in execute.call_args_list))
 
     def test_rename_out_of_schema_path_cannot_bypass_gate(self):

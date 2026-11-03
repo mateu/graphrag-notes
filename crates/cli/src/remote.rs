@@ -239,7 +239,7 @@ async fn invocation(cli: &Cli, server: &str) -> Result<Invocation> {
             let tags: Vec<String> = tags.as_deref().map(|tags|tags.split(',').map(|tag|tag.trim().to_string()).collect()).unwrap_or_default();
             return prepare_capture(cli,server,CaptureInput { content:content.as_deref(),file:None,title:title.as_deref(),tags:&tags,options:&EditorOptions::default(),format:OutputFormat::Human });
         }
-        _ => anyhow::bail!("remote mode supports search, inspect, augment, capture, notes edit/delete, connection review, upload, uploaded sources show and owned jobs; use host-side commands for database maintenance"),
+        _ => anyhow::bail!("remote mode supports search, inspect, augment, capture, notes edit/delete, connection review, reviewed proposals, upload, uploaded sources show and owned jobs; use host-side commands for database maintenance"),
     };
     Ok(Invocation {
         tool,
@@ -419,6 +419,10 @@ fn validate_read_result(tool: &str, value: &Value) -> Result<()> {
                 .is_ok()
         }
         "capture_note" | "edit_note" | "delete_note" | "decide_proposal" => true,
+        "propose_endpoint_relationship" => serde_json::from_value::<
+            graphrag_application::RemoteEndpointProposalResponse,
+        >(value["data"].clone())
+        .is_ok(),
         "upload_source" | "get_source" | "get_job" | "list_jobs" | "cancel_job" | "resume_job" => {
             crate::remote_uploads::valid_read_result(tool, value)
         }
