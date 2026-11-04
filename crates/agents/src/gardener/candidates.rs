@@ -867,29 +867,14 @@ impl super::GardenerAgent {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>();
-            let Some(headings) =
-                before(deadline, repo.candidate_source_entry_headings(&sources)).await?
+            let Some(paths) =
+                before(deadline, repo.candidate_source_heading_paths(&sources)).await?
             else {
                 return Ok(None);
             };
-            headings
+            paths
                 .into_iter()
-                .map(|(source, headings)| {
-                    let mut entries = HashMap::<String, BTreeSet<String>>::new();
-                    for heading in headings {
-                        if let Some(template) =
-                            timestamped_entry_template(std::slice::from_ref(&heading))
-                        {
-                            entries.entry(template).or_default().insert(heading);
-                        }
-                    }
-                    let recurring = entries
-                        .into_iter()
-                        .filter(|(_, entries)| entries.len() >= min_entries)
-                        .map(|(template, _)| template)
-                        .collect::<BTreeSet<_>>();
-                    (source, recurring)
-                })
+                .map(|(source, paths)| (source, recurring_entry_templates(&paths, min_entries)))
                 .collect::<BTreeMap<_, _>>()
         } else {
             BTreeMap::new()
@@ -1050,6 +1035,29 @@ impl super::GardenerAgent {
         }
         Ok(Some(gated))
     }
+}
+
+/// Clock-stamped entry templates that recur in at least `min_entries`
+/// entries of one source. `paths` are the source's heading paths in chunk
+/// order. A run of consecutive chunks with one path is one entry (one long
+/// section split into chunks), and the same heading under another path or
+/// after another section is another entry.
+fn recurring_entry_templates(paths: &[Vec<String>], min_entries: usize) -> BTreeSet<String> {
+    let mut entries = HashMap::<String, usize>::new();
+    let mut previous: Option<&Vec<String>> = None;
+    for path in paths {
+        if previous != Some(path) {
+            if let Some(template) = timestamped_entry_template(path) {
+                *entries.entry(template).or_default() += 1;
+            }
+        }
+        previous = Some(path);
+    }
+    entries
+        .into_iter()
+        .filter(|(_, count)| *count >= min_entries)
+        .map(|(template, _)| template)
+        .collect()
 }
 
 /// An opt-in quality rejection, checked after the origin and exact-duplicate
@@ -1519,6 +1527,43 @@ mod tests {
             origin_uri: uri.map(str::to_owned),
             chunk_heading_path: Vec::new(),
         }
+    }
+
+    #[test]
+    fn recurring_entries_count_sections_not_heading_strings() {
+        let path = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(|part| (*part).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let beat = "09:00 — Heartbeat recheck";
+        // Three daily sections with one identical entry heading: three entries.
+        let daily = [
+            path(&["Day one", beat]),
+            path(&["Day two", beat]),
+            path(&["Day three", beat]),
+        ];
+        assert_eq!(
+            recurring_entry_templates(&daily, 3),
+            BTreeSet::from(["#:# — heartbeat recheck".to_owned()])
+        );
+        // The same heading repeated under one path, separated by another
+        // section, is also several entries.
+        let repeated = [
+            path(&[beat]),
+            path(&["Notes"]),
+            path(&[beat]),
+            path(&["Notes"]),
+            path(&[beat]),
+        ];
+        assert_eq!(recurring_entry_templates(&repeated, 3).len(), 1);
+        // One long section split into three chunks is one entry.
+        let split = [path(&[beat]), path(&[beat]), path(&[beat])];
+        assert!(recurring_entry_templates(&split, 2).is_empty());
+        // Headings without a clock time never count.
+        let plain = [path(&["Status"]), path(&["Other"]), path(&["Status"])];
+        assert!(recurring_entry_templates(&plain, 2).is_empty());
     }
 
     #[test]

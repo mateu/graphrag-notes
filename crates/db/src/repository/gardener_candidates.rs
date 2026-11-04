@@ -587,15 +587,16 @@ impl Repository {
             .collect())
     }
 
-    /// Entry headings (the last heading-path element) of every visible note
-    /// of each supplied source, keyed by native source ID. Notes without a
-    /// heading are omitted.
+    /// Heading paths of every visible note of each supplied source, in chunk
+    /// order (notes without an ordinal last, by ID), keyed by native source
+    /// ID. Consecutive chunks of one section share a path, so a run of equal
+    /// paths is one entry and a repeated heading elsewhere is another.
     #[allow(clippy::mutable_key_type)]
     #[instrument(skip(self, sources))]
-    pub async fn candidate_source_entry_headings(
+    pub async fn candidate_source_heading_paths(
         &self,
         sources: &[RecordId],
-    ) -> Result<std::collections::BTreeMap<RecordId, Vec<String>>> {
+    ) -> Result<std::collections::BTreeMap<RecordId, Vec<Vec<String>>>> {
         let sources = sources
             .iter()
             .filter(|id| id.table.as_str() == "source")
@@ -606,26 +607,42 @@ impl Repository {
         }
         #[derive(Deserialize, SurrealValue)]
         struct HeadingRow {
+            id: RecordId,
             source_id: RecordId,
             #[serde(default)]
-            heading: Option<String>,
+            chunk_ordinal: Option<u64>,
+            #[serde(default)]
+            #[surreal(default)]
+            chunk_heading_path: Vec<String>,
         }
-        let rows: Vec<HeadingRow> = self
+        let mut rows: Vec<HeadingRow> = self
             .db
             .query(format!(
-                "SELECT source_id, array::last(chunk_heading_path) AS heading FROM note WHERE source_id IN $sources AND {VISIBLE_NOTE_CONDITION}"
+                "SELECT id, source_id, chunk_ordinal, chunk_heading_path FROM note WHERE source_id IN $sources AND {VISIBLE_NOTE_CONDITION}"
             ))
             .bind(("sources", sources))
             .await?
             .check()?
             .take(0)?;
-        let mut headings = std::collections::BTreeMap::<RecordId, Vec<String>>::new();
+        rows.sort_by(|left, right| {
+            left.source_id
+                .cmp(&right.source_id)
+                .then_with(|| match (left.chunk_ordinal, right.chunk_ordinal) {
+                    (Some(left), Some(right)) => left.cmp(&right),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let mut paths = std::collections::BTreeMap::<RecordId, Vec<Vec<String>>>::new();
         for row in rows {
-            if let Some(heading) = row.heading {
-                headings.entry(row.source_id).or_default().push(heading);
-            }
+            paths
+                .entry(row.source_id)
+                .or_default()
+                .push(row.chunk_heading_path);
         }
-        Ok(headings)
+        Ok(paths)
     }
 
     /// Entity names and types mentioned by the supplied notes.

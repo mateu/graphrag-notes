@@ -286,9 +286,12 @@ dedupe_counterparts = true
   heartbeat, watchdog or status logs, with no names hard-coded. A note's
   *entry template* is its last heading, lowercased with digit runs collapsed,
   and applies only when that heading carries a clock time
-  (`19:07 MDT — Heartbeat recheck` becomes `#:# mdt — heartbeat recheck`). If
-  at least this many distinct entries of the note's own source share its
-  template, the note is a periodic status entry. Such a note pairs only through
+  (`19:07 MDT — Heartbeat recheck` becomes `#:# mdt — heartbeat recheck`). An
+  entry is a run of consecutive chunks of the source, in chunk order, that
+  share one heading path. A long section split into several chunks is one
+  entry, and a repeated heading under another section is another. If at least
+  this many entries of the note's own source share its template, the note is a
+  periodic status entry. Such a note pairs only through
   an explicit cross-reference (record ID, source URI, wikilink or file name).
   Otherwise the pair is counted as `periodic_status`. The check costs one
   indexed heading read per source involved.

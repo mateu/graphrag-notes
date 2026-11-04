@@ -230,7 +230,7 @@ from those counters. Only 8 of the 284 (600 anchors) were candidates before.
 | Run | 210 anchors | 600 anchors |
 |---|---:|---:|
 | Deployed binary, measured policy | 8.4 s (40 ms/anchor) | 18.1 s (30 ms/anchor) |
-| This change, all three options | 8.3 s (40 ms/anchor) | 18.8 s (31 ms/anchor) |
+| This change, all three options | 8.6 s (41 ms/anchor) | 18.9 s (31 ms/anchor) |
 
 The periodic rule adds one indexed heading read per scan, over the sources of
 clock-stamped notes. No measurable regression.
