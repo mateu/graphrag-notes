@@ -32,6 +32,9 @@ pub(crate) fn policy(config: &GardenerCandidateConfig) -> CandidatePolicy {
         max_lineage_documents: config.max_lineage_documents,
         min_specific_entities: config.min_specific_entities,
         textual_cues: config.textual_cues,
+        resolve_relative_dates: config.resolve_relative_dates,
+        periodic_status_entries: config.periodic_status_entries,
+        dedupe_counterparts: config.dedupe_counterparts,
         similarity_batch_anchors: config.similarity_batch_anchors,
     }
 }
@@ -217,6 +220,15 @@ pub(crate) fn render(
             .min_specific_entities
             .map(|value| format!("at least {value} specific entities without a pointer")),
         policy.textual_cues.then(|| "textual cues".to_owned()),
+        policy
+            .resolve_relative_dates
+            .then(|| "relative dates must resolve".to_owned()),
+        policy
+            .periodic_status_entries
+            .map(|value| format!("status entries recurring {value}+ times need a reference")),
+        policy
+            .dedupe_counterparts
+            .then(|| "identical counterparts deduplicated".to_owned()),
         (policy.similarity_batch_anchors > 1).then(|| {
             format!(
                 "{} anchors per similarity pass",
@@ -282,17 +294,23 @@ pub(crate) fn render(
         + rejected.near_duplicate
         + rejected.lineage_template
         + rejected.insufficient_specific_entities
+        + rejected.unresolved_relative_date
+        + rejected.periodic_status
+        + rejected.duplicate_counterpart
         + receipt.machine_dump_anchors;
     if gated > 0 {
         writeln!(
             writer,
-            "  Quality gates rejected: same document {}, machine dump {} (anchors skipped {}), near duplicate {}, lineage template {}, too few specific entities {}",
+            "  Quality gates rejected: same document {}, machine dump {} (anchors skipped {}), near duplicate {}, lineage template {}, too few specific entities {}, unresolved relative date {}, periodic status {}, duplicate counterpart {}",
             rejected.same_document,
             rejected.machine_dump,
             receipt.machine_dump_anchors,
             rejected.near_duplicate,
             rejected.lineage_template,
             rejected.insufficient_specific_entities,
+            rejected.unresolved_relative_date,
+            rejected.periodic_status,
+            rejected.duplicate_counterpart,
         )?;
     }
     if receipt.candidates.is_empty() {

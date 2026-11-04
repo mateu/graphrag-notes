@@ -286,14 +286,25 @@ const BACK_REFERENCES: &[&str] = &[
     "following up on",
 ];
 
-/// `text` (dated `own`) points back at a document dated `other`.
-fn back_reference(text: &str, own: NaiveDate, other: NaiveDate) -> Option<TextualCueKind> {
+/// `text` (dated `own`) points back at a document dated `other`. A
+/// "yesterday" that `relative_ok` declines is skipped, and reported through
+/// `declined`, so a dated back-reference can still cue.
+fn back_reference(
+    text: &str,
+    own: NaiveDate,
+    other: NaiveDate,
+    relative_ok: impl FnOnce() -> bool,
+    declined: &mut bool,
+) -> Option<TextualCueKind> {
     if other >= own {
         return None;
     }
     let lower = text.to_lowercase();
     if other.succ_opt() == Some(own) && whole_word(&lower, "yesterday") {
-        return Some(TextualCueKind::RelativeDate);
+        if relative_ok() {
+            return Some(TextualCueKind::RelativeDate);
+        }
+        *declined = true;
     }
     let date = other.format("%Y-%m-%d").to_string();
     lower.match_indices(&date).find_map(|(start, _)| {
@@ -424,18 +435,73 @@ pub enum CueDirection {
 
 /// The first explicit textual cue between two dated notes, strongest kind
 /// first. Notes whose documents carry no date never cue.
+#[cfg(test)]
 pub(crate) fn textual_cue(
     from_text: &str,
     from_origin: Option<&str>,
     to_text: &str,
     to_origin: Option<&str>,
 ) -> Option<(TextualCueKind, CueDirection)> {
-    let from_date = from_origin.and_then(document_date)?;
-    let to_date = to_origin.and_then(document_date)?;
-    if let Some(kind) = back_reference(from_text, from_date, to_date) {
+    textual_cue_checked(from_text, from_origin, to_text, to_origin, |_| true).cue
+}
+
+/// A [`textual_cue_checked`] result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct CueOutcome {
+    pub cue: Option<(TextualCueKind, CueDirection)>,
+    /// A "yesterday" cue was found but `relative_ok` declined it (and no
+    /// other cue was found in its place).
+    pub declined_relative_date: Option<CueDirection>,
+}
+
+/// [`textual_cue`], where `relative_ok(direction)` decides whether a
+/// "yesterday" cue carried in `direction` counts. A declined relative date
+/// falls through to the weaker kinds.
+pub(crate) fn textual_cue_checked(
+    from_text: &str,
+    from_origin: Option<&str>,
+    to_text: &str,
+    to_origin: Option<&str>,
+    relative_ok: impl Fn(CueDirection) -> bool,
+) -> CueOutcome {
+    let mut outcome = CueOutcome::default();
+    let (Some(from_date), Some(to_date)) = (
+        from_origin.and_then(document_date),
+        to_origin.and_then(document_date),
+    ) else {
+        return outcome;
+    };
+    let mut declined = [false; 2];
+    outcome.cue = textual_cue_dated(
+        (from_text, from_date),
+        (to_text, to_date),
+        &relative_ok,
+        &mut declined,
+    );
+    if outcome.cue.is_none() {
+        outcome.declined_relative_date = if declined[0] {
+            Some(CueDirection::FromMentionsTo)
+        } else if declined[1] {
+            Some(CueDirection::ToMentionsFrom)
+        } else {
+            None
+        };
+    }
+    outcome
+}
+
+fn textual_cue_dated(
+    (from_text, from_date): (&str, NaiveDate),
+    (to_text, to_date): (&str, NaiveDate),
+    relative_ok: &impl Fn(CueDirection) -> bool,
+    declined: &mut [bool; 2],
+) -> Option<(TextualCueKind, CueDirection)> {
+    let from_ok = || relative_ok(CueDirection::FromMentionsTo);
+    if let Some(kind) = back_reference(from_text, from_date, to_date, from_ok, &mut declined[0]) {
         return Some((kind, CueDirection::FromMentionsTo));
     }
-    if let Some(kind) = back_reference(to_text, to_date, from_date) {
+    let to_ok = || relative_ok(CueDirection::ToMentionsFrom);
+    if let Some(kind) = back_reference(to_text, to_date, from_date, to_ok, &mut declined[1]) {
         return Some((kind, CueDirection::ToMentionsFrom));
     }
     // The answering note is the one that carries the answer.
@@ -452,6 +518,163 @@ pub(crate) fn textual_cue(
         ));
     }
     None
+}
+
+/// Clock times (`7:05`, `22:37`) written in `text`, as minutes after
+/// midnight. A run of three colon-separated numbers (`04:54:39`) or a time
+/// glued to other digits is not a clock time here.
+pub(crate) fn clock_times(text: &str) -> BTreeSet<u16> {
+    let bytes = text.as_bytes();
+    let mut found = BTreeSet::new();
+    for (colon, _) in text.match_indices(':') {
+        let hours_start = (0..colon)
+            .rev()
+            .take_while(|&index| bytes[index].is_ascii_digit())
+            .last();
+        let Some(hours_start) = hours_start else {
+            continue;
+        };
+        let hours = &text[hours_start..colon];
+        let minutes = text[colon + 1..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+        let after = colon + 1 + minutes;
+        let bounded_before = hours_start == 0 || bytes[hours_start - 1] != b':';
+        let bounded_after = bytes.get(after).is_none_or(|byte| *byte != b':');
+        if hours.len() > 2 || minutes != 2 || !bounded_before || !bounded_after {
+            continue;
+        }
+        let (Ok(hours), Ok(minutes)) =
+            (hours.parse::<u16>(), text[colon + 1..after].parse::<u16>())
+        else {
+            continue;
+        };
+        if hours < 24 && minutes < 60 {
+            found.insert(hours * 60 + minutes);
+        }
+    }
+    found
+}
+
+/// Words that place a statement in time; they never make a topic span.
+const TEMPORAL_WORDS: &[&str] = &[
+    "yesterday",
+    "today",
+    "tomorrow",
+    "tonight",
+    "morning",
+    "afternoon",
+    "evening",
+    "night",
+    "last",
+    "earlier",
+    "later",
+    "since",
+    "prior",
+    "previou",
+    "next",
+    "day",
+    "week",
+];
+
+/// Adjacent content-word pairs of `text`: a two-word topic span such as
+/// "service path". Temporal words, stop words and number-only tokens are
+/// gaps, so a span never bridges them.
+fn topic_spans(text: &str) -> BTreeSet<(String, String)> {
+    let tokens = text
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .filter(|token| !token.trim_matches(['_', '-']).is_empty())
+        .map(|token| {
+            // Stop and temporal words are checked before and after the plural
+            // `s` is dropped ("this", "days"), so neither form makes a span.
+            let token = token.trim_matches(['_', '-']).to_lowercase();
+            let stem =
+                if token.chars().count() > 3 && token.ends_with('s') && !token.ends_with("ss") {
+                    token[..token.len() - 1].to_owned()
+                } else {
+                    token.clone()
+                };
+            let excluded =
+                |word: &str| STOP_WORDS.contains(&word) || TEMPORAL_WORDS.contains(&word);
+            let content = stem.chars().count() >= 3
+                && stem.chars().any(char::is_alphabetic)
+                && !excluded(&token)
+                && !excluded(&stem);
+            content.then_some(stem)
+        })
+        .collect::<Vec<_>>();
+    tokens
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [Some(left), Some(right)] => Some((left.clone(), right.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Sentences of `text` (split at line breaks and at `.`, `!`, `?` or `;`
+/// followed by whitespace).
+fn sentences(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    for line in text.split('\n') {
+        let mut start = 0;
+        let chars = line.char_indices().collect::<Vec<_>>();
+        for (position, (index, c)) in chars.iter().enumerate() {
+            let ends = matches!(c, '.' | '!' | '?' | ';')
+                && chars
+                    .get(position + 1)
+                    .is_some_and(|(_, next)| next.is_whitespace());
+            if ends {
+                found.push(&line[start..index + c.len_utf8()]);
+                start = index + c.len_utf8();
+            }
+        }
+        found.push(&line[start..]);
+    }
+    found.retain(|sentence| !sentence.trim().is_empty());
+    found
+}
+
+/// A "yesterday" in `cue_text` resolves to the counterpart (`other_text`,
+/// whose entry heading is `other_heading`): one sentence saying "yesterday"
+/// names no clock time other than the counterpart heading's (possibly none)
+/// and shares a two-word topic span with the counterpart. A monitoring window
+/// ("since 22:37 yesterday") or an aggregate ("yesterday's notes") that
+/// names no time and nothing the counterpart says does not resolve.
+pub(crate) fn relative_date_resolves(
+    cue_text: &str,
+    other_text: &str,
+    other_heading: &[String],
+) -> bool {
+    let heading = other_heading.join("\n");
+    // Only the entry's own heading (the last element) dates the counterpart;
+    // an ancestor heading's time belongs to another entry.
+    let other_times = other_heading
+        .last()
+        .map(|entry| clock_times(entry))
+        .unwrap_or_default();
+    let other_spans = topic_spans(&format!("{other_text}\n{heading}"));
+    sentences(cue_text).into_iter().any(|sentence| {
+        if !whole_word(&sentence.to_lowercase(), "yesterday") {
+            return false;
+        }
+        // Every time the sentence names must be one of the counterpart's:
+        // "at 08:20 today … since 22:37 yesterday" points at 22:37, not 08:20.
+        clock_times(sentence).is_subset(&other_times)
+            && !topic_spans(sentence).is_disjoint(&other_spans)
+    })
+}
+
+/// The digit-collapsed, lowercased form of a note's entry heading (the last
+/// heading-path element) when that heading carries a clock time: the
+/// template of a timestamped log entry ("#:# mdt — heartbeat recheck").
+pub(crate) fn timestamped_entry_template(heading_path: &[String]) -> Option<String> {
+    let heading = heading_path.last()?;
+    if clock_times(heading).is_empty() {
+        return None;
+    }
+    Some(lineage_family(&heading.trim().to_lowercase()))
 }
 
 #[cfg(test)]
@@ -535,6 +758,137 @@ mod tests {
         assert_eq!(document_date("vault://ops/memory/notes.md"), None);
         assert_eq!(document_date("vault://2026-07-01/notes.md"), None);
         assert_eq!(document_date("vault://ops/12026-07-01.md"), None);
+    }
+
+    #[test]
+    fn clock_times_are_hours_and_minutes_only() {
+        assert_eq!(
+            clock_times("since 22:37 yesterday, and 7:05 today")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![7 * 60 + 5, 22 * 60 + 37]
+        );
+        // Seconds-bearing stamps, ratios and out-of-range values are not times.
+        assert!(clock_times("Session 04:54:39 UTC, ratio 3:1, 25:00, 123:45").is_empty());
+        assert!(clock_times("no times here").is_empty());
+    }
+
+    #[test]
+    fn relative_dates_resolve_only_to_a_matching_counterpart() {
+        let heading = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(|part| (*part).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let counterpart = "Gateway running. The service PATH warning is shown.";
+        let lane = heading(&["2026-04-27", "Maintenance lane — 08:20 MDT"]);
+        // Shares "service path" and names no other time: resolves.
+        assert!(relative_date_resolves(
+            "Yesterday's service PATH warning is not present today.",
+            counterpart,
+            &lane
+        ));
+        // Names the counterpart's own time: still resolves.
+        assert!(relative_date_resolves(
+            "The service PATH warning from 08:20 yesterday is gone.",
+            counterpart,
+            &lane
+        ));
+        // An ancestor heading's time is not the counterpart's.
+        assert!(!relative_date_resolves(
+            "The service PATH warning from 08:20 yesterday is gone.",
+            "Service PATH warning persists.",
+            &heading(&["08:20 — Maintenance", "22:37 — Recheck"])
+        ));
+        assert!(relative_date_resolves(
+            "The service PATH warning from 22:37 yesterday is gone.",
+            "Service PATH warning persists.",
+            &heading(&["08:20 — Maintenance", "22:37 — Recheck"])
+        ));
+        // Any other time in the cue sentence breaks it, even beside a match.
+        assert!(!relative_date_resolves(
+            "At 08:20 today the service PATH warning was unchanged since 22:37 yesterday.",
+            counterpart,
+            &lane
+        ));
+        // A monitoring window at another time does not.
+        assert!(!relative_date_resolves(
+            "The service PATH warning is unchanged since 22:37 yesterday.",
+            counterpart,
+            &lane
+        ));
+        // An aggregate pointer sharing no topic span does not.
+        assert!(!relative_date_resolves(
+            "Consistent with yesterday's notes. Probes 200.",
+            counterpart,
+            &lane
+        ));
+        // A topic span elsewhere in the note, not in the cue sentence, does not.
+        assert!(!relative_date_resolves(
+            "Service PATH warning shown. Yesterday was quiet.",
+            counterpart,
+            &lane
+        ));
+        // Stop words never make a span, before or after a plural `s` is
+        // dropped ("this does" would otherwise stem to "thi doe").
+        assert!(!relative_date_resolves(
+            "Yesterday this does not work.",
+            "This does something else.",
+            &[]
+        ));
+        // Temporal words never make a span ("yesterday morning").
+        assert!(!relative_date_resolves(
+            "Same as yesterday morning.",
+            "Checked this morning.",
+            &lane
+        ));
+    }
+
+    #[test]
+    fn timestamped_entry_templates_collapse_digits() {
+        let entry = |text: &str| vec!["2026-06-27".to_owned(), text.to_owned()];
+        assert_eq!(
+            timestamped_entry_template(&entry("19:07 MDT — Heartbeat recheck")),
+            timestamped_entry_template(&entry("07:37 MDT — Heartbeat Recheck"))
+        );
+        assert_eq!(
+            timestamped_entry_template(&entry("19:07 MDT — Heartbeat recheck")).as_deref(),
+            Some("#:# mdt — heartbeat recheck")
+        );
+        assert_eq!(timestamped_entry_template(&entry("Owner decisions")), None);
+        assert_eq!(timestamped_entry_template(&[]), None);
+    }
+
+    #[test]
+    fn a_declined_relative_date_falls_through_and_is_reported() {
+        let monday = Some("vault://ops/memory/2026-04-27.md");
+        let tuesday = Some("vault://ops/memory/2026-04-28.md");
+        let outcome = textual_cue_checked(
+            "Gateway warning seen.",
+            monday,
+            "Yesterday's gateway warning is gone.",
+            tuesday,
+            |_| false,
+        );
+        assert_eq!(outcome.cue, None);
+        assert_eq!(
+            outcome.declined_relative_date,
+            Some(CueDirection::ToMentionsFrom)
+        );
+        // A dated back-reference in the same note still cues.
+        let outcome = textual_cue_checked(
+            "Gateway warning seen.",
+            monday,
+            "Yesterday was quiet. Compared with 2026-04-27: the warning moved.",
+            tuesday,
+            |_| false,
+        );
+        assert_eq!(
+            outcome.cue,
+            Some((TextualCueKind::DatedReference, CueDirection::ToMentionsFrom))
+        );
+        assert_eq!(outcome.declined_relative_date, None);
     }
 
     #[test]

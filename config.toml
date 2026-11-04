@@ -116,6 +116,12 @@ max_suggestions = 50
 # min_specific_entities = 2
 # textual_cues = true
 # similarity_batch_anchors = 64
+# Cue precision (#230): "yesterday" must resolve to the counterpart (or come
+# with a specific shared entity), recurring timestamped status entries pair
+# only through an explicit reference, and identical counterparts pair once.
+# resolve_relative_dates = true
+# periodic_status_entries = 3
+# dedupe_counterparts = true
 
 [alchemist]
 # Read-only, citation-verified synthesis (`graphrag synthesize`, MCP

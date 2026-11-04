@@ -99,6 +99,12 @@ pub struct RelationshipCandidatePolicy {
     pub min_specific_entities: Option<usize>,
     #[serde(default)]
     pub textual_cues: bool,
+    #[serde(default)]
+    pub resolve_relative_dates: bool,
+    #[serde(default)]
+    pub periodic_status_entries: Option<usize>,
+    #[serde(default)]
+    pub dedupe_counterparts: bool,
     /// Anchors ranked by one exact similarity pass; 1 is one per anchor.
     #[serde(default = "one")]
     pub similarity_batch_anchors: usize,
@@ -183,6 +189,15 @@ pub struct RelationshipCandidateRejections {
     /// Too few specific shared entities and no explicit pointer.
     #[serde(default)]
     pub insufficient_specific_entities: usize,
+    /// Only a "yesterday" cue that did not resolve to the counterpart.
+    #[serde(default)]
+    pub unresolved_relative_date: usize,
+    /// A recurring timestamped status entry without an explicit reference.
+    #[serde(default)]
+    pub periodic_status: usize,
+    /// An endpoint already paired with an identical counterpart.
+    #[serde(default)]
+    pub duplicate_counterpart: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

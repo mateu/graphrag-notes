@@ -74,6 +74,10 @@ pub struct CandidateNote {
     /// shares it), else the source's own URI. Used only for lineage checks.
     #[serde(default)]
     pub origin_uri: Option<String>,
+    /// Markdown heading path of the note's chunk (empty when unknown).
+    #[serde(default)]
+    #[surreal(default)]
+    pub chunk_heading_path: Vec<String>,
 }
 
 /// Origin document of a note's source, as [`CandidateNote::origin_uri`].
@@ -171,7 +175,7 @@ pub struct CandidateExistingLinks {
 }
 
 fn candidate_note_fields() -> String {
-    format!("id, source_id, (source_id.normalized_uri ?? source_id.uri) AS source_uri, content, content_hash, {ORIGIN_URI_SQL} AS origin_uri")
+    format!("id, source_id, (source_id.normalized_uri ?? source_id.uri) AS source_uri, content, content_hash, {ORIGIN_URI_SQL} AS origin_uri, chunk_heading_path")
 }
 
 /// Statements (indices 0–2) binding `$excluded` (notes sharing a chat
@@ -581,6 +585,64 @@ impl Repository {
             .into_iter()
             .filter_map(|row| Some((row.id, row.origin_uri?)))
             .collect())
+    }
+
+    /// Heading paths of every visible note of each supplied source, in chunk
+    /// order (notes without an ordinal last, by ID), keyed by native source
+    /// ID. Consecutive chunks of one section share a path, so a run of equal
+    /// paths is one entry and a repeated heading elsewhere is another.
+    #[allow(clippy::mutable_key_type)]
+    #[instrument(skip(self, sources))]
+    pub async fn candidate_source_heading_paths(
+        &self,
+        sources: &[RecordId],
+    ) -> Result<std::collections::BTreeMap<RecordId, Vec<Vec<String>>>> {
+        let sources = sources
+            .iter()
+            .filter(|id| id.table.as_str() == "source")
+            .cloned()
+            .collect::<Vec<_>>();
+        if sources.is_empty() {
+            return Ok(Default::default());
+        }
+        #[derive(Deserialize, SurrealValue)]
+        struct HeadingRow {
+            id: RecordId,
+            source_id: RecordId,
+            #[serde(default)]
+            chunk_ordinal: Option<u64>,
+            #[serde(default)]
+            #[surreal(default)]
+            chunk_heading_path: Vec<String>,
+        }
+        let mut rows: Vec<HeadingRow> = self
+            .db
+            .query(format!(
+                "SELECT id, source_id, chunk_ordinal, chunk_heading_path FROM note WHERE source_id IN $sources AND {VISIBLE_NOTE_CONDITION}"
+            ))
+            .bind(("sources", sources))
+            .await?
+            .check()?
+            .take(0)?;
+        rows.sort_by(|left, right| {
+            left.source_id
+                .cmp(&right.source_id)
+                .then_with(|| match (left.chunk_ordinal, right.chunk_ordinal) {
+                    (Some(left), Some(right)) => left.cmp(&right),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let mut paths = std::collections::BTreeMap::<RecordId, Vec<Vec<String>>>::new();
+        for row in rows {
+            paths
+                .entry(row.source_id)
+                .or_default()
+                .push(row.chunk_heading_path);
+        }
+        Ok(paths)
     }
 
     /// Entity names and types mentioned by the supplied notes.
