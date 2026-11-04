@@ -573,17 +573,23 @@ fn reserved_graph_candidates(
         return Vec::new();
     }
     let scores = pool.iter().map(|candidate| candidate.hit.score);
-    let min_score = scores.clone().fold(f32::INFINITY, f32::min);
-    let max_score = scores.fold(f32::NEG_INFINITY, f32::max);
-    let span = max_score - min_score;
+    let pool_min = scores.clone().fold(f32::INFINITY, f32::min);
+    let pool_max = scores.fold(f32::NEG_INFINITY, f32::max);
     reserved
         .into_iter()
         .filter(|hit| hit.fusion.final_rank > options.max_chunks && !hit.content.trim().is_empty())
         .filter_map(|hit| {
             let mut candidate = Candidate::from_hit(hit);
             candidate.rank = candidate.hit.fusion.final_rank.saturating_sub(1);
+            // A neighbour from beyond the window need not lie inside the
+            // pool's score range, so widen the range to include it. For an
+            // in-pool score this equals the pool's own normalization; a
+            // lower score against a tied pool is not equivalent evidence.
+            let score = candidate.hit.score;
+            let (min_score, max_score) = (pool_min.min(score), pool_max.max(score));
+            let span = max_score - min_score;
             candidate.relevance = if span.is_finite() && span > f32::EPSILON {
-                ((candidate.hit.score - min_score) / span).clamp(0.0, 1.0)
+                ((score - min_score) / span).clamp(0.0, 1.0)
             } else {
                 1.0
             };
@@ -2045,6 +2051,46 @@ mod tests {
             reserved_slot_fixture(vec![same_source, next]),
             ["note:top", "note:support"]
         );
+    }
+
+    #[test]
+    fn reserved_graph_slot_keeps_the_relevance_gate_against_a_tied_pool() {
+        // Every in-window hit ties, so the pool's own span is zero; a lower
+        // scoring neighbour from beyond the window must still fail the gate.
+        let mut hits = vec![
+            hit("note:top", 0.9, "top direct answer alpha"),
+            hit("note:seed", 0.9, "seed session summary bravo"),
+        ];
+        for (rank, hit) in hits.iter_mut().enumerate() {
+            hit.fusion.final_rank = rank + 1;
+            hit.source_uri = Some(format!("source:{}", hit.id));
+        }
+        let pack = |min_relevance| {
+            let mut neighbour =
+                reviewed_neighbour("note:support", "note:seed", 9, "derived daily delta");
+            neighbour.score = 0.5;
+            build_augment_context_from_hits_with_graph(
+                "query".into(),
+                SearchScope::Notes,
+                None,
+                hits.clone(),
+                AugmentOptions {
+                    max_chunks: 2,
+                    max_total_tokens: 1000,
+                    min_relevance,
+                    ..options()
+                },
+                Vec::new(),
+                GraphRetrievalSummary::default(),
+                vec![neighbour],
+            )
+            .chunks
+            .into_iter()
+            .map(|chunk| chunk.id)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(pack(1.0), ["note:top", "note:seed"]);
+        assert_eq!(pack(0.0), ["note:top", "note:support"]);
     }
 
     #[test]
