@@ -1746,6 +1746,7 @@ mod tests {
                 from_id: "note:seed".into(),
                 to_id: "note:middle".into(),
                 evidence: graphrag_core::EvidenceSummary::describe(None, Some("manual"), Some(0.9)),
+                reviewed_corroborated: false,
             },
             GraphPathStep {
                 edge_id: "note_edge:two".into(),
@@ -1759,6 +1760,7 @@ mod tests {
                     evidence_mode: Some(graphrag_core::EvidenceMode::Derivation),
                     ..Default::default()
                 },
+                reviewed_corroborated: false,
             },
         ];
 
@@ -1781,6 +1783,7 @@ mod tests {
                 from_id: "note:seed".into(),
                 to_id: "note:target".into(),
                 evidence: Default::default(),
+                reviewed_corroborated: false,
             }],
             hops: 1,
             decay: 0.8,

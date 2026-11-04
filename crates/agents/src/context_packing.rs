@@ -255,9 +255,20 @@ pub(crate) fn build_augment_context_from_hits(
         options,
         Vec::new(),
         GraphRetrievalSummary::default(),
+        Vec::new(),
     )
 }
 
+/// Pack ranked hits into prompt context.
+///
+/// `reserved` holds the reviewed, corroborated first-hop neighbours of the
+/// top-ranked hits, in rank order (empty when the graph is off or did not
+/// complete). Packing is unchanged unless the chunk budget runs out exactly
+/// at one of those seeds in a slot other than the first: then the seed's
+/// best eligible neighbour that ranking placed below the chunk budget takes
+/// that last slot instead (see [`substitute_reserved_graph_candidate`]).
+/// Neighbours just outside the retrieval window are eligible.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_augment_context_from_hits_with_graph(
     query: String,
     scope: SearchScope,
@@ -266,6 +277,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
     options: AugmentOptions,
     entity_filtered: Vec<ScopedSearchResult>,
     graph_summary: GraphRetrievalSummary,
+    reserved: Vec<ScopedSearchResult>,
 ) -> AugmentContext {
     let dropped_for_entity_filter = entity_filtered.len();
     let entity_exclusions = entity_filtered
@@ -323,6 +335,7 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         candidates.push(candidate);
     }
     normalize_candidate_relevance(&mut candidates);
+    let reserved = reserved_graph_candidates(reserved, &candidates, &options);
     candidates.retain(|candidate| {
         let keep = candidate.relevance >= options.min_relevance;
         if !keep {
@@ -412,6 +425,18 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
         });
     }
 
+    let mut reserved_outside_window = 0usize;
+    if let Some((seed, outside_window)) = substitute_reserved_graph_candidate(
+        reserved,
+        &mut candidates,
+        &mut selected,
+        &query,
+        &options,
+    ) {
+        reserved_outside_window += usize::from(outside_window);
+        exclusions.push(seed);
+    }
+
     // Include unvisited capped candidates in the same diagnostic accounting.
     let mut remaining = Vec::new();
     for candidate in candidates {
@@ -464,7 +489,11 @@ pub(crate) fn build_augment_context_from_hits_with_graph(
             .saturating_sub(graph_selected),
         graph_candidates_added: graph_added,
         graph_candidates_annotating: graph_selected - graph_added,
-        graph_candidates_rank_limited: graph_summary.candidates_rank_limited,
+        // A reserved neighbour from beyond the retrieval window reached
+        // packing after all, so it is no longer rank limited.
+        graph_candidates_rank_limited: graph_summary
+            .candidates_rank_limited
+            .saturating_sub(reserved_outside_window),
     };
     AugmentContext {
         query,
@@ -530,6 +559,110 @@ pub(crate) fn empty_context(
 /// is present. Merged direct hits retain their channel ranks.
 fn graph_only(fusion: &FusionEvidence) -> bool {
     fusion.vector_rank.is_none() && fusion.fulltext_rank.is_none()
+}
+
+/// Reserved-slot candidates (see [`build_augment_context_from_hits_with_graph`]):
+/// reviewed neighbours ranked below the chunk budget, scored on the packing
+/// pool's relevance scale and gated by the same `min_relevance`.
+fn reserved_graph_candidates(
+    reserved: Vec<ScopedSearchResult>,
+    pool: &[Candidate],
+    options: &AugmentOptions,
+) -> Vec<Candidate> {
+    if options.max_chunks < 2 || reserved.is_empty() {
+        return Vec::new();
+    }
+    let scores = pool.iter().map(|candidate| candidate.hit.score);
+    let min_score = scores.clone().fold(f32::INFINITY, f32::min);
+    let max_score = scores.fold(f32::NEG_INFINITY, f32::max);
+    let span = max_score - min_score;
+    reserved
+        .into_iter()
+        .filter(|hit| hit.fusion.final_rank > options.max_chunks && !hit.content.trim().is_empty())
+        .filter_map(|hit| {
+            let mut candidate = Candidate::from_hit(hit);
+            candidate.rank = candidate.hit.fusion.final_rank.saturating_sub(1);
+            candidate.relevance = if span.is_finite() && span > f32::EPSILON {
+                ((candidate.hit.score - min_score) / span).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            (candidate.relevance >= options.min_relevance).then_some(candidate)
+        })
+        .collect()
+}
+
+/// The reserved graph slot. When the chunk budget ran out exactly at a
+/// seed (the last selected chunk, never the first), the first eligible
+/// reviewed neighbour of that seed takes its slot. Eligible: not already
+/// selected, no source shared with another selected chunk, not a near
+/// duplicate of a selected chunk or of the seed itself (#232), and fits the
+/// remaining token budget. Every other selected chunk is unchanged, so a
+/// direct match is never displaced by its own seed's neighbour. Returns the
+/// seed's exclusion and whether the neighbour came from beyond the
+/// retrieval window.
+fn substitute_reserved_graph_candidate(
+    reserved: Vec<Candidate>,
+    pool: &mut Vec<Candidate>,
+    selected: &mut Vec<SelectedChunk>,
+    query: &str,
+    options: &AugmentOptions,
+) -> Option<(crate::RetrievalExplanation, bool)> {
+    if selected.len() < 2 || selected.len() != options.max_chunks {
+        return None;
+    }
+    let (kept, last) = selected.split_at(selected.len() - 1);
+    let seed = &last[0];
+    let kept_tokens = kept
+        .iter()
+        .map(|selected| &selected.full_tokens)
+        .collect::<Vec<_>>();
+    let rendered = kept
+        .iter()
+        .map(|selected| selected.chunk.clone())
+        .collect::<Vec<_>>();
+    let (chunk, full_tokens, id) = reserved.into_iter().find_map(|candidate| {
+        let graph = candidate.hit.graph.as_ref()?;
+        if graph.seed_note_id != seed.chunk.id
+            || kept.iter().any(|item| {
+                item.chunk.id == candidate.hit.id
+                    || (candidate.hit.source_uri.is_some()
+                        && item.chunk.source_uri == candidate.hit.source_uri)
+            })
+            || kept_tokens
+                .iter()
+                .copied()
+                .chain([&seed.full_tokens])
+                .any(|tokens| {
+                    multiset_jaccard_similarity(&candidate.full_tokens, tokens)
+                        >= options.near_duplicate_threshold
+                })
+        {
+            return None;
+        }
+        let selection = selection_evidence(&candidate, &kept_tokens, options.novelty_weight);
+        let chunk = fit_candidate(
+            &candidate,
+            selection,
+            query,
+            kept.len() + 1,
+            &rendered,
+            options,
+        )?;
+        Some((chunk, candidate.full_tokens, candidate.hit.id))
+    })?;
+    let seed = selected.pop().expect("budget is full");
+    let mut seed_exclusion = seed.chunk.explanation(selected.len() + 1);
+    seed_exclusion.context_rank = None;
+    seed_exclusion.selection = None;
+    seed_exclusion.token_count = None;
+    seed_exclusion.inclusion = crate::InclusionReason::DiagnosticLimit;
+    selected.push(SelectedChunk { chunk, full_tokens });
+    let in_pool = pool.iter().position(|item| item.hit.id == id);
+    if let Some(index) = in_pool {
+        pool.remove(index);
+    }
+    Some((seed_exclusion, in_pool.is_none()))
 }
 
 fn source_is_capped(
@@ -1811,6 +1944,109 @@ mod tests {
         assert_eq!(context.diagnostics.dropped_for_source_cap, 0);
     }
 
+    fn reviewed_neighbour(id: &str, seed: &str, rank: usize, content: &str) -> ScopedSearchResult {
+        let mut neighbour = hit(id, 0.5, content);
+        neighbour.fusion.final_rank = rank;
+        neighbour.source_uri = Some(format!("source:{id}"));
+        neighbour.graph = Some(GraphEvidence {
+            query_entities: Vec::new(),
+            seed_note_id: seed.into(),
+            path: vec![crate::search::GraphPathStep {
+                edge_id: "derived_from:edge".into(),
+                edge_type: "derived_from".into(),
+                direction: "outbound".into(),
+                confidence: 1.0,
+                from_id: seed.into(),
+                to_id: id.into(),
+                evidence: Default::default(),
+                reviewed_corroborated: true,
+            }],
+            hops: 1,
+            decay: 1.0,
+            score: 0.5,
+            source_uri: None,
+            provenance_ids: Vec::new(),
+        });
+        neighbour
+    }
+
+    fn reserved_slot_fixture(reserved: Vec<ScopedSearchResult>) -> Vec<String> {
+        let mut hits = vec![
+            hit("note:top", 1.0, "top direct answer alpha"),
+            hit("note:seed", 0.9, "seed session summary bravo"),
+            hit("note:other", 0.8, "other passage charlie"),
+        ];
+        for (rank, hit) in hits.iter_mut().enumerate() {
+            hit.fusion.final_rank = rank + 1;
+            hit.source_uri = Some(format!("source:{}", hit.id));
+        }
+        build_augment_context_from_hits_with_graph(
+            "query".into(),
+            SearchScope::Notes,
+            None,
+            hits,
+            AugmentOptions {
+                max_chunks: 2,
+                max_total_tokens: 1000,
+                ..options()
+            },
+            Vec::new(),
+            GraphRetrievalSummary {
+                candidates_considered: 1,
+                candidates_rank_limited: 1,
+                ..Default::default()
+            },
+            reserved,
+        )
+        .chunks
+        .into_iter()
+        .map(|chunk| chunk.id)
+        .collect()
+    }
+
+    #[test]
+    fn reserved_graph_slot_packs_reviewed_neighbour_after_top_hit() {
+        // Without a reserved neighbour the ordinary greedy order holds.
+        assert_eq!(reserved_slot_fixture(Vec::new()), ["note:top", "note:seed"]);
+        // A reviewed neighbour of a top seed, even from beyond the retrieval
+        // window, takes the last slot; the top direct hit never moves.
+        let neighbour = reviewed_neighbour("note:support", "note:seed", 9, "derived daily delta");
+        assert_eq!(
+            reserved_slot_fixture(vec![neighbour]),
+            ["note:top", "note:support"]
+        );
+        // A neighbour of the top hit never displaces the next direct hit.
+        let of_top = reviewed_neighbour("note:support", "note:top", 9, "derived daily delta");
+        assert_eq!(
+            reserved_slot_fixture(vec![of_top]),
+            ["note:top", "note:seed"]
+        );
+        // Already within the chunk budget: nothing is reserved.
+        let in_budget =
+            reviewed_neighbour("note:seed", "note:top", 2, "seed session summary bravo");
+        assert_eq!(
+            reserved_slot_fixture(vec![in_budget]),
+            ["note:top", "note:seed"]
+        );
+    }
+
+    #[test]
+    fn reserved_graph_slot_skips_seed_duplicates_and_selected_sources() {
+        // A near copy of the seed that reached it is a duplicate path (#232).
+        let copy = reviewed_neighbour("note:copy", "note:seed", 3, "seed session summary bravo");
+        assert_eq!(reserved_slot_fixture(vec![copy]), ["note:top", "note:seed"]);
+        // A neighbour from an already selected source does not take the slot,
+        // but the next eligible neighbour does.
+        let mut same_source =
+            reviewed_neighbour("note:sibling", "note:seed", 4, "sibling text echo");
+        same_source.source_uri = Some("source:note:top".into());
+        let next = reviewed_neighbour("note:support", "note:seed", 5, "derived daily delta");
+        assert_eq!(
+            reserved_slot_fixture(vec![same_source, next]),
+            ["note:top", "note:support"]
+        );
+    }
+
     #[test]
     fn zero_budget_context_retains_graph_packing_diagnostics() {
         let mut zero_budget = options();
@@ -1829,6 +2065,7 @@ mod tests {
                 candidates_dropped: 1,
                 candidates_rank_limited: 1,
             },
+            Vec::new(),
         );
 
         assert!(context.chunks.is_empty());
