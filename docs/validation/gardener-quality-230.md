@@ -216,32 +216,35 @@ periodic status 112, same document 24, no second signal 14, duplicate content
 10, machine dump 10, lineage template 6, too few specific entities 4,
 duplicate counterpart 1.
 
-Rejections after, 600 anchors: generic entities only 299, periodic status 284,
+Rejections after, 600 anchors: generic entities only 298, periodic status 287,
 near duplicate 261, same document 124, duplicate content 49, no second signal
-36, machine dump 20, too few specific entities 20, lineage template 17,
+36, machine dump 20, too few specific entities 20, lineage template 15,
 unresolved relative date 1.
 
 The periodic rule is checked before entity evidence, so pairs it removes no
 longer reach the generic-entity and lineage counters. Most of its count moves
-from those counters. Only 8 of the 284 (600 anchors) were candidates before.
+from those counters.
 
 ### Latency
 
 | Run | 210 anchors | 600 anchors |
 |---|---:|---:|
-| Deployed binary, measured policy | 8.4 s (40 ms/anchor) | 18.1 s (30 ms/anchor) |
-| This change, all three options | 8.6 s (41 ms/anchor) | 18.9 s (31 ms/anchor) |
+| Deployed binary, measured policy (two runs) | 8.4–8.6 s (40–41 ms/anchor) | 18.1–18.9 s (30–32 ms/anchor) |
+| This change, all three options (two runs) | 8.7–9.1 s (41–43 ms/anchor) | 19.4–20.0 s (32–33 ms/anchor) |
 
-The periodic rule adds one indexed heading read per scan, over the sources of
-clock-stamped notes. No measurable regression.
+The periodic rule adds one indexed read per scan of the heading paths of the
+sources of clock-stamped notes. The cost is about 1–2 ms per anchor, close to
+run-to-run noise.
 
 ### Sensitivity and limits
 
-- **`periodic_status_entries` of 2, 3 or 5**, with the other two options on,
-  give the same labelled result: 4/4 keeps, 6/11 batch-2 rejects removed, 0/27
-  batch-1 regressions. The same-scope candidate counts are also the same
-  (3 and 6). At 5, three of the six are caught by the relative-date rule
-  instead.
+- **`periodic_status_entries`**, with the other two options on:
+  - **3 or 5** give the same labelled result: 4/4 keeps, 6/11 batch-2 rejects
+    removed, 0/27 batch-1 regressions. The same-scope counts are 3 and 6. At 5,
+    three of the six are caught by the relative-date rule instead.
+  - **2 loses two batch-1 keeps.** Both keeps are entries whose clock-stamped
+    heading template occurs twice in their own log. **The margin at 3 is one
+    entry.** Do not set it below 3.
 - **Each rule alone** keeps all 4 keeps:
   - `resolve_relative_dates` alone removes 5 of the 6;
   - `periodic_status_entries = 3` alone removes 5 of the 6;
