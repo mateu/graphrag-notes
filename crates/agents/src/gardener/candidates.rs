@@ -707,6 +707,11 @@ impl super::GardenerAgent {
         let mut survivors = Vec::new();
         let mut shared_names = BTreeSet::<String>::new();
         for pair in pairs.into_values() {
+            // Text gates are synchronous: a gate pass that outlives the
+            // deadline abstains without advancing the cursor, like a read.
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
             let from_origin = provenance.get(&key(&pair.from.id));
             let to_origin = provenance.get(&key(&pair.to.id));
             if from_origin.is_some_and(|from| {
@@ -784,13 +789,12 @@ impl super::GardenerAgent {
         };
         // Origin documents of every note mentioning a specific name.
         let origins = if policy.max_lineage_documents.is_some() {
-            let mut mentioning = BTreeMap::<String, RecordId>::new();
-            for (_, notes) in specific.values() {
-                for note in notes {
-                    mentioning.insert(key(note), note.clone());
-                }
-            }
-            let mentioning = mentioning.into_values().collect::<Vec<_>>();
+            let mentioning = specific
+                .values()
+                .flat_map(|(_, notes)| notes.iter().cloned())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
             let Some(origins) =
                 before(deadline, repo.candidate_note_origin_uris(&mentioning)).await?
             else {
@@ -803,6 +807,9 @@ impl super::GardenerAgent {
 
         let mut signalled = Vec::new();
         for (pair, shared) in survivors {
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
             let globally_specific = shared.iter().any(|name| specific.contains_key(name));
             let families = policy.max_lineage_documents.map(|_| {
                 [&pair.from, &pair.to]
@@ -819,7 +826,7 @@ impl super::GardenerAgent {
                         // more origin documents of its families than allowed.
                         let documents = notes
                             .iter()
-                            .filter_map(|note| origins.get(&key(note)))
+                            .filter_map(|note| origins.get(note))
                             .filter(|origin| families.contains(&lineage_family(origin)))
                             .collect::<BTreeSet<_>>();
                         if documents.len() > max {

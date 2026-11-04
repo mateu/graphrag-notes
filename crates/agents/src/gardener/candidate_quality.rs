@@ -19,36 +19,71 @@ pub(crate) fn words(text: &str) -> Vec<String> {
 /// A shared run shorter than this many words is a phrase, never a copy.
 pub(crate) const MIN_SHARED_SPAN_WORDS: usize = 12;
 
+/// Stable small-integer identities for words, shared across calls.
+fn word_identities<'a>(
+    words: &'a [String],
+    vocabulary: &mut std::collections::HashMap<&'a str, u32>,
+) -> Vec<u32> {
+    words
+        .iter()
+        .map(|word| {
+            let next = vocabulary.len() as u32;
+            *vocabulary.entry(word.as_str()).or_insert(next)
+        })
+        .collect()
+}
+
 /// Longest run of consecutive words two notes share, as a share of the
 /// shorter note's word count; zero when the run is shorter than
 /// [`MIN_SHARED_SPAN_WORDS`]. Overlapping chunks of one file, copies and
 /// repeated templated output share long runs; independent notes about one
 /// topic rarely do.
+///
+/// Linear in the notes' lengths: every run of [`MIN_SHARED_SPAN_WORDS`]
+/// words of the longer note is indexed by its first occurrence, and the
+/// shorter note is walked once, extending each verified match greedily and
+/// skipping past it, so each word is compared a bounded number of times.
+/// With repeated text this can under-count the longest run (a lower bound),
+/// which only ever keeps a pair; a verbatim copy of most of the shorter note
+/// is always found.
 pub(crate) fn shared_span_share(left: &str, right: &str) -> f32 {
+    use std::collections::HashMap;
     let (left, right) = (words(left), words(right));
     let (short, long) = if left.len() <= right.len() {
         (left, right)
     } else {
         (right, left)
     };
-    if short.is_empty() {
+    let window = MIN_SHARED_SPAN_WORDS;
+    if short.len() < window {
         return 0.0;
     }
-    let mut best = 0usize;
-    let mut previous = vec![0usize; long.len() + 1];
-    let mut current = vec![0usize; long.len() + 1];
-    for word in &short {
-        for (index, other) in long.iter().enumerate() {
-            current[index + 1] = if word == other {
-                previous[index] + 1
-            } else {
-                0
-            };
-            best = best.max(current[index + 1]);
-        }
-        std::mem::swap(&mut previous, &mut current);
+    // Word identities, so windows compare as integer slices.
+    let mut vocabulary = HashMap::<&str, u32>::new();
+    let long_ids = word_identities(&long, &mut vocabulary);
+    let short_ids = word_identities(&short, &mut vocabulary);
+    let mut starts = HashMap::<&[u32], usize>::new();
+    for (start, run) in long_ids.windows(window).enumerate() {
+        starts.entry(run).or_insert(start);
     }
-    if best < MIN_SHARED_SPAN_WORDS {
+    let mut best = 0usize;
+    let mut position = 0usize;
+    while position + window <= short_ids.len() {
+        let Some(&start) = starts.get(&short_ids[position..position + window]) else {
+            position += 1;
+            continue;
+        };
+        let mut length = window;
+        while position + length < short_ids.len()
+            && start + length < long_ids.len()
+            && short_ids[position + length] == long_ids[start + length]
+        {
+            length += 1;
+        }
+        best = best.max(length);
+        position += length.saturating_sub(window - 1);
+    }
+    if best < window {
         return 0.0;
     }
     best as f32 / short.len() as f32
@@ -431,6 +466,14 @@ mod tests {
         let same_topic = "Relay check: queue normal, cache warm, nothing restarted today and no drain was needed at all";
         assert!(shared_span_share(original, same_topic) < 0.2);
         assert_eq!(shared_span_share("", original), 0.0);
+        // Long notes stay linear: two ~65 KB repetitive texts finish fast.
+        let unit = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu ";
+        let huge = unit.repeat(5_000);
+        let started = std::time::Instant::now();
+        assert!(shared_span_share(&huge, &huge) > 0.99);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let shifted = format!("omega {huge}");
+        assert!(shared_span_share(&huge, &shifted) > 0.99);
         // A short shared phrase is never a copy, even in a short note.
         assert_eq!(
             shared_span_share(

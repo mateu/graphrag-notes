@@ -105,8 +105,9 @@ fn surreal_cosine(stored: &[f64], anchor: &[f64]) -> f64 {
 }
 
 /// Similarity-descending, then record-ID-ascending, like the per-anchor
-/// `ORDER BY similarity DESC, id ASC`.
-fn neighbour_order(left: &(f64, String), right: &(f64, String)) -> std::cmp::Ordering {
+/// `ORDER BY similarity DESC, id ASC`. Native record IDs keep distinct keys
+/// with one display form (`note:42` and `note:⟨42⟩`) distinct.
+fn neighbour_order(left: &(f64, RecordId), right: &(f64, RecordId)) -> std::cmp::Ordering {
     right
         .0
         .total_cmp(&left.0)
@@ -114,7 +115,7 @@ fn neighbour_order(left: &(f64, String), right: &(f64, String)) -> std::cmp::Ord
 }
 
 /// Keep the best `limit` entries of `ranked` (unsorted), in neighbour order.
-fn keep_best(ranked: &mut Vec<(f64, String)>, limit: usize) {
+fn keep_best(ranked: &mut Vec<(f64, RecordId)>, limit: usize) {
     ranked.sort_by(neighbour_order);
     ranked.truncate(limit);
 }
@@ -342,8 +343,8 @@ impl Repository {
             excluded: HashSet<RecordId>,
             joined: HashSet<RecordId>,
             anchor: Vec<f64>,
-            fresh: Vec<(f64, String)>,
-            recorded: Vec<(f64, String)>,
+            fresh: Vec<(f64, RecordId)>,
+            recorded: Vec<(f64, RecordId)>,
         }
         #[derive(Deserialize, SurrealValue)]
         struct Exclusions {
@@ -399,7 +400,6 @@ impl Repository {
         let floor = f64::from(floor);
         let counterparts = counterpart_sources.map(<[RecordId]>::to_vec);
         let mut after: Option<RecordId> = None;
-        let mut ids = HashMap::<String, RecordId>::new();
         loop {
             // A record range continues strictly after the last row read, so
             // every page is an ordered key-range read, never a full re-scan.
@@ -431,8 +431,12 @@ impl Repository {
             };
             after = Some(last.id.clone());
             let full_page = page.len() >= CANDIDATE_BATCH_PAGE;
-            for row in page {
-                let key = record_id_to_string(&row.id);
+            for (index, row) in page.into_iter().enumerate() {
+                // Cosine work is synchronous: yield regularly so the scan's
+                // deadline and other tasks are never starved.
+                if index % 256 == 255 {
+                    tokio::task::yield_now().await;
+                }
                 for (anchor, ranking) in anchors.iter().zip(rankings.iter_mut()) {
                     let Some(ranking) = ranking else { continue };
                     if row.id == anchor.id
@@ -448,13 +452,12 @@ impl Repository {
                     if similarity.is_nan() || similarity < floor {
                         continue;
                     }
-                    ids.entry(key.clone()).or_insert_with(|| row.id.clone());
                     let bucket = if ranking.joined.contains(&row.id) {
                         &mut ranking.recorded
                     } else {
                         &mut ranking.fresh
                     };
-                    bucket.push((similarity, key.clone()));
+                    bucket.push((similarity, row.id.clone()));
                     if bucket.len() >= limit.saturating_mul(4).max(64) {
                         keep_best(bucket, limit);
                     }
@@ -469,11 +472,11 @@ impl Repository {
         for ranking in rankings.iter_mut().flatten() {
             keep_best(&mut ranking.fresh, limit);
             keep_best(&mut ranking.recorded, limit);
-            for (_, key) in ranking.fresh.iter().chain(&ranking.recorded) {
-                selected.push(ids[key].clone());
+            for (_, id) in ranking.fresh.iter().chain(&ranking.recorded) {
+                selected.push(id.clone());
             }
         }
-        selected.sort_by_key(record_id_to_string);
+        selected.sort();
         selected.dedup();
         let hydrated: Vec<CandidateNote> = if selected.is_empty() {
             Vec::new()
@@ -487,7 +490,7 @@ impl Repository {
         };
         let hydrated = hydrated
             .into_iter()
-            .map(|note| (record_id_to_string(&note.id), note))
+            .map(|note| (note.id.clone(), note))
             .collect::<HashMap<_, _>>();
         Ok(rankings
             .into_iter()
@@ -499,8 +502,8 @@ impl Repository {
                     .fresh
                     .into_iter()
                     .chain(ranking.recorded)
-                    .filter_map(|(similarity, key)| {
-                        hydrated.get(&key).map(|note| CandidateNote {
+                    .filter_map(|(similarity, id)| {
+                        hydrated.get(&id).map(|note| CandidateNote {
                             similarity: Some(similarity as f32),
                             ..note.clone()
                         })
@@ -545,12 +548,12 @@ impl Repository {
     }
 
     /// Origin document ([`CandidateNote::origin_uri`]) of each supplied note
-    /// that has one, keyed by canonical note ID.
+    /// that has one, keyed by native note ID.
     #[instrument(skip(self, notes))]
     pub async fn candidate_note_origin_uris(
         &self,
         notes: &[RecordId],
-    ) -> Result<std::collections::HashMap<String, String>> {
+    ) -> Result<std::collections::HashMap<RecordId, String>> {
         let notes = note_ids_only(notes);
         if notes.is_empty() {
             return Ok(Default::default());
@@ -572,7 +575,7 @@ impl Repository {
             .take(0)?;
         Ok(rows
             .into_iter()
-            .filter_map(|row| Some((record_id_to_string(&row.id), row.origin_uri?)))
+            .filter_map(|row| Some((row.id, row.origin_uri?)))
             .collect())
     }
 

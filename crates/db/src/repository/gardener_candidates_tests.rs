@@ -704,15 +704,11 @@ async fn batched_similarity_reads_equal_per_anchor_reads() {
     // Origin documents: a declared upload origin wins over the source URI.
     let origins = repo.candidate_note_origin_uris(&all).await.unwrap();
     assert_eq!(
-        origins
-            .get(&record_id_to_string(&all[3]))
-            .map(String::as_str),
+        origins.get(&all[3]).map(String::as_str),
         Some("vault://ops/delta.md")
     );
     assert_eq!(
-        origins
-            .get(&record_id_to_string(&all[0]))
-            .map(String::as_str),
+        origins.get(&all[0]).map(String::as_str),
         Some("file:///fixtures/alpha.md")
     );
     let names = repo
@@ -726,4 +722,55 @@ async fn batched_similarity_reads_equal_per_anchor_reads() {
             truncated: false
         }]
     );
+}
+
+#[tokio::test]
+async fn batched_similarity_keeps_native_record_ids_with_one_display_form_distinct() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let alpha = source(&repo, "/fixtures/alpha.md").await;
+    let beta = source(&repo, "/fixtures/beta.md").await;
+    let anchor_id = sourced(&repo, &alpha, "Fictional anchor", embedding(1.0, 1)).await;
+    // `note:42` and `note:⟨42⟩` print alike but are different records; the
+    // string key is the closer neighbour.
+    repo.db
+        .query(
+            "CREATE note:42 SET content = 'Fictional numeric', source_id = $beta, embedding = $far; \
+             CREATE type::record('note', '42') SET content = 'Fictional string', source_id = $beta, embedding = $near;",
+        )
+        .bind(("beta", beta.clone()))
+        .bind(("far", embedding(0.85, 2)))
+        .bind(("near", embedding(0.95, 3)))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let anchor = repo
+        .candidate_anchor_notes(CandidateAnchorScope::Notes(&[anchor_id]), None, 1)
+        .await
+        .unwrap()
+        .remove(0);
+    for limit in [1, 2] {
+        let single = repo
+            .candidate_similar_notes(&anchor, 0.8, limit, None)
+            .await
+            .unwrap();
+        let batched = repo
+            .candidate_similar_notes_batch(std::slice::from_ref(&anchor), 0.8, limit, None)
+            .await
+            .unwrap()
+            .remove(0);
+        let shape = |rows: &[CandidateNote]| {
+            rows.iter()
+                .map(|row| {
+                    (
+                        row.id.clone(),
+                        row.content.clone(),
+                        row.similarity.map(f32::to_bits),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(single.len(), limit);
+        assert_eq!(shape(&batched), shape(&single), "limit {limit}");
+    }
 }
