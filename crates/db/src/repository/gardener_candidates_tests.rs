@@ -702,6 +702,7 @@ async fn batched_similarity_reads_equal_per_anchor_reads() {
         single.iter().map(|row| row.id.clone()).collect::<Vec<_>>()
     );
     // Origin documents: a declared upload origin wins over the source URI.
+    #[allow(clippy::mutable_key_type)] // Native note IDs, as returned.
     let origins = repo.candidate_note_origin_uris(&all).await.unwrap();
     assert_eq!(
         origins.get(&all[3]).map(String::as_str),

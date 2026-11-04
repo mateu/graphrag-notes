@@ -335,13 +335,13 @@ impl Repository {
         limit: usize,
         counterpart_sources: Option<&[RecordId]>,
     ) -> Result<Vec<Vec<CandidateNote>>> {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::{BTreeMap, BTreeSet};
         use std::ops::Bound;
         use surrealdb::types::{RecordIdKey, RecordIdKeyRange};
 
         struct Ranking {
-            excluded: HashSet<RecordId>,
-            joined: HashSet<RecordId>,
+            excluded: BTreeSet<RecordId>,
+            joined: BTreeSet<RecordId>,
             anchor: Vec<f64>,
             fresh: Vec<(f64, RecordId)>,
             recorded: Vec<(f64, RecordId)>,
@@ -488,10 +488,12 @@ impl Repository {
                 .check()?
                 .take(0)?
         };
+        // Native `RecordId` keys: distinct records may share a display form.
+        #[allow(clippy::mutable_key_type)]
         let hydrated = hydrated
             .into_iter()
             .map(|note| (note.id.clone(), note))
-            .collect::<HashMap<_, _>>();
+            .collect::<BTreeMap<_, _>>();
         Ok(rankings
             .into_iter()
             .map(|ranking| {
@@ -548,12 +550,14 @@ impl Repository {
     }
 
     /// Origin document ([`CandidateNote::origin_uri`]) of each supplied note
-    /// that has one, keyed by native note ID.
+    /// that has one, keyed by native note ID (distinct records may share a
+    /// display form).
+    #[allow(clippy::mutable_key_type)]
     #[instrument(skip(self, notes))]
     pub async fn candidate_note_origin_uris(
         &self,
         notes: &[RecordId],
-    ) -> Result<std::collections::HashMap<RecordId, String>> {
+    ) -> Result<std::collections::BTreeMap<RecordId, String>> {
         let notes = note_ids_only(notes);
         if notes.is_empty() {
             return Ok(Default::default());

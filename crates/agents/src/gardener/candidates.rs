@@ -787,7 +787,9 @@ impl super::GardenerAgent {
                 .map(|(name, frequency)| (name, (frequency.notes, Vec::new())))
                 .collect::<HashMap<_, _>>()
         };
-        // Origin documents of every note mentioning a specific name.
+        // Origin documents of every note mentioning a specific name, keyed
+        // by native note ID (distinct records may share a display form).
+        #[allow(clippy::mutable_key_type)]
         let origins = if policy.max_lineage_documents.is_some() {
             let mentioning = specific
                 .values()
@@ -802,7 +804,7 @@ impl super::GardenerAgent {
             };
             origins
         } else {
-            HashMap::new()
+            BTreeMap::new()
         };
 
         let mut signalled = Vec::new();
