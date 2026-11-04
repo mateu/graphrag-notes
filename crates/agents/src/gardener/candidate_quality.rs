@@ -638,8 +638,8 @@ fn sentences(text: &str) -> Vec<&str> {
 
 /// A "yesterday" in `cue_text` resolves to the counterpart (`other_text`,
 /// whose entry heading is `other_heading`): one sentence saying "yesterday"
-/// names no clock time, or a clock time of the counterpart's heading, and
-/// shares a two-word topic span with the counterpart. A monitoring window
+/// names no clock time other than the counterpart heading's (possibly none)
+/// and shares a two-word topic span with the counterpart. A monitoring window
 /// ("since 22:37 yesterday") or an aggregate ("yesterday's notes") that
 /// names no time and nothing the counterpart says does not resolve.
 pub(crate) fn relative_date_resolves(
@@ -654,8 +654,9 @@ pub(crate) fn relative_date_resolves(
         if !whole_word(&sentence.to_lowercase(), "yesterday") {
             return false;
         }
-        let times = clock_times(sentence);
-        (times.is_empty() || !times.is_disjoint(&other_times))
+        // Every time the sentence names must be one of the counterpart's:
+        // "at 08:20 today … since 22:37 yesterday" points at 22:37, not 08:20.
+        clock_times(sentence).is_subset(&other_times)
             && !topic_spans(sentence).is_disjoint(&other_spans)
     })
 }
@@ -786,6 +787,12 @@ mod tests {
         // Names the counterpart's own time: still resolves.
         assert!(relative_date_resolves(
             "The service PATH warning from 08:20 yesterday is gone.",
+            counterpart,
+            &lane
+        ));
+        // Any other time in the cue sentence breaks it, even beside a match.
+        assert!(!relative_date_resolves(
+            "At 08:20 today the service PATH warning was unchanged since 22:37 yesterday.",
             counterpart,
             &lane
         ));
