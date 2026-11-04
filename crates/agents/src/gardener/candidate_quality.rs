@@ -586,19 +586,22 @@ fn topic_spans(text: &str) -> BTreeSet<(String, String)> {
         .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
         .filter(|token| !token.trim_matches(['_', '-']).is_empty())
         .map(|token| {
+            // Stop and temporal words are checked before and after the plural
+            // `s` is dropped ("this", "days"), so neither form makes a span.
             let token = token.trim_matches(['_', '-']).to_lowercase();
-            if token.chars().count() > 3 && token.ends_with('s') && !token.ends_with("ss") {
-                token[..token.len() - 1].to_owned()
-            } else {
-                token
-            }
-        })
-        .map(|token| {
-            let content = token.chars().count() >= 3
-                && token.chars().any(char::is_alphabetic)
-                && !STOP_WORDS.contains(&token.as_str())
-                && !TEMPORAL_WORDS.contains(&token.as_str());
-            content.then_some(token)
+            let stem =
+                if token.chars().count() > 3 && token.ends_with('s') && !token.ends_with("ss") {
+                    token[..token.len() - 1].to_owned()
+                } else {
+                    token.clone()
+                };
+            let excluded =
+                |word: &str| STOP_WORDS.contains(&word) || TEMPORAL_WORDS.contains(&word);
+            let content = stem.chars().count() >= 3
+                && stem.chars().any(char::is_alphabetic)
+                && !excluded(&token)
+                && !excluded(&stem);
+            content.then_some(stem)
         })
         .collect::<Vec<_>>();
     tokens
@@ -803,6 +806,13 @@ mod tests {
             "Service PATH warning shown. Yesterday was quiet.",
             counterpart,
             &lane
+        ));
+        // Stop words never make a span, before or after a plural `s` is
+        // dropped ("this does" would otherwise stem to "thi doe").
+        assert!(!relative_date_resolves(
+            "Yesterday this does not work.",
+            "This does something else.",
+            &[]
         ));
         // Temporal words never make a span ("yesterday morning").
         assert!(!relative_date_resolves(
