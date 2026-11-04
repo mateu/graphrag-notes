@@ -94,8 +94,9 @@ pub struct CandidatePolicy {
     /// second signal, ranked with cross-references.
     pub textual_cues: bool,
     /// A "yesterday" cue counts only when it resolves to the counterpart (a
-    /// sentence naming none of the counterpart's other times and sharing a
-    /// topic span with it) or the pair also shares a specific entity.
+    /// sentence naming no clock time but those of the counterpart's entry
+    /// heading and sharing a topic span with it) or the pair also shares a
+    /// specific entity.
     /// Requires `textual_cues`. `false`: any "yesterday" cues, as before.
     pub resolve_relative_dates: bool,
     /// Recurring timestamped status entries: a note whose clock-stamped

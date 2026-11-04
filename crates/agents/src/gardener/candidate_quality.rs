@@ -648,7 +648,12 @@ pub(crate) fn relative_date_resolves(
     other_heading: &[String],
 ) -> bool {
     let heading = other_heading.join("\n");
-    let other_times = clock_times(&heading);
+    // Only the entry's own heading (the last element) dates the counterpart;
+    // an ancestor heading's time belongs to another entry.
+    let other_times = other_heading
+        .last()
+        .map(|entry| clock_times(entry))
+        .unwrap_or_default();
     let other_spans = topic_spans(&format!("{other_text}\n{heading}"));
     sentences(cue_text).into_iter().any(|sentence| {
         if !whole_word(&sentence.to_lowercase(), "yesterday") {
@@ -789,6 +794,17 @@ mod tests {
             "The service PATH warning from 08:20 yesterday is gone.",
             counterpart,
             &lane
+        ));
+        // An ancestor heading's time is not the counterpart's.
+        assert!(!relative_date_resolves(
+            "The service PATH warning from 08:20 yesterday is gone.",
+            "Service PATH warning persists.",
+            &heading(&["08:20 — Maintenance", "22:37 — Recheck"])
+        ));
+        assert!(relative_date_resolves(
+            "The service PATH warning from 22:37 yesterday is gone.",
+            "Service PATH warning persists.",
+            &heading(&["08:20 — Maintenance", "22:37 — Recheck"])
         ));
         // Any other time in the cue sentence breaks it, even beside a match.
         assert!(!relative_date_resolves(

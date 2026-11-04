@@ -371,7 +371,7 @@ pub struct GardenerCandidateConfig {
     pub textual_cues: bool,
     /// Opt-in (requires `textual_cues`): a "yesterday" cue counts only when
     /// it resolves to the counterpart (its sentence names no other clock time
-    /// than the counterpart's heading and shares a two-word topic span with
+    /// than the counterpart's entry heading and shares a two-word topic span with
     /// it) or the pair also shares a specific entity.
     pub resolve_relative_dates: bool,
     /// Opt-in: a note whose clock-stamped entry heading recurs, with digits

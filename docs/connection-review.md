@@ -276,7 +276,7 @@ dedupe_counterparts = true
 
 - **`resolve_relative_dates`.** A "yesterday" cue counts only if it resolves
   to the counterpart: one sentence that says "yesterday" names no clock time
-  other than those in the counterpart's entry heading, *and* shares a two-word
+  other than those in the counterpart's entry heading (its last heading), *and* shares a two-word
   topic span with the counterpart (adjacent content words; stop words, temporal
   words and numbers break a span). A pair that also shares a specific entity
   keeps the cue either way. An unresolved cue falls through to the weaker cue
