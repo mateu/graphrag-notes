@@ -357,7 +357,9 @@ async fn direct_match_stronger_than_the_anchor_keeps_its_slot() {
     // Lexical-only notes covering more query terms push the anchor down the
     // full-text channel, so the competitor now outranks the anchor itself.
     // The undecayed support can reach its anchor's strength but never takes
-    // a slot from a direct match stronger than that anchor.
+    // a slot from a direct match stronger than that anchor. With the anchor
+    // packed last, the reserved graph slot (#243) lets the support take the
+    // anchor's own slot instead; the competitor's slot never changes.
     let corpus = corpus(12).await;
     let competitor = direct_competitor(&corpus.repo).await;
     for index in 0..2 {
@@ -398,12 +400,15 @@ async fn direct_match_stronger_than_the_anchor_keeps_its_slot() {
 
     let two = context(&search, fixed_budget(2), GraphMode::On).await;
     assert_eq!(chunk_ids(&two)[0], id(&competitor));
-    assert_eq!(chunk_ids(&two), vec![id(&competitor), id(&corpus.anchor)]);
-    assert_eq!(two.diagnostics.graph_candidates_added, 0);
+    assert_eq!(chunk_ids(&two), vec![id(&competitor), id(&support)]);
+    assert_eq!(two.diagnostics.graph_candidates_added, 1);
     assert_eq!(
-        excluded(&two, &support).inclusion,
+        excluded(&two, &corpus.anchor).inclusion,
         crate::InclusionReason::DiagnosticLimit
     );
+    // Graph off is untouched.
+    let off = context(&search, fixed_budget(2), GraphMode::Off).await;
+    assert_eq!(chunk_ids(&off), vec![id(&competitor), id(&corpus.anchor)]);
 }
 
 #[tokio::test]

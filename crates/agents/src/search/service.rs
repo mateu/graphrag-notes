@@ -99,6 +99,11 @@ pub struct GraphPathStep {
     /// Report-only evidence summary of the traversed edge (#205). Legacy
     /// edges are `unassessed`. Never read by scoring or admission.
     pub evidence: graphrag_core::EvidenceSummary,
+    /// A person created or accepted this edge (`is_manual`) and the note it
+    /// reached has its own query evidence (the #186 corroboration). Read only
+    /// by context packing's reserved graph slot; not serialized.
+    #[serde(skip)]
+    pub reviewed_corroborated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -583,16 +588,19 @@ impl SearchAgent {
         graph_mode: GraphMode,
     ) -> Result<GraphSearchResults> {
         self.search_with_scope_graph_filtered(
-            query, limit, scope, since_days, source_uri, graph_mode, None,
+            query, limit, scope, since_days, source_uri, graph_mode, None, 0,
         )
         .await
-        .map(|(results, _)| results)
+        .map(|(results, _, _)| results)
     }
 
     /// Internal filtered retrieval path for augmentation. The entity filter is
     /// applied after all retrieval channels are merged but before their shared
     /// rank/limit step, so graph-only non-matches cannot consume the context
-    /// fetch budget.
+    /// fetch budget. With `reserve_seed_ranks > 0` and a completed graph
+    /// phase, it also returns the reviewed, corroborated first-hop neighbours of the top
+    /// `reserve_seed_ranks` ranked hits, in rank order, from the ranking
+    /// before the limit (see [`reviewed_seed_neighbours`]).
     #[allow(clippy::too_many_arguments)]
     async fn search_with_scope_graph_filtered(
         &self,
@@ -603,7 +611,12 @@ impl SearchAgent {
         source_uri: Option<String>,
         graph_mode: GraphMode,
         entity_filter: Option<&str>,
-    ) -> Result<(GraphSearchResults, Vec<ScopedSearchResult>)> {
+        reserve_seed_ranks: usize,
+    ) -> Result<(
+        GraphSearchResults,
+        Vec<ScopedSearchResult>,
+        Vec<ScopedSearchResult>,
+    )> {
         let since = since_days.map(|days| Utc::now() - Duration::days(days as i64));
         let embedding = self.embed_query(query).await?;
         let mut scoped_results = Vec::new();
@@ -744,6 +757,11 @@ impl SearchAgent {
         }
 
         rank_scoped_results(&mut scoped_results);
+        let reserved = if reserve_seed_ranks > 0 && graph_status == GraphStatus::Ok {
+            reviewed_seed_neighbours(&scoped_results, reserve_seed_ranks)
+        } else {
+            Vec::new()
+        };
         if scoped_results.len() > limit {
             summary.candidates_rank_limited = scoped_results[limit..]
                 .iter()
@@ -766,6 +784,7 @@ impl SearchAgent {
                 summary,
             },
             entity_filtered,
+            reserved,
         ))
     }
 
@@ -881,7 +900,7 @@ impl SearchAgent {
             return Ok(context);
         }
         let fetch_limit = options.max_chunks.max(1).saturating_mul(4).clamp(4, 200);
-        let (graph_results, entity_filtered) = self
+        let (graph_results, entity_filtered, reserved) = self
             .search_with_scope_graph_filtered(
                 query,
                 fetch_limit,
@@ -890,6 +909,7 @@ impl SearchAgent {
                 source_uri,
                 graph_mode,
                 entity_filter.as_deref(),
+                RESERVED_GRAPH_SEED_RANKS,
             )
             .await?;
         let hits = graph_results.hits;
@@ -903,6 +923,7 @@ impl SearchAgent {
             options,
             entity_filtered,
             graph_results.summary,
+            reserved,
         );
         context.diagnostics.graph_status = graph_results.graph_status;
         debug!(
@@ -1387,6 +1408,8 @@ impl SearchAgent {
                             edge.provenance.as_deref(),
                             edge.confidence,
                         ),
+                        reviewed_corroborated: edge.is_manual
+                            && corroborated.contains(&neighbor_id),
                     });
                     let mut visited = from.visited.clone();
                     visited.insert(neighbor_id.clone());
@@ -2039,6 +2062,47 @@ fn graph_edge_transitions<'a>(
     transitions
 }
 
+/// How many top-ranked hits may anchor the reserved graph context slot.
+pub(crate) const RESERVED_GRAPH_SEED_RANKS: usize = 2;
+/// Bound on reserved-slot candidates carried from retrieval into packing.
+const RESERVED_GRAPH_CANDIDATES: usize = 4;
+
+/// Reviewed, corroborated first-hop neighbours of the top `seed_ranks`
+/// ranked hits, in rank order. A neighbour without its own query evidence
+/// is never eligible, so a reviewed hub cannot place unrelated notes (#186).
+/// `ranked` is the final ranking before the fetch limit, so a neighbour just
+/// outside the window is still eligible. Scores are not
+/// changed: the #216 anchor cap, #221 direction rule and #186 corroboration
+/// gate already decided each neighbour's rank. Context packing may let one
+/// of these take its own seed's slot when that seed is packed last (never
+/// the first slot).
+fn reviewed_seed_neighbours(
+    ranked: &[ScopedSearchResult],
+    seed_ranks: usize,
+) -> Vec<ScopedSearchResult> {
+    let seeds = ranked
+        .iter()
+        .take(seed_ranks)
+        .filter(|hit| hit.hit_type == SearchHitType::Note)
+        .map(|hit| hit.id.as_str())
+        .collect::<HashSet<_>>();
+    ranked
+        .iter()
+        .filter(|hit| {
+            hit.graph.as_ref().is_some_and(|graph| {
+                graph.hops == 1
+                    && graph.path.len() == 1
+                    && graph.path[0].reviewed_corroborated
+                    && graph.path[0].from_id == graph.seed_note_id
+                    && graph.seed_note_id != hit.id
+                    && seeds.contains(graph.seed_note_id.as_str())
+            })
+        })
+        .take(RESERVED_GRAPH_CANDIDATES)
+        .cloned()
+        .collect()
+}
+
 /// Merge graph results by canonical record ID. Hybrid candidates keep their
 /// calibrated score while receiving graph evidence; graph-only notes enter the
 /// same final sorter as a new channel.
@@ -2477,6 +2541,65 @@ mod tests {
         ];
         rank_scoped_results(&mut ranked);
         assert_eq!(ranked[0].id, "message:weighted");
+    }
+
+    #[test]
+    fn reviewed_seed_neighbours_keeps_reviewed_first_hops_of_top_seeds() {
+        let note = |id: &str, seed: Option<(&str, bool, usize)>| ScopedSearchResult {
+            hit_type: SearchHitType::Note,
+            id: id.into(),
+            title: None,
+            content: id.into(),
+            created_at: None,
+            source_uri: None,
+            score: 0.0,
+            fusion: FusionEvidence::default(),
+            score_kind: crate::ScoreKind::ReciprocalRankFusion,
+            effective_weight: 1.0,
+            conversation_uuid: None,
+            message_index: None,
+            role: None,
+            graph: seed.map(|(seed, reviewed, hops)| GraphEvidence {
+                query_entities: Vec::new(),
+                seed_note_id: seed.into(),
+                path: (0..hops)
+                    .map(|_| GraphPathStep {
+                        edge_id: "derived_from:edge".into(),
+                        edge_type: "derived_from".into(),
+                        direction: "outbound".into(),
+                        confidence: 1.0,
+                        from_id: seed.into(),
+                        to_id: id.into(),
+                        evidence: Default::default(),
+                        reviewed_corroborated: reviewed,
+                    })
+                    .collect(),
+                hops,
+                decay: 1.0,
+                score: 0.0,
+                source_uri: None,
+                provenance_ids: Vec::new(),
+            }),
+        };
+        let ranked = vec![
+            note("note:a", None),
+            note("note:b", None),
+            note("note:c", None),
+            note("note:unreviewed", Some(("note:a", false, 1))),
+            note("note:two_hop", Some(("note:a", true, 2))),
+            note("note:low_seed", Some(("note:c", true, 1))),
+            note("note:of_b", Some(("note:b", true, 1))),
+            note("note:of_a", Some(("note:a", true, 1))),
+        ];
+        let ids = |seed_ranks| {
+            reviewed_seed_neighbours(&ranked, seed_ranks)
+                .into_iter()
+                .map(|hit| hit.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(2), ["note:of_b", "note:of_a"]);
+        assert_eq!(ids(1), ["note:of_a"]);
+        assert!(ids(0).is_empty());
     }
 
     #[tokio::test]
