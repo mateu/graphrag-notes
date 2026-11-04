@@ -349,6 +349,29 @@ pub struct GardenerCandidateConfig {
     pub max_per_endpoint: usize,
     /// Shared entity names mentioned by more notes are generic, not evidence.
     pub max_entity_note_frequency: usize,
+    /// Opt-in (#230): pairs at or above this cosine are near-duplicates and
+    /// never become related-candidates. Unset: off.
+    pub near_duplicate_ceiling: Option<f32>,
+    /// Opt-in: pairs whose longest shared run of words covers at least this
+    /// share of the shorter note are near-duplicates. Unset: off.
+    pub max_shared_span: Option<f32>,
+    /// Opt-in: notes at least this share machine output (JSON/YAML, tables,
+    /// stack frames) neither anchor nor qualify as counterparts. Unset: off.
+    pub max_machine_line_share: Option<f32>,
+    /// Opt-in lineage-aware specificity: one origin document never pairs with
+    /// itself, and a shared name is specific only if at most this many origin
+    /// documents of the pair's recurring document families mention it.
+    /// Unset: off.
+    pub max_lineage_documents: Option<usize>,
+    /// Opt-in: without a cross-reference or textual cue, require this many
+    /// specific shared entities. Unset: one.
+    pub min_specific_entities: Option<usize>,
+    /// Opt-in: explicit textual cues between dated documents are a second
+    /// signal.
+    pub textual_cues: bool,
+    /// Anchors ranked by one exact similarity pass (1–200). 1 keeps one
+    /// similarity query per anchor; results are identical either way.
+    pub similarity_batch_anchors: usize,
 }
 impl Default for GardenerCandidateConfig {
     fn default() -> Self {
@@ -357,6 +380,13 @@ impl Default for GardenerCandidateConfig {
             neighbors_per_endpoint: 8,
             max_per_endpoint: 2,
             max_entity_note_frequency: 10,
+            near_duplicate_ceiling: None,
+            max_shared_span: None,
+            max_machine_line_share: None,
+            max_lineage_documents: None,
+            min_specific_entities: None,
+            textual_cues: false,
+            similarity_batch_anchors: 1,
         }
     }
 }
@@ -1145,6 +1175,25 @@ impl RuntimeConfig {
                 "gardener.candidates requires similarity_floor in [0, 1], neighbors_per_endpoint in 1..={MAX_GARDENER_CANDIDATE_NEIGHBORS}, max_per_endpoint in 1..=50 and max_entity_note_frequency in 2..=10000"
             )));
         }
+        let share = |value: Option<f32>| value.is_none_or(|value| value > 0.0 && value <= 1.0);
+        if !share(candidates.near_duplicate_ceiling)
+            || candidates
+                .near_duplicate_ceiling
+                .is_some_and(|ceiling| ceiling <= candidates.similarity_floor)
+            || !share(candidates.max_shared_span)
+            || !share(candidates.max_machine_line_share)
+            || candidates
+                .max_lineage_documents
+                .is_some_and(|max| !(1..=1_000).contains(&max))
+            || candidates
+                .min_specific_entities
+                .is_some_and(|min| !(1..=8).contains(&min))
+            || !(1..=200).contains(&candidates.similarity_batch_anchors)
+        {
+            return Err(ConfigError::Validation(
+                "gardener.candidates requires near_duplicate_ceiling above similarity_floor and at most 1, max_shared_span and max_machine_line_share in (0, 1], max_lineage_documents in 1..=1000, min_specific_entities in 1..=8 and similarity_batch_anchors in 1..=200".into(),
+            ));
+        }
         if !matches!(
             self.logging.level.trim().to_ascii_lowercase().as_str(),
             "trace" | "debug" | "info" | "warn" | "error" | "off"
@@ -1823,6 +1872,14 @@ mod tests {
         assert_eq!(defaults.neighbors_per_endpoint, 8);
         assert_eq!(defaults.max_per_endpoint, 2);
         assert_eq!(defaults.max_entity_note_frequency, 10);
+        // #230 quality gates are opt-in: absent options keep legacy scans.
+        assert_eq!(defaults.near_duplicate_ceiling, None);
+        assert_eq!(defaults.max_shared_span, None);
+        assert_eq!(defaults.max_machine_line_share, None);
+        assert_eq!(defaults.max_lineage_documents, None);
+        assert_eq!(defaults.min_specific_entities, None);
+        assert!(!defaults.textual_cues);
+        assert_eq!(defaults.similarity_batch_anchors, 1);
 
         let directory = tempfile::tempdir().unwrap();
         let config_path = directory.path().join("graphrag.toml");
@@ -1843,6 +1900,21 @@ mod tests {
         assert_eq!(config.gardener.candidates.similarity_floor, 0.86);
         assert_eq!(config.gardener.candidates.max_per_endpoint, 1);
         assert_eq!(config.gardener.candidates.neighbors_per_endpoint, 8);
+        assert_eq!(config.gardener.candidates.near_duplicate_ceiling, None);
+
+        let quality = load(
+            "[gardener.candidates]\nnear_duplicate_ceiling = 0.95\nmax_shared_span = 0.5\nmax_machine_line_share = 0.6\nmax_lineage_documents = 2\nmin_specific_entities = 2\ntextual_cues = true\nsimilarity_batch_anchors = 64\n",
+        )
+        .unwrap()
+        .gardener
+        .candidates;
+        assert_eq!(quality.near_duplicate_ceiling, Some(0.95));
+        assert_eq!(quality.max_shared_span, Some(0.5));
+        assert_eq!(quality.max_machine_line_share, Some(0.6));
+        assert_eq!(quality.max_lineage_documents, Some(2));
+        assert_eq!(quality.min_specific_entities, Some(2));
+        assert!(quality.textual_cues);
+        assert_eq!(quality.similarity_batch_anchors, 64);
 
         for invalid in [
             "similarity_floor = 1.5",
@@ -1850,6 +1922,15 @@ mod tests {
             "neighbors_per_endpoint = 21",
             "max_per_endpoint = 0",
             "max_entity_note_frequency = 1",
+            "near_duplicate_ceiling = 0.8",
+            "near_duplicate_ceiling = 1.5",
+            "max_shared_span = 0",
+            "max_machine_line_share = 1.1",
+            "max_lineage_documents = 0",
+            "min_specific_entities = 0",
+            "min_specific_entities = 9",
+            "similarity_batch_anchors = 0",
+            "similarity_batch_anchors = 201",
         ] {
             let error = load(&format!("[gardener.candidates]\n{invalid}\n")).unwrap_err();
             assert!(

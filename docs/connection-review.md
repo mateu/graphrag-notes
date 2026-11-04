@@ -197,4 +197,70 @@ are never refreshed and decided ones are never resurrected. The scan never
 accepts anything. `garden apply` and `garden proposals accept --all` select only
 legacy `gardener-similarity` proposals, so candidates are accepted only through
 individual review. Each examined endpoint runs one exact similarity scan over
-the notes, like the legacy scan, so keep `--max-endpoints` modest on large corpora.
+the notes, like the legacy scan, so keep `--max-endpoints` modest on large corpora
+unless similarity batching (below) is on.
+
+### Opt-in quality gates (#230)
+
+The first reviewed live batch kept 3 of 30 candidates. The rejects were
+overlapping chunks or copies, serial logs from one recurring lineage, and
+machine output. Every kept pair rested on an explicit textual pointer. These
+options target those failure modes. **All are off by default**: with no new
+keys, scans, receipts and persisted features are exactly as above.
+
+```toml
+[gardener.candidates]
+near_duplicate_ceiling = 0.95   # cosine at or above: near-duplicate, never a candidate
+max_shared_span = 0.5           # longest shared run (>= 12 words) covering this share of the shorter note
+max_machine_line_share = 0.6    # notes this share JSON/YAML/table/stack-frame lines neither anchor nor pair
+max_lineage_documents = 2       # lineage-aware specificity (see below)
+min_specific_entities = 2       # without a cross-reference or cue, need this many specific entities
+textual_cues = true             # explicit textual cues are a second signal
+similarity_batch_anchors = 64   # anchors per exact similarity pass (1 = one query per anchor)
+```
+
+- **Near-duplicates.** Pairs above the ceiling, or sharing a long verbatim
+  span, are counted as `near_duplicate` and go to duplicate handling, not
+  review. Similarity above about 0.94 predicted duplicates and templates, not
+  relationships, so the floor is not raised.
+- **Lineage-aware specificity.** A note's *origin document* is the URI its
+  uploader declared for the source (one file split into several uploaded parts
+  shares it), else the source URI. Two notes of one origin document are never a
+  pair (`same_document`). A document's *family* is its origin URI with digit
+  runs collapsed, so dated or numbered runs of one log, heartbeat or job
+  (`memory/2026-07-01.md`, `memory/2026-07-02.md`) are one family. A shared
+  name that is specific corpus-wide but mentioned by more than
+  `max_lineage_documents` documents of the pair's families is templating and
+  is counted as `lineage_template`. With `min_specific_entities`, a pair
+  without an explicit pointer needs that many lineage-specific entities
+  (`insufficient_specific_entities` otherwise).
+- **Machine dumps.** A note whose non-blank lines are at least
+  `max_machine_line_share` JSON/YAML structure, table rows, stack frames or
+  addresses, or mostly symbols and digits, is skipped as an anchor
+  (`machine_dump_anchors`, still counted as examined) and rejected as a
+  counterpart (`machine_dump`).
+- **Textual cues** (signal `textual_cue`, ranked with cross-references). Both
+  documents must carry an ISO date in the file name:
+  - `relative_date`: "yesterday" in a note whose document is dated the day
+    after the other's.
+  - `dated_reference`: a back-reference phrase ("compared with", "as noted in",
+    "follow-up to", …) naming the other, earlier document's date.
+  - `answered_question`: a question in the earlier note whose content words
+    (at least three, and at least three quarters of them) appear in one
+    statement of a same-day or later note.
+
+  The cue's `direction` names the note that carries it.
+- **Throughput.** Each anchor's neighbour read was a full exact cosine scan
+  (about 0.47 s per anchor on a 9.8k-note corpus). That cost does not depend
+  on how many anchors share the scan. With `similarity_batch_anchors > 1`, one
+  pass reads the visible corpus once in record-ID pages of 2048 and ranks the
+  neighbours of up to that many anchors together. It applies the same
+  exclusions, floor, limits and tie order, and computes the cosine exactly as
+  `vector::similarity::cosine` does, so results are identical. A group is
+  examined as a unit, so with a short deadline use a smaller group.
+
+Every receipt echoes the new policy values (`null`/`false`/`1` when off) and
+counts every new rejection reason. When any gate is on, persisted candidate
+features also record `policy.quality` and `textual_cue`. Measurements and the
+recommended live settings are in
+[gardener-quality-230](validation/gardener-quality-230.md).

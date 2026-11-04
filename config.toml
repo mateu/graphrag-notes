@@ -107,6 +107,15 @@ max_suggestions = 50
 # neighbors_per_endpoint = 8
 # max_per_endpoint = 2
 # max_entity_note_frequency = 10
+# Opt-in quality gates and batching (#230); unset keeps legacy behaviour. See
+# docs/connection-review.md#opt-in-quality-gates-230.
+# near_duplicate_ceiling = 0.95
+# max_shared_span = 0.5
+# max_machine_line_share = 0.6
+# max_lineage_documents = 2
+# min_specific_entities = 2
+# textual_cues = true
+# similarity_batch_anchors = 64
 
 [alchemist]
 # Read-only, citation-verified synthesis (`graphrag synthesize`, MCP

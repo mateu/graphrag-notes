@@ -53,7 +53,8 @@ pub use chats::{EdgeProposalDraft, GraphEntityMatch, GraphEntityNoteSeed, NoteEd
 pub use folder_sync::FileSourceSnapshot;
 pub use gardener_candidates::{
     CandidateAnchorScope, CandidateExistingLinks, CandidateExistingProposal, CandidateMention,
-    CandidateNameFrequency, CandidateNote, CandidateProposalOutcome, ACCEPTED_NOTE_EDGE_TABLES,
+    CandidateNameFrequency, CandidateNameNotes, CandidateNote, CandidateProposalOutcome,
+    ACCEPTED_NOTE_EDGE_TABLES,
 };
 pub use graph::{SourceDeleteSummary, SourceImportAction, SourceImportPlan};
 use ids::normalize_note_id;

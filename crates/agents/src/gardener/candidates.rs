@@ -7,7 +7,19 @@
 //! prior-decision checks, and fit per-endpoint and global budgets. Zero
 //! candidates is a valid, reported abstention. Persistence creates pending
 //! proposals only; nothing here accepts an edge.
+//!
+//! Opt-in quality gates (#230), all off unless the operator configures them:
+//! a near-duplicate ceiling and shared-span check, machine-dump anchors and
+//! counterparts, lineage-aware entity specificity (one origin document, or a
+//! recurring document family), a minimum number of specific entities, and an
+//! explicit textual-cue second signal. Batched nomination reads the corpus
+//! once per group of anchors instead of once per anchor, with identical
+//! results.
 
+pub use super::candidate_quality::TextualCueKind;
+use super::candidate_quality::{
+    lineage_family, machine_line_share, shared_span_share, textual_cue, CueDirection,
+};
 use crate::Result;
 use graphrag_core::{record_id_to_string, EdgeType, ProposedEdge};
 use graphrag_db::repository::{
@@ -54,6 +66,32 @@ pub struct CandidatePolicy {
     /// A shared name mentioned by more notes than this is generic and is
     /// not evidence of a specific relationship.
     pub max_entity_note_frequency: usize,
+    /// Pairs at or above this cosine are near-duplicates (copies, overlapping
+    /// chunks, repeated output), never related-candidates. `None`: off.
+    pub near_duplicate_ceiling: Option<f32>,
+    /// Pairs whose longest shared run of words covers at least this share of
+    /// the shorter note are near-duplicates. `None`: off.
+    pub max_shared_span: Option<f32>,
+    /// Notes whose non-blank lines are at least this share machine output
+    /// (JSON/YAML, tables, stack frames) neither anchor nor qualify as a
+    /// counterpart. `None`: off.
+    pub max_machine_line_share: Option<f32>,
+    /// Lineage-aware specificity. When set, two notes of one origin document
+    /// are never a pair, and a shared name is specific only if at most this
+    /// many origin documents of the pair's document families (dated or
+    /// numbered runs of one recurring log, heartbeat or job) mention it.
+    /// `None`: off.
+    pub max_lineage_documents: Option<usize>,
+    /// Without an explicit cross-reference or textual cue, a pair needs at
+    /// least this many specific shared entities. `None`: one, as before.
+    pub min_specific_entities: Option<usize>,
+    /// Explicit textual cues between dated documents ("yesterday's …",
+    /// "compared with <date>", an earlier question answered later) count as a
+    /// second signal, ranked with cross-references.
+    pub textual_cues: bool,
+    /// Anchors whose neighbours one exact similarity pass ranks together.
+    /// `1` runs one similarity query per anchor, as before.
+    pub similarity_batch_anchors: usize,
 }
 
 impl Default for CandidatePolicy {
@@ -63,7 +101,26 @@ impl Default for CandidatePolicy {
             neighbors_per_endpoint: 8,
             max_per_endpoint: 2,
             max_entity_note_frequency: 10,
+            near_duplicate_ceiling: None,
+            max_shared_span: None,
+            max_machine_line_share: None,
+            max_lineage_documents: None,
+            min_specific_entities: None,
+            textual_cues: false,
+            similarity_batch_anchors: 1,
         }
+    }
+}
+
+impl CandidatePolicy {
+    /// Any opt-in quality gate or cue is enabled.
+    pub fn quality_gates_enabled(&self) -> bool {
+        self.near_duplicate_ceiling.is_some()
+            || self.max_shared_span.is_some()
+            || self.max_machine_line_share.is_some()
+            || self.max_lineage_documents.is_some()
+            || self.min_specific_entities.is_some()
+            || self.textual_cues
     }
 }
 
@@ -116,6 +173,7 @@ impl CandidateStopReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CandidateSignal {
     ExplicitCrossReference,
+    TextualCue,
     SharedSpecificEntity,
 }
 
@@ -123,6 +181,7 @@ impl CandidateSignal {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ExplicitCrossReference => "explicit_cross_reference",
+            Self::TextualCue => "textual_cue",
             Self::SharedSpecificEntity => "shared_specific_entity",
         }
     }
@@ -171,6 +230,14 @@ pub struct CrossReferenceEvidence {
     pub kind: CrossReferenceKind,
 }
 
+/// An explicit textual cue between the endpoints. `direction` names the note
+/// that carries the cue (the later note pointing back, or the answer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextualCueEvidence {
+    pub kind: TextualCueKind,
+    pub direction: CrossReferenceDirection,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedEntityEvidence {
     pub name: String,
@@ -189,6 +256,7 @@ pub struct RelationshipCandidate {
     pub signals: Vec<CandidateSignal>,
     pub shared_entities: Vec<SharedEntityEvidence>,
     pub cross_reference: Option<CrossReferenceEvidence>,
+    pub textual_cue: Option<TextualCueEvidence>,
     /// The persisted proposal, for a non-dry run that reached it.
     pub proposal: Option<ProposedEdge>,
 }
@@ -215,6 +283,19 @@ pub struct CandidateRejections {
     /// An endpoint was deleted or its source generation retired after
     /// nomination, before the proposal could be recorded.
     pub vanished: usize,
+    /// Both notes come from one origin document (for example two uploaded
+    /// parts of one file). Counted only with lineage specificity on.
+    pub same_document: usize,
+    /// A counterpart is mostly machine output.
+    pub machine_dump: usize,
+    /// Above the near-duplicate ceiling, or a long shared span of words.
+    pub near_duplicate: usize,
+    /// Shared names are specific corpus-wide but recur across the pair's
+    /// document lineage (templated logs, heartbeat or job output).
+    pub lineage_template: usize,
+    /// Fewer specific shared entities than the policy requires, and no
+    /// explicit cross-reference or textual cue.
+    pub insufficient_specific_entities: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +304,9 @@ pub struct CandidateScanReport {
     pub policy: CandidatePolicy,
     pub candidates: Vec<RelationshipCandidate>,
     pub endpoints_examined: usize,
+    /// Examined anchors skipped as mostly machine output; included in
+    /// `endpoints_examined`.
+    pub machine_dump_anchors: usize,
     /// True when every anchor in scope after the cursor was examined.
     pub scope_exhausted: bool,
     /// Resume cursor when anchors remain. Never set for a dry run that cut
@@ -276,6 +360,14 @@ struct Gated {
     signals: Vec<CandidateSignal>,
     shared_entities: Vec<SharedEntityEvidence>,
     cross_reference: Option<CrossReferenceEvidence>,
+    textual_cue: Option<TextualCueEvidence>,
+}
+
+impl Gated {
+    /// An explicit pointer between the notes: ranked before entity overlap.
+    fn explicit(&self) -> bool {
+        self.cross_reference.is_some() || self.textual_cue.is_some()
+    }
 }
 
 fn key(id: &RecordId) -> String {
@@ -316,6 +408,7 @@ impl super::GardenerAgent {
             policy: policy.clone(),
             candidates: Vec::new(),
             endpoints_examined: 0,
+            machine_dump_anchors: 0,
             scope_exhausted: false,
             next_after: request.after.clone(),
             nominations: 0,
@@ -363,42 +456,77 @@ impl super::GardenerAgent {
         let more_in_scope = anchors.len() > request.max_endpoints;
         anchors.truncate(request.max_endpoints);
 
-        // 2. Nominate cross-source neighbours above the floor.
+        // 2. Nominate cross-source neighbours above the floor, one exact
+        // similarity pass per group of anchors (one anchor per pass unless
+        // batching is configured). Machine-dump anchors are examined and
+        // skipped without a similarity pass.
         let mut pairs = BTreeMap::<(String, String), Pair>::new();
         let mut time_limited = false;
-        for anchor in &anchors {
+        let group = policy.similarity_batch_anchors.max(1);
+        for chunk in anchors.chunks(group) {
             if Instant::now() >= nomination_deadline {
                 time_limited = true;
                 break;
             }
-            let Some(neighbours) = before(
-                nomination_deadline,
-                repo.candidate_similar_notes(
-                    anchor,
-                    policy.similarity_floor,
-                    policy.neighbors_per_endpoint,
-                    request.counterpart_sources.as_deref(),
-                ),
-            )
-            .await?
-            else {
+            let live = chunk
+                .iter()
+                .filter(|anchor| {
+                    policy
+                        .max_machine_line_share
+                        .is_none_or(|max| machine_line_share(&anchor.content) < max)
+                })
+                .collect::<Vec<_>>();
+            let neighbours = if live.is_empty() {
+                Some(Vec::new())
+            } else if group == 1 {
+                before(
+                    nomination_deadline,
+                    repo.candidate_similar_notes(
+                        live[0],
+                        policy.similarity_floor,
+                        policy.neighbors_per_endpoint,
+                        request.counterpart_sources.as_deref(),
+                    ),
+                )
+                .await?
+                .map(|neighbours| vec![neighbours])
+            } else {
+                let batch = live
+                    .iter()
+                    .map(|anchor| (*anchor).clone())
+                    .collect::<Vec<_>>();
+                before(
+                    nomination_deadline,
+                    repo.candidate_similar_notes_batch(
+                        &batch,
+                        policy.similarity_floor,
+                        policy.neighbors_per_endpoint,
+                        request.counterpart_sources.as_deref(),
+                    ),
+                )
+                .await?
+            };
+            let Some(neighbours) = neighbours else {
                 time_limited = true;
                 break;
             };
-            report.endpoints_examined += 1;
-            for neighbour in neighbours {
-                let similarity = neighbour.similarity.unwrap_or_default();
-                let mut from = anchor.clone();
-                from.embedding = Vec::new();
-                let mut to = neighbour;
-                if key(&to.id) < key(&from.id) {
-                    std::mem::swap(&mut from, &mut to);
+            report.endpoints_examined += chunk.len();
+            report.machine_dump_anchors += chunk.len() - live.len();
+            for (anchor, neighbours) in live.into_iter().zip(neighbours) {
+                for neighbour in neighbours {
+                    let similarity = neighbour.similarity.unwrap_or_default();
+                    let mut from = anchor.clone();
+                    from.embedding = Vec::new();
+                    let mut to = neighbour;
+                    if key(&to.id) < key(&from.id) {
+                        std::mem::swap(&mut from, &mut to);
+                    }
+                    pairs.entry((key(&from.id), key(&to.id))).or_insert(Pair {
+                        from,
+                        to,
+                        similarity,
+                    });
                 }
-                pairs.entry((key(&from.id), key(&to.id))).or_insert(Pair {
-                    from,
-                    to,
-                    similarity,
-                });
             }
         }
         report.nominations = pairs.len();
@@ -418,9 +546,8 @@ impl super::GardenerAgent {
         // 6. Rank, then apply per-endpoint and global budgets.
         gated.sort_by(|left, right| {
             right
-                .cross_reference
-                .is_some()
-                .cmp(&left.cross_reference.is_some())
+                .explicit()
+                .cmp(&left.explicit())
                 .then_with(|| right.shared_entities.len().cmp(&left.shared_entities.len()))
                 .then_with(|| right.pair.similarity.total_cmp(&left.pair.similarity))
                 .then_with(|| key(&left.pair.from.id).cmp(&key(&right.pair.from.id)))
@@ -450,6 +577,7 @@ impl super::GardenerAgent {
                 signals: item.signals,
                 shared_entities: item.shared_entities,
                 cross_reference: item.cross_reference,
+                textual_cue: item.textual_cue,
                 proposal: None,
             });
         }
@@ -596,6 +724,10 @@ impl super::GardenerAgent {
                 report.rejections.duplicate_content += 1;
                 continue;
             }
+            if let Some(reason) = quality_rejection(policy, &pair) {
+                *reason.counter(&mut report.rejections) += 1;
+                continue;
+            }
             let shared = match (names.get(&key(&pair.from.id)), names.get(&key(&pair.to.id))) {
                 (Some(from), Some(to)) => from.intersection(to).cloned().collect::<Vec<_>>(),
                 _ => Vec::new(),
@@ -615,28 +747,86 @@ impl super::GardenerAgent {
             .max_entity_note_frequency
             .saturating_add(1)
             .saturating_mul(FREQUENCY_PROBE_FACTOR);
-        let Some(frequencies) =
-            before(deadline, repo.candidate_name_frequencies(&evaluated, probe)).await?
-        else {
-            return Ok(None);
+        // Globally specific names, with the notes that mention them when
+        // lineage specificity needs to know where they recur.
+        let specific = if policy.max_lineage_documents.is_some() {
+            let Some(evidence) =
+                before(deadline, repo.candidate_name_notes(&evaluated, probe)).await?
+            else {
+                return Ok(None);
+            };
+            evaluated
+                .into_iter()
+                .zip(evidence)
+                .filter(|(_, evidence)| {
+                    !evidence.truncated
+                        && evidence.notes.len() >= 2
+                        && evidence.notes.len() <= policy.max_entity_note_frequency
+                })
+                .map(|(name, evidence)| (name, (evidence.notes.len(), evidence.notes)))
+                .collect::<HashMap<_, _>>()
+        } else {
+            let Some(frequencies) =
+                before(deadline, repo.candidate_name_frequencies(&evaluated, probe)).await?
+            else {
+                return Ok(None);
+            };
+            evaluated
+                .into_iter()
+                .zip(frequencies)
+                .filter(|(_, frequency)| {
+                    !frequency.truncated
+                        && frequency.notes >= 2
+                        && frequency.notes <= policy.max_entity_note_frequency
+                })
+                .map(|(name, frequency)| (name, (frequency.notes, Vec::new())))
+                .collect::<HashMap<_, _>>()
         };
-        let specific = evaluated
-            .into_iter()
-            .zip(frequencies)
-            .filter(|(_, frequency)| {
-                !frequency.truncated
-                    && frequency.notes >= 2
-                    && frequency.notes <= policy.max_entity_note_frequency
-            })
-            .map(|(name, frequency)| (name, frequency.notes))
-            .collect::<HashMap<_, _>>();
+        // Origin documents of every note mentioning a specific name.
+        let origins = if policy.max_lineage_documents.is_some() {
+            let mut mentioning = BTreeMap::<String, RecordId>::new();
+            for (_, notes) in specific.values() {
+                for note in notes {
+                    mentioning.insert(key(note), note.clone());
+                }
+            }
+            let mentioning = mentioning.into_values().collect::<Vec<_>>();
+            let Some(origins) =
+                before(deadline, repo.candidate_note_origin_uris(&mentioning)).await?
+            else {
+                return Ok(None);
+            };
+            origins
+        } else {
+            HashMap::new()
+        };
 
         let mut signalled = Vec::new();
         for (pair, shared) in survivors {
+            let globally_specific = shared.iter().any(|name| specific.contains_key(name));
+            let families = policy.max_lineage_documents.map(|_| {
+                [&pair.from, &pair.to]
+                    .into_iter()
+                    .filter_map(|note| note.origin_uri.as_deref().map(lineage_family))
+                    .collect::<BTreeSet<_>>()
+            });
             let mut entities = shared
                 .iter()
                 .filter_map(|name| {
-                    specific.get(name).map(|frequency| SharedEntityEvidence {
+                    let (frequency, notes) = specific.get(name)?;
+                    if let (Some(max), Some(families)) = (policy.max_lineage_documents, &families) {
+                        // Generic within the pair's lineage: mentioned by
+                        // more origin documents of its families than allowed.
+                        let documents = notes
+                            .iter()
+                            .filter_map(|note| origins.get(&key(note)))
+                            .filter(|origin| families.contains(&lineage_family(origin)))
+                            .collect::<BTreeSet<_>>();
+                        if documents.len() > max {
+                            return None;
+                        }
+                    }
+                    Some(SharedEntityEvidence {
                         name: name.chars().take(MAX_RECORDED_NAME_CHARS).collect(),
                         note_frequency: *frequency,
                     })
@@ -650,9 +840,30 @@ impl super::GardenerAgent {
             let specific_count = entities.len();
             entities.truncate(MAX_RECORDED_ENTITIES);
             let cross_reference = cross_reference(&pair.from, &pair.to);
+            let textual_cue = policy
+                .textual_cues
+                .then(|| {
+                    textual_cue(
+                        &pair.from.content,
+                        pair.from.origin_uri.as_deref(),
+                        &pair.to.content,
+                        pair.to.origin_uri.as_deref(),
+                    )
+                })
+                .flatten()
+                .map(|(kind, direction)| TextualCueEvidence {
+                    kind,
+                    direction: match direction {
+                        CueDirection::FromMentionsTo => CrossReferenceDirection::FromMentionsTo,
+                        CueDirection::ToMentionsFrom => CrossReferenceDirection::ToMentionsFrom,
+                    },
+                });
             let mut signals = Vec::new();
             if cross_reference.is_some() {
                 signals.push(CandidateSignal::ExplicitCrossReference);
+            }
+            if textual_cue.is_some() {
+                signals.push(CandidateSignal::TextualCue);
             }
             if specific_count > 0 {
                 signals.push(CandidateSignal::SharedSpecificEntity);
@@ -660,9 +871,16 @@ impl super::GardenerAgent {
             if signals.is_empty() {
                 if shared.is_empty() {
                     report.rejections.no_second_signal += 1;
+                } else if globally_specific && policy.max_lineage_documents.is_some() {
+                    report.rejections.lineage_template += 1;
                 } else {
                     report.rejections.generic_entities_only += 1;
                 }
+                continue;
+            }
+            let explicit = cross_reference.is_some() || textual_cue.is_some();
+            if !explicit && specific_count < policy.min_specific_entities.unwrap_or(1) {
+                report.rejections.insufficient_specific_entities += 1;
                 continue;
             }
             signalled.push(Gated {
@@ -670,6 +888,7 @@ impl super::GardenerAgent {
                 signals,
                 shared_entities: entities,
                 cross_reference,
+                textual_cue,
             });
         }
         if signalled.is_empty() {
@@ -702,6 +921,54 @@ impl super::GardenerAgent {
         }
         Ok(Some(gated))
     }
+}
+
+/// An opt-in quality rejection, checked after the origin and exact-duplicate
+/// gates and before any entity evidence is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QualityRejection {
+    SameDocument,
+    MachineDump,
+    NearDuplicate,
+}
+
+impl QualityRejection {
+    fn counter(self, rejections: &mut CandidateRejections) -> &mut usize {
+        match self {
+            Self::SameDocument => &mut rejections.same_document,
+            Self::MachineDump => &mut rejections.machine_dump,
+            Self::NearDuplicate => &mut rejections.near_duplicate,
+        }
+    }
+}
+
+fn quality_rejection(policy: &CandidatePolicy, pair: &Pair) -> Option<QualityRejection> {
+    if policy.max_lineage_documents.is_some()
+        && pair
+            .from
+            .origin_uri
+            .as_ref()
+            .is_some_and(|origin| Some(origin) == pair.to.origin_uri.as_ref())
+    {
+        return Some(QualityRejection::SameDocument);
+    }
+    if let Some(max) = policy.max_machine_line_share {
+        if machine_line_share(&pair.from.content) >= max
+            || machine_line_share(&pair.to.content) >= max
+        {
+            return Some(QualityRejection::MachineDump);
+        }
+    }
+    if policy
+        .near_duplicate_ceiling
+        .is_some_and(|ceiling| pair.similarity >= ceiling)
+        || policy
+            .max_shared_span
+            .is_some_and(|max| shared_span_share(&pair.from.content, &pair.to.content) >= max)
+    {
+        return Some(QualityRejection::NearDuplicate);
+    }
+    None
 }
 
 /// Where the next page starts, and whether the scope is exhausted. The cursor
@@ -1024,6 +1291,13 @@ fn candidate_reason(
             reference.direction.as_str()
         ));
     }
+    if let Some(cue) = candidate.textual_cue {
+        summary.push_str(&format!(
+            "; textual {} cue ({})",
+            cue.kind.as_str(),
+            cue.direction.as_str()
+        ));
+    }
     if !candidate.shared_entities.is_empty() {
         let names = candidate
             .shared_entities
@@ -1034,7 +1308,7 @@ fn candidate_reason(
         summary.push_str(&format!("; shared specific entities: {names}"));
     }
     let policy = &report.policy;
-    serde_json::json!({
+    let mut reason = serde_json::json!({
         "contract": CANDIDATE_CONTRACT,
         "generator": CANDIDATE_GENERATOR,
         "summary": summary,
@@ -1058,8 +1332,34 @@ fn candidate_reason(
         },
         "embedding_model": report.embedding_model,
         "requested_by": requested_by,
+    });
+    // Legacy policies record exactly the legacy features; the opt-in gates
+    // and cue are echoed only when they were in force.
+    if policy.quality_gates_enabled() {
+        reason["policy"]["quality"] = quality_policy_json(policy);
+        reason["textual_cue"] = candidate
+            .textual_cue
+            .map(|cue| {
+                serde_json::json!({
+                    "kind": cue.kind.as_str(),
+                    "direction": cue.direction.as_str(),
+                })
+            })
+            .unwrap_or(serde_json::Value::Null);
+    }
+    reason.to_string()
+}
+
+/// The opt-in quality policy, as persisted in candidate features.
+fn quality_policy_json(policy: &CandidatePolicy) -> serde_json::Value {
+    serde_json::json!({
+        "near_duplicate_ceiling": policy.near_duplicate_ceiling,
+        "max_shared_span": policy.max_shared_span,
+        "max_machine_line_share": policy.max_machine_line_share,
+        "max_lineage_documents": policy.max_lineage_documents,
+        "min_specific_entities": policy.min_specific_entities,
+        "textual_cues": policy.textual_cues,
     })
-    .to_string()
 }
 
 #[cfg(test)]
@@ -1075,6 +1375,7 @@ mod tests {
             content_hash: None,
             embedding: Vec::new(),
             similarity: None,
+            origin_uri: uri.map(str::to_owned),
         }
     }
 
