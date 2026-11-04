@@ -582,3 +582,196 @@ async fn candidate_recording_skips_endpoints_that_vanished() {
     assert!(matches!(outcome, CandidateProposalOutcome::Vanished));
     assert!(repo.list_edge_proposals(None, 10).await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn batched_similarity_reads_equal_per_anchor_reads() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let alpha = source(&repo, "/fixtures/alpha.md").await;
+    let beta = source(&repo, "/fixtures/beta.md").await;
+    let gamma = source(&repo, "/fixtures/gamma.md").await;
+    // An uploaded part that declares the document it was split from.
+    let mut part =
+        Source::from_file("/fixtures/uploads/delta.part-1", SourceType::Markdown).unwrap();
+    part.metadata =
+        serde_json::json!({"remote_upload": {"source": {"uri": "vault://ops/delta.md"}}});
+    let delta = repo.create_source(part).await.unwrap().id.unwrap();
+    let mut anchors = Vec::new();
+    let mut all = Vec::new();
+    for index in 0..12 {
+        let owner = [&alpha, &beta, &gamma, &delta][index % 4];
+        // Ties at 0.95 and distinct strengths, all above the floor but two.
+        let cosine = [1.0, 0.95, 0.95, 0.9, 0.85, 0.5][index % 6];
+        let id = sourced(
+            &repo,
+            owner,
+            &format!("Fictional chunk {index}"),
+            embedding(cosine, index + 1),
+        )
+        .await;
+        if index % 4 == 0 || index == 5 {
+            anchors.push(id.clone());
+        }
+        all.push(id);
+    }
+    // A legacy note without a source, a joined pair, and a shared conversation.
+    let manual = repo
+        .create_note(Note::new("Fictional manual note").with_embedding(embedding(0.92, 40)))
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    repo.upsert_gardener_proposal(&all[0], &all[1], 0.9, "fixture".into(), None, None)
+        .await
+        .unwrap();
+    repo.create_edge(&all[2], &all[4], EdgeType::Supports, None)
+        .await
+        .unwrap();
+    repo.db
+        .query(format!(
+            "CREATE conversation:x SET uuid='x', title='x', created_at=time::now(), updated_at=time::now(); \
+             CREATE note_from_conversation:a SET in={}, out=conversation:x; \
+             CREATE note_from_conversation:b SET in={}, out=conversation:x;",
+            record_id_to_string(&all[4]),
+            record_id_to_string(&all[7]),
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    // A note of a superseded generation is invisible to both reads.
+    repo.db
+        .query(format!(
+            "UPDATE {} SET source_generation = 99",
+            record_id_to_string(&all[9])
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let anchors = repo
+        .candidate_anchor_notes(CandidateAnchorScope::Notes(&anchors), None, 20)
+        .await
+        .unwrap();
+    assert!(anchors.len() >= 4);
+    for counterparts in [None, Some(vec![beta.clone(), delta.clone()])] {
+        for limit in [1, 2, 8] {
+            let batched = repo
+                .candidate_similar_notes_batch(&anchors, 0.8, limit, counterparts.as_deref())
+                .await
+                .unwrap();
+            assert_eq!(batched.len(), anchors.len());
+            for (anchor, batch) in anchors.iter().zip(&batched) {
+                let single = repo
+                    .candidate_similar_notes(anchor, 0.8, limit, counterparts.as_deref())
+                    .await
+                    .unwrap();
+                let shape = |rows: &[CandidateNote]| {
+                    rows.iter()
+                        .map(|row| {
+                            (
+                                record_id_to_string(&row.id),
+                                row.similarity.map(f32::to_bits),
+                                row.source_uri.clone(),
+                                row.origin_uri.clone(),
+                                row.content_hash.clone(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(shape(batch), shape(&single), "limit {limit}");
+            }
+        }
+    }
+    let manual_anchor = repo
+        .candidate_anchor_notes(CandidateAnchorScope::Notes(&[manual]), None, 1)
+        .await
+        .unwrap();
+    let batched = repo
+        .candidate_similar_notes_batch(&manual_anchor, 0.8, 8, None)
+        .await
+        .unwrap();
+    let single = repo
+        .candidate_similar_notes(&manual_anchor[0], 0.8, 8, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        batched[0]
+            .iter()
+            .map(|row| row.id.clone())
+            .collect::<Vec<_>>(),
+        single.iter().map(|row| row.id.clone()).collect::<Vec<_>>()
+    );
+    // Origin documents: a declared upload origin wins over the source URI.
+    #[allow(clippy::mutable_key_type)] // Native note IDs, as returned.
+    let origins = repo.candidate_note_origin_uris(&all).await.unwrap();
+    assert_eq!(
+        origins.get(&all[3]).map(String::as_str),
+        Some("vault://ops/delta.md")
+    );
+    assert_eq!(
+        origins.get(&all[0]).map(String::as_str),
+        Some("file:///fixtures/alpha.md")
+    );
+    let names = repo
+        .candidate_name_notes(&["absent name".to_owned()], 4)
+        .await
+        .unwrap();
+    assert_eq!(
+        names,
+        vec![CandidateNameNotes {
+            notes: Vec::new(),
+            truncated: false
+        }]
+    );
+}
+
+#[tokio::test]
+async fn batched_similarity_keeps_native_record_ids_with_one_display_form_distinct() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let alpha = source(&repo, "/fixtures/alpha.md").await;
+    let beta = source(&repo, "/fixtures/beta.md").await;
+    let anchor_id = sourced(&repo, &alpha, "Fictional anchor", embedding(1.0, 1)).await;
+    // `note:42` and `note:⟨42⟩` print alike but are different records; the
+    // string key is the closer neighbour.
+    repo.db
+        .query(
+            "CREATE note:42 SET content = 'Fictional numeric', source_id = $beta, embedding = $far; \
+             CREATE type::record('note', '42') SET content = 'Fictional string', source_id = $beta, embedding = $near;",
+        )
+        .bind(("beta", beta.clone()))
+        .bind(("far", embedding(0.85, 2)))
+        .bind(("near", embedding(0.95, 3)))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let anchor = repo
+        .candidate_anchor_notes(CandidateAnchorScope::Notes(&[anchor_id]), None, 1)
+        .await
+        .unwrap()
+        .remove(0);
+    for limit in [1, 2] {
+        let single = repo
+            .candidate_similar_notes(&anchor, 0.8, limit, None)
+            .await
+            .unwrap();
+        let batched = repo
+            .candidate_similar_notes_batch(std::slice::from_ref(&anchor), 0.8, limit, None)
+            .await
+            .unwrap()
+            .remove(0);
+        let shape = |rows: &[CandidateNote]| {
+            rows.iter()
+                .map(|row| {
+                    (
+                        row.id.clone(),
+                        row.content.clone(),
+                        row.similarity.map(f32::to_bits),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(single.len(), limit);
+        assert_eq!(shape(&batched), shape(&single), "limit {limit}");
+    }
+}

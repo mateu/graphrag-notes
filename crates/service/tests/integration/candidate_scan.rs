@@ -421,6 +421,28 @@ async fn receipts_echo_resolved_limits_and_policy_and_dry_runs_change_nothing() 
     assert_eq!(receipt["policy"]["max_per_endpoint"], 2);
     assert_eq!(receipt["policy"]["generator"], "gardener-candidate");
     assert_eq!(receipt["policy"]["relationship"], "related_to");
+    // Opt-in quality gates (#230) are echoed as off under a legacy policy.
+    for gate in [
+        "near_duplicate_ceiling",
+        "max_shared_span",
+        "max_machine_line_share",
+        "max_lineage_documents",
+        "min_specific_entities",
+    ] {
+        assert_eq!(receipt["policy"][gate], Value::Null, "{gate}");
+    }
+    assert_eq!(receipt["policy"]["textual_cues"], false);
+    assert_eq!(receipt["policy"]["similarity_batch_anchors"], 1);
+    assert_eq!(receipt["machine_dump_anchors"], 0);
+    for reason in [
+        "same_document",
+        "machine_dump",
+        "near_duplicate",
+        "lineage_template",
+        "insufficient_specific_entities",
+    ] {
+        assert_eq!(receipt["rejections"][reason], 0, "{reason}");
+    }
     assert_eq!(receipt["scope"], json!({"kind":"notes","ids":[hub]}));
     assert_eq!(receipt["stop_reason"], "completed");
     assert_eq!(receipt["endpoints_examined"], 1);
@@ -487,5 +509,39 @@ async fn receipts_echo_resolved_limits_and_policy_and_dry_runs_change_nothing() 
     assert_eq!(receipt["candidates"], json!([]));
     assert_eq!(proposals(&repo).await, stored);
     assert_eq!(accepted_edges(&repo).await, 0);
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn receipts_echo_the_operator_quality_gates_and_count_their_rejections() {
+    let repo = Repository::new(init_memory().await.unwrap());
+    let hub = corpus(&repo).await;
+    let policy = CandidatePolicy {
+        near_duplicate_ceiling: Some(0.94),
+        max_shared_span: Some(0.5),
+        max_machine_line_share: Some(0.6),
+        max_lineage_documents: Some(2),
+        min_specific_entities: Some(2),
+        textual_cues: true,
+        similarity_batch_anchors: 16,
+        ..CandidatePolicy::default()
+    };
+    let fixture = Fixture::new(&repo, policy).await;
+    let receipt = data(&fixture.tool("gardener", TOOL, scan(&hub, true)).await).clone();
+    let echoed = &receipt["policy"];
+    assert!((echoed["near_duplicate_ceiling"].as_f64().unwrap() - 0.94).abs() < 1e-6);
+    assert_eq!(echoed["max_shared_span"], 0.5);
+    assert!((echoed["max_machine_line_share"].as_f64().unwrap() - 0.6).abs() < 1e-6);
+    assert_eq!(echoed["max_lineage_documents"], 2);
+    assert_eq!(echoed["min_specific_entities"], 2);
+    assert_eq!(echoed["textual_cues"], true);
+    assert_eq!(echoed["similarity_batch_anchors"], 16);
+    // The 0.95 spoke is a near-duplicate; the others share one marker each,
+    // below the two-entity minimum, and carry no cue.
+    assert_eq!(receipt["nominations"], 3);
+    assert_eq!(receipt["rejections"]["near_duplicate"], 1);
+    assert_eq!(receipt["rejections"]["insufficient_specific_entities"], 2);
+    assert_eq!(receipt["candidates"], json!([]));
+    assert!(proposals(&repo).await.is_empty());
     fixture.stop().await;
 }

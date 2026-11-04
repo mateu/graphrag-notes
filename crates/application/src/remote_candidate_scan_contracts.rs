@@ -86,6 +86,26 @@ pub struct RelationshipCandidatePolicy {
     pub max_per_endpoint: usize,
     /// Shared names mentioned by more notes than this are generic.
     pub max_entity_note_frequency: usize,
+    /// Opt-in quality gates (#230); `null`/`false` means off.
+    #[serde(default)]
+    pub near_duplicate_ceiling: Option<f32>,
+    #[serde(default)]
+    pub max_shared_span: Option<f32>,
+    #[serde(default)]
+    pub max_machine_line_share: Option<f32>,
+    #[serde(default)]
+    pub max_lineage_documents: Option<usize>,
+    #[serde(default)]
+    pub min_specific_entities: Option<usize>,
+    #[serde(default)]
+    pub textual_cues: bool,
+    /// Anchors ranked by one exact similarity pass; 1 is one per anchor.
+    #[serde(default = "one")]
+    pub similarity_batch_anchors: usize,
+}
+
+fn one() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -101,7 +121,16 @@ pub enum RelationshipCandidateStopReason {
 #[serde(rename_all = "snake_case")]
 pub enum RelationshipCandidateSignal {
     ExplicitCrossReference,
+    TextualCue,
     SharedSpecificEntity,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipTextualCueKind {
+    RelativeDate,
+    DatedReference,
+    AnsweredQuestion,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -138,6 +167,22 @@ pub struct RelationshipCandidateRejections {
     /// pending proposal could be recorded.
     #[serde(default)]
     pub vanished: usize,
+    /// Opt-in gates (#230); always zero while they are off.
+    /// Both notes come from one origin document.
+    #[serde(default)]
+    pub same_document: usize,
+    /// A counterpart is mostly machine output.
+    #[serde(default)]
+    pub machine_dump: usize,
+    /// Above the near-duplicate ceiling or sharing a long span of words.
+    #[serde(default)]
+    pub near_duplicate: usize,
+    /// Shared names recur across the pair's document lineage.
+    #[serde(default)]
+    pub lineage_template: usize,
+    /// Too few specific shared entities and no explicit pointer.
+    #[serde(default)]
+    pub insufficient_specific_entities: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -159,6 +204,13 @@ pub struct RelationshipCandidateCrossReference {
     pub direction: RelationshipCrossReferenceDirection,
 }
 
+/// An explicit textual cue; `direction` names the note that carries it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RelationshipCandidateTextualCue {
+    pub kind: RelationshipTextualCueKind,
+    pub direction: RelationshipCrossReferenceDirection,
+}
+
 /// The pending proposal recorded for a candidate.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RelationshipCandidateProposal {
@@ -176,6 +228,9 @@ pub struct RelationshipCandidateOutput {
     /// Rarest first, at most eight.
     pub shared_entities: Vec<RelationshipCandidateEntity>,
     pub cross_reference: Option<RelationshipCandidateCrossReference>,
+    /// Set only when textual cues are enabled and one was found.
+    #[serde(default)]
+    pub textual_cue: Option<RelationshipCandidateTextualCue>,
     /// `null` in a dry run, or when the deadline stopped persistence first.
     pub proposal: Option<RelationshipCandidateProposal>,
 }
@@ -204,6 +259,9 @@ pub struct RelationshipCandidateScanResponse {
     pub after_note_id: Option<String>,
     pub stop_reason: RelationshipCandidateStopReason,
     pub endpoints_examined: usize,
+    /// Examined anchors skipped as mostly machine output (opt-in gate).
+    #[serde(default)]
+    pub machine_dump_anchors: usize,
     /// Every anchor in scope after the cursor was examined and every
     /// candidate found was reported.
     pub scope_exhausted: bool,

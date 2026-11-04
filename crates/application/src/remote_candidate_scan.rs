@@ -2,8 +2,8 @@
 use crate::*;
 use graphrag_agents::gardener::{
     CandidatePolicy, CandidateScanReport, CandidateScanRequest, CandidateScope, CandidateSignal,
-    CandidateStopReason, CrossReferenceDirection, CrossReferenceKind, CANDIDATE_CONTRACT,
-    CANDIDATE_GENERATOR,
+    CandidateStopReason, CrossReferenceDirection, CrossReferenceKind, TextualCueKind,
+    CANDIDATE_CONTRACT, CANDIDATE_GENERATOR,
 };
 use graphrag_agents::GardenerAgent;
 use graphrag_core::{record_id_to_string, ProposedEdgeStatus};
@@ -120,7 +120,16 @@ fn signal(signal: CandidateSignal) -> RelationshipCandidateSignal {
         CandidateSignal::ExplicitCrossReference => {
             RelationshipCandidateSignal::ExplicitCrossReference
         }
+        CandidateSignal::TextualCue => RelationshipCandidateSignal::TextualCue,
         CandidateSignal::SharedSpecificEntity => RelationshipCandidateSignal::SharedSpecificEntity,
+    }
+}
+
+fn cue_kind(kind: TextualCueKind) -> RelationshipTextualCueKind {
+    match kind {
+        TextualCueKind::RelativeDate => RelationshipTextualCueKind::RelativeDate,
+        TextualCueKind::DatedReference => RelationshipTextualCueKind::DatedReference,
+        TextualCueKind::AnsweredQuestion => RelationshipTextualCueKind::AnsweredQuestion,
     }
 }
 
@@ -186,6 +195,12 @@ fn receipt(
                     direction: reference_direction(reference.direction),
                 }
             }),
+            textual_cue: candidate
+                .textual_cue
+                .map(|cue| RelationshipCandidateTextualCue {
+                    kind: cue_kind(cue.kind),
+                    direction: reference_direction(cue.direction),
+                }),
             proposal: candidate.proposal.and_then(|proposal| {
                 let status = proposal.status;
                 proposal.id.map(|id| RelationshipCandidateProposal {
@@ -213,12 +228,20 @@ fn receipt(
             neighbors_per_endpoint: report.policy.neighbors_per_endpoint,
             max_per_endpoint: report.policy.max_per_endpoint,
             max_entity_note_frequency: report.policy.max_entity_note_frequency,
+            near_duplicate_ceiling: report.policy.near_duplicate_ceiling,
+            max_shared_span: report.policy.max_shared_span,
+            max_machine_line_share: report.policy.max_machine_line_share,
+            max_lineage_documents: report.policy.max_lineage_documents,
+            min_specific_entities: report.policy.min_specific_entities,
+            textual_cues: report.policy.textual_cues,
+            similarity_batch_anchors: report.policy.similarity_batch_anchors,
         },
         scope: request.scope,
         counterpart_source_ids: request.counterpart_source_ids,
         after_note_id: request.after_note_id,
         stop_reason: stop_reason(report.stop_reason),
         endpoints_examined: report.endpoints_examined,
+        machine_dump_anchors: report.machine_dump_anchors,
         scope_exhausted: report.scope_exhausted,
         next_after_note_id: report.next_after.as_ref().map(record_id_to_string),
         dry_run_cut,
@@ -234,6 +257,11 @@ fn receipt(
             endpoint_cap: rejections.endpoint_cap,
             over_budget: rejections.over_budget,
             vanished: rejections.vanished,
+            same_document: rejections.same_document,
+            machine_dump: rejections.machine_dump,
+            near_duplicate: rejections.near_duplicate,
+            lineage_template: rejections.lineage_template,
+            insufficient_specific_entities: rejections.insufficient_specific_entities,
         },
         unevaluated_names: report.unevaluated_names,
         elapsed_ms: u64::try_from(report.elapsed.as_millis()).unwrap_or(u64::MAX),

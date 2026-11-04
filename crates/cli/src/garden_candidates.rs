@@ -26,6 +26,13 @@ pub(crate) fn policy(config: &GardenerCandidateConfig) -> CandidatePolicy {
         neighbors_per_endpoint: config.neighbors_per_endpoint,
         max_per_endpoint: config.max_per_endpoint,
         max_entity_note_frequency: config.max_entity_note_frequency,
+        near_duplicate_ceiling: config.near_duplicate_ceiling,
+        max_shared_span: config.max_shared_span,
+        max_machine_line_share: config.max_machine_line_share,
+        max_lineage_documents: config.max_lineage_documents,
+        min_specific_entities: config.min_specific_entities,
+        textual_cues: config.textual_cues,
+        similarity_batch_anchors: config.similarity_batch_anchors,
     }
 }
 
@@ -193,6 +200,36 @@ pub(crate) fn render(
         text(&policy.generator),
         text(&policy.generator_version),
     )?;
+    let quality = [
+        policy
+            .near_duplicate_ceiling
+            .map(|value| format!("near-duplicate ceiling {value:.3}")),
+        policy
+            .max_shared_span
+            .map(|value| format!("shared span below {value:.2}")),
+        policy
+            .max_machine_line_share
+            .map(|value| format!("machine lines below {value:.2}")),
+        policy
+            .max_lineage_documents
+            .map(|value| format!("specific within lineage at most {value} document(s)")),
+        policy
+            .min_specific_entities
+            .map(|value| format!("at least {value} specific entities without a pointer")),
+        policy.textual_cues.then(|| "textual cues".to_owned()),
+        (policy.similarity_batch_anchors > 1).then(|| {
+            format!(
+                "{} anchors per similarity pass",
+                policy.similarity_batch_anchors
+            )
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if !quality.is_empty() {
+        writeln!(writer, "  Quality gates: {}", quality.join(", "))?;
+    }
     let scope = match &receipt.scope {
         RelationshipCandidateScope::Notes { ids } => format!("{} note(s)", ids.len()),
         RelationshipCandidateScope::Sources { ids } => format!("{} source(s)", ids.len()),
@@ -240,6 +277,24 @@ pub(crate) fn render(
         rejected.over_budget,
         rejected.vanished,
     )?;
+    let gated = rejected.same_document
+        + rejected.machine_dump
+        + rejected.near_duplicate
+        + rejected.lineage_template
+        + rejected.insufficient_specific_entities
+        + receipt.machine_dump_anchors;
+    if gated > 0 {
+        writeln!(
+            writer,
+            "  Quality gates rejected: same document {}, machine dump {} (anchors skipped {}), near duplicate {}, lineage template {}, too few specific entities {}",
+            rejected.same_document,
+            rejected.machine_dump,
+            receipt.machine_dump_anchors,
+            rejected.near_duplicate,
+            rejected.lineage_template,
+            rejected.insufficient_specific_entities,
+        )?;
+    }
     if receipt.candidates.is_empty() {
         writeln!(writer, "  No candidate met the policy (abstained).")?;
     }
@@ -278,6 +333,19 @@ pub(crate) fn render(
                     .map(label)
                     .unwrap_or_default(),
                 serde_json::to_value(reference.direction)
+                    .map(label)
+                    .unwrap_or_default()
+            )?;
+        }
+        if let Some(cue) = &candidate.textual_cue {
+            let label = |value: Value| value.as_str().map(str::to_owned).unwrap_or_default();
+            writeln!(
+                writer,
+                "     textual cue: {} ({})",
+                serde_json::to_value(cue.kind)
+                    .map(label)
+                    .unwrap_or_default(),
+                serde_json::to_value(cue.direction)
                     .map(label)
                     .unwrap_or_default()
             )?;
