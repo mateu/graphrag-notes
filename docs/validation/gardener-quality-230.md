@@ -122,3 +122,137 @@ with them there, but on the full scope they are the first reason for
 123 rejections and 17 skipped anchors. Each kept `related_to` pair depends on
 a single cue. A larger reviewed batch is needed before trusting the yield
 estimate.
+
+## Cue precision (second reviewed batch)
+
+The second capped live batch ran the measured policy above on 600 fresh orphan
+anchors and produced 12 candidates. Two blind reviewers and the owner kept 1
+and rejected 11 (10 same topic only, 1 generic overlap). Five of the rejects
+were heartbeat or status entries nominated only by `relative_date`, with no
+shared specific entity. A sixth heartbeat pair was carried by two shared
+entities.
+In those entries "yesterday" named a monitoring window or an aggregate log, not
+the paired note. Three opt-in tightenings target that failure mode; see
+[connection review](../connection-review.md#cue-precision-230-opt-in).
+
+### Method
+
+- **Corpora.** Isolated restores of two portable backups, one per label set:
+  - the backup taken before the first live scan, where the 30 batch-1 pairs
+    are undecided;
+  - the backup taken after batch 1 and before batch 2, where the 12 batch-2
+    pairs are undecided.
+
+  Scratch services ran on loopback ports with a scratch `garden` principal.
+  No live service, database, config or credential was used.
+- **Baseline check.** The deployed binary with the live policy reproduced
+  both live results exactly:
+  - batch 2: 600 anchors, 12 candidates (the same 12 pairs), and the same
+    rejection counts (generic entities only 539, near duplicate 261, same
+    document 124, no second signal 53, duplicate content 49, too few specific
+    entities 33, lineage template 26, machine dump 20);
+  - batch 1: 210 anchors, 8 candidates, 3/3 keeps, 0/27 rejects.
+- **Attribution.** Each labelled pair was run as a single-anchor dry run from
+  each side, with the other endpoint's source as the only counterpart source.
+- **Labels.** All 42 owner-reviewed pairs: 4 keeps (3 from batch 1, 1 from
+  batch 2) and 38 rejects. Where the reviewers split on a reject reason, the
+  first published table's reason is used.
+
+### Measured policy
+
+The measured policy above plus:
+
+```toml
+resolve_relative_dates = true
+periodic_status_entries = 3
+dedupe_counterparts = true
+```
+
+### The 42 labelled pairs
+
+| Batch | Reviewer category | Pairs | Produced before | Produced after | Rejected after, by reason |
+|---|---|---:|---:|---:|---|
+| 1 | keeps (2 `related_to`, 1 `derived_from`) | 3 | 3 | **3** | none |
+| 1 | same topic only | 11 | 0 | 0 | periodic status 8, same document 2, lineage template 1 |
+| 1 | duplicate or restatement | 10 | 0 | 0 | near duplicate 3, machine-dump anchor 2, duplicate content 2, lineage template 2, too few specific entities 1 |
+| 1 | generic overlap | 6 | 0 | 0 | same document 2, near duplicate 2, machine-dump anchor 1, lineage template 1 |
+| 2 | keep (`related_to`) | 1 | 1 | **1** | none |
+| 2 | same topic only | 10 | 10 | 4 | periodic status 6 |
+| 2 | generic overlap | 1 | 1 | 1 | none |
+| | **batch-2 rejects** | **11** | **11** | **5** | 6 of 11 |
+| | **batch-1 rejects** | **27** | **0** | **0** | no regression |
+
+The 6 batch-2 rejects removed are the 5 `relative_date` status pairs and the
+entity-carried heartbeat pair. Each rule alone removes 5:
+- 4 are removed by either rule;
+- 1 only by the relative-date rule (its entry headings each occur once in their
+  logs);
+- 1 only by the periodic rule (no cue; two shared entities). The 5 batch-2 rejects still produced carry no textual cue:
+log-warning boilerplate, an epic rollup listing child PRs, a PR heartbeat
+followed by its merge note, and two pairs from consecutive sessions editing one
+file. They need a different signal.
+
+The batch-1 `relative_date` keep resolves (its "yesterday" sentence shares a
+topic span with the counterpart and names no other time). The two
+`answered_question` keeps and the entity-carried `derived_from` keep are not
+affected.
+
+### Same scope, before and after
+
+| | 210 anchors (batch 1) before | after | 600 anchors (batch 2) before | after |
+|---|---:|---:|---:|---:|
+| Nominations | 415 | 415 | 1,117 | 1,117 |
+| Candidates | 8 | **3** | 12 | **6** |
+| Labelled keeps | 3 | 3 | 1 | 1 |
+| Labelled rejects | 0 (+4 batch-2 rejects) | 0 | 11 | 5 |
+| Unlabelled | 1 | 0 | 0 | 0 |
+
+The 210-anchor scope's 8 "before" candidates include 4 batch-2 heartbeat
+rejects, which the first scan had not reached at that cursor. All 4 are gone
+after.
+
+Rejections after, 210 anchors: generic entities only 118, near duplicate 113,
+periodic status 112, same document 24, no second signal 14, duplicate content
+10, machine dump 10, lineage template 6, too few specific entities 4,
+duplicate counterpart 1.
+
+Rejections after, 600 anchors: generic entities only 299, periodic status 284,
+near duplicate 261, same document 124, duplicate content 49, no second signal
+36, machine dump 20, too few specific entities 20, lineage template 17,
+unresolved relative date 1.
+
+The periodic rule is checked before entity evidence, so pairs it removes no
+longer reach the generic-entity and lineage counters. Most of its count moves
+from those counters. Only 8 of the 284 (600 anchors) were candidates before.
+
+### Latency
+
+| Run | 210 anchors | 600 anchors |
+|---|---:|---:|
+| Deployed binary, measured policy | 8.4 s (40 ms/anchor) | 18.1 s (30 ms/anchor) |
+| This change, all three options | 8.3 s (40 ms/anchor) | 18.8 s (31 ms/anchor) |
+
+The periodic rule adds one indexed heading read per scan, over the sources of
+clock-stamped notes. No measurable regression.
+
+### Sensitivity and limits
+
+- **`periodic_status_entries` of 2, 3 or 5**, with the other two options on,
+  give the same labelled result: 4/4 keeps, 6/11 batch-2 rejects removed, 0/27
+  batch-1 regressions. The same-scope candidate counts are also the same
+  (3 and 6). At 5, three of the six are caught by the relative-date rule
+  instead.
+- **Each rule alone** keeps all 4 keeps:
+  - `resolve_relative_dates` alone removes 5 of the 6;
+  - `periodic_status_entries = 3` alone removes 5 of the 6;
+  - `dedupe_counterparts` alone removes 1 same-scope candidate on 600 anchors
+    (one of the two pairs whose targets are identical copies) and 2 on 210
+    anchors. Single-pair attribution cannot show it, because each copy pairs
+    on its own.
+- **Fragility.** Each keep that rests on a cue still rests on a single cue.
+  The batch-1 `relative_date` keep passes on one shared two-word span. The
+  periodic rule depends on heading structure. Logs with timestamped entries
+  but no clock time in the heading are not detected, and a one-off
+  clock-stamped entry is never periodic. 42 labels are still a small set.
+  Projected yield on the 600-anchor scope rises from 1/12 to 1/6, from one
+  keep. A larger reviewed batch is needed before trusting it.

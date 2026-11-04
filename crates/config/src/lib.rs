@@ -369,6 +369,19 @@ pub struct GardenerCandidateConfig {
     /// Opt-in: explicit textual cues between dated documents are a second
     /// signal.
     pub textual_cues: bool,
+    /// Opt-in (requires `textual_cues`): a "yesterday" cue counts only when
+    /// it resolves to the counterpart (its sentence names no other clock time
+    /// than the counterpart's heading and shares a two-word topic span with
+    /// it) or the pair also shares a specific entity.
+    pub resolve_relative_dates: bool,
+    /// Opt-in: a note whose clock-stamped entry heading recurs, with digits
+    /// collapsed, in at least this many distinct entries of its source (a
+    /// heartbeat, watchdog or status log) pairs only through an explicit
+    /// cross-reference. Unset: off.
+    pub periodic_status_entries: Option<usize>,
+    /// Opt-in: one endpoint pairs with at most one of several counterparts
+    /// whose content is identical.
+    pub dedupe_counterparts: bool,
     /// Anchors ranked by one exact similarity pass (1–200). 1 keeps one
     /// similarity query per anchor; results are identical either way.
     pub similarity_batch_anchors: usize,
@@ -386,6 +399,9 @@ impl Default for GardenerCandidateConfig {
             max_lineage_documents: None,
             min_specific_entities: None,
             textual_cues: false,
+            resolve_relative_dates: false,
+            periodic_status_entries: None,
+            dedupe_counterparts: false,
             similarity_batch_anchors: 1,
         }
     }
@@ -1189,9 +1205,13 @@ impl RuntimeConfig {
                 .min_specific_entities
                 .is_some_and(|min| !(1..=8).contains(&min))
             || !(1..=200).contains(&candidates.similarity_batch_anchors)
+            || candidates
+                .periodic_status_entries
+                .is_some_and(|entries| !(2..=1_000).contains(&entries))
+            || (candidates.resolve_relative_dates && !candidates.textual_cues)
         {
             return Err(ConfigError::Validation(
-                "gardener.candidates requires near_duplicate_ceiling above similarity_floor and at most 1, max_shared_span and max_machine_line_share in (0, 1], max_lineage_documents in 1..=1000, min_specific_entities in 1..=8 and similarity_batch_anchors in 1..=200".into(),
+                "gardener.candidates requires near_duplicate_ceiling above similarity_floor and at most 1, max_shared_span and max_machine_line_share in (0, 1], max_lineage_documents in 1..=1000, min_specific_entities in 1..=8, similarity_batch_anchors in 1..=200, periodic_status_entries in 2..=1000, and textual_cues for resolve_relative_dates".into(),
             ));
         }
         if !matches!(
@@ -1879,6 +1899,9 @@ mod tests {
         assert_eq!(defaults.max_lineage_documents, None);
         assert_eq!(defaults.min_specific_entities, None);
         assert!(!defaults.textual_cues);
+        assert!(!defaults.resolve_relative_dates);
+        assert_eq!(defaults.periodic_status_entries, None);
+        assert!(!defaults.dedupe_counterparts);
         assert_eq!(defaults.similarity_batch_anchors, 1);
 
         let directory = tempfile::tempdir().unwrap();
@@ -1915,6 +1938,19 @@ mod tests {
         assert_eq!(quality.min_specific_entities, Some(2));
         assert!(quality.textual_cues);
         assert_eq!(quality.similarity_batch_anchors, 64);
+        // The earlier quality policy leaves the cue-precision options off.
+        assert!(!quality.resolve_relative_dates);
+        assert_eq!(quality.periodic_status_entries, None);
+        assert!(!quality.dedupe_counterparts);
+        let precise = load(
+            "[gardener.candidates]\ntextual_cues = true\nresolve_relative_dates = true\nperiodic_status_entries = 3\ndedupe_counterparts = true\n",
+        )
+        .unwrap()
+        .gardener
+        .candidates;
+        assert!(precise.resolve_relative_dates);
+        assert_eq!(precise.periodic_status_entries, Some(3));
+        assert!(precise.dedupe_counterparts);
 
         for invalid in [
             "similarity_floor = 1.5",
@@ -1931,6 +1967,9 @@ mod tests {
             "min_specific_entities = 9",
             "similarity_batch_anchors = 0",
             "similarity_batch_anchors = 201",
+            "periodic_status_entries = 1",
+            "periodic_status_entries = 1001",
+            "resolve_relative_dates = true",
         ] {
             let error = load(&format!("[gardener.candidates]\n{invalid}\n")).unwrap_err();
             assert!(

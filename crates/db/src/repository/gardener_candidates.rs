@@ -74,6 +74,10 @@ pub struct CandidateNote {
     /// shares it), else the source's own URI. Used only for lineage checks.
     #[serde(default)]
     pub origin_uri: Option<String>,
+    /// Markdown heading path of the note's chunk (empty when unknown).
+    #[serde(default)]
+    #[surreal(default)]
+    pub chunk_heading_path: Vec<String>,
 }
 
 /// Origin document of a note's source, as [`CandidateNote::origin_uri`].
@@ -171,7 +175,7 @@ pub struct CandidateExistingLinks {
 }
 
 fn candidate_note_fields() -> String {
-    format!("id, source_id, (source_id.normalized_uri ?? source_id.uri) AS source_uri, content, content_hash, {ORIGIN_URI_SQL} AS origin_uri")
+    format!("id, source_id, (source_id.normalized_uri ?? source_id.uri) AS source_uri, content, content_hash, {ORIGIN_URI_SQL} AS origin_uri, chunk_heading_path")
 }
 
 /// Statements (indices 0–2) binding `$excluded` (notes sharing a chat
@@ -581,6 +585,47 @@ impl Repository {
             .into_iter()
             .filter_map(|row| Some((row.id, row.origin_uri?)))
             .collect())
+    }
+
+    /// Entry headings (the last heading-path element) of every visible note
+    /// of each supplied source, keyed by native source ID. Notes without a
+    /// heading are omitted.
+    #[allow(clippy::mutable_key_type)]
+    #[instrument(skip(self, sources))]
+    pub async fn candidate_source_entry_headings(
+        &self,
+        sources: &[RecordId],
+    ) -> Result<std::collections::BTreeMap<RecordId, Vec<String>>> {
+        let sources = sources
+            .iter()
+            .filter(|id| id.table.as_str() == "source")
+            .cloned()
+            .collect::<Vec<_>>();
+        if sources.is_empty() {
+            return Ok(Default::default());
+        }
+        #[derive(Deserialize, SurrealValue)]
+        struct HeadingRow {
+            source_id: RecordId,
+            #[serde(default)]
+            heading: Option<String>,
+        }
+        let rows: Vec<HeadingRow> = self
+            .db
+            .query(format!(
+                "SELECT source_id, array::last(chunk_heading_path) AS heading FROM note WHERE source_id IN $sources AND {VISIBLE_NOTE_CONDITION}"
+            ))
+            .bind(("sources", sources))
+            .await?
+            .check()?
+            .take(0)?;
+        let mut headings = std::collections::BTreeMap::<RecordId, Vec<String>>::new();
+        for row in rows {
+            if let Some(heading) = row.heading {
+                headings.entry(row.source_id).or_default().push(heading);
+            }
+        }
+        Ok(headings)
     }
 
     /// Entity names and types mentioned by the supplied notes.

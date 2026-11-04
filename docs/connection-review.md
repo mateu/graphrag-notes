@@ -259,8 +259,47 @@ similarity_batch_anchors = 64   # anchors per exact similarity pass (1 = one que
   `vector::similarity::cosine` does, so results are identical. A group is
   examined as a unit, so with a short deadline use a smaller group.
 
+#### Cue precision (#230, opt-in)
+
+In the second reviewed batch, 6 of 11 rejects were recurring heartbeat or
+status entries nominated by `relative_date` alone: "since 22:37 yesterday" or
+"yesterday's notes" named a monitoring window or an aggregate log, not the
+paired note. Three stricter options address this. Each is off by default and
+only ever removes pairs:
+
+```toml
+[gardener.candidates]
+resolve_relative_dates = true    # requires textual_cues = true
+periodic_status_entries = 3      # 2..=1000
+dedupe_counterparts = true
+```
+
+- **`resolve_relative_dates`.** A "yesterday" cue counts only if it resolves
+  to the counterpart: one sentence that says "yesterday" names no clock time,
+  or names a time in the counterpart's entry heading, *and* shares a two-word
+  topic span with the counterpart (adjacent content words; stop words, temporal
+  words and numbers break a span). A pair that also shares a specific entity
+  keeps the cue either way. An unresolved cue falls through to the weaker cue
+  kinds; if nothing else signals, the pair is counted as
+  `unresolved_relative_date`.
+- **`periodic_status_entries`.** This is a structural test for recurring
+  heartbeat, watchdog or status logs, with no names hard-coded. A note's
+  *entry template* is its last heading, lowercased with digit runs collapsed,
+  and applies only when that heading carries a clock time
+  (`19:07 MDT — Heartbeat recheck` becomes `#:# mdt — heartbeat recheck`). If
+  at least this many distinct entries of the note's own source share its
+  template, the note is a periodic status entry. Such a note pairs only through
+  an explicit cross-reference (record ID, source URI, wikilink or file name).
+  Otherwise the pair is counted as `periodic_status`. The check costs one
+  indexed heading read per source involved.
+- **`dedupe_counterparts`.** After ranking, an endpoint already selected with
+  a counterpart of identical (trimmed) content is not paired with another
+  copy. The better-ranked copy is kept, and the rest are counted as
+  `duplicate_counterpart`.
+
 Every receipt echoes the new policy values (`null`/`false`/`1` when off) and
 counts every new rejection reason. When any gate is on, persisted candidate
-features also record `policy.quality` and `textual_cue`. Measurements and the
+features also record `policy.quality` and `textual_cue`. The three
+cue-precision options appear in `policy.quality` only while they are on. Measurements and the
 recommended live settings are in
 [gardener-quality-230](validation/gardener-quality-230.md).

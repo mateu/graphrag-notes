@@ -14,11 +14,15 @@
 //! recurring document family), a minimum number of specific entities, and an
 //! explicit textual-cue second signal. Batched nomination reads the corpus
 //! once per group of anchors instead of once per anchor, with identical
-//! results.
+//! results. Three further opt-in tightenings: a relative-date cue must
+//! resolve to its counterpart (or come with a specific shared entity),
+//! recurring timestamped status entries never pair without an explicit
+//! reference, and one endpoint never pairs with two identical counterparts.
 
 pub use super::candidate_quality::TextualCueKind;
 use super::candidate_quality::{
-    lineage_family, machine_line_share, shared_span_share, textual_cue, CueDirection,
+    lineage_family, machine_line_share, relative_date_resolves, shared_span_share,
+    textual_cue_checked, timestamped_entry_template, CueDirection,
 };
 use crate::Result;
 use graphrag_core::{record_id_to_string, EdgeType, ProposedEdge};
@@ -89,6 +93,19 @@ pub struct CandidatePolicy {
     /// "compared with <date>", an earlier question answered later) count as a
     /// second signal, ranked with cross-references.
     pub textual_cues: bool,
+    /// A "yesterday" cue counts only when it resolves to the counterpart (a
+    /// sentence naming none of the counterpart's other times and sharing a
+    /// topic span with it) or the pair also shares a specific entity.
+    /// Requires `textual_cues`. `false`: any "yesterday" cues, as before.
+    pub resolve_relative_dates: bool,
+    /// Recurring timestamped status entries: a note whose clock-stamped
+    /// entry heading recurs, digit-collapsed, in at least this many distinct
+    /// entries of its source (a heartbeat, watchdog or status log) pairs only
+    /// through an explicit cross-reference. `None`: off.
+    pub periodic_status_entries: Option<usize>,
+    /// One endpoint is paired with at most one of several counterparts whose
+    /// content is identical. `false`: off.
+    pub dedupe_counterparts: bool,
     /// Anchors whose neighbours one exact similarity pass ranks together.
     /// `1` runs one similarity query per anchor, as before.
     pub similarity_batch_anchors: usize,
@@ -107,6 +124,9 @@ impl Default for CandidatePolicy {
             max_lineage_documents: None,
             min_specific_entities: None,
             textual_cues: false,
+            resolve_relative_dates: false,
+            periodic_status_entries: None,
+            dedupe_counterparts: false,
             similarity_batch_anchors: 1,
         }
     }
@@ -121,6 +141,9 @@ impl CandidatePolicy {
             || self.max_lineage_documents.is_some()
             || self.min_specific_entities.is_some()
             || self.textual_cues
+            || self.resolve_relative_dates
+            || self.periodic_status_entries.is_some()
+            || self.dedupe_counterparts
     }
 }
 
@@ -296,6 +319,15 @@ pub struct CandidateRejections {
     /// Fewer specific shared entities than the policy requires, and no
     /// explicit cross-reference or textual cue.
     pub insufficient_specific_entities: usize,
+    /// The only second signal was a "yesterday" cue that did not resolve to
+    /// the counterpart, without a specific shared entity.
+    pub unresolved_relative_date: usize,
+    /// An endpoint is a recurring timestamped status entry and the pair has
+    /// no explicit cross-reference.
+    pub periodic_status: usize,
+    /// An endpoint was already selected with a counterpart of identical
+    /// content.
+    pub duplicate_counterpart: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -554,8 +586,23 @@ impl super::GardenerAgent {
                 .then_with(|| key(&left.pair.to.id).cmp(&key(&right.pair.to.id)))
         });
         let mut per_endpoint = HashMap::<String, usize>::new();
+        // (endpoint, counterpart content) of selected candidates.
+        let mut counterparts = BTreeSet::<(String, String)>::new();
         for item in gated {
             let (from, to) = (key(&item.pair.from.id), key(&item.pair.to.id));
+            let sides = policy.dedupe_counterparts.then(|| {
+                [
+                    (from.clone(), item.pair.to.content.trim().to_owned()),
+                    (to.clone(), item.pair.from.content.trim().to_owned()),
+                ]
+            });
+            if sides
+                .as_ref()
+                .is_some_and(|sides| sides.iter().any(|side| counterparts.contains(side)))
+            {
+                report.rejections.duplicate_counterpart += 1;
+                continue;
+            }
             if per_endpoint.get(&from).copied().unwrap_or(0) >= policy.max_per_endpoint
                 || per_endpoint.get(&to).copied().unwrap_or(0) >= policy.max_per_endpoint
             {
@@ -568,6 +615,7 @@ impl super::GardenerAgent {
             }
             *per_endpoint.entry(from).or_default() += 1;
             *per_endpoint.entry(to).or_default() += 1;
+            counterparts.extend(sides.into_iter().flatten());
             report.candidates.push(RelationshipCandidate {
                 from: item.pair.from.id,
                 to: item.pair.to.id,
@@ -807,6 +855,55 @@ impl super::GardenerAgent {
             BTreeMap::new()
         };
 
+        // Recurring timestamped entry templates per source, for the notes
+        // whose own entry heading is clock-stamped.
+        #[allow(clippy::mutable_key_type)]
+        let periodic_templates = if let Some(min_entries) = policy.periodic_status_entries {
+            let sources = survivors
+                .iter()
+                .flat_map(|(pair, _)| [&pair.from, &pair.to])
+                .filter(|note| timestamped_entry_template(&note.chunk_heading_path).is_some())
+                .filter_map(|note| note.source_id.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let Some(headings) =
+                before(deadline, repo.candidate_source_entry_headings(&sources)).await?
+            else {
+                return Ok(None);
+            };
+            headings
+                .into_iter()
+                .map(|(source, headings)| {
+                    let mut entries = HashMap::<String, BTreeSet<String>>::new();
+                    for heading in headings {
+                        if let Some(template) =
+                            timestamped_entry_template(std::slice::from_ref(&heading))
+                        {
+                            entries.entry(template).or_default().insert(heading);
+                        }
+                    }
+                    let recurring = entries
+                        .into_iter()
+                        .filter(|(_, entries)| entries.len() >= min_entries)
+                        .map(|(template, _)| template)
+                        .collect::<BTreeSet<_>>();
+                    (source, recurring)
+                })
+                .collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::new()
+        };
+        let periodic = |note: &CandidateNote| {
+            note.source_id
+                .as_ref()
+                .and_then(|source| periodic_templates.get(source))
+                .is_some_and(|recurring| {
+                    timestamped_entry_template(&note.chunk_heading_path)
+                        .is_some_and(|template| recurring.contains(&template))
+                })
+        };
+
         let mut signalled = Vec::new();
         for (pair, shared) in survivors {
             if Instant::now() >= deadline {
@@ -849,24 +946,45 @@ impl super::GardenerAgent {
             let specific_count = entities.len();
             entities.truncate(MAX_RECORDED_ENTITIES);
             let cross_reference = cross_reference(&pair.from, &pair.to);
-            let textual_cue = policy
-                .textual_cues
-                .then(|| {
-                    textual_cue(
-                        &pair.from.content,
-                        pair.from.origin_uri.as_deref(),
-                        &pair.to.content,
-                        pair.to.origin_uri.as_deref(),
-                    )
-                })
-                .flatten()
-                .map(|(kind, direction)| TextualCueEvidence {
-                    kind,
-                    direction: match direction {
-                        CueDirection::FromMentionsTo => CrossReferenceDirection::FromMentionsTo,
-                        CueDirection::ToMentionsFrom => CrossReferenceDirection::ToMentionsFrom,
+            if policy.periodic_status_entries.is_some()
+                && cross_reference.is_none()
+                && (periodic(&pair.from) || periodic(&pair.to))
+            {
+                report.rejections.periodic_status += 1;
+                continue;
+            }
+            let cue = policy.textual_cues.then(|| {
+                textual_cue_checked(
+                    &pair.from.content,
+                    pair.from.origin_uri.as_deref(),
+                    &pair.to.content,
+                    pair.to.origin_uri.as_deref(),
+                    |direction| {
+                        let (cue_note, other) = match direction {
+                            CueDirection::FromMentionsTo => (&pair.from, &pair.to),
+                            CueDirection::ToMentionsFrom => (&pair.to, &pair.from),
+                        };
+                        !policy.resolve_relative_dates
+                            || specific_count > 0
+                            || relative_date_resolves(
+                                &cue_note.content,
+                                &other.content,
+                                &other.chunk_heading_path,
+                            )
                     },
-                });
+                )
+            });
+            let declined_relative_date =
+                cue.is_some_and(|cue| cue.declined_relative_date.is_some());
+            let textual_cue =
+                cue.and_then(|cue| cue.cue)
+                    .map(|(kind, direction)| TextualCueEvidence {
+                        kind,
+                        direction: match direction {
+                            CueDirection::FromMentionsTo => CrossReferenceDirection::FromMentionsTo,
+                            CueDirection::ToMentionsFrom => CrossReferenceDirection::ToMentionsFrom,
+                        },
+                    });
             let mut signals = Vec::new();
             if cross_reference.is_some() {
                 signals.push(CandidateSignal::ExplicitCrossReference);
@@ -878,7 +996,9 @@ impl super::GardenerAgent {
                 signals.push(CandidateSignal::SharedSpecificEntity);
             }
             if signals.is_empty() {
-                if shared.is_empty() {
+                if declined_relative_date {
+                    report.rejections.unresolved_relative_date += 1;
+                } else if shared.is_empty() {
                     report.rejections.no_second_signal += 1;
                 } else if globally_specific && policy.max_lineage_documents.is_some() {
                     report.rejections.lineage_template += 1;
@@ -1361,14 +1481,26 @@ fn candidate_reason(
 
 /// The opt-in quality policy, as persisted in candidate features.
 fn quality_policy_json(policy: &CandidatePolicy) -> serde_json::Value {
-    serde_json::json!({
+    let mut quality = serde_json::json!({
         "near_duplicate_ceiling": policy.near_duplicate_ceiling,
         "max_shared_span": policy.max_shared_span,
         "max_machine_line_share": policy.max_machine_line_share,
         "max_lineage_documents": policy.max_lineage_documents,
         "min_specific_entities": policy.min_specific_entities,
         "textual_cues": policy.textual_cues,
-    })
+    });
+    // The cue-precision tightenings are recorded only when in force, so
+    // features persisted under the earlier quality policy are unchanged.
+    if policy.resolve_relative_dates {
+        quality["resolve_relative_dates"] = true.into();
+    }
+    if let Some(entries) = policy.periodic_status_entries {
+        quality["periodic_status_entries"] = entries.into();
+    }
+    if policy.dedupe_counterparts {
+        quality["dedupe_counterparts"] = true.into();
+    }
+    quality
 }
 
 #[cfg(test)]
@@ -1385,6 +1517,7 @@ mod tests {
             embedding: Vec::new(),
             similarity: None,
             origin_uri: uri.map(str::to_owned),
+            chunk_heading_path: Vec::new(),
         }
     }
 

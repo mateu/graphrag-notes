@@ -432,6 +432,9 @@ async fn receipts_echo_resolved_limits_and_policy_and_dry_runs_change_nothing() 
         assert_eq!(receipt["policy"][gate], Value::Null, "{gate}");
     }
     assert_eq!(receipt["policy"]["textual_cues"], false);
+    assert_eq!(receipt["policy"]["resolve_relative_dates"], false);
+    assert_eq!(receipt["policy"]["periodic_status_entries"], Value::Null);
+    assert_eq!(receipt["policy"]["dedupe_counterparts"], false);
     assert_eq!(receipt["policy"]["similarity_batch_anchors"], 1);
     assert_eq!(receipt["machine_dump_anchors"], 0);
     for reason in [
@@ -440,6 +443,9 @@ async fn receipts_echo_resolved_limits_and_policy_and_dry_runs_change_nothing() 
         "near_duplicate",
         "lineage_template",
         "insufficient_specific_entities",
+        "unresolved_relative_date",
+        "periodic_status",
+        "duplicate_counterpart",
     ] {
         assert_eq!(receipt["rejections"][reason], 0, "{reason}");
     }
@@ -523,6 +529,9 @@ async fn receipts_echo_the_operator_quality_gates_and_count_their_rejections() {
         max_lineage_documents: Some(2),
         min_specific_entities: Some(2),
         textual_cues: true,
+        resolve_relative_dates: true,
+        periodic_status_entries: Some(3),
+        dedupe_counterparts: true,
         similarity_batch_anchors: 16,
         ..CandidatePolicy::default()
     };
@@ -535,12 +544,22 @@ async fn receipts_echo_the_operator_quality_gates_and_count_their_rejections() {
     assert_eq!(echoed["max_lineage_documents"], 2);
     assert_eq!(echoed["min_specific_entities"], 2);
     assert_eq!(echoed["textual_cues"], true);
+    assert_eq!(echoed["resolve_relative_dates"], true);
+    assert_eq!(echoed["periodic_status_entries"], 3);
+    assert_eq!(echoed["dedupe_counterparts"], true);
     assert_eq!(echoed["similarity_batch_anchors"], 16);
     // The 0.95 spoke is a near-duplicate; the others share one marker each,
     // below the two-entity minimum, and carry no cue.
     assert_eq!(receipt["nominations"], 3);
     assert_eq!(receipt["rejections"]["near_duplicate"], 1);
     assert_eq!(receipt["rejections"]["insufficient_specific_entities"], 2);
+    for reason in [
+        "unresolved_relative_date",
+        "periodic_status",
+        "duplicate_counterpart",
+    ] {
+        assert_eq!(receipt["rejections"][reason], 0, "{reason}");
+    }
     assert_eq!(receipt["candidates"], json!([]));
     assert!(proposals(&repo).await.is_empty());
     fixture.stop().await;

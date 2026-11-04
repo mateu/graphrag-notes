@@ -4,6 +4,8 @@
 //! policy surfaces are kept explicit for future private implementation moves.
 //! `candidates` owns the bounded, high-precision candidate scan.
 
+#[cfg(test)]
+mod candidate_cue_precision_tests;
 mod candidate_quality;
 #[cfg(test)]
 mod candidate_quality_scan_tests;
