@@ -846,6 +846,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lexeme_backfills_visit_every_row_once_across_pages() {
+        let db = raw_memory_db().await;
+        apply_migrations(&db, &MIGRATIONS[..23]).await.unwrap();
+        // Seed before installing projection events so only backfill can populate them.
+        db.query("CREATE note:pages SET content = 'pages'; FOR $n IN 0..257 { CREATE type::record('entity', $n) SET name = string::concat('Atlas ', $n), canonical_name = string::concat('atlas ', $n), entity_type = 'concept'; CREATE type::record('mentions', $n) SET in = note:pages, out = type::record('entity', $n); };")
+            .await.unwrap().check().unwrap();
+        for migration in &MIGRATIONS[23..25] {
+            db.query(migration.sql).await.unwrap().check().unwrap();
+        }
+        // A materializer deletes and recreates each projection row. Count creates
+        // to detect revisits as well as skipped records, despite idempotent writes.
+        db.query("DEFINE TABLE backfill_visit SCHEMALESS; DEFINE EVENT count_entity_visit ON entity_lexeme WHEN $event = 'CREATE' THEN (CREATE backfill_visit SET source = $after.entity); DEFINE EVENT count_mention_visit ON mention_lexeme WHEN $event = 'CREATE' THEN (CREATE backfill_visit SET source = $after.mention);")
+            .await.unwrap().check().unwrap();
+        v024_entity_lexeme_index::backfill(&db).await.unwrap();
+        v025_mention_lexeme_evidence::backfill(&db).await.unwrap();
+        let visits: Vec<String> = db
+            .query("SELECT VALUE type::string(source) FROM backfill_visit")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let expected = ["entity", "mentions"]
+            .into_iter()
+            .flat_map(|table| (0..257).map(move |n| format!("{table}:{n}")))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            visits.len(),
+            expected.len(),
+            "each row must be visited once"
+        );
+        assert_eq!(
+            visits.into_iter().collect::<std::collections::HashSet<_>>(),
+            expected
+        );
+    }
+
+    #[tokio::test]
     async fn v024_backfills_entity_and_mention_alias_lexemes_idempotently() {
         let db = raw_memory_db().await;
         apply_migrations(&db, &MIGRATIONS[..23]).await.unwrap();

@@ -63,7 +63,7 @@ pub(super) async fn backfill(db: &DbConnection) -> Result<()> {
             })),
         );
         let ids: Vec<RecordId> = db
-            .query("RETURN ((SELECT VALUE id FROM $range LIMIT 128) ?? []);")
+            .query("RETURN ((SELECT VALUE id FROM $range ORDER BY id ASC LIMIT 128) ?? []);")
             .bind(("range", range))
             .await?
             .take(0)?;
