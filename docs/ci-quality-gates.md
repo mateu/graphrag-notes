@@ -181,6 +181,17 @@ graph:
   `p256`/`p384` 0.13. A forced major-version override is not a valid fix.
   This exemption does not qualify WebAssembly builds as secure.
 
+One temporary exemption is reachable and tracked for removal:
+
+- `RUSTSEC-2026-0454`: `reblessive` 0.4.3, which `surrealdb-core` 3.3.5 uses to
+  run every SurrealQL statement, declares `Send`/`Sync` unsoundly. Safe code that
+  drives `reblessive` directly can race or double-free its task stack. graphrag
+  never calls `reblessive`; it runs only inside SurrealDB's own executor, and the
+  advisory describes no trigger through ordinary queries. The only fix is
+  SurrealDB 4.0.0, which removes the crate. The upgrade is tracked in #246.
+  The exemption script fails once `reblessive` 0.4 leaves the native dependency
+  graph, so the exemption is removed with that upgrade.
+
 Before `cargo audit`, CI runs `scripts/check-audit-exemptions.sh` against the
 native Linux target. The job fails if either exempted crate becomes reachable,
 forcing the exemption to be removed or reassessed instead of silently masking
