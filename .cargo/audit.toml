@@ -15,4 +15,10 @@ ignore = [
     # bumps object_store to 0.14, which uses quick-xml >=0.41.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # reblessive 0.4.3 via surrealdb-core 3.3.5: unsound Send/Sync lets safe
+    # code that drives reblessive directly race or double-free its stack.
+    # graphrag never calls reblessive; it only runs inside SurrealDB's own
+    # executor. Fixed only in SurrealDB 4.0.0. Temporary: removed by #246.
+    # scripts/check-audit-exemptions.sh fails once reblessive is gone.
+    "RUSTSEC-2026-0454",
 ]
