@@ -258,6 +258,29 @@ when comparing. Preserve the same corpus, suite and protocol to isolate ranking
 changes; timing drift alone is not evidence of graph usefulness.
 
 
+### Recording a judgement
+
+`needs_judgement` is not a result. To close the fourth pass condition for an
+item:
+
+1. Build a private sheet from the run's `--private-dir` responses. For each
+   item show the question, the expected answer and the graph-off and graph-on
+   contexts as rendered. Judge the rendered text, not the chunk ID: a delivered
+   chunk is a truncated span and may omit its answer passage.
+2. Note what graph-on replaced. At a fixed chunk budget it always displaces a
+   graph-off chunk, and the answer can depend on the chunk that left.
+3. The repository owner decides `yes`, `no` or `unsure` per item. A delegated
+   recommendation may be attached but is not the judgement. `no` covers both a
+   delivered chunk that does not answer and one that only repeats what
+   graph-off already returned.
+4. Append the decision to the private decision log, and publish counts and
+   classifications only. Grade guard items mechanically in the same record.
+
+[The `98fb72f` judgement](validation/graph-answer-judgement-251.md) is the
+worked example. Setting `answer_differs_materially` in a suite changes its
+hash, so record decisions against a retained run instead of editing an
+approved suite, unless a rerun is intended.
+
 ### Suite revisions
 
 Revise a question or its expected seed only after reading the admitted source and
