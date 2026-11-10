@@ -218,15 +218,65 @@ for invocation, doctor warning semantics, and isolated acceptance evidence.
 Summarize usage records per principal and tool:
 
 ```bash
-scripts/usage_report.py ~/.graphrag/shared/logs/service.stderr.log --since 2026-11-02
-scripts/usage_report.py service.stderr.log --principal openclaw.clawd --json
+# Rolling seven days ending now; use this for a weekly report.
+scripts/usage_report.py ~/.graphrag/shared/logs/service.stderr.log --last 7d
+# An exact interval; a bare date means 00:00:00 UTC of that day.
+scripts/usage_report.py service.stderr.log --since 2026-11-02T15:00:00Z --until 2026-11-09T15:00:00Z
+scripts/usage_report.py service.stderr.log --since 2026-11-02 --principal openclaw.clawd --json
 ```
 
-The report shows call counts by day, error codes, latency p50/p95, the
-empty-result rate, median hits and top score, the option mix, and how often
-the graph contributed a selected `build_context` candidate. An empty result or
-a low top score is a retrieval-quality signal; it does not show whether the
-client used a nonempty result.
+`--since` (inclusive) and `--until` (exclusive) each take `YYYY-MM-DD` or an
+RFC 3339 timestamp with `Z` or a numeric offset. Record timestamps are compared
+as instants. `--last <N>d|<N>h` is a rolling interval ending at `--until`, or
+now; it cannot be combined with `--since`. A `--since` date alone still selects
+whole UTC days through the end of the log, so
+`--since "$(date -u -v-7d +%Y-%m-%d)"` covers seven days **plus** the elapsed
+part of today; prefer `--last 7d`.
+
+Every report first states the requested interval, the first and last record it
+included, the span of usage records present in the supplied logs, and how many
+`graphrag_usage` lines could not be parsed. A requested start earlier than the
+first usage record is flagged: activity before instrumentation or before the
+retained log is unknown, not zero.
+
+Groups are ordered by a workload class derived from the tool name only
+(`retrieval`, `record_read`, `ingest_sync`, `graph_review`, `status`, `other`
+for tools the script does not list). A principal identifies a credential, not a
+workload: the same credential can serve scheduled sync, evaluation runs and
+interactive use. For `search_notes` and `build_context` the report therefore
+breaks successful calls down by call shape (`mode/graph/scope limit=N`, plus
+`cap=N` for `max_chunks_per_source`; `-` means the client did not send that
+option). Shape is evidence of what kind of client made the calls, not proof,
+and the report assigns no intent labels.
+
+Reading the numbers:
+
+- Latency shows its sample count. Under 20 samples the report prints
+  min/median/max instead of p50/p95 and marks the group `low sample`, because a
+  p95 of a handful of calls is just the slowest one.
+- Non-`ok` outcomes fall into three buckets. *Expected pre-upload probes* are
+  `get_source` `not_found` responses followed by the same principal's successful
+  `upload_source` within 5 seconds: the normal create path of a sync client.
+  Usage records carry no IDs, so this is a timing correlation, one probe per
+  upload. *Role denials* are `forbidden` responses, the capability model
+  working as configured. Everything else is listed under `errors` by code,
+  including any `not_found` without a matching upload.
+- Median top score is reported per call shape and never pooled across modes.
+  Hybrid scores are weighted reciprocal-rank fusion values (around 0.016 for a
+  top hit), keyword scores use a different scale, and neither is a confidence.
+- *Graph-annotated contexts* counts `build_context` responses with at least one
+  graph-selected chunk. That includes zero-hop annotation of chunks retrieval
+  had already chosen, so it does not show that the graph added support. Use the
+  [graph context evaluation](retrieval-evaluation.md#graph-context-evaluation)
+  for that question.
+- An empty result or a low top score is a retrieval-quality signal; it does not
+  show whether the client used a nonempty result.
+
+`--json` emits one object with `schema_version` (2), `window` (requested and
+actual bounds, record count, skipped lines) and `groups`. Schema 1 was a bare
+list of groups with pooled `top_score_median`, `options` and
+`graph_contributed*` fields; those are replaced by per-shape entries and
+`graph_annotated*`.
 
 ## Owner-approved fam deployment workflow
 
