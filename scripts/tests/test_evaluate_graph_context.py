@@ -326,7 +326,8 @@ class GraphEvaluationTests(unittest.TestCase):
         self.assertNotIn('PRIVATE', (self.root / 'report.json').read_text() + stdout)
         self.assertNotIn('SECRET', (self.root / 'report.json').read_text() + stdout)
         report = json.loads((self.root / 'report.json').read_text())
-        self.assertEqual(report['schema_version'], 2)
+        self.assertEqual(report['schema_version'], 3)
+        self.assertEqual(report['questions'][0]['summary']['span_check'], 'unchecked')
         row = report['questions'][0]
         self.assertEqual((row['support_chunks'], row['allowed_directions']),
                          (Q['support_chunks'], ['outbound', 'inbound']))
@@ -353,6 +354,203 @@ class GraphEvaluationTests(unittest.TestCase):
                            (['--endpoint', 'http://secret@localhost/mcp'], {'TEST_GRAPH_TOKEN': 'secret'})]:
             self.assertEqual(self.run_main(self.argv(*extra), env)[0], 2)
         self.assertEqual(FakeClient.calls, [])
+
+
+TERMS = ['Launch Window', 'tuesday 09:00']
+EVIDENCE = {'note:support': {'required_terms': TERMS}}
+ANSWER = 'The LAUNCH WINDOW is Tuesday 09:00, after the freeze.'
+ELSEWHERE = 'An unrelated passage of the same chunk about the launch window.'
+
+
+def rendered(snippet=ANSWER, start=120, end=320, truncated=True, **extra):
+    """The support chunk as build_context renders it: one clipped span."""
+    value = dict(chunk('bbb', edge()), snippet=snippet, selected_span_start=start,
+                 selected_span_end=end, truncated=truncated)
+    value.update(extra)
+    return value
+
+
+class SpanClient(FakeClient):
+    """Graph-on returns `on` (one support chunk per on round); graph-off returns `off` snippets."""
+    on = [rendered(), rendered()]
+    off = ['Seed premise only.']
+
+    def __init__(self, endpoint='', token='', deadline=0):
+        super().__init__(endpoint, token, deadline)
+        self.on_calls = 0
+
+    def call(self, name, args):
+        self.calls.append((name, args))
+        if args['graph'] == 'off':
+            return {'chunks': [dict(chunk(key), snippet=text) for key, text in zip(('aaa', 'ccc'), self.off)],
+                    'diagnostics': {}}
+        support = self.on[self.on_calls % len(self.on)]
+        self.on_calls += 1
+        return {'chunks': [dict(chunk('aaa'), snippet='Seed premise only.'), support],
+                'diagnostics': {'graph_candidates_selected': 1}}
+
+
+def span_client(on=None, off=None):
+    return type('Client', (SpanClient,), {'on': on or SpanClient.on, 'off': off or SpanClient.off})()
+
+
+class SpanEvidenceTests(unittest.TestCase):
+    # Shared fixtures only; inheriting the class would run its tests twice.
+    setUp, report = GraphEvaluationTests.setUp, GraphEvaluationTests.report
+    argv, run_main = GraphEvaluationTests.argv, GraphEvaluationTests.run_main
+
+    def graded(self, on=None, off=None, **question):
+        q = dict(Q, support_evidence=EVIDENCE)
+        q.update(question)
+        eval_graph.load_suite({'questions': [q]})
+        return self.report(q, span_client(on, off))
+
+    def test_covered_span_stays_needs_judgement_and_never_passes_by_itself(self):
+        row = self.graded()
+        summary = row['summary']
+        self.assertEqual((summary['pass'], summary['fail_reasons']), ('needs_judgement', []))
+        self.assertEqual((summary['span_check'], summary['span_unchecked_chunks']), ('covered', 0))
+        self.assertEqual(summary['on_span_by_round'],
+                         [{'checked': 1, 'covered': 1, 'terms_found': 2, 'terms_required': 2}] * 2)
+        self.assertIs(summary['off_answer_terms_found'], False)
+        on = [r for r in row['rounds'] if r['policy'] == 'on'][0]
+        self.assertEqual(on['returned_spans'], [{'start': None, 'end': None, 'truncated': None},
+                                                {'start': 120, 'end': 320, 'truncated': True}])
+        self.assertEqual(on['span_evidence'], {'note:support': {
+            'status': 'covered', 'terms_required': 2, 'context_terms_found': 2, 'terms_found': 2}})
+        self.assertEqual(row['support_evidence'], {'note:support': {'required_terms': 2, 'answer_span': None}})
+        self.assertEqual(self.graded(answer_differs_materially='yes')['summary']['pass'], 'pass')
+
+    def test_delivered_chunk_with_the_answer_outside_its_span_fails(self):
+        # The V2-E07 shape: chunk ID delivered over a valid path, rendered span elsewhere.
+        summary = self.graded(on=[rendered(ELSEWHERE, 514, 854)], answer_differs_materially='yes')['summary']
+        self.assertEqual((summary['pass'], summary['fail_reasons']), ('fail', ['support_span_missing']))
+        self.assertEqual(summary['span_check'], 'missing')
+        # ID delivery is still reported as such; only the rendered text is missing.
+        self.assertTrue(summary['on_returns_support_via_allowed_path'])
+        self.assertEqual(summary['on_support_by_round'], [True, True])
+        self.assertEqual(summary['on_span_by_round'][0],
+                         {'checked': 1, 'covered': 0, 'terms_found': 1, 'terms_required': 2})
+
+    def test_terms_match_case_folded_nfc_substrings(self):
+        decomposed = 'Café OPENS at 9'
+        evidence = {'note:support': {'required_terms': ['café opens']}}
+        self.assertEqual(self.graded(on=[rendered(decomposed)], support_evidence=evidence)['summary']['span_check'],
+                         'covered')
+
+    def test_answer_span_needs_no_text_and_untruncated_chunks_cover_any_range(self):
+        evidence = {'note:support': {'answer_span': [150, 300]}}
+        def check(**fields):
+            return self.graded(on=[rendered(ELSEWHERE, **fields)], support_evidence=evidence)['summary']
+        self.assertEqual(check()['span_check'], 'covered')
+        self.assertEqual(check(start=120, end=300)['span_check'], 'covered')
+        for start, end in ((151, 320), (120, 299), (514, 854)):
+            self.assertEqual(check(start=start, end=end)['fail_reasons'], ['support_span_missing'])
+        self.assertEqual(check(start=None, end=None, truncated=False)['span_check'], 'covered')
+        self.assertIsNone(check()['off_answer_terms_found'])
+        both = {'note:support': {'required_terms': TERMS, 'answer_span': [150, 300]}}
+        self.assertEqual(self.graded(support_evidence=both)['summary']['span_check'], 'covered')
+        self.assertEqual(self.graded(on=[rendered(start=514, end=854)], support_evidence=both)['summary']['fail_reasons'],
+                         ['support_span_missing'])
+
+    def test_missing_span_fields_fail_as_missing_fields(self):
+        span = {'note:support': {'answer_span': [150, 300]}}
+        for fields in ({'start': None}, {'end': None}, {'truncated': None}, {'start': '120'}, {'start': True}):
+            summary = self.graded(on=[rendered(**fields)], support_evidence=span)['summary']
+            self.assertEqual((summary['pass'], summary['fail_reasons']), ('fail', ['missing_fields']), fields)
+        summary = self.graded(on=[rendered(snippet=None)])['summary']
+        self.assertEqual((summary['pass'], summary['fail_reasons']), ('fail', ['missing_fields']))
+
+    def test_rounds_that_disagree_fail_and_show_each_round(self):
+        summary = self.graded(on=[rendered(), rendered(ELSEWHERE, 514, 854)])['summary']
+        self.assertEqual((summary['pass'], summary['fail_reasons']), ('fail', ['support_span_missing']))
+        self.assertEqual([r['covered'] for r in summary['on_span_by_round']], [1, 0])
+        self.assertEqual([r['terms_found'] for r in summary['on_span_by_round']], [2, 1])
+        self.assertFalse(summary['stable_on'])
+
+    def test_id_level_reasons_keep_priority_and_skip_the_span_check(self):
+        no_path = dict(rendered(ELSEWHERE), graph=None)
+        summary = self.graded(on=[no_path])['summary']
+        self.assertEqual(summary['fail_reasons'], ['invalid_path'])
+        self.assertEqual(summary['span_check'], 'not_delivered')
+        self.assertEqual(summary['on_span_by_round'][0]['checked'], 0)
+
+    def test_suites_without_evidence_keep_their_verdicts_and_report_unchecked(self):
+        plain = self.report(Q, span_client(on=[rendered(ELSEWHERE, 514, 854)]))['summary']
+        self.assertEqual((plain['pass'], plain['fail_reasons']), ('needs_judgement', []))
+        self.assertEqual((plain['span_check'], plain['span_unchecked_chunks']), ('unchecked', 1))
+        self.assertIsNone(plain['off_answer_terms_found'])
+        self.assertEqual(plain['on_span_by_round'], [{'checked': 0, 'covered': 0, 'terms_found': 0, 'terms_required': 0}] * 2)
+        # Evidence for one of two support chunks: the other is counted, not failed.
+        two = dict(Q, support_chunks={'support.md': ['note:support', 'note:other']}, support_evidence=EVIDENCE)
+        summary = self.report(two, span_client())['summary']
+        self.assertEqual(summary['span_unchecked_chunks'], 1)
+        self.assertNotIn('support_span_missing', summary['fail_reasons'])
+
+    def test_off_answer_terms_flag_is_recorded_without_changing_the_verdict(self):
+        # The V2-Q4c shape: another chunk already states the answer with the graph off.
+        summary = self.graded(off=['Seed premise only.', 'Launch window: Tuesday 09:00 sharp.'])['summary']
+        self.assertIs(summary['off_answer_terms_found'], True)
+        self.assertEqual((summary['pass'], summary['fail_reasons']), ('needs_judgement', []))
+        # Terms spread over two chunks also set it, which is why it is only a flag.
+        summary = self.graded(off=['The launch window moved.', 'Standup is Tuesday 09:00.'])['summary']
+        self.assertIs(summary['off_answer_terms_found'], True)
+        self.assertIs(self.graded(off=['The launch window moved.'])['summary']['off_answer_terms_found'], False)
+
+    def test_support_evidence_is_validated(self):
+        ok = [{'note:support': {'answer_span': [0, 1]}}, {'note:support': {'required_terms': ['a'], 'answer_span': [3, 9]}}, {}]
+        bad = [[], {'note:other': {'required_terms': ['a']}}, {'note:support': {}}, {'note:support': ['a']},
+               {'note:support': {'terms': ['a']}}, {'note:support': {'required_terms': []}},
+               {'note:support': {'required_terms': 'a'}}, {'note:support': {'required_terms': ['a', ' ']}},
+               {'note:support': {'required_terms': ['Dup', 'dup ']}}, {'note:support': {'required_terms': [1]}},
+               {'note:support': {'answer_span': [5, 5]}}, {'note:support': {'answer_span': [9, 3]}},
+               {'note:support': {'answer_span': [-1, 3]}}, {'note:support': {'answer_span': [1, 2, 3]}},
+               {'note:support': {'answer_span': [1.0, 3]}}, {'note:support': {'answer_span': [True, 3]}},
+               {'note:support': {'answer_span': None}}, {'note:support': {'required_terms': None}}]
+        for evidence in ok:
+            eval_graph.load_suite({'questions': [dict(Q, support_evidence=evidence)]})
+        for evidence in bad:
+            with self.assertRaises(eval_graph.EvaluationError, msg=str(evidence)):
+                eval_graph.load_suite({'questions': [dict(Q, support_evidence=evidence)]})
+
+    def test_terms_snippets_and_questions_leak_nowhere_but_the_private_directory(self):
+        question = dict(Q, question='SENTINEL-QUESTION text?', support_evidence={
+            'note:support': {'required_terms': ['SENTINEL-TERM-FOUND', 'SENTINEL-TERM-ABSENT']}})
+        client = type('Client', (SpanClient,), {
+            'on': [rendered('SENTINEL-SNIPPET with sentinel-term-found only.')], 'off': ['SENTINEL-SNIPPET off.']})
+        private = self.root / 'private'
+        stdout, stderr = io.StringIO(), io.StringIO()
+        argv = self.argv('--private-dir', str(private), '--json', '--summary', question=question)
+        with patch.dict(os.environ, {'TEST_GRAPH_TOKEN': 'SECRET'}, clear=True), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(eval_graph.main(argv, client), 0)
+        public = (self.root / 'report.json').read_text() + stdout.getvalue() + stderr.getvalue()
+        self.assertNotIn('SENTINEL', public.upper())
+        self.assertIn('Q1: fail on==off=False graph_selected=2 span=missing reasons=support_span_missing\n',
+                      stdout.getvalue())
+        self.assertIn('SENTINEL-SNIPPET', (private / 'private-responses.json').read_text())
+        self.assertTrue(all(name == 'build_context' for name, _ in FakeClient.calls))
+        self.assertEqual(len(FakeClient.calls), 4)
+        # A rejected suite names neither the field value nor the term.
+        bad = dict(question, support_evidence={'note:support': {'required_terms': ['SENTINEL-TERM', '']}})
+        (self.root / 'report.json').unlink()
+        result, out, err = self.run_main(self.argv(question=bad), {'TEST_GRAPH_TOKEN': 'SECRET'})
+        self.assertEqual(result, 2)
+        self.assertNotIn('SENTINEL', (out + err).upper())
+
+    def test_compare_treats_older_baselines_as_unchecked(self):
+        current = {'questions': [self.graded(on=[rendered(ELSEWHERE, 514, 854)])]}
+        schema2 = copy.deepcopy(current)
+        for key in ('span_check', 'on_span_by_round', 'span_unchecked_chunks', 'off_answer_terms_found'):
+            del schema2['questions'][0]['summary'][key]
+        schema2['questions'][0]['summary']['pass'] = 'needs_judgement'
+        for r in schema2['questions'][0]['rounds']:
+            del r['returned_spans'], r['span_evidence']
+        line = eval_graph.compare(current, schema2)
+        self.assertIn('pass=needs_judgement -> fail', line)
+        self.assertIn('span_check=unchecked -> missing', line)
+        self.assertIn('span_check=unchecked -> unchecked',
+                      eval_graph.compare({'questions': [self.report()]}, schema2))
 
 
 if __name__ == '__main__':

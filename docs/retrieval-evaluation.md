@@ -165,6 +165,32 @@ path still runs but cannot pass (`support_chunk_unspecified`).
 `allowed_directions` optionally narrows the traversal labels a path step may
 use (`outbound`, `inbound`; default both).
 
+`build_context` renders one clipped span per chunk, not the chunk. With the
+default estimated token counter (one token per UTF-8 byte) a 400-token chunk
+budget renders at most about 400 bytes, so a returned chunk ID does not show
+that its answer passage was rendered. Optional `support_evidence` names, per
+support chunk ID, what the rendered span must contain:
+
+```json
+"support_evidence": {
+  "note:fictional-answer-chunk": {
+    "required_terms": ["fictional-term-a", "fictional-term-b"],
+    "answer_span": [120, 310]
+  }
+}
+```
+
+| Field | Check | Trade-off |
+| --- | --- | --- |
+| `required_terms` | Every term is a substring of that chunk's rendered `snippet`, after NFC normalization and case folding. | Survives re-chunking and small edits. The terms are private text and stay in the suite. |
+| `answer_span` | The byte range `[start, end)` of the chunk content lies inside `selected_span_start..selected_span_end`. An untruncated chunk covers any range. | Holds no text. Goes stale when the chunk content changes, so pin it to a chunk revision. |
+
+Give either field or both; with both, both must hold. List only the terms
+without which the answer is not there. Keys must be chunk IDs listed in
+`support_chunks`; terms must be non-empty and unique; a span is two integers
+with `0 <= start < end`. The check is exact matching only: it can show that an
+answer is absent, never that a context answers the question.
+
 The source map accepts `{ "upload-hash": "workspace-relative/path.md" }` or
 the importer's registry `files[path].parts[*].id = "source:<hash>"` (parts can
 be an object or list). Hashes map the tail of `mcp://upload/<hash>` to paths.
@@ -209,6 +235,9 @@ missing field, or a human `"no"` is `fail`. Each summary lists sorted
   file returned), `unrelated_chunk` (only other chunks of the support file),
   `invalid_path` (the chunk without a valid path as above),
   `support_source_mismatch` (the chunk ID mapped to another file);
+- rendered span, per on round: `support_span_missing` (the chunk was delivered
+  as above, but its rendered span lacks a required term or does not cover the
+  answer span);
 - baseline: `off_has_support`;
 - data/protocol: `call_error`, `insufficient_rounds` (fewer than two off or two
   on rounds), `support_chunk_unspecified`, `missing_fields` (no chunk IDs or
@@ -217,6 +246,30 @@ missing field, or a human `"no"` is `fail`. Each summary lists sorted
 
 Seed/support found flags still summarize the union of repeated rounds at file
 level; only the pass conditions are per round and per chunk.
+
+The span check runs only for a chunk that is already `delivered`, so the
+path reasons keep priority. One failing on round fails the item. A covered span
+changes nothing else: the item stays `needs_judgement` until a human decides,
+and the check never produces `pass`. `span_check` in each summary is
+`unchecked` (the suite has no evidence for these chunks; verdicts are exactly
+as before), `not_delivered` (evidence, but no delivered chunk to check),
+`covered` or `missing`. `on_span_by_round` gives checked and covered chunk
+counts and found and required term counts per on round, so a partial delivery
+is visible. `span_unchecked_chunks` counts support chunks without evidence.
+Delivered evidence chunks whose snippet or span offsets are absent fail as
+`missing_fields`.
+
+`off_answer_terms_found` is a flag, not a fail reason. It is `true` when every
+required term already appears somewhere in the rendered graph-off context in
+every off round, which suggests graph-off already answers from another chunk.
+Terms spread over unrelated chunks also set it, and an answer worded
+differently does not, so it prompts a look at the private context and decides
+nothing. It is `null` without `required_terms`.
+
+Evidence terms, snippets and questions never reach the report, `--json`
+output, summary lines or error messages. Those carry statuses, counts and the
+numeric span offsets the service returned. No hashes of terms are written,
+because a short term can be guessed from its hash.
 
 ```sh
 python3 -I scripts/evaluate-graph-context.py \
@@ -236,11 +289,14 @@ these identifiers before sharing. Errors never print server exception strings.
 Use new output/private paths per run. Failed calls exit 1, setup failures exit
 2; exit 0 says calls succeeded, not that questions passed.
 
-Reports (`schema_version` 2) record per-round paths, chunk record IDs
-(`returned_ids`, aligned with `returned_paths` and `chunk_graph`), scores,
-graph hops/steps/types/IDs, diagnostics, found flags, elapsed milliseconds and
-sanitized-response SHA-256 stability. Each question row also records its
-`support_chunks` and effective `allowed_directions`.
+Reports (`schema_version` 3) record per-round paths, chunk record IDs
+(`returned_ids`, aligned with `returned_paths`, `chunk_graph` and
+`returned_spans`), scores, graph hops/steps/types/IDs, diagnostics, found
+flags, elapsed milliseconds and sanitized-response SHA-256 stability.
+`returned_spans` holds each chunk's `start`, `end` and `truncated`;
+`span_evidence` holds the per-chunk check status and term counts. Each question
+row also records its `support_chunks`, effective `allowed_directions` and, per
+evidence chunk, the number of required terms and the answer span.
 Hashes exclude timing, policy, and private fields (not byte hashes of the full
 response). Metadata includes endpoint host only, MCP protocol, timestamps,
 source-map size, suite and runner hashes. Optional `--binary-sha256`,
@@ -248,7 +304,8 @@ source-map size, suite and runner hashes. Optional `--binary-sha256`,
 `--accepted-edge-count` record operator-supplied snapshot identity; these claims
 do not freeze the live corpus. `--compare` prints per-question gained/lost paths
 for off/on, boolean flag flips, mean per-call elapsed delta and pass transitions,
-without note text. It accepts schema 1 baselines. Schema 1 rounds have no chunk
+without note text, and the `span_check` transition. It accepts schema 1 and 2
+baselines and reads their span check as `unchecked`. Schema 1 rounds have no chunk
 IDs, so they cannot be re-graded as passes; the committed 2026-11-02 and
 2026-11-03 fixtures stay unchanged and remain 0/8 under the current rules.
 The sanitized 2026-11-02 fixture predates tri-state scoring;
@@ -266,7 +323,8 @@ item:
 1. Build a private sheet from the run's `--private-dir` responses. For each
    item show the question, the expected answer and the graph-off and graph-on
    contexts as rendered. Judge the rendered text, not the chunk ID: a delivered
-   chunk is a truncated span and may omit its answer passage.
+   chunk is a truncated span and may omit its answer passage. `support_evidence`
+   removes the items whose span misses the answer before anyone reads them.
 2. Note what graph-on replaced. At a fixed chunk budget it always displaces a
    graph-off chunk, and the answer can depend on the chunk that left.
 3. The repository owner decides `yes`, `no` or `unsure` per item. A delegated

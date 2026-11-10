@@ -177,3 +177,35 @@ nothing.
 1. Both v3 guards are violated on the deployed build.
 2. A support chunk can pass by ID while its rendered span omits the answer
    (V2-E07). Chunk-level grading cannot detect that.
+
+## Replay with span evidence (#255)
+
+The runner can now check a suite's `support_evidence` against the rendered
+span. To test it, the retained raw responses of both runs were re-graded
+offline: no service call was made and the approved suites were not edited.
+
+- **Without evidence:** all 29 items reproduce their retained verdict,
+  `fail_reasons`, chunk IDs and paths, and report `span_check: unchecked`.
+- **With delegated evidence** (two to five required terms per item, taken from
+  each expected answer, for the seven judged items):
+
+| Item | Mechanical verdict before → after | Span check | Terms found / required, each on round | Owner decision |
+| --- | --- | --- | --- | --- |
+| V3-E01 | `needs_judgement` → `needs_judgement` | covered | 2 / 2 | yes |
+| V3-E02 | `needs_judgement` → `needs_judgement` | covered | 3 / 3 | yes |
+| V3-E03 | `needs_judgement` → `needs_judgement` | covered | 5 / 5 | yes |
+| V3-E05 | `needs_judgement` → `needs_judgement` | covered | 2 / 2 | yes |
+| V2-E09 | `needs_judgement` → `needs_judgement` | covered | 2 / 2 | yes |
+| V2-E07 | `needs_judgement` → `fail` (`support_span_missing`) | missing | 0 / 3 | no |
+| V2-Q4c | `needs_judgement` → `needs_judgement` | covered | 2 / 2 | no |
+
+  The other 22 items are unchanged.
+- **Truncation:** 214 of the 228 rendered chunks across both runs were
+  truncated.
+- **`off_answer_terms_found` is `false` for all seven, including V2-Q4c.** The
+  graph-off context there states the same result in different words, so exact
+  terms do not find it. The flag cannot replace reading the context for that
+  pattern; it stays a flag.
+
+The evidence terms are a delegated choice kept with the private run evidence.
+They are not an owner-approved suite revision.

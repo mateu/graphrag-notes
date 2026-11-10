@@ -10,6 +10,7 @@ import re
 import stat
 import sys
 import time
+import unicodedata
 from urllib.parse import urlparse
 
 # Explicit local import also works under python3 -I in an isolated allowlist copy.
@@ -23,7 +24,11 @@ class EvaluationError(Exception):
 
 # v2 adds per-round `returned_ids` (opaque chunk record IDs) so path terminals
 # can be checked against the chunk that actually carried the graph evidence.
-REPORT_SCHEMA_VERSION = 2
+# v3 adds per-round `returned_spans` and `span_evidence`: build_context renders
+# one clipped span per chunk, so a returned chunk ID does not show that the
+# answer passage was rendered.
+REPORT_SCHEMA_VERSION = 3
+EVIDENCE_FIELDS = ('required_terms', 'answer_span')
 # Traversal labels emitted by the service's graph path steps.
 DIRECTIONS = ('outbound', 'inbound')
 STEP_FIELDS = ('edge_id', 'edge_type', 'direction', 'from_id', 'to_id')
@@ -92,7 +97,81 @@ def load_suite(value):
         directions = q.get('allowed_directions', list(DIRECTIONS))
         require(isinstance(directions, list) and directions and all(d in DIRECTIONS for d in directions),
                 'invalid allowed directions')
+        # Optional per support chunk: what its rendered span must contain. Terms are private.
+        evidence = q.get('support_evidence', {})
+        known = {c for ids in chunks.values() for c in ids}
+        require(isinstance(evidence, dict) and set(evidence) <= known, 'invalid support evidence')
+        for spec in evidence.values():
+            require(isinstance(spec, dict) and spec and set(spec) <= set(EVIDENCE_FIELDS),
+                    'invalid support evidence')
+            terms = spec.get('required_terms')
+            if 'required_terms' in spec:
+                require(isinstance(terms, list) and terms and
+                        all(isinstance(t, str) and normalized(t) for t in terms) and
+                        len({normalized(t) for t in terms}) == len(terms), 'invalid support evidence')
+            span = spec.get('answer_span')
+            if 'answer_span' in spec:
+                require(isinstance(span, list) and len(span) == 2 and all(type(x) is int for x in span) and
+                        0 <= span[0] < span[1], 'invalid support evidence')
     return value
+
+
+def normalized(text):
+    """NFC, case-folded and stripped, for exact substring checks only."""
+    return unicodedata.normalize('NFC', text).casefold().strip()
+
+
+def span_fields(chunk):
+    """The numeric rendered-span offsets the service returned for one chunk; never its text."""
+    def offset(key):
+        return chunk[key] if type(chunk.get(key)) is int and chunk[key] >= 0 else None
+    truncated = chunk.get('truncated')
+    return {'start': offset('selected_span_start'), 'end': offset('selected_span_end'),
+            'truncated': truncated if isinstance(truncated, bool) else None}
+
+
+def span_status(chunk, spec):
+    """Whether one rendered chunk carries its evidence, with found/required term counts."""
+    statuses, found, terms = [], None, spec.get('required_terms')
+    if terms:
+        snippet = chunk.get('snippet')
+        if isinstance(snippet, str):
+            rendered = normalized(snippet)
+            found = sum(normalized(t) in rendered for t in terms)
+            statuses.append('covered' if found == len(terms) else 'missing')
+        else:
+            statuses.append('missing_fields')
+    if 'answer_span' in spec:
+        span, (start, end) = span_fields(chunk), spec['answer_span']
+        if span['truncated'] is False:
+            # An untruncated chunk renders its whole content, so it covers any range.
+            statuses.append('covered')
+        elif span['start'] is None or span['end'] is None or span['truncated'] is None:
+            statuses.append('missing_fields')
+        else:
+            statuses.append('covered' if span['start'] <= start and end <= span['end'] else 'missing')
+    status = next((s for s in ('missing_fields', 'missing') if s in statuses), 'covered')
+    return status, found
+
+
+def span_evidence(chunks, question):
+    """Check suite evidence against the rendered response in memory; keep statuses and counts only."""
+    result = {}
+    context = normalized('\n'.join(ch['snippet'] for ch in chunks if isinstance(ch.get('snippet'), str)))
+    for chunk_id, spec in (question.get('support_evidence') or {}).items():
+        entry, terms = {'status': 'not_returned'}, spec.get('required_terms')
+        if terms:
+            entry['terms_required'] = len(terms)
+            # Across every rendered chunk: shows an answer already present without the support chunk.
+            entry['context_terms_found'] = sum(normalized(t) in context for t in terms)
+        outcomes = [span_status(ch, spec) for ch in chunks if ch.get('id') == chunk_id]
+        if outcomes:
+            order = ('covered', 'missing', 'missing_fields')
+            entry['status'], found = min(outcomes, key=lambda item: order.index(item[0]))
+            if found is not None:
+                entry['terms_found'] = found
+        result[chunk_id] = entry
+    return result
 
 
 def graph_fields(graph):
@@ -119,6 +198,8 @@ def round_result(data, policy, elapsed, mapping, question):
                             for ch in chunks],
            'scores': [ch.get('score') for ch in chunks],
            'chunk_graph': [graph_fields(ch.get('graph')) for ch in chunks],
+           'returned_spans': [span_fields(ch) for ch in chunks],
+           'span_evidence': span_evidence(chunks, question),
            'diagnostics': diagnostics, 'total_tokens': data.get('total_tokens'),
            'expected_found': {p: p in paths for p in question['seed'] + question['support']}}
     # Hash the sanitized response projection, excluding timing and policy.
@@ -197,11 +278,25 @@ def summarize(question, rounds):
         reasons.add('missing_fields')
     off_ids = {i for r in off for i in (r.get('returned_ids') or [])}
     # Every successful on repetition must deliver every expected chunk on its own.
-    delivered = []
+    # A delivered chunk with suite evidence must also carry it in its rendered span.
+    evidence = question.get('support_evidence') or {}
+    delivered, span_rounds = [], []
     for r in on:
-        statuses = set() if r['error'] else {support_status(r, p, c, question) for p, c in targets}
+        by_target = {} if r['error'] else {(p, c): support_status(r, p, c, question) for p, c in targets}
+        statuses = set(by_target.values())
         reasons.update(statuses - {'delivered'})
         delivered.append(not r['error'] and not unspecified and bool(targets) and statuses == {'delivered'})
+        counts = {'checked': 0, 'covered': 0, 'terms_found': 0, 'terms_required': 0}
+        for chunk_id in sorted({c for (_, c), status in by_target.items()
+                                if status == 'delivered' and c in evidence}):
+            entry = (r.get('span_evidence') or {}).get(chunk_id) or {}
+            counts['checked'] += 1
+            counts['covered'] += entry.get('status') == 'covered'
+            counts['terms_found'] += entry.get('terms_found', 0)
+            counts['terms_required'] += entry.get('terms_required', 0)
+            if entry.get('status') != 'covered':
+                reasons.add('support_span_missing' if entry.get('status') == 'missing' else 'missing_fields')
+        span_rounds.append(counts)
     successful = [d for r, d in zip(on, delivered) if not r['error']]
     if any(successful) and not all(successful):
         reasons.add('inconsistent_support')
@@ -216,6 +311,23 @@ def summarize(question, rounds):
         reasons.add('human_rejected')
     summary.update(conditions)
     summary['on_support_by_round'] = delivered
+    checked = sum(c['checked'] for c in span_rounds)
+    summary['on_span_by_round'] = span_rounds
+    summary['span_unchecked_chunks'] = sum(c not in evidence for _, c in targets)
+    # `unchecked`: no evidence in the suite. `not_delivered`: evidence, but no delivered chunk to check.
+    summary['span_check'] = ('unchecked' if not any(c in evidence for _, c in targets)
+                             else 'not_delivered' if not checked
+                             else 'covered' if checked == sum(c['covered'] for c in span_rounds)
+                             else 'missing')
+    # A flag, not a fail reason: every required term already rendered in every graph-off round,
+    # from any chunk. Terms spread over unrelated chunks can set it, so a person still decides.
+    with_terms = sorted({c for _, c in targets if (evidence.get(c) or {}).get('required_terms')})
+    off_ok = [r for r in off if not r['error']]
+    def off_terms(row, chunk_id):
+        entry = (row.get('span_evidence') or {}).get(chunk_id) or {}
+        return entry.get('terms_required') and entry.get('context_terms_found') == entry['terms_required']
+    summary['off_answer_terms_found'] = (bool(all(off_terms(r, c) for r in off_ok for c in with_terms))
+                                         if with_terms and off_ok else None)
     summary['answer_differs_materially'] = judgement
     summary['fail_reasons'] = sorted(reasons)
     summary['pass'] = ('fail' if reasons or not all(conditions.values())
@@ -239,11 +351,16 @@ def evaluate(suite, mapping, client, params, policies):
                 # Exception strings can echo queries/credentials; never export them.
                 row = {'policy': policy, 'elapsed_ms': round((time.monotonic() - started) * 1000),
                        'error': 'context_failed', 'returned_paths': [], 'returned_ids': [], 'scores': [],
-                       'chunk_graph': [], 'diagnostics': {}, 'expected_found': {},
+                       'chunk_graph': [], 'returned_spans': [], 'span_evidence': {},
+                       'diagnostics': {}, 'expected_found': {},
                        'response_sha256': digest({'error': 'context_failed'})}
             rounds.append(row)
         public.append({'id': q['id'], 'seed': q['seed'], 'support': q['support'],
                        'support_chunks': q.get('support_chunks', {}),
+                       # Counts and byte offsets only; the terms stay in the private suite.
+                       'support_evidence': {c: {'required_terms': len(spec.get('required_terms', [])),
+                                                'answer_span': spec.get('answer_span')}
+                                            for c, spec in (q.get('support_evidence') or {}).items()},
                        'allowed_relations': q['allowed_relations'],
                        'allowed_directions': q.get('allowed_directions', list(DIRECTIONS)),
                        'coverage': {p: p in set(mapping.values()) for p in q['seed'] + q['support']},
@@ -276,6 +393,9 @@ def compare(report, baseline):
         old_pass = before['summary'].get('pass', 'fail' if not before['summary'].get('on_has_edge_path') else 'needs_judgement')
         changes.append('flags_flipped=' + json.dumps(flips, sort_keys=True))
         changes.append('pass=%s -> %s' % (old_pass, q['summary']['pass']))
+        # Schema 1 and 2 baselines did not check rendered spans.
+        changes.append('span_check=%s -> %s' % (before['summary'].get('span_check', 'unchecked'),
+                                                 q['summary'].get('span_check', 'unchecked')))
         lines.append(q['id'] + ': ' + '; '.join(changes))
     for qid in sorted(set(old) - {q['id'] for q in report['questions']}):
         lines.append(qid + ': removed question')
@@ -354,9 +474,11 @@ def main(argv=None, client_factory=mcp.Client):
         if args.summary or not args.json:
             for q in questions:
                 reasons = q['summary']['fail_reasons']
-                print('%s: %s on==off=%s graph_selected=%d%s' %
+                span = q['summary']['span_check']
+                print('%s: %s on==off=%s graph_selected=%d%s%s' %
                       (q['id'], q['summary']['pass'], q['summary']['on_same_paths_as_off'],
-                       q['summary']['on_graph_selected'], ' reasons=' + ','.join(reasons) if reasons else ''))
+                       q['summary']['on_graph_selected'], '' if span == 'unchecked' else ' span=' + span,
+                       ' reasons=' + ','.join(reasons) if reasons else ''))
             print('%d/%d pass' % (sum(q['summary']['pass'] == 'pass' for q in questions), len(questions)))
         if baseline:
             print(compare(report, baseline))
