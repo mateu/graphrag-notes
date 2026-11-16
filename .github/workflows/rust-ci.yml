@@ -100,9 +100,9 @@ jobs:
         with:
           shared-key: nextest-v1
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.152
       - name: Run deterministic workspace tests (cargo nextest run --workspace --locked)
         # Only the fictional policy-migration fixture installs the safe
         # dedicated subscriber; nextest hides captured output on success.
@@ -207,9 +207,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-targets: false
       # Prebuilt release binary instead of compiling cargo-audit (~2.5 min).
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
-          tool: cargo-audit
+          tool: cargo-audit@0.23.0
       - name: Verify scoped audit exemptions remain unreachable
         run: scripts/check-audit-exemptions.sh
       - name: Audit Cargo.lock (cargo audit)
