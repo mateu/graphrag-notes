@@ -1,8 +1,9 @@
 # Getting started
 
-The published [0.1.0-rc.2 prerelease](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.2)
-includes capture, folder sync, keyword search, source navigation, review, and
-the terminal workspace. Its binary targets **macOS Apple Silicon, macOS 15 or
+The published [0.1.0-rc.5 prerelease](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.5)
+includes capture, folder sync, keyword search, source navigation, review, the
+terminal workspace, and the shared-service commands with matching portable
+clients. Its binary targets **macOS Apple Silicon, macOS 15 or
 newer**. The published `v0.1.0-rc.1` remains a historical first-run baseline
 with import and hybrid search.
 Native Linux and Intel macOS release acceptance is tracked in
@@ -14,34 +15,35 @@ models and internet access for downloads. The sample contains no personal notes.
 
 | Use case | Installation path |
 | --- | --- |
-| Apple Silicon daily-use binary | [Install rc.2](#published-daily-use-prerelease) |
+| Apple Silicon daily-use binary | [Install rc.5](#published-daily-use-prerelease) |
 | Development, Intel Macs, or Linux | [Build from source](#build-from-source) |
 | Reproduce the published first-run baseline | [Install rc.1](#published-onboarding-baseline) |
 
 ### Published daily-use prerelease
 
-Download the installer from the exact `v0.1.0-rc.2` tag, inspect it, and install
+Download the installer from the exact `v0.1.0-rc.5` tag, inspect it, and install
 this candidate explicitly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.2/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.5/scripts/install.sh \
   -o /tmp/graphrag-install.sh
 bash /tmp/graphrag-install.sh --help
-bash /tmp/graphrag-install.sh --version 0.1.0-rc.2
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.5
 export PATH="$HOME/.local/bin:$PATH"
 graphrag --version
 ```
 
-Expect `graphrag 0.1.0-rc.2`. The installer verifies `SHA256SUMS` and installs
+Expect `graphrag 0.1.0-rc.5`. The installer verifies `SHA256SUMS` and installs
 the binary to `~/.local/bin/graphrag` and starter notes to
-`~/.local/share/graphrag-notes/samples/first-notes.md`. Use `--bin-dir` and
+`~/.local/share/graphrag-notes/samples/first-notes.md`, with the matching
+clients and guides under `~/.local/share/graphrag-notes/releases/v0.1.0-rc.5`. Use `--bin-dir` and
 `--data-dir` for other destinations. It refuses to replace an existing binary;
 follow [the upgrade steps](#upgrade-an-existing-installation) before using
 `--force`. Existing starter notes are preserved.
 
 The latest-release lookup selects stable releases and excludes prereleases,
-so keep the explicit `--version 0.1.0-rc.2`. See the
-[release guide](releases/0.1.0-rc.2.md) for archive contents and verification.
+so keep the explicit `--version 0.1.0-rc.5`. See the
+[release record](releases/0.1.0-rc.5.md) for archive contents and verification.
 For a new configuration, continue with step 2. For an existing one, inspect it
 with `graphrag init` without `--backend` or `--write`.
 
@@ -103,7 +105,7 @@ Install [Rust](https://rustup.rs/) 1.97.1 or newer. The repository toolchain pin
 | Other Linux | Install the equivalent compiler/build tools, CMake, pkg-config, OpenSSL development headers, and Clang/libclang packages for your distribution. |
 
 ```bash
-git clone --branch v0.1.0-rc.2 https://github.com/mateu/graphrag-notes.git
+git clone --branch v0.1.0-rc.5 https://github.com/mateu/graphrag-notes.git
 cd graphrag-notes
 ./setup.sh
 export PATH="$PWD/target/release:$PATH"
@@ -116,7 +118,7 @@ does not run a package manager, install Rust, download models, or start services
 `sccache` is optional. The PATH command above applies to the current terminal;
 add the absolute `target/release` directory to your shell configuration if you
 want to use this source build from other directories. Build dependencies may
-need to be downloaded on the first build. Omit `--branch v0.1.0-rc.2` when
+need to be downloaded on the first build. Omit `--branch v0.1.0-rc.5` when
 cloning if you want current development source instead of the tagged candidate.
 
 ## 2. Preview and create configuration
@@ -223,7 +225,7 @@ applies application schema migrations. Repeating an unchanged file import is a
 no-op. Finish with `graphrag doctor` to check the initialized database and active
 embedding identity.
 
-In rc.2 and current source, each result prints an
+In rc.2 and later, including current source, each result prints an
 `Inspect` command for its full content, source heading/lines, and chat context,
 plus an `Open source` command when it names a local file. Copy these commands;
 they retain the selected configuration/database and check that the result has
@@ -240,8 +242,8 @@ You can also
 search already indexed content offline using
 `graphrag search "Atlas launch" --mode keyword --scope all`. This explicit mode
 searches notes, original messages, and conversation summaries without requiring
-vectors; hybrid remains the default. This mode requires current source or the
-published rc.2 binary. Continue with the [daily workflow](daily-workflow.md),
+vectors; hybrid remains the default. This mode requires the published rc.2
+binary or later, or current source. Continue with the [daily workflow](daily-workflow.md),
 or see [keyword search](keyword-search.md) for its exact contract.
 
 ## Using TEI and TGI instead
@@ -271,10 +273,9 @@ by the Docker stack.
 
 ## Upgrade an existing installation
 
-For the published rc.2 installation, follow the commands below. The
-[rc.3 release guide](releases/0.1.0-rc.3.md) records shared-service candidate
-availability, matching installed clients, and publication/upgrade validation.
-Once rc.3 is published, select its version explicitly in the same installer flow.
+To move a published installation to the latest prerelease, currently rc.5,
+follow the commands below. The [rc.5 release record](releases/0.1.0-rc.5.md)
+lists its verified installation and upgrade checks and the gates that remain.
 
 Before changing binaries, stop the service/workspace that owns the corpus,
 quiesce remote clients, retain pending job/request recovery state, and use the working installation to create and verify
@@ -289,16 +290,16 @@ Keep your usual `--config` and `--db-path` flags when needed. Including vectors
 requires recorded embedding identity; otherwise omit `--include-embeddings`
 and plan to reindex before hybrid retrieval after restore. The new binary
 applies additive schema migrations when it opens the existing database.
-`rc.1` supports schema 14, rc.2 supports schema 15, and the rc.3 source
-candidate includes schema 19. An older binary cannot open the upgraded corpus. Returning
+`rc.1` supports schema 14, rc.2 schema 15, rc.3 schema 19, and rc.4 and rc.5
+schema 21; current source is at schema 28. An older binary cannot open the upgraded corpus. Returning
 to an older binary requires a compatible pre-upgrade archive restored into a
 fresh database. Do not lower schema metadata or remove fields with SQL.
 
-After verifying the backup, download and inspect the rc.2 installer as shown
+After verifying the backup, download and inspect the rc.5 installer as shown
 above. Deliberately replace the installed binary with:
 
 ```bash
-bash /tmp/graphrag-install.sh --version 0.1.0-rc.2 --force
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.5 --force
 export PATH="$HOME/.local/bin:$PATH"
 graphrag --version
 graphrag init
@@ -309,9 +310,9 @@ Plain `init` inspects the existing configuration. Do not add `--backend` or
 one, select another directory and invoke that binary explicitly:
 
 ```bash
-bash /tmp/graphrag-install.sh --version 0.1.0-rc.2 \
-  --bin-dir "$HOME/.local/graphrag-rc2/bin"
-"$HOME/.local/graphrag-rc2/bin/graphrag" --version
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.5 \
+  --bin-dir "$HOME/.local/graphrag-rc5/bin"
+"$HOME/.local/graphrag-rc5/bin/graphrag" --version
 ```
 
 Separate executable directories do not make an upgraded database compatible
@@ -324,7 +325,8 @@ reconfiguration; keep original Markdown files separately. Follow the
 The validation harness compares separate fresh databases for the old and new
 binaries; it never opens an upgraded corpus with the old binary.
 
-rc.3 clients/docs install below `DATA_DIR/releases/v0.1.0-rc.3`, preserving
+Since rc.3, matching clients/docs install below `DATA_DIR/releases/vVERSION`
+(for rc.5, `DATA_DIR/releases/v0.1.0-rc.5`), preserving
 configuration and edited starter notes. Installation requires curl, tar and SHA
 tools; optional Python clients require Python 3.11+ to run. Keep capture journals,
 refresh collection state, tokens and private relevance cases outside that public

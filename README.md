@@ -4,9 +4,10 @@ A local-first GraphRAG notes system built around a Rust CLI, hybrid retrieval, a
 
 ## Get your first result
 
-The published [0.1.0-rc.2 prerelease](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.2)
+The published [0.1.0-rc.5 prerelease](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.5)
 includes recoverable capture, explicit Markdown folder sync, offline keyword
-search, source inspection/opening, connection review, and a terminal workspace.
+search, source inspection/opening, connection review, a terminal workspace, and
+the shared-service commands with matching portable clients.
 Its binary targets **macOS Apple Silicon, macOS 15 or newer**. Download the
 versioned installer, inspect it, and select this prerelease explicitly:
 
@@ -14,10 +15,10 @@ For an existing installation, [create and verify a portable backup before
 switching binaries](docs/getting-started.md#upgrade-an-existing-installation).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.2/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/mateu/graphrag-notes/v0.1.0-rc.5/scripts/install.sh \
   -o /tmp/graphrag-install.sh
 bash /tmp/graphrag-install.sh --help
-bash /tmp/graphrag-install.sh --version 0.1.0-rc.2
+bash /tmp/graphrag-install.sh --version 0.1.0-rc.5
 export PATH="$HOME/.local/bin:$PATH"
 graphrag --version
 ```
@@ -70,8 +71,9 @@ that database must wait for the workspace to exit.
 The published [v0.1.0-rc.1](https://github.com/mateu/graphrag-notes/releases/tag/v0.1.0-rc.1)
 remains an onboarding baseline and predates these daily-use commands. Its
 [versioned install instructions](docs/getting-started.md#published-onboarding-baseline)
-remain available. See the [rc.2 release guide](docs/releases/0.1.0-rc.2.md) for
-candidate scope, installation, and publication verification.
+remain available. See the [rc.5 release record](docs/releases/0.1.0-rc.5.md) for
+its scope, verified identities and remaining gates; earlier prereleases keep
+their guides under [docs/releases](docs/releases/README.md).
 Prereleases need an explicit `--version`; default installer lookup selects stable releases.
 
 [Operating runbooks](docs/operations.md) cover existing database migration,
@@ -82,19 +84,19 @@ release acceptance follows in [#66](https://github.com/mateu/graphrag-notes/issu
 Current source provides the [shared MCP service](docs/shared-mcp.md) for
 OpenClaw, Hermes and the remote CLI, with independent capabilities,
 [guarded mutations](docs/shared-mcp-mutations.md), uploaded Markdown and durable
-jobs. [The rc.3 reliability candidate](docs/releases/0.1.0-rc.3.md) adds
+jobs. [The published rc.3 prerelease](docs/releases/0.1.0-rc.3.md) added
 [incremental indexed-memory refresh](docs/openclaw-memory-refresh.md),
 [remote diagnostics](docs/remote-diagnostics.md), a
 [private capture recovery journal](docs/capture-journal.md),
 [relevance evaluation](docs/retrieval-evaluation.md) and
 [search timing measurements](docs/search-benchmark.md). Its archive includes
 matching clients and operating guides in a versioned bundle. Published rc.2
-predates the shared-service commands; follow the rc.3 guide for publication and
-upgrade status. The remaining native Linux/Intel acceptance is tracked in #66.
+predates the shared-service commands. The remaining native Linux/Intel
+acceptance is tracked in #66.
 The [live rc.3 acceptance record](https://github.com/mateu/graphrag-notes/issues/97#issuecomment-6009885555)
 tracks publication, installation and deployment gates as they are completed.
 
-The [rc.4 follow-up candidate](docs/releases/0.1.0-rc.4.md) prepares matching
+The published [rc.4 prerelease](docs/releases/0.1.0-rc.4.md) prepared matching
 clients for explicit retained extraction-policy migration and the measured
 note-search and OpenClaw connection improvements. Its guide records the
 separate validation and publication gates; rc.3 assets remain immutable.
