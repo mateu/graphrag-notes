@@ -19,13 +19,14 @@ on pull requests without blocking a merge.
 | `format` | `bash scripts/test-install.sh`, `python3 scripts/test-release.py` and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`, then `cargo fmt --all -- --check` | Offline installer/setup and packaging behavior, compiled-input identity, and formatting drift |
 | `clippy` | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Warnings and lint regressions |
 | `msrv` | `python3 scripts/check-workspace-rust-version.py`, then `cargo +1.97.1 check --workspace --locked` | Exact workspace declaration and Rust 1.97.1 MSRV |
-| `offline-integration` (PR, main, nightly, manual) | `GRAPHRAG_MIGRATION_CONFLICT_PROBE=1 cargo test --workspace --locked`, then `python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline` | Full unit tests, offline integration, graph replay/scale assertions, and the combined daily workflow with deterministic doubles |
+| `offline-integration` (3 shards; PR, main, nightly, manual) | `GRAPHRAG_MIGRATION_CONFLICT_PROBE=1 cargo test --workspace --locked`, then `python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline` | Full unit tests, offline integration, graph replay/scale assertions, and the combined daily workflow with deterministic doubles |
 | `persistent-round-trip` | commands shown in `.github/workflows/rust-ci.yml` | Fresh/upgrade migrations, source idempotency, resilient processing, and portable round trips |
 | `retrieval-regression` | `python3 scripts/run-exact-rust-test.py --package graphrag-cli --bin graphrag --test-name eval::tests::committed_retrieval_fixture_matches_versioned_baseline --nocapture` | Committed retrieval fixture baseline |
 | `dependency-audit` (weekly/manual) | `scripts/check-audit-exemptions.sh && cargo audit` | Weekly RustSec scan plus reachability checks for scoped exemptions |
 
 Each build lane has its own Cargo cache key (`check-v1` shared by clippy and
-MSRV, then `nextest-v1`, `persistent-round-trip-v1`, `retrieval-regression-v1`,
+MSRV, then `nextest-v1` shared by the three unit/offline shards and saved by
+shard 1, `persistent-round-trip-v1`, `retrieval-regression-v1`,
 `migration-regression-v1` and `audit-v1`), saved only from `main`; see
 [cache keys and dependency optimization](#cache-keys-and-dependency-optimization).
 Compilation is not merged into one opaque job: focused failures remain
@@ -121,6 +122,16 @@ keys and dependency opt-level change below, the nightly job at `c4e7288`
 so the job runs on pull requests and `main` pushes again, while the nightly run
 remains. This is one observation on a warm cache, not a runtime budget; no
 fixture, replay count, timing threshold or concurrency setting changed.
+
+CI runs the suite as three `cargo nextest run --partition hash:k/3` shards,
+`unit and offline integration (k/3)`, and a small job named `unit and offline
+integration` passes only when all three pass, so branch protection keeps one
+context. Every shard builds the same test binaries; doctests, the combined
+daily-workflow validation and the `main` cache save run in shard 1 only. On the
+current 1089-test set the shards hold 372, 332 and 385 tests and about 33%, 30%
+and 37% of the measured per-test time. A hash split is stable but not
+time-aware, so a new heavy test can unbalance it. To reproduce one shard
+locally, add `--partition hash:1/3` to the nextest command.
 
 ## Cache keys and dependency optimization
 
