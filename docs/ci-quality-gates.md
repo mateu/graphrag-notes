@@ -1,21 +1,25 @@
 # CI quality gates
 
-The Rust workflow separates focused pre-merge checks from full nightly coverage.
+The Rust workflow runs focused pre-merge checks and the full unit/offline suite.
 Pull requests and pushes to `main` run format, Clippy, MSRV, persistent round-trip,
 and retrieval-regression checks. All five are required on `main`, with strict
 up-to-date branch protection and GitHub Actions App binding.
 
-The full `unit and offline integration` job runs nightly at **03:23 UTC** on
-`main`, or by manual dispatch. It is no longer a required PR check. This knowingly
-moves full workspace unit/offline and combined daily-workflow regression detection
-after merge; the five focused checks do not provide equivalent coverage.
+The full `unit and offline integration` job runs on pull requests, pushes to
+`main` and manual dispatch, and again nightly at **03:23 UTC** on `main`.
+[#143](https://github.com/mateu/graphrag-notes/issues/143) moved it to nightly-only
+when the job took about 25 minutes; it now takes about 5 minutes, so it is back on
+pull requests (see the [follow-up](#follow-up-full-suite-back-on-pull-requests)).
+The five focused checks do not provide equivalent coverage. Until the maintainer
+adds `unit and offline integration` to `main`'s required status checks, it reports
+on pull requests without blocking a merge.
 
 | Job | Exact local-equivalent command | What it protects |
 | --- | --- | --- |
 | `format` | `bash scripts/test-install.sh`, `python3 scripts/test-release.py` and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`, then `cargo fmt --all -- --check` | Offline installer/setup and packaging behavior, compiled-input identity, and formatting drift |
 | `clippy` | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Warnings and lint regressions |
 | `msrv` | `python3 scripts/check-workspace-rust-version.py`, then `cargo +1.97.1 check --workspace --locked` | Exact workspace declaration and Rust 1.97.1 MSRV |
-| `offline-integration` (nightly/manual) | `GRAPHRAG_MIGRATION_CONFLICT_PROBE=1 cargo test --workspace --locked`, then `python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline` | Full unit tests, offline integration, graph replay/scale assertions, and the combined daily workflow with deterministic doubles |
+| `offline-integration` (PR, main, nightly, manual) | `GRAPHRAG_MIGRATION_CONFLICT_PROBE=1 cargo test --workspace --locked`, then `python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline` | Full unit tests, offline integration, graph replay/scale assertions, and the combined daily workflow with deterministic doubles |
 | `persistent-round-trip` | commands shown in `.github/workflows/rust-ci.yml` | Fresh/upgrade migrations, source idempotency, resilient processing, and portable round trips |
 | `retrieval-regression` | `python3 scripts/run-exact-rust-test.py --package graphrag-cli --bin graphrag --test-name eval::tests::committed_retrieval_fixture_matches_versioned_baseline --nocapture` | Committed retrieval fixture baseline |
 | `dependency-audit` (weekly/manual) | `scripts/check-audit-exemptions.sh && cargo audit` | Weekly RustSec scan plus reachability checks for scoped exemptions |
@@ -39,8 +43,9 @@ gh workflow run rust-ci.yml --repo mateu/graphrag-notes --ref <branch-or-tag>
 ```
 
 GitHub scheduled workflows use the default branch, not a PR revision; their
-actual start can be delayed. A skipped unit/offline PR job is not a substitute
-required gate. The five focused contexts above must remain required.
+actual start can be delayed. The five focused contexts above must remain
+required; add `unit and offline integration` beside them once it has run green on
+pull requests.
 
 The repository maintainer owns nightly failures: retain the failed run and tested
 SHA, reproduce/localize the defect, then fix it or revert the responsible change.
@@ -105,6 +110,17 @@ No fixture, replay count, timing threshold, compiler cache, or concurrency behav
 changes in this delivery. No execution speedup or total runner-minute reduction
 is claimed. Safe fixture/cache optimization remains measurement-gated follow-up
 work; the historical baseline does not justify a new runtime budget.
+
+### Follow-up: full suite back on pull requests
+
+The premise of the nightly-only routing no longer holds. After the per-lane cache
+keys and dependency opt-level change below, the nightly job at `c4e7288`
+([run 43798846552](https://github.com/mateu/graphrag-notes/actions/runs/43798846552),
+2026-11-16) took 5m15s end to end; its nextest step reported 1089 tests passed in
+227.9 s, and the slowest test took 49.5 s. That is comparable to the focused lanes,
+so the job runs on pull requests and `main` pushes again, while the nightly run
+remains. This is one observation on a warm cache, not a runtime budget; no
+fixture, replay count, timing threshold or concurrency setting changed.
 
 ## Cache keys and dependency optimization
 
