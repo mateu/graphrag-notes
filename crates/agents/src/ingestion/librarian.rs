@@ -3436,8 +3436,17 @@ mod tests {
     /// chunk provenance; v008 cannot retroactively derive it from stored
     /// chunk bodies alone.
     async fn clear_v008_markdown_metadata(repo: &Repository, notes: &[Note]) {
-        for note in notes {
+        // Legacy rows have no chunk ordinal, so `get_source_chunks` orders them
+        // by `created_at`, then by random record ID. Chunks staged in one loop
+        // can share a timestamp on a microsecond clock (macOS), which made the
+        // recovered order nondeterministic (#239). Pre-v008 imports created
+        // chunks one at a time, so keep the simulated legacy rows ordered too.
+        let Some(base) = notes.first().map(|note| note.created_at) else {
+            return;
+        };
+        for (offset, note) in notes.iter().enumerate() {
             let mut legacy = note.clone();
+            legacy.created_at = base + chrono::Duration::seconds(offset as i64);
             legacy.chunk_key = None;
             legacy.chunk_location_key = None;
             legacy.chunk_ordinal = None;
