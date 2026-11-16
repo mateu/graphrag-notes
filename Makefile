@@ -1,4 +1,4 @@
-.PHONY: all build test clean run-cli setup demo-add demo-search stats fmt lint retrieval-fixture-report update-baseline help
+.PHONY: all build test clean run-cli setup demo-add demo-search demo-clean stats fmt lint retrieval-fixture-report update-baseline help
 
 all: build
 
@@ -20,13 +20,21 @@ run-cli:
 setup:
 	./setup.sh
 
+# The demo targets share one throwaway database. `--memory` is per process, so
+# each `cargo run` would start empty and demo-search could never find a note.
+# They need the configured embedding provider (see `graphrag init --check`).
+DEMO_DB ?= $(CURDIR)/target/demo-db
+
 demo-add:
-	cargo run --release -p graphrag-cli -- --memory add "Machine learning is transforming how we build software" --title "ML Overview"
-	cargo run --release -p graphrag-cli -- --memory add "Neural networks learn hierarchical representations of data" --title "Neural Networks"
-	cargo run --release -p graphrag-cli -- --memory add "Transformers use attention mechanisms for sequence modeling" --title "Transformers"
+	cargo run --release -p graphrag-cli -- --db-path "$(DEMO_DB)" add "Machine learning is transforming how we build software" --title "ML Overview"
+	cargo run --release -p graphrag-cli -- --db-path "$(DEMO_DB)" add "Neural networks learn hierarchical representations of data" --title "Neural Networks"
+	cargo run --release -p graphrag-cli -- --db-path "$(DEMO_DB)" add "Transformers use attention mechanisms for sequence modeling" --title "Transformers"
 
 demo-search:
-	cargo run --release -p graphrag-cli -- --memory search "how do neural networks work"
+	cargo run --release -p graphrag-cli -- --db-path "$(DEMO_DB)" search "how do neural networks work"
+
+demo-clean:
+	rm -rf "$(DEMO_DB)"
 
 stats:
 	cargo run --release -p graphrag-cli -- stats
@@ -56,6 +64,9 @@ help:
 	@echo "  test         Run Rust tests"
 	@echo "  run-cli      Start interactive CLI"
 	@echo "  setup        Build-local setup helper"
+	@echo "  demo-add     Add three sample notes to DEMO_DB (default target/demo-db; needs providers)"
+	@echo "  demo-search  Search DEMO_DB"
+	@echo "  demo-clean   Delete DEMO_DB"
 	@echo "  clean        Clean build artifacts"
 	@echo "  fmt          Format Rust code"
 	@echo "  lint         Run CI-equivalent clippy"

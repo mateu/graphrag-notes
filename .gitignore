@@ -33,5 +33,12 @@ Thumbs.db
 *.db
 *.log
 
+# Local runtime overrides (`.env.example` says to copy it to .env; the CLI
+# loads it automatically), docker-compose TEI/TGI model caches, and private
+# chat exports such as the one tests/phase7-validation.sh reads by default.
+.env
+/data/
+/conversations*.json
+
 # Python virtual env
 python/.venv/

@@ -1,9 +1,9 @@
-# Cargo configuration for optimized builds
-# Additional build optimizations can be added here
-
-[build]
-# Use sccache for faster compilation when available
-rustc-wrapper = "sccache"
+# Repository Cargo configuration.
+#
+# sccache is optional: to use it, export RUSTC_WRAPPER=sccache or set
+# `build.rustc-wrapper = "sccache"` in your user-level ~/.cargo/config.toml.
+# It is not set here because a plain `cargo` command then fails on any
+# machine without sccache installed.
 
 [env]
 # Debug async tests in this workspace build deep future chains; the default
