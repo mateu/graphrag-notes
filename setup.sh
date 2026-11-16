@@ -19,7 +19,8 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
-# The repository enables sccache, but it is optional for a first source build.
+# A user-level Cargo config may enable sccache; it is optional for a first
+# source build, so bypass a configured wrapper that is not installed.
 if [ -z "${RUSTC_WRAPPER+x}" ] && ! command -v sccache >/dev/null 2>&1; then
     export RUSTC_WRAPPER=''
 fi
