@@ -87,34 +87,60 @@ jobs:
         run: cargo check --workspace --locked
 
   offline-integration:
-    name: unit and offline integration
+    name: unit and offline integration (${{ matrix.partition }}/3)
     # Runs on PRs, main pushes and manual dispatch, plus the nightly schedule;
-    # only the weekly audit schedule skips it.
+    # only the weekly audit schedule skips it. Three hash-partitioned shards run
+    # in parallel: each builds the same test binaries and runs its third of the
+    # tests. The `unit and offline integration` job below reports their result.
     if: github.event_name != 'schedule' || github.event.schedule == '23 3 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: nextest-v1
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Every shard builds the complete test set, so one save keeps the
+          # shared key fresh without three uploads racing for it.
+          save-if: ${{ github.ref == 'refs/heads/main' && matrix.partition == 1 }}
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-nextest@0.9.152
-      - name: Run deterministic workspace tests (cargo nextest run --workspace --locked)
+      - name: Run deterministic workspace tests (shard ${{ matrix.partition }}/3)
         # Only the fictional policy-migration fixture installs the safe
         # dedicated subscriber; nextest hides captured output on success.
         # Binaries run concurrently and the ci profile does not stop at the
         # first failure (see .config/nextest.toml).
         env:
           GRAPHRAG_MIGRATION_CONFLICT_PROBE: "1"
-        run: cargo nextest run --workspace --locked --profile ci
+          SHARD: hash:${{ matrix.partition }}/3
+        run: cargo nextest run --workspace --locked --profile ci --partition "$SHARD"
       - name: Run doctests (nextest does not run them)
+        if: matrix.partition == 1
         run: cargo test --workspace --locked --doc
       - name: Validate the combined daily workflow with isolated provider doubles
+        if: matrix.partition == 1
         run: python3 scripts/validate-daily-workflow.py --binary target/debug/graphrag --offline
+
+  offline-integration-result:
+    # One stable context for branch protection: it passes only when every
+    # shard passed. `!cancelled()` (not `always()`) keeps a superseded,
+    # cancelled PR run from reporting a failure on its old commit.
+    name: unit and offline integration
+    needs: offline-integration
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || github.event.schedule == '23 3 * * *') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every shard to pass
+        env:
+          SHARDS: ${{ needs.offline-integration.result }}
+        run: test "$SHARDS" = success
 
   persistent-round-trip:
     name: persistent DB, migrations, and data round trip
